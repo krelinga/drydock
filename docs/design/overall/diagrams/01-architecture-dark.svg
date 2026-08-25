@@ -1,0 +1,112 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 560" role="img" aria-label="Caddy is the only process listening on the LAN; it terminates TLS and forwards over a Unix socket to the Drydock API server, which opens no TCP port at all. The API server drives a container manager over the Docker socket and a session supervisor that holds a PTY into each container. A token broker holds the GitHub App key and reaches each container only through a bind-mounted Unix socket. Containers talk to api.anthropic.com and api.github.com directly.">
+        <defs>
+          <marker id="01-architecture-dark-ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M0 0 L10 5 L0 10 z" fill="#A6B0BA"/>
+          </marker>
+          <marker id="01-architecture-dark-arA" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M0 0 L10 5 L0 10 z" fill="#5DC4A6"/>
+          </marker>
+        </defs>
+
+        <!-- clients, outside the host -->
+        <rect x="34" y="6" width="140" height="40" rx="4" fill="none" stroke="#A6B0BA" stroke-width="1.3"/>
+        <text x="104" y="24" text-anchor="middle" font-family="system-ui, -apple-system, Segoe UI, Roboto, Helvetica, sans-serif" font-size="12.5" fill="#A6B0BA">LAN browsers</text>
+        <text x="104" y="38" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="9.5" fill="#A6B0BA" opacity=".65">laptop &#183; phone &#183; tablet</text>
+
+        <!-- host boundary -->
+        <rect x="14" y="64" width="540" height="436" rx="6" fill="none" stroke="#A6B0BA" stroke-width="1" stroke-dasharray="4 4" opacity=".45"/>
+        <text x="238" y="84" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="11" fill="#A6B0BA" opacity=".7">DEV SERVER</text>
+
+        <!-- caddy: the only LAN listener -->
+        <rect x="40" y="86" width="112" height="44" rx="4" fill="none" stroke="#5DC4A6" stroke-width="1.6"/>
+        <text x="96" y="105" text-anchor="middle" font-family="system-ui, -apple-system, Segoe UI, Roboto, Helvetica, sans-serif" font-size="12.5" fill="#5DC4A6">Caddy</text>
+        <text x="96" y="119" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="9.5" fill="#5DC4A6" opacity=".85">0.0.0.0:443</text>
+
+        <!-- api server -->
+        <rect x="40" y="156" width="112" height="50" rx="4" fill="none" stroke="#A6B0BA" stroke-width="1.3"/>
+        <text x="96" y="177" text-anchor="middle" font-family="system-ui, -apple-system, Segoe UI, Roboto, Helvetica, sans-serif" font-size="12.5" fill="#A6B0BA">API server</text>
+        <text x="96" y="192" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="9.5" fill="#A6B0BA" opacity=".65">no TCP listener</text>
+
+        <!-- sqlite -->
+        <rect x="40" y="238" width="88" height="38" rx="4" fill="none" stroke="#A6B0BA" stroke-width="1.3"/>
+        <text x="84" y="262" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="11.5" fill="#A6B0BA">SQLite</text>
+
+        <!-- container manager -->
+        <rect x="232" y="156" width="148" height="50" rx="4" fill="none" stroke="#A6B0BA" stroke-width="1.3"/>
+        <text x="306" y="177" text-anchor="middle" font-family="system-ui, -apple-system, Segoe UI, Roboto, Helvetica, sans-serif" font-size="12.5" fill="#A6B0BA">Container mgr</text>
+        <text x="306" y="192" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="10" fill="#A6B0BA" opacity=".65">devcontainer CLI</text>
+
+        <!-- docker -->
+        <rect x="232" y="238" width="148" height="50" rx="4" fill="none" stroke="#A6B0BA" stroke-width="1.3"/>
+        <text x="306" y="259" text-anchor="middle" font-family="system-ui, -apple-system, Segoe UI, Roboto, Helvetica, sans-serif" font-size="12.5" fill="#A6B0BA">Docker daemon</text>
+        <text x="306" y="274" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="10" fill="#A6B0BA" opacity=".65">docker.sock</text>
+
+        <!-- supervisor -->
+        <rect x="232" y="320" width="148" height="50" rx="4" fill="none" stroke="#A6B0BA" stroke-width="1.3"/>
+        <text x="306" y="341" text-anchor="middle" font-family="system-ui, -apple-system, Segoe UI, Roboto, Helvetica, sans-serif" font-size="12.5" fill="#A6B0BA">Session supervisor</text>
+        <text x="306" y="356" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="10" fill="#A6B0BA" opacity=".65">owns PTYs</text>
+
+        <!-- token broker -->
+        <rect x="40" y="400" width="132" height="52" rx="4" fill="none" stroke="#5DC4A6" stroke-width="1.6"/>
+        <text x="106" y="422" text-anchor="middle" font-family="system-ui, -apple-system, Segoe UI, Roboto, Helvetica, sans-serif" font-size="12.5" fill="#5DC4A6">Token broker</text>
+        <text x="106" y="437" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="10" fill="#5DC4A6" opacity=".85">holds app key</text>
+
+        <!-- container -->
+        <rect x="416" y="144" width="118" height="336" rx="5" fill="none" stroke="#A6B0BA" stroke-width="1.6"/>
+        <text x="475" y="162" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="10.5" fill="#A6B0BA" opacity=".7">CONTAINER</text>
+        <rect x="432" y="172" width="86" height="34" rx="3" fill="none" stroke="#A6B0BA" stroke-width="1"/>
+        <text x="475" y="193" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="10" fill="#A6B0BA">~/.claude</text>
+        <rect x="432" y="262" width="86" height="34" rx="3" fill="none" stroke="#A6B0BA" stroke-width="1"/>
+        <text x="475" y="283" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="10" fill="#A6B0BA">repo</text>
+        <rect x="432" y="324" width="86" height="44" rx="3" fill="none" stroke="#A6B0BA" stroke-width="1"/>
+        <text x="475" y="343" text-anchor="middle" font-family="system-ui, -apple-system, Segoe UI, Roboto, Helvetica, sans-serif" font-size="11" fill="#A6B0BA">claude</text>
+        <text x="475" y="357" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="9.5" fill="#A6B0BA" opacity=".65">remote-ctl</text>
+        <rect x="432" y="410" width="86" height="44" rx="3" fill="none" stroke="#5DC4A6" stroke-width="1.2"/>
+        <text x="475" y="429" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="9.5" fill="#5DC4A6">cred</text>
+        <text x="475" y="442" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="9.5" fill="#5DC4A6">helper</text>
+
+        <!-- external -->
+        <rect x="614" y="212" width="132" height="46" rx="4" fill="none" stroke="#A6B0BA" stroke-width="1.3"/>
+        <text x="680" y="240" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="11" fill="#A6B0BA">api.anthropic.com</text>
+        <rect x="614" y="362" width="132" height="46" rx="4" fill="none" stroke="#A6B0BA" stroke-width="1.3"/>
+        <text x="680" y="390" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="11" fill="#A6B0BA">api.github.com</text>
+
+        <!-- front door -->
+        <line x1="104" y1="46" x2="104" y2="84" stroke="#5DC4A6" stroke-width="1.5" marker-end="url(#01-architecture-dark-arA)"/>
+        <text x="112" y="60" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="9.5" fill="#5DC4A6">HTTPS, real cert</text>
+
+        <line x1="104" y1="130" x2="104" y2="154" stroke="#5DC4A6" stroke-width="1.5" marker-end="url(#01-architecture-dark-arA)"/>
+        <text x="112" y="147" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="9.5" fill="#5DC4A6">unix socket</text>
+
+        <!-- arrows: host-internal -->
+        <line x1="84" y1="206" x2="84" y2="236" stroke="#A6B0BA" stroke-width="1.2" marker-end="url(#01-architecture-dark-ar)"/>
+
+        <line x1="152" y1="181" x2="230" y2="181" stroke="#A6B0BA" stroke-width="1.2" marker-end="url(#01-architecture-dark-ar)"/>
+        <text x="191" y="173" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="9.5" fill="#A6B0BA" opacity=".7">start / stop</text>
+
+        <line x1="306" y1="206" x2="306" y2="236" stroke="#A6B0BA" stroke-width="1.2" marker-end="url(#01-architecture-dark-ar)"/>
+        <text x="314" y="226" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="9.5" fill="#A6B0BA" opacity=".7">up / exec</text>
+
+        <path d="M136 206 L136 345 L228 345" fill="none" stroke="#A6B0BA" stroke-width="1.2" marker-end="url(#01-architecture-dark-ar)"/>
+        <text x="142" y="338" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="9.5" fill="#A6B0BA" opacity=".7">supervises</text>
+
+        <line x1="380" y1="263" x2="412" y2="263" stroke="#A6B0BA" stroke-width="1.2" marker-end="url(#01-architecture-dark-ar)"/>
+        <text x="368" y="254" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="9.5" fill="#A6B0BA" opacity=".7">creates</text>
+
+        <line x1="380" y1="345" x2="412" y2="345" stroke="#A6B0BA" stroke-width="1.2" marker-end="url(#01-architecture-dark-ar)"/>
+        <text x="386" y="337" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="9.5" fill="#A6B0BA" opacity=".7">PTY</text>
+
+        <!-- broker: socket into the container -->
+        <line x1="172" y1="432" x2="412" y2="432" stroke="#5DC4A6" stroke-width="1.5" marker-end="url(#01-architecture-dark-arA)"/>
+        <text x="192" y="425" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="9.5" fill="#5DC4A6">bind-mount unix socket</text>
+
+        <!-- broker: mints tokens -->
+        <path d="M106 452 L106 522 L680 522 L680 410" fill="none" stroke="#5DC4A6" stroke-width="1.4" marker-end="url(#01-architecture-dark-arA)"/>
+        <text x="256" y="538" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="9.5" fill="#5DC4A6">JWT &#8594; installation token, scoped to one repo</text>
+
+        <!-- container to the outside -->
+        <path d="M534 346 L578 346 L578 236 L610 236" fill="none" stroke="#A6B0BA" stroke-width="1.2" marker-end="url(#01-architecture-dark-ar)"/>
+        <text x="536" y="364" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="9.5" fill="#A6B0BA" opacity=".7">model + RC</text>
+        <path d="M534 432 L578 432 L578 386 L610 386" fill="none" stroke="#A6B0BA" stroke-width="1.2" marker-end="url(#01-architecture-dark-ar)"/>
+        <text x="540" y="450" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="9.5" fill="#A6B0BA" opacity=".7">push &#183; PR &#183; workflows</text>
+      </svg>
