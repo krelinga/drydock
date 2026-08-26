@@ -188,9 +188,18 @@ The requirement is that a preview is behind the same sign-in as everything else,
 Steps 2–6 are four redirects with no user interaction, so in practice the first request to a new preview host renders the app. If you are not signed in, step 3 lands on the ordinary sign-in page and `return` carries you back afterwards.
 
 > [!WARNING]
-> **Strip the preview cookie before proxying**
+> **Strip the preview cookie before proxying — at the second hop, not the first**
 >
-> The browser attaches the preview cookie to every request to that host, including the ones the proxy forwards upstream. The container must never see it: a dev server that logs headers would write a live credential to a file, and a hostile one would simply exfiltrate it. **The proxy removes its own cookie from `Cookie` before dialing, and removes any `Set-Cookie` from upstream that tries to claim the same name.** Everything else passes through untouched, because the app's own cookies are the app's business.
+> The browser attaches the preview cookie to every request to that host, including the ones that get forwarded upstream. The container must never see it: a dev server that logs headers would write a live credential to a file, and a hostile one would simply exfiltrate it.
+>
+> There are **two** proxy hops, and the cookie has to survive the first one. Caddy forwards it to `preview.sock` untouched, because Drydock's preview mux is the thing that validates it — a Caddy-side strip would make preview authentication impossible. The strip belongs to the **preview proxy component** (§3.1), in the hop from Drydock to the container, *after* the session has been checked and immediately before the dial:
+>
+> | Hop | Preview cookie | Because |
+> |---|---|---|
+> | LAN → Caddy → `preview.sock` | **passes through** | The preview mux authenticates on it. |
+> | preview proxy → container | **removed** | The container has no business seeing a Drydock credential. |
+>
+> Concretely: delete the preview cookie from `Cookie` in the outbound request, and drop any upstream `Set-Cookie` that tries to claim the same name. Everything else passes through untouched, because the app's own cookies are the app's business.
 
 `SameSite=Lax` rather than `Strict` on the preview cookie is deliberate and narrow: `Strict` would drop the cookie on the step-6 redirect, and a preview cookie is a read-only capability to view one app, not an API credential.
 
@@ -289,8 +298,8 @@ drydock.example.com {
     reverse_proxy unix//run/drydock/preview.sock {
         flush_interval -1                          # HMR websockets and SSE from the previewed app
         header_up X-Forwarded-For {remote_host}
-        header_up X-Drydock-Preview-Host {host}
     }
+    # No cookie handling here — deliberately. See the note below.
 }
 # Still no site block for the bare IP, and the wildcard matches one level:
 # a request for anything else — including drydock.example.com's own siblings — matches nothing.
@@ -302,6 +311,16 @@ drydock.example.com {
 > §13.1 says certificate issuance is out of scope and Drydock has no opinion beyond needing the result. This design adds one requirement to that result: **a wildcard certificate for `*.preview.drydock.example.com`**, which in practice means DNS-01 rather than HTTP-01, plus a wildcard `A`/`AAAA` record. If that is not available, §4's fixed-SAN pool is the fallback and it changes the URL scheme but nothing else in this document.
 >
 > `encode` is deliberately absent from the preview block. Compressing a proxied dev server that is already compressing, or already streaming, buys nothing and has broken HMR in the wild.
+
+> [!NOTE]
+> **Why there is no cookie stripping in this file**
+>
+> §7 requires the preview cookie never to reach the container, and the natural place to look for that rule is here. It is not here, and it must not be: Caddy's hop ends at `preview.sock`, where Drydock still has to *read* that cookie to authenticate the request. Stripping it in Caddy would leave every preview permanently unauthenticated. The strip happens one hop later, in the preview proxy, between Drydock and the container — see the table in §7.
+>
+> Two behaviours this block relies on, both verified against Caddy rather than assumed:
+>
+> - **`Host` survives the proxy to a Unix socket.** Caddy passes the client's `Host` through unchanged, so `myapp-5173-p2mq.preview.drydock.example.com` arrives intact and is the routing key the preview mux resolves the slug from. Nothing needs to carry it separately — an earlier draft of this block set an `X-Drydock-Preview-Host` header, which was redundant and is now removed. A second source of truth for the routing key is a liability, not a convenience.
+> - **`header_up` replaces rather than appends**, so a client-supplied `X-Forwarded-For` cannot survive alongside the real one. This is the same property §13.2 of the overall document relies on when it says the forwarded address is as trustworthy as Caddy is.
 
 ## 10. Security
 
@@ -346,7 +365,7 @@ Extending §13.4 of the overall document:
 
 - **The preview mux serves no API route, ever.** It is a separate mux on a separate socket precisely so this is structural rather than remembered.
 - **The upstream is derived, never supplied.** Workspace container IP plus an enabled port. No host field reaches the dialer from a request, a config file, or a database column.
-- **The preview cookie never reaches the container**, and an upstream `Set-Cookie` may not claim its name.
+- **The preview cookie never reaches the container**, and an upstream `Set-Cookie` may not claim its name. This is the preview proxy's job on the hop to the container, *not* Caddy's on the hop to `preview.sock` — where the cookie still has to arrive for the request to authenticate at all (§7, §9).
 - **Previews are default-deny.** No `forwarded_port` row with `enabled = 1`, no preview — the same rule, for the same reason, as `secret_grant` in §10.1.
 - **Discovery never enables anything.** The scanner writes `observed`, `bind_addr`, and timestamps. It has no path to `enabled`, and it is worth keeping that as a property of the code rather than of the current implementation: the container decides what it listens on, so a scanner that could enable would hand that decision to the container.
 - **The API's `Origin` allowlist is load-bearing.** Not defense in depth. See §10.2.
