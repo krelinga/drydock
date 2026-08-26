@@ -1,0 +1,4 @@
+# scratch output from spike runs
+*.out
+*.txt
+*.log
