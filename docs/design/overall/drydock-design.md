@@ -371,18 +371,22 @@ Every container mounts the same named volume at its `CLAUDE_CONFIG_DIR`. Login h
 
 | Option | Logins required | Cost |
 |---|---|---|
-| **Shared volume** at `CLAUDE_CONFIG_DIR` | One, for all containers | Containers share config *and* history/state files. Concurrent token refresh is a real write race. |
+| **Shared volume** at `CLAUDE_CONFIG_DIR` | One, for all containers | Containers share config *and* history/state files. Concurrent token refresh is serialised by Claude Code itself (Spike 00). |
 | Per-container volume, credential copied in | One, then copies | Drydock reads the plaintext credential to copy it, and refreshed tokens in one container never reach the others. |
 | Per-container login | One per clone | Defeats the point of the button. |
 
-> [!WARNING]
-> **Known risk — needs a spike**
+> [!NOTE]
+> **Resolved by Spike 00 — the shared volume is safe.**
 >
-> Claude Code refreshes its OAuth credential in place. With ten containers sharing one `.credentials.json`, two refreshes can interleave and one can write a credential the other has already rotated away from. Whether this is benign (last-write-wins on an equally valid token) or corrupting depends on refresh semantics that are not documented.
+> The worry was that two containers refreshing at once could interleave and write a credential the other had already rotated away from. They cannot. Claude Code serialises refreshes with a `proper-lockfile`-style lock at **`$CLAUDE_CONFIG_DIR/.oauth_refresh.lock`** — inside the shared volume itself, so cross-container exclusion falls out of the sharing for free. Before refreshing it re-reads the credential (twice: once optimistically, once under the lock) and *adopts a peer's newer token* rather than issuing a second refresh. Writes are temp-file + `fsync` + `rename()`, so a reader never sees a torn file. Measured: four contending containers serialised cleanly; 16,185 reads across a live write, zero torn.
 >
-> **Mitigation, in order of preference:** (a) verify empirically with two containers and a forced refresh before committing; (b) mount only `.credentials.json` read-only and give each container its own writable config dir, accepting that refresh happens in a single designated container; (c) if neither holds, fall back to a broker-style credential helper for Claude the way §9 does for GitHub. Do not discover this in production at 2am.
+> **Take mitigation (a). Mitigation (b) is now struck** — giving each container its own writable config dir would put each lockfile in a *different* directory, destroying the exclusion that currently comes for free, and a read-only credential could never persist a rotated token. It is worse than the problem. Mitigation (c) is unnecessary.
+>
+> Two constraints follow. The credential volume **must be a local Docker volume, never NFS/CIFS** — the guarantee rests on `mkdir(2)` atomicity. And this is undocumented behaviour, measured against **Claude Code `2.1.246`**, so **re-run the spike on every Claude Code bump**. See [Spike 00](../spikes/00-shared-credential-volume.md).
 
 Note also that the shared volume carries more than credentials: session history, project trust records, and settings all live under `CLAUDE_CONFIG_DIR`. Sharing them across containers is mostly a *feature* — workspace trust and settings apply everywhere without re-answering prompts — but it means one container's `/logout` logs out all of them. The UI should say so.
+
+That shared fate has a second, sharper form. On a definitive `invalid_grant` — a genuinely dead login, a revoked session, someone typing `/logout` — Claude Code does not delete the credential, it **blanks it in place**: `accessToken` and `refreshToken` become `""` and `expiresAt` becomes `0`. Every container on the volume loses auth in the same instant. Spike 00 confirmed this is not a race artifact (the write is compare-and-swap guarded, so a container that lost a refresh race cannot blank a winner's fresh token, and a mere network failure leaves the file untouched) — but the blast radius is the whole fleet, so §7.3 has to treat a blanked credential as its own condition rather than folding it into "expired".
 
 ### 7.2  The login handshake
 
@@ -403,6 +407,8 @@ Implementation notes that matter:
 ### 7.3  Expiry watch
 
 A poller runs `claude /status`-equivalent output in the auth container every six hours and records `expires_at`. Three days out, the UI shows a persistent banner and every workspace card carries a warning dot. On expiry, supervisors are marked `degraded` rather than restarted — restarting cannot fix a missing credential, and a restart loop would just burn the log.
+
+A **blanked** credential (`accessToken: ""`, §7.1) is a different condition from an expiring one and needs its own message. Expiring is a countdown the user can ignore for three days; blanked means every workspace is already dead and the only fix is a new login handshake. Detect it on the same poll — an empty `accessToken` is unambiguous — and say "signed out, sign in again", not "expired".
 
 ## 8. Session supervision
 
@@ -793,7 +799,7 @@ Ordered so the riskiest unknown is settled first. Phase 0 is not optional — it
 
 | Phase | Deliverable | Done when |
 |---|---|---|
-| **0 — Spikes** | Two containers sharing one credential volume, both refreshing. A scripted login handshake against a PTY. A `remote-control` process surviving a supervisor restart. Whether `CLAUDE_ENV_FILE` is re-read before each Bash command (§10.3). | You know whether the shared volume is safe, whether secrets can reach a live session without a restart, and you have a regex that reliably catches the login URL and the session URL. |
+| **0 — Spikes** | ~~Two containers sharing one credential volume, both refreshing~~ — **done, see [Spike 00](../spikes/00-shared-credential-volume.md): safe.** A scripted login handshake against a PTY. A `remote-control` process surviving a supervisor restart. Whether `CLAUDE_ENV_FILE` is re-read before each Bash command (§10.3). | You know whether the shared volume is safe, whether secrets can reach a live session without a restart, and you have a regex that reliably catches the login URL and the session URL. |
 | **1 — Front door** | Unix socket listener, `drydock passwd`, session middleware, `Origin` and `Host` checks, lockout, device list. A Caddy site block pointed at your existing certificate. A stub UI behind it all. | You can sign in from your phone over HTTPS, and every route without a cookie returns `401`. **Nothing else gets built until this is true.** |
 | **2 — Walking skeleton** | Repo list from the App, clone, `devcontainer up`, workspace states, SSE, reconciliation on boot. No Claude, no broker. | The button produces a running container you can `devcontainer exec` into, and Drydock survives a reboot. |
 | **3 — Credentials** | Token broker, per-workspace socket, git helper, `gh` shim, the Feature's install half. | Inside a container: push a branch, open a PR, and read a workflow run — and fail to touch any other repo. |
@@ -807,9 +813,9 @@ Phases 2 through 4 are independently useful. If Phase 5 turns out to be blocked 
 
 ### 15.1  Still open
 
-One, and it is the one that can force a redesign.
+**None.** The one question that could have forced a redesign — *does concurrent credential refresh corrupt the shared volume?* — was answered by [Spike 00](../spikes/00-shared-credential-volume.md): it does not. Claude Code serialises refreshes with a lockfile that lives inside `CLAUDE_CONFIG_DIR`, so the shared volume gets cross-container mutual exclusion for free, and its credential writes are atomic renames. §7.1 stands as designed.
 
-1. **Does concurrent credential refresh corrupt the shared volume?** If two containers sharing one `.credentials.json` can interleave a refresh badly, §7.1 needs rethinking before anything is built on it. Phase 0 answers it.
+What the spike turned up instead is not a race but a blast radius: a dead login blanks the shared credential for every container at once (§7.1, §7.3). That is a UI and monitoring problem, not an architectural one — but it is the thing most likely to look like a Drydock bug at 2am, because ten workspaces fail simultaneously and none of them is at fault.
 
 ### 15.2  Deferred, and what would reopen each
 
@@ -833,12 +839,13 @@ Recorded because the reasoning is easier to lose than the decision.
 | What counts as an eligible repo? | **List everything.** Badge repos with no `devcontainer.json` and generate a default for them at clone time (§6). Inverts only if the installation grows past a hundred repos, where probing each one starts costing real API calls. |
 | Where do agent branches go? | **A `drydock/` namespace** (§9.3). Makes cleanup scriptable and agent branches obvious in the GitHub UI. |
 | Re-prompt for sign-in on destructive actions? | **No.** Typing the repo name is the only friction on delete, deliberately (§13.5). |
+| Is one shared credential volume safe under concurrent refresh? | **Yes** — Claude Code locks in `CLAUDE_CONFIG_DIR` and writes by atomic rename, so the sharing supplies its own mutual exclusion ([Spike 00](../spikes/00-shared-credential-volume.md)). The §7.1 fallbacks are withdrawn; (b) would have made it worse. |
 
 ---
 
 #### What I would revisit first as this grows
 
-The shared credential volume and the terminal scraping are the two places where Drydock is holding something the way it does because there is no better documented interface, not because it is the right shape. Both would be replaced immediately by a supported headless auth path or a machine-readable session-status output. Everything else — the broker, the socket-as-identity trick, the label-based reconciliation, and the decision to let Caddy own the only listener — would survive a rewrite unchanged. The secrets model in §10 is a third: it works because of a discipline rather than a mechanism, and a discipline is only as good as the day you are in a hurry. If any of the rest turns out to be load-bearing in a way I did not expect, my bet is on the socket-only rule: it is the one constraint that keeps having useful consequences (no forwarded-header allowlist, no local-user exposure, no debug port to forget about) long after the reason it was adopted.
+The shared credential volume and the terminal scraping are the two places where Drydock is holding something the way it does because there is no better documented interface, not because it is the right shape. Both would be replaced immediately by a supported headless auth path or a machine-readable session-status output. Spike 00 raised the confidence on the first of those considerably — the concurrency behaviour underneath it turns out to be carefully built rather than accidental — but it did not change its character: it is still undocumented internals of a pinned version, and the spike is the thing that has to be re-run when that pin moves. Everything else — the broker, the socket-as-identity trick, the label-based reconciliation, and the decision to let Caddy own the only listener — would survive a rewrite unchanged. The secrets model in §10 is a third: it works because of a discipline rather than a mechanism, and a discipline is only as good as the day you are in a hurry. If any of the rest turns out to be load-bearing in a way I did not expect, my bet is on the socket-only rule: it is the one constraint that keeps having useful consequences (no forwarded-header allowlist, no local-user exposure, no debug port to forget about) long after the reason it was adopted.
 
 ---
 

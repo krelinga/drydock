@@ -4,9 +4,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Repository state
 
-**Design-only. There is no source code yet.** The repository contains one design document
-(`docs/design/overall/drydock-design.md`, draft v3) plus its SVG diagrams, and a devcontainer
-definition. There are no build, lint, or test commands because nothing is built yet.
+**Design-only. There is no application source code yet.** The repository contains one design document
+(`docs/design/overall/drydock-design.md`, draft v3) plus its SVG diagrams, a devcontainer definition,
+and the Phase 0 spike results and harness under `docs/design/spikes/`. There are no build, lint, or
+test commands because nothing is built yet.
 
 The devcontainer (`.devcontainer/devcontainer.json`) carries the full toolchain: Go (with
 golangci-lint), Node, **docker-in-docker**, the `devcontainer` CLI, Caddy, `gh`, and
@@ -104,7 +105,20 @@ These come from §2 (Claude Code constraints) and §13.5 (non-negotiables). Most
   contains the one-time code — scrape, match, redact, then store.
 - **Pin the Claude Code version and set `DISABLE_AUTOUPDATER=1`** in the devcontainer feature. Two
   places scrape Claude Code's terminal output (the login URL, the `claude.ai/code/<id>` session
-  URLs); a background update would change them without warning.
+  URLs); a background update would change them without warning. Spike 00 added a third reason that
+  fails harder: the shared credential volume is safe only because of undocumented locking behavior
+  verified against **Claude Code `2.1.246`**. Re-run `docs/design/spikes/harness/` on every bump and
+  update that version here.
+- **The shared credential volume must be a local Docker volume — never NFS or CIFS.** Claude Code's
+  cross-container refresh lock is a `mkdir(2)`-based lockfile at
+  `$CLAUDE_CONFIG_DIR/.oauth_refresh.lock`; network filesystems do not give `mkdir` the atomicity the
+  whole guarantee rests on (Spike 00).
+- **Never reap `.oauth_refresh.lock`.** An abandoned lock self-heals after 60s, and a cleanup pass
+  racing the 5s heartbeat is strictly worse than waiting. Verified in Spike 00.
+- **A blanked credential is not an expired one.** On a dead login Claude Code rewrites
+  `.credentials.json` in place with `accessToken: ""` / `refreshToken: ""` / `expiresAt: 0`, which
+  kills every container on the volume at once. The expiry watch must report it as "signed out, sign
+  in again" rather than folding it into the three-day expiry countdown (§7.3).
 
 ## Working conventions from the design
 
@@ -125,9 +139,9 @@ These come from §2 (Claude Code constraints) and §13.5 (non-negotiables). Most
 
 §14 of the design doc orders the phases so the riskiest unknown resolves first. Follow it:
 
-0. **Spikes** — shared credential volume under concurrent refresh (the one open question that can
-   force a redesign, §15.1), a scripted PTY login handshake, supervisor restart survival, and
-   whether `CLAUDE_ENV_FILE` is re-read per Bash command.
+0. **Spikes** — ~~shared credential volume under concurrent refresh~~ **done: safe, see
+   `docs/design/spikes/00-shared-credential-volume.md`** — a scripted PTY login handshake, supervisor
+   restart survival, and whether `CLAUDE_ENV_FILE` is re-read per Bash command.
 1. **Front door** — socket listener, `drydock passwd`, session middleware, `Origin`/`Host` checks,
    Caddy block. *Nothing else gets built until every route without a cookie returns 401.*
 2. **Walking skeleton** — repo list, clone, `devcontainer up`, states, SSE, boot reconciliation.
@@ -142,6 +156,10 @@ most of the value.
 ## Docs
 
 Design docs live under `docs/design/<scope>/`, with diagrams in a sibling `diagrams/` directory.
+Spike results live under `docs/design/spikes/`, each one a numbered report next to the re-runnable
+harness that produced it — a spike whose evidence cannot be re-checked against a new Claude Code
+version is worth very little.
+
 Diagrams ship as light/dark SVG pairs (`NN-name-light.svg` / `NN-name-dark.svg`) referenced from a
 `<picture>` element with a `prefers-color-scheme: dark` source, and every one carries a descriptive
 `alt` and a `**Fig N** —` caption explaining what the reader should take from it. Match that pattern
