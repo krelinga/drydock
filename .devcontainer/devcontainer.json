@@ -37,7 +37,7 @@
     // jq        -- parse `devcontainer ... --json` output (§2.5)
     // build-essential -- cgo, for the SQLite driver
     "ghcr.io/devcontainers-extra/features/apt-get-packages:1": {
-      "packages": "sqlite3,socat,netcat-openbsd,jq,build-essential,ca-certificates"
+      "packages": "sqlite3,socat,netcat-openbsd,jq,build-essential,ca-certificates,tmux"
     },
 
     "ghcr.io/anthropics/devcontainer-features/claude-code:1.0": {}
