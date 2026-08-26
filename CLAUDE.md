@@ -8,10 +8,24 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 (`docs/design/overall/drydock-design.md`, draft v3) plus its SVG diagrams, and a devcontainer
 definition. There are no build, lint, or test commands because nothing is built yet.
 
-The devcontainer (`.devcontainer/devcontainer.json`) provisions only Node LTS and the Claude Code
-feature. The design picks **Go** as the implementation language, so the first implementation work
-requires adding a Go feature (and, for local end-to-end work, the `devcontainer` CLI, Docker socket
-access, and SQLite). Do not assume `go`, `docker`, or `devcontainer` are on `PATH` — they are not.
+The devcontainer (`.devcontainer/devcontainer.json`) carries the full toolchain: Go (with
+golangci-lint), Node, **docker-in-docker**, the `devcontainer` CLI, Caddy, `gh`, and
+`sqlite3`/`socat`/`nc`/`jq`.
+
+`devcontainer-lock.json` is a **generated artifact — never hand-edit it.** The CLI regenerates it
+from the resolved feature set on every build, so an added feature needs no lock entry: leave it out
+and the tag is resolved fresh. The digests in it are trusted *input* during resolution (they pin
+what actually gets fetched), so a hand-written wrong digest silently installs content the tag no
+longer points at. Adding a feature means editing `devcontainer.json` only.
+
+Docker-in-docker rather than docker-outside-of-docker is a deliberate choice, not a default. Drydock
+hands the daemon host paths to bind-mount — the clone at `/srv/drydock/ws/<id>/repo` and the broker
+socket — and under DooD the daemon is the *host's*, so those paths resolve differently inside and
+outside this container and every mount breaks. That is the same path-identity problem §1 gives as
+the reason Drydock is not containerized in production. With DinD the daemon lives in here, so a path
+means the same thing to both sides. Consequences worth knowing: the inner daemon's
+`/var/lib/docker` is a named volume so images survive a rebuild (only ever run one such container at
+a time), and containers Drydock creates are invisible to the host's `docker ps`.
 
 Read `docs/design/overall/drydock-design.md` before making architectural decisions. It is dense and
 opinionated, and most "why is it like this?" questions are answered there with reasoning that is

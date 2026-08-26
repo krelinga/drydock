@@ -1,7 +1,52 @@
 {
+  "name": "drydock",
   "image": "mcr.microsoft.com/devcontainers/base:noble",
   "features": {
+    // Primary language (§3.2). This feature also installs golangci-lint, so no
+    // separate lint feature is needed.
+    "ghcr.io/devcontainers/features/go:1": {
+      "version": "latest",
+      "golangciLintVersion": "latest"
+    },
+
+    // Needed for the devcontainer CLI, which ships as an npm package.
     "ghcr.io/devcontainers/features/node:2": { "version": "lts" },
+
+    // Docker-IN-docker, deliberately, not docker-outside-of-docker: Drydock hands
+    // the daemon host paths to bind-mount (/srv/drydock/ws/<id>/repo, the broker
+    // sockets). With DooD the daemon is the host's, so those paths resolve
+    // differently inside and outside this container and every mount breaks -- the
+    // exact problem §1 cites for not containerizing Drydock. With DinD the daemon
+    // lives in here, so a path is the same path to both sides.
+    // Tag 4, not 2: the `2` tag is a stale 2.x line, current major is 4.
+    "ghcr.io/devcontainers/features/docker-in-docker:4": {},
+
+    // Every container operation shells out to this CLI (§3.2).
+    "ghcr.io/devcontainers-extra/features/devcontainers-cli:1": {},
+
+    // The front door (§13.1). golangVersion:none because this feature otherwise
+    // nests its own Go install and would fight the pinned one above.
+    "ghcr.io/devcontainers-extra/features/caddy:1": { "golangVersion": "none" },
+
+    // Exercising the App installation and the `gh` shim's behaviour (§9.2).
+    "ghcr.io/devcontainers/features/github-cli:1": {},
+
+    // sqlite3   -- inspect the WAL-mode store (§4)
+    // socat, nc -- probe the broker's Unix sockets; `nc` is also the fallback the
+    //              in-container broker client is specified to use (§5)
+    // jq        -- parse `devcontainer ... --json` output (§2.5)
+    // build-essential -- cgo, for the SQLite driver
+    "ghcr.io/devcontainers-extra/features/apt-get-packages:1": {
+      "packages": "sqlite3,socat,netcat-openbsd,jq,build-essential,ca-certificates"
+    },
+
     "ghcr.io/anthropics/devcontainer-features/claude-code:1.0": {}
-  }
+  },
+
+  // Keep images and build cache across rebuilds of this container. Without it the
+  // inner daemon starts empty every time and each spike re-pulls its base images.
+  // One container at a time only -- two dockerds on one volume corrupts it.
+  "mounts": [
+    "source=drydock-dind-lib,target=/var/lib/docker,type=volume"
+  ]
 }
