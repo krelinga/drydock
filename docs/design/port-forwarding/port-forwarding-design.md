@@ -21,7 +21,8 @@ That sounds like a five-line reverse proxy, and it very nearly is. The reason it
 - **Preview a port.** Open a chosen container port at a stable URL, reachable from any device that can sign in to Drydock.
 - **Authenticated.** A preview is behind the same sign-in as everything else. Signing out of all devices closes every preview with it.
 - **Works with real dev servers.** Absolute asset paths, HMR websockets, and streaming responses all have to survive the trip.
-- **Explicit.** A port is reachable because someone enabled it, not because something was listening.
+- **Finds ports by itself.** `devcontainer.json` must not have to be an exhaustive list — dev servers pick ports at runtime, and an agent starting a second server picks whatever it likes.
+- **Explicit.** A port is reachable because someone enabled it, not because something was listening. Discovery and exposure are different decisions, and only the second one is yours to make.
 - **Cheap to reason about.** No new listener on the LAN, no new credential, no new trust boundary.
 
 ### Non-goals
@@ -70,8 +71,9 @@ Extending the table in §3.1 of the overall document:
 | Component | Owns | Explicitly does not |
 |---|---|---|
 | **Preview proxy** | The `preview.sock` listener, host→port resolution, the upstream dial, websocket upgrade, preview session validation. | Serve any API route. Accept an operator-supplied upstream. Hold any credential. |
-| **Port registry** | `forwarded_port` rows, discovery from the resolved devcontainer config, enable/disable. | Decide reachability on its own — a row is a *permission*, the workspace still has to be running. |
-| **Container manager** *(extended)* | Resolving a workspace's current container IP, and invalidating that on every state transition. | Publish ports on the host. Nothing is bound on the dev server's network interfaces. |
+| **Port registry** | `forwarded_port` rows, merging declared and observed ports, enable/disable/hide. | Decide reachability on its own — a row is a *permission*, the workspace still has to be running. |
+| **Discovery scanner** | Reading each running container's socket table from the host, debouncing, classifying loopback binds (§8.2). | Execute anything inside a container. Enable a port. Notify anyone. |
+| **Container manager** *(extended)* | Resolving a workspace's current container IP and PID, and invalidating both on every state transition. | Publish ports on the host. Nothing is bound on the dev server's network interfaces. |
 
 Note what is *not* here: no change to the container. No agent, no injected feature, no published port, no `docker run -p`. Drydock reaches the container the way it already reaches everything else — from the host, over the Docker network — and the container never learns it is being previewed.
 
@@ -110,7 +112,18 @@ forwarded_port(
   upstream_scheme TEXT NOT NULL DEFAULT 'http',   -- http | https (rare; self-signed upstreams)
   host_header TEXT NOT NULL DEFAULT 'passthrough',-- passthrough | localhost  (§8.2)
   enabled INTEGER NOT NULL DEFAULT 0,
-  discovered_from TEXT,              -- forwardPorts | appPort | manual
+  hidden INTEGER NOT NULL DEFAULT 0,  -- muted from the panel; the escape hatch for noise
+
+  -- provenance is a set, not a choice: a port can be both declared and observed
+  declared INTEGER NOT NULL DEFAULT 0,  -- appears in forwardPorts / appPort
+  observed INTEGER NOT NULL DEFAULT 0,  -- has been seen listening at least once
+  manual   INTEGER NOT NULL DEFAULT 0,  -- added by hand
+
+  -- last observation from the discovery scan (§8.2)
+  bind_addr TEXT,                    -- 0.0.0.0 | :: | 127.0.0.1 | …
+  observed_state TEXT,               -- listening | gone | never_seen
+  first_seen_at TEXT, last_seen_at TEXT,
+
   created_at TEXT, last_used_at TEXT,
   UNIQUE(workspace_id, container_port)
 )
@@ -128,6 +141,8 @@ Three notes, in the spirit of §4's "what is deliberately absent".
 
 There is **no upstream host column** — only a port. The upstream address is always derived from the workspace's own container, so there is no value an operator or an attacker could write that would make the proxy dial somewhere else.
 
+`enabled` and `observed` are **deliberately independent**. A port being listened on has no bearing on whether it is reachable, and a port being enabled does not require anything to be listening yet. Conflating them is how a discovery feature turns into an exposure feature by accident.
+
 `preview_session.auth_session_id` is a **cascading foreign key on purpose**. §13.2 promises that one button kills every session; without the cascade that promise would quietly stop covering previews, which are the most likely thing to be left open on a device you no longer have.
 
 The row is **per preview host, not per device**. A single cookie covering `.preview.drydock.example.com` would let a previewed app fetch every other preview on the same device. Host-only cookies cost one extra redirect per preview, and §7 explains why that redirect is invisible.
@@ -138,11 +153,12 @@ Additions to §5 of the overall document. All on the API mux, all behind the ses
 
 | Method & path | Does | Returns |
 |---|---|---|
-| `GET /api/workspaces/:id/ports` | Every known port: discovered and manual, enabled and not, each with its URL and last reachability result. | Port list |
-| `POST /api/workspaces/:id/ports` | Add a port. Body: `container_port`, optional `label`, `upstream_scheme`, `host_header`. Mints the slug. | `201` + port |
-| `PATCH /api/workspaces/:id/ports/:port` | Enable, disable, or relabel. Enabling is the click that makes a URL live. | `200` + port |
-| `DELETE /api/workspaces/:id/ports/:port` | Remove it. The slug is not reused. | `204` |
-| `GET /api/workspaces/:id/ports/:port/probe` | Dial it now and report what happened, with the §11 diagnosis attached. | Probe result |
+| `GET /api/workspaces/:id/ports` | Every known port — declared, observed, manual — with its provenance flags, `bind_addr`, `observed_state`, `last_seen_at`, and URL if enabled. Hidden rows only with `?hidden=true`. | Port list |
+| `POST /api/workspaces/:id/ports` | Add a port by hand. Body: `container_port`, optional `label`, `upstream_scheme`, `host_header`. Mints the slug. | `201` + port |
+| `PATCH /api/workspaces/:id/ports/:port` | Enable, disable, hide, unhide, or relabel. Enabling is the click that makes a URL live. | `200` + port |
+| `DELETE /api/workspaces/:id/ports/:port` | Remove it. The slug is not reused. A still-listening port reappears on the next scan as a fresh, disabled row. | `204` |
+| `POST /api/workspaces/:id/ports/rescan` | Force a discovery scan now instead of waiting for the interval. | `200` + port list |
+| `GET /api/workspaces/:id/ports/:port/probe` | Dial it now and report what happened, with the §11 diagnosis attached. Rarely needed once §8.2 is running — discovery usually knows the answer already. | Probe result |
 | `GET /preview/authorize` | The main-origin half of the handshake in §7. Query: `return`. Requires a session. | `302` |
 
 On the **preview mux**, and nowhere else, two routes under a reserved prefix:
@@ -155,6 +171,8 @@ On the **preview mux**, and nowhere else, two routes under a reserved prefix:
 `/.drydock/*` is the only path the preview mux handles itself; everything else is proxied verbatim. A repo that genuinely serves something at `/.drydock/` loses that path, which is a trade worth making once and documenting.
 
 New events on the existing SSE stream: `port.enabled`, `port.disabled`, `port.unreachable`.
+
+Discovery deliberately emits **no** event of its own. A port appearing or disappearing changes the ports panel the next time it is read; it does not push anything at anyone, for the reason in §8.2.
 
 ## 7. Preview authentication
 
@@ -176,7 +194,7 @@ Steps 2–6 are four redirects with no user interaction, so in practice the firs
 
 `SameSite=Lax` rather than `Strict` on the preview cookie is deliberate and narrow: `Strict` would drop the cookie on the step-6 redirect, and a preview cookie is a read-only capability to view one app, not an API credential.
 
-## 8. Reaching the container
+## 8. Finding and reaching the container
 
 ### 8.1 Resolving the upstream
 
@@ -186,7 +204,58 @@ The address comes from the container's `NetworkSettings`, looked up by the same 
 
 A dial is attempted only when the workspace is `running` and the port row is `enabled`. Either being false is a `/.drydock/denied` page naming which one, not a 502.
 
-### 8.2 The `Host` header
+### 8.2 Discovering what is listening
+
+Requiring `forwardPorts` to be exhaustive pushes the cost of this feature onto every repository, and it does not even work: Vite takes 5174 when 5173 is busy, Next.js does the same, and an agent that decides to start a second server picks whatever it likes. A hand-written list is stale the first time something moves.
+
+Drydock does not have to ask. A container's listening sockets are visible from the host as an ordinary file:
+
+```
+/proc/<container-pid>/net/tcp        # and net/tcp6
+
+  sl  local_address rem_address   st ...
+   0: 0100007F:2382 00000000:0000 0A ...   ->  127.0.0.1:9090   LISTEN
+   1: 00000000:1F90 00000000:0000 0A ...   ->  0.0.0.0:8080     LISTEN
+```
+
+`<container-pid>` is `.State.Pid` on the container Drydock already tracks by label (§8.1). Reading that file enumerates every socket in the container's network namespace.
+
+Three properties make this the right mechanism rather than merely a working one, and all three were measured rather than assumed:
+
+**No agent, and no cooperation.** Nothing executes inside the container — no injected process, no `exec`, no dependency on `ss`, `netstat`, or `lsof` being present in the image. §3.1's promise that the container never learns it is being previewed survives discovery intact, which it would not if discovery were a shell command.
+
+**It is a file read.** No process spawn, so scanning fifteen workspaces every few seconds costs approximately nothing. An `exec`-based scan is a container round-trip per workspace per interval, which is the kind of cost that gets a feature quietly disabled.
+
+**It is unprivileged.** A non-root user — uid 1000, `docker` group, `yama/ptrace_scope=1` — reads the socket table of a container process running as uid 0. Unlike `/proc/<pid>/mem` or `/proc/<pid>/fd`, `/proc/<pid>/net/` sits outside the ptrace access check, so Drydock needs no capability it does not already have. *If a hardened host ever changes that, the fallback is a throwaway container sharing the target's namespaces (`--network=container:<id>`), which costs a spawn but still asks nothing of the image.*
+
+#### The bind address is the diagnosis
+
+The scan distinguishes `0.0.0.0` from `127.0.0.1`. That single fact turns the most common failure in §11 from a guess made after a refused connection into something known before anyone clicks: a server on `127.0.0.1:5173` is listed, greyed, and labelled *"listening on loopback — start it with `--host 0.0.0.0` to preview it."* The preview is never offered, so the 502 never happens.
+
+#### Turning sockets into rows
+
+A raw socket list is not a useful list. A workspace running a Drydock session has the remote-control process, possibly MCP servers, maybe a debugger, and — somewhere in there — the dev server you actually wanted.
+
+| Rule | Why |
+|---|---|
+| Only state `0A` (LISTEN), over `tcp` and `tcp6`. | An established connection is not an offer. |
+| Loopback binds are listed but never previewable. | They are the diagnosis above, not candidates. |
+| Two consecutive scans before a row appears; a grace period before it goes. | A restarting dev server must not churn the list or the event stream. |
+| Suppress Drydock's own ports and a small known-noise denylist. | The remote-control process is not a preview. |
+| Merge onto `container_port`; never duplicate. | A port both declared and observed is **one row with both flags** — the declaration supplies the label and the intent, the scan supplies the truth. |
+| Any row can be hidden. | The escape hatch for the thing you never want to see again, and cheaper than a cleverer denylist. |
+
+Declared-but-not-listening ports stay visible and greyed, which is what makes the panel useful on a workspace that is running while its dev server is not.
+
+#### Discovery is not a prompt
+
+The tempting next step is a notification — *"port 8080 appeared, approve?"* — and this design deliberately refuses it, for the reason §13.5 of the overall document gives for refusing a re-auth prompt on delete: **a prompt you see often enough buys habituation rather than safety.** A toast that fires whenever a test run opens a socket trains exactly one reflex, and it is the wrong one.
+
+So discovery is **ambient, not interruptive**. The workspace card carries a quiet count — *"4 listening · 1 previewed"* — and the ports panel is where decisions get made, at a moment the operator chose. No port changing state ever moves anything into reach.
+
+That the list is now live is itself an argument that default-deny was the right call in §12. A static list makes auto-exposure merely unwise; a live one would make it dangerous, because a debugger would become reachable at the instant it opened.
+
+### 8.3 The `Host` header
 
 Dev servers increasingly reject unexpected `Host` values — Vite's `server.allowedHosts`, Rails' `config.hosts`, Django's `ALLOWED_HOSTS`. Two behaviors, per port, because neither is right for everything:
 
@@ -197,7 +266,7 @@ Dev servers increasingly reject unexpected `Host` values — Vite's `server.allo
 
 `X-Forwarded-Proto: https`, `X-Forwarded-Host: <preview host>`, and `X-Forwarded-For` are always set, so a framework that honors them produces correct absolute URLs even under `localhost`.
 
-### 8.3 Websockets and streaming
+### 8.4 Websockets and streaming
 
 HMR is the whole point of previewing a dev server, so `Upgrade` must survive the proxy, and the Caddy block needs `flush_interval -1` for the same reason the API block already has it (§13.1). Server-sent events from a previewed app work for free once that flag is set.
 
@@ -279,6 +348,7 @@ Extending §13.4 of the overall document:
 - **The upstream is derived, never supplied.** Workspace container IP plus an enabled port. No host field reaches the dialer from a request, a config file, or a database column.
 - **The preview cookie never reaches the container**, and an upstream `Set-Cookie` may not claim its name.
 - **Previews are default-deny.** No `forwarded_port` row with `enabled = 1`, no preview — the same rule, for the same reason, as `secret_grant` in §10.1.
+- **Discovery never enables anything.** The scanner writes `observed`, `bind_addr`, and timestamps. It has no path to `enabled`, and it is worth keeping that as a property of the code rather than of the current implementation: the container decides what it listens on, so a scanner that could enable would hand that decision to the container.
 - **The API's `Origin` allowlist is load-bearing.** Not defense in depth. See §10.2.
 - **The UI sends `Content-Security-Policy: frame-ancestors 'none'`**, so a preview cannot frame the control plane for clickjacking.
 
@@ -288,8 +358,10 @@ Extending §12. The first row is the one that will actually happen, repeatedly.
 
 | Failure | Detection | Response |
 |---|---|---|
-| **Dev server bound to `127.0.0.1` inside the container** | Dial to the container IP is refused, but `ss -ltn` over `devcontainer exec` shows the port listening on loopback | The single most common cause, and a generic 502 would send you debugging the proxy. Name it exactly: *"vite is listening on 127.0.0.1:5173, which is only reachable from inside the container. Start it with `--host 0.0.0.0`."* Include the flag for the detected server where known. |
-| Port enabled, nothing listening | Connection refused, nothing on loopback either | *"Nothing is listening on port 5173"* — the server has not been started, or it crashed. Link to the workspace log. |
+| **Dev server bound to `127.0.0.1` inside the container** | The discovery scan (§8.2) reads `bind_addr` directly — this is known *before* anyone tries | The single most common cause, and a generic 502 would send you debugging the proxy. The port is listed, greyed, and not previewable: *"listening on 127.0.0.1:5173, which is only reachable from inside the container. Start it with `--host 0.0.0.0`."* Include the flag for the detected server where known. **The dial never happens, so the 502 never happens.** |
+| Port enabled, nothing listening | `observed_state = gone`, and the dial is refused | *"Nothing is listening on port 5173"* — the server has not been started, or it crashed. Link to the workspace log. |
+| Discovery unavailable (cannot read `/proc/<pid>/net/*`) | Scan returns an error rather than an empty set | **Fail visibly, never silently.** An empty port list and a broken scanner look identical, and the difference matters. Fall back to declared ports only, badge the panel *"discovery unavailable"*, and keep manual add working. |
+| A port flaps (test run opens and closes sockets) | Repeated appear/disappear within the debounce window | The two-scan threshold and the disappearance grace period absorb it. Nothing is emitted, so nothing is noticed. |
 | Workspace stopped | State check before dialing | `/.drydock/denied` naming the state, with a start button. Never a proxy error. |
 | Container restarted, IP changed | Dial fails against the cached address | Re-resolve once and retry transparently. Only a second failure is user-visible. |
 | App rejects the `Host` header | Upstream returns 400/403 with a recognizable body (`Blocked request`, `Invalid HTTP_HOST`) | Detect the signature and suggest the fix for that framework, or switching the port to `host_header: localhost`. A raw 403 here reads as a Drydock bug. |
@@ -301,7 +373,8 @@ Extending §12. The first row is the one that will actually happen, repeatedly.
 ## 12. What this deliberately gives up
 
 - **No non-HTTP forwarding.** A database client on a tablet would need a raw TCP listener on the LAN, which §13.5 forbids and which no amount of design here can make acceptable. Use `devcontainer exec`.
-- **No port auto-exposure.** A repo's `forwardPorts` was written for VS Code, where forwarding lands on *your own* loopback. Promoting that to a LAN-reachable origin serving code to a phone is a different decision, so Drydock discovers those ports and pre-fills the list, but the enable is yours. One click, made once per port.
+- **No port auto-exposure.** A repo's `forwardPorts` was written for VS Code, where forwarding lands on *your own* loopback. Promoting that to a LAN-reachable origin serving code to a phone is a different decision, so Drydock finds ports for you and the enable is yours. One click, made once per port. Live discovery (§8.2) makes this *more* important rather than less: with a static list auto-exposure is merely unwise, but against a scanner it would publish a debugger at the moment it opened.
+- **No notification when a port appears.** Discovery is ambient (§8.2). The cost is that you have to look at the panel; the benefit is that the approval click never becomes a reflex.
 - **No preview without a session.** There is no share link, no anonymous read-only mode, no "just this one port". A preview is repo code on your domain; the sign-in is the only thing making that reasonable.
 - **No editing through the preview.** It is a viewport. Changes happen through Remote Control, which is where the agent already is.
 - **`/.drydock/*` is reserved** on every preview host. Rare, documented, and the alternative — a magic query parameter, or sniffing content — is worse.
@@ -315,8 +388,9 @@ Small enough to be one phase, ordered so the risky part is first. This slots in 
 | **1 — Front door** | Second socket, second mux, wildcard Caddy block, wildcard cert in place. Preview mux returns 401 for everything. | Every preview URL returns 401 from a device on the LAN, and no preview URL can reach an API route. |
 | **2 — Handshake** | `/preview/authorize`, one-time tokens, `preview_session`, cookie stripping. | A signed-in device reaches a hardcoded upstream; an unsigned-in one is bounced to sign-in and returned. Revoke-all closes it. |
 | **3 — Proxy** | Container IP resolution, dial, websocket upgrade, `Host` handling, `X-Forwarded-*`. | Vite with HMR works end to end on a phone. |
-| **4 — Registry** | `forwarded_port`, discovery from the resolved config, the ports UI, probe endpoint. | Enable a port from the card, open it, disable it, and watch it close. |
-| **5 — Diagnosis** | The §11 table, especially the loopback detection. | Binding a dev server to `127.0.0.1` produces the sentence that tells you to use `--host 0.0.0.0`, not a 502. |
+| **4 — Registry** | `forwarded_port`, declared-port parsing from the resolved config, the ports UI, probe endpoint. | Enable a port from the card, open it, disable it, and watch it close. |
+| **5 — Discovery** | The `/proc/<pid>/net/*` scanner, debounce, merge onto declared rows, the loopback classification, the ambient count on the card. | Start a server on an undeclared port with the panel already open; it appears, disabled, correctly labelled — and nothing is pushed at you. |
+| **6 — Diagnosis** | The §11 table, wired to what §8.2 already knows. | Binding a dev server to `127.0.0.1` produces the sentence that tells you to use `--host 0.0.0.0`, and no dial is ever attempted. |
 
 Step 1 before anything else, for the same reason §14 puts the front door before the skeleton: retrofitting auth onto a proxy that already works is how open proxies happen.
 
@@ -326,6 +400,7 @@ Step 1 before anything else, for the same reason §14 puts the front door before
 
 1. **Does the `Origin` check hold up as the sole CSRF defense?** §10.2 makes it load-bearing. Before step 2 ships, it is worth a deliberate test: a page served from a preview origin attempting a state-changing `POST` to `/api/*`, confirming it is refused, and confirming the refusal is logged. This is cheap and it is the one place where being wrong is quiet.
 2. **Does `host_header: passthrough` want to be the default?** It is the correct behavior for apps that generate absolute URLs and the wrong one for apps with strict host allowlists, and the second group is growing. The answer is one afternoon of pointing it at the repos actually in the installation.
+3. **What actually belongs on the discovery denylist?** §8.2 asserts that a workspace's socket table is mostly noise, which is true, but the specific noise is an empirical question — the remote-control process is certain, MCP servers and language servers are likely, and the rest is guesswork until a real workspace has been running for a week. Ship the `hidden` flag first and let the denylist be whatever people keep hiding. Getting this wrong is cosmetic, which is why it is not worth designing in advance.
 
 ### 14.2 Deferred, and what would reopen each
 
@@ -334,7 +409,8 @@ Step 1 before anything else, for the same reason §14 puts the front door before
 | **A separate registrable domain for previews** (`*.drydock-preview.net`). | Either the `Origin` check proves fragile in 14.1, or a preview needs to run code you did not write — a dependency's demo, a third-party template. At that point the same-site relationship stops being a manageable risk and the second domain becomes cheap by comparison. |
 | **Raw TCP forwarding.** | Never, on this design. It would reopen §13.5's first bullet. If it is genuinely needed the answer is Tailscale to the host, not a Drydock feature. |
 | **Sharing a preview with someone else.** | A second operator exists — at which point §1's "Operators: 1" is what actually needs revisiting, and this follows from it rather than leading. |
-| **Auto-enabling ports on `forwardPorts`.** | The one-click enable proves to be friction you resent, measured in actual clicks rather than anticipated ones. The row already records `discovered_from`, so the switch is a default change, not a migration. |
+| **Auto-enabling declared ports.** | The one-click enable proves to be friction you resent, measured in actual clicks rather than anticipated ones. The row already carries `declared` / `observed` / `manual` separately, so the switch is a default change rather than a migration — and it should only ever apply to *declared* ports, never observed ones (§12). |
+| **Process attribution on discovered ports** — showing "vite (node)" rather than a bare number. | Bare port numbers prove genuinely ambiguous in practice. It is available from a sidecar sharing both namespaces (`--network=container:<id> --pid=container:<id>`, then `ss -ltnp`), but that costs a container spawn, so it belongs on panel-open rather than on the poll — an enrichment, never the scan itself. |
 | **Previewing a stopped workspace** by starting it on demand. | Opening a bookmark to a stopped workspace becomes a common enough annoyance to be worth the surprise of a container starting because you clicked a link. |
 
 ### 14.3 Decided while writing this
@@ -345,6 +421,8 @@ Step 1 before anything else, for the same reason §14 puts the front door before
 | One preview cookie or one per host? | **One per host.** Host-only cookies are what stop preview A reading preview B, and the extra redirect is invisible (§10.4). |
 | Should Caddy route to workspaces? | **No.** It gets a wildcard and a socket. Teaching the front door the workspace map would make it stateful and couple it to Drydock, against §3.1. |
 | Publish container ports on the host? | **No.** Drydock dials the container's Docker-network address from the host. Publishing would put listeners on the dev server's interfaces, which is the thing §13.5 exists to prevent. |
+| Discover ports with an in-container agent, like VS Code does? | **No — read the netns from the host.** VS Code can afford an agent because it already runs a server inside the container. Drydock does not, and `/proc/<pid>/net/tcp` gives the same answer as an unprivileged file read: no exec, no image dependency, no cost per poll, and the container stays unaware it is being previewed (§8.2). |
+| Should a newly discovered port notify the operator? | **No.** Ambient count on the card, decisions in the panel. A prompt that fires whenever a test run opens a socket trains a click-through reflex — the same argument §13.5 of the overall document uses to refuse a re-auth prompt on delete (§8.2). |
 
 ---
 
