@@ -1,0 +1,80 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 980 430" width="980" height="430" font-family="ui-sans-serif,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif">
+  <defs>
+    <marker id="aApi" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#60a5fa"/>
+    </marker>
+    <marker id="aPrev" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#c4b5fd"/>
+    </marker>
+  </defs>
+
+  <rect x="0" y="0" width="980" height="430" fill="#0b1220"/>
+
+  <!-- LAN -->
+  <rect x="16" y="126" width="118" height="176" rx="10" fill="#1e293b" stroke="#94a3b8" stroke-width="1.5"/>
+  <text x="75" y="152" text-anchor="middle" font-size="14" font-weight="600" fill="#e2e8f0">LAN device</text>
+  <text x="75" y="176" text-anchor="middle" font-size="12.5" fill="#cbd5e1">phone</text>
+  <text x="75" y="196" text-anchor="middle" font-size="12.5" fill="#cbd5e1">tablet</text>
+  <text x="75" y="216" text-anchor="middle" font-size="12.5" fill="#cbd5e1">laptop</text>
+  <text x="75" y="252" text-anchor="middle" font-size="11.5" fill="#cbd5e1">one sign-in,</text>
+  <text x="75" y="269" text-anchor="middle" font-size="11.5" fill="#cbd5e1">two origins</text>
+
+  <!-- TLS arrows into Caddy -->
+  <path d="M138,180 L196,180" stroke="#60a5fa" stroke-width="2" fill="none" marker-end="url(#aApi)"/>
+  <path d="M138,250 L196,250" stroke="#c4b5fd" stroke-width="2" fill="none" marker-end="url(#aPrev)"/>
+  <text x="167" y="172" text-anchor="middle" font-size="10.5" fill="#cbd5e1">TLS</text>
+  <text x="167" y="242" text-anchor="middle" font-size="10.5" fill="#cbd5e1">TLS</text>
+
+  <!-- Caddy -->
+  <rect x="200" y="126" width="192" height="176" rx="10" fill="#1e293b" stroke="#94a3b8" stroke-width="1.5"/>
+  <text x="296" y="150" text-anchor="middle" font-size="14" font-weight="600" fill="#e2e8f0">Caddy :443</text>
+  <text x="296" y="168" text-anchor="middle" font-size="11" fill="#cbd5e1">the only LAN listener</text>
+
+  <rect x="214" y="180" width="164" height="42" rx="7" fill="#0f172a" stroke="#60a5fa" stroke-width="1.5"/>
+  <text x="296" y="197" text-anchor="middle" font-size="11.5" font-weight="600" fill="#60a5fa">drydock.example.com</text>
+  <text x="296" y="213" text-anchor="middle" font-size="10.5" fill="#cbd5e1">site block 1</text>
+
+  <rect x="214" y="232" width="164" height="42" rx="7" fill="#0f172a" stroke="#c4b5fd" stroke-width="1.5"/>
+  <text x="296" y="249" text-anchor="middle" font-size="11.5" font-weight="600" fill="#c4b5fd">*.preview.drydock…</text>
+  <text x="296" y="265" text-anchor="middle" font-size="10.5" fill="#cbd5e1">site block 2 · wildcard</text>
+
+  <text x="296" y="294" text-anchor="middle" font-size="10.5" font-style="italic" fill="#cbd5e1">knows no workspace map</text>
+
+  <!-- socket arrows -->
+  <path d="M396,201 L470,201" stroke="#60a5fa" stroke-width="2" fill="none" marker-end="url(#aApi)"/>
+  <path d="M396,253 L470,253" stroke="#c4b5fd" stroke-width="2" fill="none" marker-end="url(#aPrev)"/>
+  <text x="433" y="194" text-anchor="middle" font-size="10" fill="#cbd5e1">http.sock</text>
+  <text x="433" y="246" text-anchor="middle" font-size="10" fill="#cbd5e1">preview.sock</text>
+
+  <!-- Drydock process -->
+  <rect x="474" y="96" width="286" height="236" rx="10" fill="#1e293b" stroke="#94a3b8" stroke-width="1.5"/>
+  <text x="617" y="120" text-anchor="middle" font-size="14" font-weight="600" fill="#e2e8f0">Drydock process</text>
+  <text x="617" y="138" text-anchor="middle" font-size="11" fill="#cbd5e1">binds no TCP port</text>
+
+  <rect x="490" y="152" width="254" height="72" rx="8" fill="#0f172a" stroke="#60a5fa" stroke-width="1.75"/>
+  <text x="617" y="172" text-anchor="middle" font-size="12.5" font-weight="600" fill="#60a5fa">API mux</text>
+  <text x="617" y="190" text-anchor="middle" font-size="10.5" fill="#cbd5e1">session cookie · Origin allowlist</text>
+  <text x="617" y="208" text-anchor="middle" font-size="10.5" fill="#cbd5e1">UI, REST, SSE</text>
+
+  <rect x="490" y="236" width="254" height="72" rx="8" fill="#0f172a" stroke="#c4b5fd" stroke-width="1.75"/>
+  <text x="617" y="256" text-anchor="middle" font-size="12.5" font-weight="600" fill="#c4b5fd">preview mux</text>
+  <text x="617" y="274" text-anchor="middle" font-size="10.5" fill="#cbd5e1">preview cookie · proxy only</text>
+  <text x="617" y="292" text-anchor="middle" font-size="10.5" fill="#cbd5e1">no API route exists here</text>
+
+  <!-- container -->
+  <path d="M748,272 L836,272" stroke="#c4b5fd" stroke-width="2" fill="none" marker-end="url(#aPrev)"/>
+  <text x="792" y="264" text-anchor="middle" font-size="10" fill="#cbd5e1">dial</text>
+
+  <rect x="840" y="212" width="124" height="120" rx="10" fill="#1e293b" stroke="#94a3b8" stroke-width="1.5"/>
+  <text x="902" y="238" text-anchor="middle" font-size="13" font-weight="600" fill="#e2e8f0">workspace</text>
+  <text x="902" y="256" text-anchor="middle" font-size="13" font-weight="600" fill="#e2e8f0">container</text>
+  <text x="902" y="280" text-anchor="middle" font-size="11" fill="#cbd5e1">dev server</text>
+  <text x="902" y="298" text-anchor="middle" font-size="11" fill="#cbd5e1">:5173</text>
+  <text x="902" y="320" text-anchor="middle" font-size="10" font-style="italic" fill="#cbd5e1">nothing published</text>
+
+  <!-- the point -->
+  <rect x="16" y="342" width="948" height="70" rx="9" fill="#0f172a" stroke="#fbbf24" stroke-width="1.5" stroke-dasharray="5 3"/>
+  <text x="34" y="366" font-size="12" font-weight="600" fill="#fbbf24">The socket is the boundary.</text>
+  <text x="34" y="386" font-size="11.5" fill="#e2e8f0">A preview request arrives on a different file descriptor and is served by a different http.Server — so it cannot reach an API handler even if host parsing is wrong.</text>
+  <text x="34" y="404" font-size="11.5" fill="#e2e8f0">Both origins are same-site, so SameSite=Strict does not separate them. The Origin allowlist on the API mux is what does.</text>
+</svg>
