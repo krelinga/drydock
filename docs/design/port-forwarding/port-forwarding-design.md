@@ -2,7 +2,7 @@
 
 *Reaching a dev server running inside a workspace container from a phone or tablet on the LAN — without giving repository code a foothold on Drydock's own origin.*
 
-**Status** design document, draft v1 · **Date** 26 August 2026
+**Status** design document, draft v2 · **Date** 27 August 2026 · incorporates the [27 Aug security review](../security-review.md)
 
 **Supplements** [`../overall/drydock-design.md`](../overall/drydock-design.md) · **Depends on** §3, §6, §13 of that document
 
@@ -147,6 +147,8 @@ There is **no upstream host column** — only a port. The upstream address is al
 
 The row is **per preview host, not per device**. A single cookie covering `.preview.drydock.example.com` would let a previewed app fetch every other preview on the same device. Host-only cookies cost one extra redirect per preview, and §7 explains why that redirect is invisible.
 
+Two lifetimes, both made explicit rather than left implicit. The preview cookie gets its **own** idle TTL keyed on `last_seen_at`, shorter than the auth session's — a captured preview cookie should not stay live for the auth session's full 30-day ceiling. And a `preview_session` is deleted when its port is disabled or removed, not only when the auth session is: without that, disabling a port dial-blocks new requests (§8.1) but leaves the minted rows lying around to reactivate silently on re-enable. The cascade on `auth_session` is the backstop for the lost-device case; per-port cleanup is the routine one.
+
 ## 6. API surface
 
 Additions to §5 of the overall document. All on the API mux, all behind the session cookie and the `Origin` check.
@@ -203,15 +205,30 @@ Steps 2–6 are four redirects with no user interaction, so in practice the firs
 
 `SameSite=Lax` rather than `Strict` on the preview cookie is deliberate and narrow: `Strict` would drop the cookie on the step-6 redirect, and a preview cookie is a read-only capability to view one app, not an API credential.
 
+The pending token from step 4 lives **in memory only**, is consumed with an atomic compare-and-delete so two racing requests cannot both spend it, and is never persisted. A Drydock restart between mint and consume simply fails the handshake closed, and the browser retries from step 1 — there is nothing on disk to leak and nothing to replay.
+
+> [!WARNING]
+> **The one-time token is in the URL, so keep it out of the logs**
+>
+> Step 5 carries the token as a `?t=` query parameter, because a redirect from `drydock.example.com` to a *different* host is the only way to cross origins — the main origin cannot set the preview host's cookie for it. A query-string credential is the most-logged thing there is, which collides with the overall design's "session tokens never reach Caddy's access log" (§13.5). The token is single-use and expires in 60 seconds, so replay is already hard; the remaining job is to stop it being *written down*:
+>
+> - The preview vhost keeps Caddy access logging **off** (Caddy's default), and if a global `log` directive is ever added it redacts query strings for this host. A live credential must not land in the access log even for 60 seconds.
+> - `/.drydock/session` responds with `Referrer-Policy: no-referrer`, so the token URL cannot leak onward in a `Referer` header from the app that loads next.
+> - The step-6 redirect lands on the clean path, so the token URL never becomes the app's own address or a bookmark.
+>
+> Single-use, 60-second TTL, no access log, no referrer: that quartet is what makes a credential-in-a-URL tolerable here, and it is a decision on the record rather than an oversight.
+
 ## 8. Finding and reaching the container
 
 ### 8.1 Resolving the upstream
 
 Drydock runs on the host, not in a container (§1, *not containerized itself*), so it can dial the container's address on the Docker network directly. There is nothing to publish and nothing bound on the dev server's interfaces.
 
-The address comes from the container's `NetworkSettings`, looked up by the same `drydock.workspace=<id>` label that everything else uses. **Container IPs change on restart**, so the resolved address is a cache with exactly one invalidation rule: any workspace state transition clears it. This is the same posture as §6's reconciliation — *Docker is the truth, the database is the cache* — applied to one more field.
+The address comes from the container's `NetworkSettings`, looked up by the same `drydock.workspace=<id>` label that everything else uses. **Container IPs change on restart, and a container can die without Drydock noticing** — an OOM kill, a `dockerd` restart, a crash the supervisor has not yet seen — after which Docker is free to hand that IP to a different container. A cached IP is therefore not safe to dial on the strength of a `running` row alone: the row can be stale in exactly the window where the IP now points at *another* workspace's container, and a request authorized for X would be shown Y — including whatever Y's dev server renders from Y's own secrets.
 
-A dial is attempted only when the workspace is `running` and the port row is `enabled`. Either being false is a `/.drydock/denied` page naming which one, not a 502.
+So the address is not merely cached-with-invalidation; it is **re-resolved from Docker by label immediately before every dial**, and the dial is bound to that freshly-resolved container identity, not to a remembered IP string. If the label resolves to no live container right now, the workspace is treated as stopped — a `/.drydock/denied` — never as a cache miss to be filled from the last known address. This is the same *Docker is the truth, the database is the cache* rule as §6, made per-request because a proxy runs continuously against a fact — *which container, at which IP* — that churns under it, and §6's boot-time reconciliation cadence is far too coarse to keep a live data path from crossing a workspace boundary.
+
+A dial is attempted only when the label resolves to a `running` container and the port row is `enabled`. Either being false is a `/.drydock/denied` page naming which one, not a 502.
 
 ### 8.2 Discovering what is listening
 
@@ -227,7 +244,7 @@ Drydock does not have to ask. A container's listening sockets are visible from t
    1: 00000000:1F90 00000000:0000 0A ...   ->  0.0.0.0:8080     LISTEN
 ```
 
-`<container-pid>` is `.State.Pid` on the container Drydock already tracks by label (§8.1). Reading that file enumerates every socket in the container's network namespace.
+`<container-pid>` is `.State.Pid` on the container Drydock already tracks by label (§8.1). Reading that file enumerates every socket in the container's network namespace — **which is only true while that PID is still that container.** A dead container's PID is reused by the kernel like any other, so a scan that trusts a cached `.State.Pid` can end up reading an unrelated host process's namespace and surfacing *host* listeners as previewable rows for a workspace. The PID is therefore re-resolved from Docker by label at the start of every scan, exactly as the dial re-resolves the IP (§8.1); a label that resolves to no live container is scanned as empty, not skipped-with-stale-rows. Enabling a phantom row would otherwise feed the misrouted dial in §8.1, so the two live paths share one rule: **trust the label resolved now, never a remembered PID or IP.**
 
 Three properties make this the right mechanism rather than merely a working one, and all three were measured rather than assumed:
 
@@ -300,6 +317,9 @@ drydock.example.com {
         header_up X-Forwarded-For {remote_host}
     }
     # No cookie handling here — deliberately. See the note below.
+    # Access logging stays OFF on this block (Caddy's default): the step-5
+    # handshake puts a one-time token in the query string (§7). If a global
+    # log directive is ever added, redact query strings for this host.
 }
 # Still no site block for the bare IP, and the wildcard matches one level:
 # a request for anything else — including drydock.example.com's own siblings — matches nothing.
@@ -328,7 +348,7 @@ drydock.example.com {
 
 A preview is a **browser-side** exposure: repository code, rendered as a first-class web origin on your domain, on a device that is also signed in to Drydock. Nothing new is exposed to the network — no listener, no published port, no credential in the container — and a compromised container gains nothing it did not have, because it does not learn it is being previewed.
 
-So the entire threat model is *what can that origin do to the other origin*, and there are exactly three answers.
+So the threat model is mostly *what can that origin do to the other origin*, and there are three answers — plus a fourth (§10.5) aimed at the human at the keyboard rather than at another origin.
 
 ### 10.2 Preview → API is same-site, so `Origin` carries the load
 
@@ -342,34 +362,65 @@ This is the finding that should change the parent document.
 
 `GET` routes need the same care: any API `GET` with a side effect, or any that returns data worth stealing via a scripted same-site navigation, must be treated as state-changing. The existing rule that mutations are never `GET` is what makes this tractable.
 
+**Because a preview is same-site, the `Origin` check only holds if it is written exactly right** — three details that stop being hygiene and become the whole defense, and so are contract rather than handler-author discretion:
+
+- **Exact-string allowlist, previews explicitly excluded.** The check compares `Origin` against the literal `https://drydock.example.com` and nothing else. It must *never* be a suffix or registrable-domain match: `evil.preview.drydock.example.com` ends with `drydock.example.com` and is attacker-controlled content, so a `HasSuffix` here is a full bypass. This is the single most likely way to build it wrong, because a suffix test is the intuitive way to write "belongs to us."
+- **Fail closed on an absent `Origin`.** A missing header is refused exactly as hard as a wrong one. Browsers omit `Origin` on some requests, and "no header ⇒ allow" is a one-line bypass. Safe here because every legitimate API caller is a browser `fetch` (which always sends `Origin`) or the SSE `GET` (non-mutating); there is no non-browser `POST` client to accommodate.
+- **No permissive CORS, and never a reflected `Origin`.** The "CORS still prevents *reading* the response" pillar above is *entirely* a property of the headers Drydock returns. One `Access-Control-Allow-Origin: *`, or an `Origin`-reflecting allow-origin sent with credentials, lets a same-site preview read every API response and collapses that pillar silently. The contract: no CORS headers on `/api/*`, ever; cross-origin reads fail by default.
+
+None of the three is visible on the happy path — a preview-origin `POST` succeeds against a wrong allowlist exactly as it fails against a right one, as far as the server can see. §14.1 makes the browser-level test that distinguishes them a gate on shipping, not a nicety.
+
 ### 10.3 Preview → UI cookie fixation is already blocked
 
 A same-site subdomain can normally set cookies on its parent domain — classic cookie tossing, and a preview would be perfectly placed to do it. It cannot here, because §13.2 chose the `__Host-` prefix, and a browser refuses a `__Host-`-prefixed cookie that is not host-only. A preview can set `Domain=drydock.example.com` cookies under other names; the UI reads exactly one cookie and ignores the rest, which is the property to preserve rather than a new thing to build.
 
 This is a decision made for a different reason in the parent document paying off here, and it is worth recording as such: had §13.2 picked a bare cookie name, this design would have needed a separate registrable domain.
 
+Two properties keep this closed as the surface grows. First, **the UI reads exactly one cookie, `__Host-drydock`, by its exact name** — a preview can set any number of other-named `Domain`-scoped cookies and none is ever read, so the invariant to hold is *the UI never reads a cookie by a guessable or attacker-settable name.* A future feature that read a second cookie would inherit a hostile writer. Second, a hostile preview can register a **Service Worker** scoped to its own host, which outlives the container and can intercept later handshakes on that host; this grants nothing the preview origin did not already have (the preview cookie is `HttpOnly` and host-only, and the first token-bearing navigation predates any worker), but it means a retired slug's host should be assumed to still be running attacker code in some browser until that browser evicts it. Emitting `Clear-Site-Data: "*"` when a port is disabled or its slug retired is the cheap countermeasure; either way the residue is bounded to the preview's own already-hostile origin.
+
 ### 10.4 Preview → preview is blocked by host-only cookies
 
 Per-host preview cookies (§5, §7) mean a previewed app cannot read another preview even though they are same-site, because the browser will not send a host-only cookie for `a.preview...` to `b.preview...`. The cost is one invisible redirect per new preview host.
 
-### 10.5 Additions to the blast-radius table
+### 10.5 Preview → operator: the phishing surface
+
+The three subsections above are origin-against-origin. There is a fourth target the same-site choice creates, and it is aimed at the human: **a hostile preview is served from what a person reads as "part of Drydock."**
+
+`myapp-5173-p2mq.preview.drydock.example.com` is, to anyone not parsing origins for a living, obviously Drydock. Nothing stops the repo code behind it from rendering a pixel-perfect copy of the Drydock sign-in page and asking for the password — and the operator, seeing a login prompt under the real domain, is far more likely to type it than at `evil.example`. There is a single factor (§13.2) and no second one, so a harvested password is the entire system. No cookie or `Origin` control touches this: it is a human trusting a name. The defenses are procedural and must be built into the product rather than left to operator vigilance:
+
+- **Sign-in is served only from the bare origin.** `drydock.example.com` is the one and only place a password field ever appears. A preview host has no sign-in route to imitate legitimately, so "this asked for my password on a `*.preview` URL" becomes an absolute, teachable tell.
+- **The UI says so, where it is seen.** The device list and the ports panel both state that a login prompt on any preview host is hostile by construction. This is the one place a preview can attack the operator directly, so it earns a sentence in the UI rather than a line in this document.
+- **Previews carry no Drydock chrome.** Nothing Drydock renders — no header, no logo, no styling — is shared with the proxied response stream, so a preview cannot borrow real Drydock UI to look more convincing. The preview mux proxies the app verbatim (§3.1) and injects no branding, which makes this free.
+
+> [!WARNING]
+> **This is the sharp edge of the same-site decision — an accepted risk, not a solved one.**
+>
+> A separate registrable domain (§4, §14.2) removes the "looks like us" trust that makes this work at all, and this document's own §4 table calls that option *"strictly better security."* It is not adopted here because the single operator already owns and renews one domain by choice (§9); the controls above are what make same-site tolerable in the meantime. Read strictly, previewed repo code is *always* code the operator did not write in the way that matters — the agent reads untrusted issue text and dependency READMEs into it (overall §10.4) — so §14.2's reopen trigger for the second domain is arguably already met. Recorded here so the choice is re-litigated on purpose rather than defaulted into.
+
+### 10.6 Additions to the blast-radius table
 
 Extending §13.4 of the overall document:
 
 | If this is compromised | Reachable | Not reachable |
 |---|---|---|
-| **A previewed app** (hostile or XSS'd repo code) | Side-effecting same-site requests to `/api/*` **if and only if the `Origin` check is missing or wrong**. Its own preview origin's storage. | The API cookie (host-only). API *responses* (CORS). Other previews (host-only preview cookies). Anything on the host — the proxy dials one container port and nothing else. |
+| **A previewed app** (hostile or XSS'd repo code) | Side-effecting same-site requests to `/api/*` **if and only if the `Origin` check is missing or wrong**. Its own preview origin's storage. | The API cookie (host-only). API *responses* (CORS). Other previews (host-only preview cookies). Anything on the host directly — the proxy dials one container port and nothing else (but the note below bounds what that means). |
 | **The preview proxy** | Every enabled port on every running workspace. | The App key, the Docker socket, the API mux, any credential — it holds none. |
 
-### 10.6 Additions to §13.5's non-negotiables
+> [!NOTE]
+> **"One container port" bounds the proxy, not the response.** The preview proxy dials exactly one port and adds no network reach of its own. But the process listening on that port is repo code, and it can relay: bytes coming back through the preview may have been fetched by the container from anywhere the container itself can reach. A preview is a driven channel into whatever the container chooses to serve or relay — which is the container's existing egress (governed elsewhere), never a new capability the preview grants. The table row is a guarantee about the *proxy*, not about what the port serves.
+
+### 10.7 Additions to §13.5's non-negotiables
 
 - **The preview mux serves no API route, ever.** It is a separate mux on a separate socket precisely so this is structural rather than remembered.
 - **The upstream is derived, never supplied.** Workspace container IP plus an enabled port. No host field reaches the dialer from a request, a config file, or a database column.
+- **The container is re-resolved by label at every dial and every scan, never trusted from cache.** A `running` row is not permission to dial a remembered IP: the container may have died unobserved and Docker may have handed that IP, or that PID, to someone else (§8.1, §8.2). Trust the `drydock.workspace=<id>` label resolved *now*, or treat the workspace as stopped — never a stale address.
 - **The preview cookie never reaches the container**, and an upstream `Set-Cookie` may not claim its name. This is the preview proxy's job on the hop to the container, *not* Caddy's on the hop to `preview.sock` — where the cookie still has to arrive for the request to authenticate at all (§7, §9).
 - **Previews are default-deny.** No `forwarded_port` row with `enabled = 1`, no preview — the same rule, for the same reason, as `secret_grant` in §10.1.
 - **Discovery never enables anything.** The scanner writes `observed`, `bind_addr`, and timestamps. It has no path to `enabled`, and it is worth keeping that as a property of the code rather than of the current implementation: the container decides what it listens on, so a scanner that could enable would hand that decision to the container.
-- **The API's `Origin` allowlist is load-bearing.** Not defense in depth. See §10.2.
+- **The API's `Origin` allowlist is load-bearing, and specified exactly.** Not defense in depth. Exact-string match against the UI origin (never a suffix, or a preview subdomain slips through), fail-closed on an absent `Origin`, and no permissive or reflected CORS. See §10.2.
+- **Sign-in appears only on the bare origin, never a preview host.** A password field on any `*.preview` URL is hostile by construction (§10.5), and the UI teaches this rather than trusting the operator to notice.
 - **The UI sends `Content-Security-Policy: frame-ancestors 'none'`**, so a preview cannot frame the control plane for clickjacking.
+- **The preview mux is resource-bounded.** A concurrent-connection cap and an idle timeout on proxied upgrades, so a held-open HMR socket or an unauthenticated redirect flood cannot exhaust the process (§3, §11) — consistent with the hand-managed capacity of the overall §1.
 
 ## 11. Failure modes
 
@@ -388,6 +439,7 @@ Extending §12. The first row is the one that will actually happen, repeatedly.
 | Wildcard certificate missing or expired | TLS failure at Caddy, before Drydock | Previews fail; the UI is unaffected because it is a different block with a different cert. Health check warns on preview-cert expiry separately from the UI cert. |
 | Slug collision | `UNIQUE` violation on insert | Regenerate the random suffix and retry. Four characters over a per-repo-per-port namespace makes this rare and harmless. |
 | Preview left open on a lost device | You notice, as in §13.2 | *Revoke all sessions* cascades to `preview_session`, so every preview on every device dies with the same click. This is the reason for the foreign key. |
+| Too many concurrent previews or held-open HMR sockets | Live connection count against the cap (§10.7) | Connections beyond the cap are refused with a plain 503; upgrades idle past the timeout are closed. A buggy client, or an unauthenticated redirect flood from a LAN device, cannot pin the process — the preview mux is bounded like the rest of the system (§1). |
 
 ## 12. What this deliberately gives up
 
@@ -417,7 +469,7 @@ Step 1 before anything else, for the same reason §14 puts the front door before
 
 ### 14.1 Still open
 
-1. **Does the `Origin` check hold up as the sole CSRF defense?** §10.2 makes it load-bearing. Before step 2 ships, it is worth a deliberate test: a page served from a preview origin attempting a state-changing `POST` to `/api/*`, confirming it is refused, and confirming the refusal is logged. This is cheap and it is the one place where being wrong is quiet.
+1. **Does the `Origin` check hold up as the sole CSRF defense?** §10.2 makes it load-bearing, so this is a **gate on shipping step 2**, not a nicety — it is the one place where being wrong is quiet, because a wrong allowlist and a right one look identical from the server on the happy path. A page served from a preview origin must, in a real browser: (a) have a state-changing `POST` to `/api/*` refused and the refusal logged; (b) have that same `POST` refused when `Origin` is stripped (fail-closed); and (c) fail to *read* the response of a data `GET` (no reflected CORS). All three, in CI against the actual middleware, before the handshake is wired to a real upstream.
 2. **Does `host_header: passthrough` want to be the default?** It is the correct behavior for apps that generate absolute URLs and the wrong one for apps with strict host allowlists, and the second group is growing. The answer is one afternoon of pointing it at the repos actually in the installation.
 3. **What actually belongs on the discovery denylist?** §8.2 asserts that a workspace's socket table is mostly noise, which is true, but the specific noise is an empirical question — the remote-control process is certain, MCP servers and language servers are likely, and the rest is guesswork until a real workspace has been running for a week. Ship the `hidden` flag first and let the denylist be whatever people keep hiding. Getting this wrong is cosmetic, which is why it is not worth designing in advance.
 
@@ -425,7 +477,7 @@ Step 1 before anything else, for the same reason §14 puts the front door before
 
 | Deferred | Reopen when |
 |---|---|
-| **A separate registrable domain for previews** (`*.drydock-preview.net`). | Either the `Origin` check proves fragile in 14.1, or a preview needs to run code you did not write — a dependency's demo, a third-party template. At that point the same-site relationship stops being a manageable risk and the second domain becomes cheap by comparison. |
+| **A separate registrable domain for previews** (`*.drydock-preview.net`). | Any of: the `Origin` check proves fragile in 14.1; the operator-phishing surface in §10.5 stops feeling like an accepted risk; or you weigh that *all* previewed code is code you did not write in the sense that matters — the agent reads untrusted issue text and dependency READMEs into it (overall §10.4) — and conclude the trigger is already met. At that point the same-site relationship stops being a manageable risk, and the second domain — one more registration alongside the one the operator already renews for the UI — becomes cheap by comparison. |
 | **Raw TCP forwarding.** | Never, on this design. It would reopen §13.5's first bullet. If it is genuinely needed the answer is Tailscale to the host, not a Drydock feature. |
 | **Sharing a preview with someone else.** | A second operator exists — at which point §1's "Operators: 1" is what actually needs revisiting, and this follows from it rather than leading. |
 | **Auto-enabling declared ports.** | The one-click enable proves to be friction you resent, measured in actual clicks rather than anticipated ones. The row already carries `declared` / `observed` / `manual` separately, so the switch is a default change rather than a migration — and it should only ever apply to *declared* ports, never observed ones (§12). |
@@ -445,4 +497,4 @@ Step 1 before anything else, for the same reason §14 puts the front door before
 
 ---
 
-*Supplements `docs/design/overall/drydock-design.md` draft v3. The `Origin`-check promotion in §10.2 is a change to that document's §13.3 and §13.5, not merely an addition to it, and should be reflected there when this is built.*
+*Supplements `docs/design/overall/drydock-design.md` draft v4. The `Origin`-check promotion in §10.2 is a change to that document's §13.3 and §13.5, not merely an addition to it, and is reflected there as of draft v4. The same-site decision it rests on is recorded as an accepted risk (§10.5) with a reopen trigger (§14.2), not a settled one.*

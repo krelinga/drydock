@@ -8,6 +8,9 @@
 
 **Nature of this review** Both documents are design-only; there is no code. "Severity" below is therefore *design risk* — what the exposure becomes if the system is built exactly as written — and every recommendation is a design change, not a patch. Where the design already names a risk honestly, this review says so rather than re-discovering it.
 
+> [!NOTE]
+> **Resolution (27 Aug 2026).** All nine findings have been folded into the design docs — **overall draft v4**, **port-forwarding draft v2**. Section numbers in the findings below refer to the versions *reviewed* (overall v3, PF v1); this document is left as the dated snapshot rather than renumbered. Where each landed: **F1** — same-site kept by the operator's explicit choice and now recorded as an accepted risk with anti-phishing controls (PF §10.5, §10.7) and a sharpened reopen trigger (PF §14.2). **F2** — the exact `Origin`/CORS contract (PF §10.2, §10.7; overall §13.3, §13.5) and a shipping-gate test (PF §14.1). **F3** — re-resolve the container by label at every dial and scan (PF §8.1, §8.2, §10.7). **F4** — token kept out of the log path (PF §7, §9). **F5** — `--secrets-file` removed from the `up` invocation (overall §6). **F6/F7/F8/F9** — cookie-name invariant and Service-Worker note (PF §10.3), relay bound (PF §10.6), `preview_session` lifetimes and pending-token store (PF §5, §7), and a preview-mux resource bound (PF §10.7, §11). The one open judgment is F1's first option — a *separate* registrable domain — which remains available but was not taken.
+
 ---
 
 ## 0. Summary
