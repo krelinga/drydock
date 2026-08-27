@@ -771,6 +771,11 @@ Password auth defends against someone typing at the UI. It does nothing about th
 
 The reason to take this seriously on a home network specifically: the LAN contains devices you did not write and cannot patch — a TV, a printer, a smart plug, a guest's laptop. “Behind the router” has not been a security boundary for a long time, and the whole point of the three gates in Fig 4 is that none of them assumes it is.
 
+> [!NOTE]
+> **The CSRF bullet above has a shelf life**
+>
+> "`SameSite=Strict` stops this for essentially every current browser" is true while Drydock's hostname is the only thing served from this domain. [Port forwarding](../port-forwarding/port-forwarding-design.md) puts previews on `*.preview.<same domain>`, which is **same-site** with the UI — so `SameSite` stops separating them and the `Origin` allowlist becomes the primary defense rather than the backup. If that design is built, this bullet and the fourth item in §13.5 have to be rewritten, not merely appended to.
+
 ### 13.4  Blast radius
 
 | If this is compromised | Reachable | Not reachable |

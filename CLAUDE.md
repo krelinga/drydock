@@ -4,9 +4,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Repository state
 
-**Design-only. There is no application source code yet.** The repository contains one design document
-(`docs/design/overall/drydock-design.md`, draft v3) plus its SVG diagrams, a devcontainer definition,
-and the Phase 0 spike results and harness under `docs/design/spikes/`. There are no build, lint, or
+**Design-only. There is no application source code yet.** The repository contains the overall design
+document (`docs/design/overall/drydock-design.md`, draft v3), a supplemental one on port forwarding
+(`docs/design/port-forwarding/`, draft v1), their SVG diagrams, a devcontainer definition, and the
+Phase 0 spike results and harness under `docs/design/spikes/`. There are no build, lint, or
 test commands because nothing is built yet.
 
 The devcontainer (`.devcontainer/devcontainer.json`) carries the full toolchain: Go (with
