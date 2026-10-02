@@ -1,0 +1,89 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 360" role="img" aria-label="On a phone the app is a single column: a header with a fleet-wide banner slot, a Running section of workspace cards, an All repositories section with search, and a three-item bottom tab bar for Workspaces, Secrets and Settings. On a desktop the same components reflow into a left navigation rail with the list and the workspace detail side by side, so the detail is a route on mobile and a column on desktop.">
+        <defs>
+          <marker id="02-screen-map-dark-ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+            <path d="M0 0 L10 5 L0 10 z" fill="#A6B0BA"/>
+          </marker>
+        </defs>
+
+        <!-- phone frame -->
+        <rect x="50" y="28" width="230" height="300" rx="12" fill="none" stroke="#A6B0BA" stroke-width="1.4"/>
+        <line x1="50" y1="58" x2="280" y2="58" stroke="#A6B0BA" stroke-width="1" opacity=".4"/>
+        <text x="64" y="49" font-family="system-ui, -apple-system, Segoe UI, Roboto, Helvetica, sans-serif" font-size="11" fill="#A6B0BA">Drydock</text>
+
+        <rect x="62" y="66" width="206" height="22" rx="3" fill="none" stroke="#D9A15D" stroke-width="1.1"/>
+        <text x="72" y="81" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="8.5" fill="#D9A15D">Claude login expires in 2 days</text>
+
+        <text x="62" y="106" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="9" fill="#5DC4A6">Running · 2</text>
+        <rect x="62" y="112" width="206" height="32" rx="3" fill="none" stroke="#5DC4A6" stroke-width="1.2"/>
+        <text x="72" y="126" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="8.5" fill="#5DC4A6">drydock · 3 sessions</text>
+        <text x="72" y="137" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="8" fill="#5DC4A6" opacity=".7">4 listening · 1 previewed</text>
+
+        <rect x="62" y="150" width="206" height="32" rx="3" fill="none" stroke="#D9A15D" stroke-width="1.2"/>
+        <text x="72" y="164" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="8.5" fill="#D9A15D">vite-app · building</text>
+        <text x="72" y="175" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="8" fill="#D9A15D" opacity=".75">pulling base image</text>
+
+        <text x="62" y="204" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="9" fill="#A6B0BA" opacity=".8">All repositories</text>
+        <rect x="62" y="210" width="206" height="20" rx="10" fill="none" stroke="#A6B0BA" stroke-width="1" opacity=".55"/>
+        <text x="74" y="224" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="8.5" fill="#A6B0BA" opacity=".55">search 47 repos</text>
+
+        <text x="66" y="248" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="8.5" fill="#A6B0BA" opacity=".7">krelinga/drydock</text>
+        <line x1="62" y1="256" x2="268" y2="256" stroke="#A6B0BA" stroke-width="1" opacity=".2"/>
+        <text x="66" y="270" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="8.5" fill="#A6B0BA" opacity=".7">krelinga/notes</text>
+        <line x1="62" y1="278" x2="268" y2="278" stroke="#A6B0BA" stroke-width="1" opacity=".2"/>
+        <text x="66" y="292" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="8.5" fill="#A6B0BA" opacity=".7">krelinga/mediaserve</text>
+
+        <line x1="50" y1="300" x2="280" y2="300" stroke="#A6B0BA" stroke-width="1" opacity=".4"/>
+        <text x="96" y="317" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="8.5" fill="#5DC4A6">Workspaces</text>
+        <text x="173" y="317" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="8.5" fill="#A6B0BA" opacity=".6">Secrets</text>
+        <text x="240" y="317" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="8.5" fill="#A6B0BA" opacity=".6">Settings</text>
+
+        <text x="165" y="347" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="9" fill="#A6B0BA" opacity=".75">phone · 360 px · detail is a route</text>
+
+        <!-- the bridge -->
+        <text x="320" y="156" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="8.5" fill="#D9A15D">one</text>
+        <text x="320" y="169" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="8.5" fill="#D9A15D">component</text>
+        <text x="320" y="182" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="8.5" fill="#D9A15D">tree</text>
+        <line x1="286" y1="128" x2="320" y2="146" stroke="#A6B0BA" stroke-width="1" opacity=".3"/>
+        <line x1="320" y1="192" x2="354" y2="210" stroke="#A6B0BA" stroke-width="1" opacity=".3"/>
+
+        <!-- desktop frame -->
+        <rect x="360" y="28" width="500" height="300" rx="6" fill="none" stroke="#A6B0BA" stroke-width="1.4"/>
+        <line x1="460" y1="28" x2="460" y2="328" stroke="#A6B0BA" stroke-width="1" opacity=".4"/>
+        <text x="374" y="60" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="9" fill="#5DC4A6">Workspaces</text>
+        <text x="374" y="82" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="9" fill="#A6B0BA" opacity=".6">Secrets</text>
+        <text x="374" y="104" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="9" fill="#A6B0BA" opacity=".6">Settings</text>
+
+        <line x1="656" y1="44" x2="656" y2="312" stroke="#A6B0BA" stroke-width="1" opacity=".25" stroke-dasharray="3 3"/>
+
+        <text x="476" y="58" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="9" fill="#5DC4A6">Running · 2</text>
+        <rect x="476" y="64" width="166" height="30" rx="3" fill="none" stroke="#5DC4A6" stroke-width="1.2"/>
+        <text x="486" y="83" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="8.5" fill="#5DC4A6">drydock · 3 sessions</text>
+        <rect x="476" y="100" width="166" height="30" rx="3" fill="none" stroke="#D9A15D" stroke-width="1.2"/>
+        <text x="486" y="119" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="8.5" fill="#D9A15D">vite-app · building</text>
+
+        <text x="476" y="156" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="9" fill="#A6B0BA" opacity=".8">All repositories</text>
+        <rect x="476" y="162" width="166" height="18" rx="9" fill="none" stroke="#A6B0BA" stroke-width="1" opacity=".55"/>
+        <text x="488" y="175" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="8" fill="#A6B0BA" opacity=".55">search 47 repos</text>
+        <text x="480" y="198" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="8.5" fill="#A6B0BA" opacity=".7">krelinga/notes</text>
+        <text x="480" y="214" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="8.5" fill="#A6B0BA" opacity=".7">krelinga/mediaserve</text>
+        <text x="480" y="230" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="8.5" fill="#A6B0BA" opacity=".7">krelinga/dotfiles</text>
+        <text x="480" y="246" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="8.5" fill="#A6B0BA" opacity=".7">krelinga/scratch</text>
+
+        <text x="672" y="58" font-family="system-ui, -apple-system, Segoe UI, Roboto, Helvetica, sans-serif" font-size="11" fill="#A6B0BA">drydock</text>
+        <text x="672" y="73" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="8.5" fill="#5DC4A6">running · 3 sessions</text>
+        <rect x="672" y="82" width="104" height="20" rx="3" fill="none" stroke="#5DC4A6" stroke-width="1.2"/>
+        <text x="724" y="96" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="8.5" fill="#5DC4A6">Open in Claude</text>
+
+        <text x="672" y="128" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="9" fill="#A6B0BA" opacity=".8">Ports</text>
+        <text x="672" y="146" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="8.5" fill="#5DC4A6">5173  vite dev server  · on</text>
+        <text x="672" y="162" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="8.5" fill="#A6B0BA" opacity=".45">9090  loopback — not previewable</text>
+        <text x="672" y="178" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="8.5" fill="#A6B0BA" opacity=".45">8080  declared, not listening</text>
+
+        <text x="672" y="206" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="9" fill="#A6B0BA" opacity=".8">Events</text>
+        <line x1="672" y1="218" x2="844" y2="218" stroke="#A6B0BA" stroke-width="1" opacity=".2"/>
+        <line x1="672" y1="232" x2="820" y2="232" stroke="#A6B0BA" stroke-width="1" opacity=".2"/>
+        <line x1="672" y1="246" x2="836" y2="246" stroke="#A6B0BA" stroke-width="1" opacity=".2"/>
+        <line x1="672" y1="260" x2="800" y2="260" stroke="#A6B0BA" stroke-width="1" opacity=".2"/>
+
+        <text x="610" y="347" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="9" fill="#A6B0BA" opacity=".75">desktop · ≥ 900 px · detail is a column</text>
+      </svg>

@@ -2,7 +2,7 @@
 
 *A single-host server that turns any GitHub repository into a running dev container with a supervised, remote-controllable Claude Code session inside it — one click from a repo list, with push credentials scoped to that repo alone.*
 
-**Status** design document, draft v7 · **Date** 4 October 2026 · five findings from the [testing plan](../testing/testing-design.md) §15 applied — §4, §6, §10.1, §10.3 and §13.5; Phase 0 spikes complete — §7.2, §7.3, §8, §10.3, and §11 revised against measurement (see [spikes](../spikes/)); §13 auth revised for cross-site previews (see the [security review](../security-review.md) and [port forwarding](../port-forwarding/port-forwarding-design.md))
+**Status** design document, draft v7 · **Date** 4 October 2026 · five findings from the [testing plan](../testing/testing-design.md) §15 applied — §4, §6, §10.1, §10.3 and §13.5; Phase 0 spikes complete — §7.2, §7.3, §8, §10.3, and §11 revised against measurement (see [spikes](../spikes/)); §13 auth revised for cross-site previews (see the [security review](../security-review.md) and [port forwarding](../port-forwarding/port-forwarding-design.md)) · the UI this document describes in passing is specified in the [frontend design](../frontend/frontend-design.md)
 
 **Runtime** single dev server, local Docker socket · **Reach** LAN, behind Caddy
 
@@ -321,6 +321,11 @@ The broker speaks a deliberately tiny line protocol over the per-container Unix 
 ```
 
 There is no `repository` parameter, and the `GET-SECRETS` verb in §10.3 takes no arguments at all. The broker derives both the repo and the grant set from which socket the connection arrived on, so a compromised container cannot ask for a different repo's token or another repo's secrets — it can only ask for its own, which it already had.
+
+> [!NOTE]
+> **The UI needs eight additions to the table above**
+>
+> A client built on "every mutation is a `202`, follow the stream" needs a handful of things this table does not yet promise: `id:` on every SSE event with `Last-Event-ID` replay and a heartbeat, the in-flight login readable back from `GET /api/auth/claude`, a `409` on a duplicate workspace create, a route onto the supervisor's log ring buffer, and a consistent error envelope. They are enumerated with their reasons in the [frontend design](../frontend/frontend-design.md) §4.5 rather than here, so this table stays the server's own contract — but they are requirements, not wishes, and three of them are the difference between a correct UI and a plausible one.
 
 ## 6. Clone → container
 

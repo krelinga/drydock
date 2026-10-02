@@ -6,11 +6,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **Design-only. There is no application source code yet.** The repository contains the overall design
 document (`docs/design/overall/drydock-design.md`, draft v7), supplemental ones on port forwarding
-(`docs/design/port-forwarding/`, draft v4) and testing (`docs/design/testing/`, draft v3), an
-adversarial security review (`docs/design/security-review.md`), their SVG diagrams, a devcontainer
-definition, and the **four completed Phase 0 spikes** with their harnesses under
-`docs/design/spikes/`. There are no build, lint, or test commands because nothing is built yet —
-the testing document specifies what they will be.
+(`docs/design/port-forwarding/`, draft v4), testing (`docs/design/testing/`, draft v3) and the Vue
+frontend (`docs/design/frontend/`, draft v3), an adversarial security review
+(`docs/design/security-review.md`), their SVG diagrams, a devcontainer definition, and the **four
+completed Phase 0 spikes** with their harnesses under `docs/design/spikes/`. There are no build,
+lint, or test commands because nothing is built yet — the testing document specifies what they will
+be.
 
 The devcontainer (`.devcontainer/devcontainer.json`) carries the full toolchain: Go (with
 golangci-lint), Node, **docker-in-docker**, the `devcontainer` CLI, Caddy, `gh`, and
@@ -119,6 +120,13 @@ These come from §2 (Claude Code constraints) and §13.5 (non-negotiables). Most
   once at startup. Environment variables leak into `/proc`, crash reports, and every child process.
 - **No Docker socket in any workspace container.** Docker-out-of-Docker would let one container
   mount another's broker socket.
+- **The frontend invents no state.** Every mutation returns `202`; the only local state a click may
+  create is "a request is in flight". Entity state is written by exactly one thing — the reducer over
+  the SSE stream — and the `202` response body is discarded rather than applied. Patching an entity
+  from a mutation response is the failure that looks like it works: it is right most of the time and
+  diverges the moment a second device acts. Nothing is ever framed, either: the UI sends
+  `frame-ancestors 'none'` and `frame-src 'none'`, so a preview can neither embed the control plane
+  nor be embedded in it. See `docs/design/frontend/frontend-design.md` §2.1 and §8.
 - **Redact by default.** Passwords, login codes, session cookies, GitHub tokens, secret values, and
   PTY buffers never reach the event log, a file, or Caddy's access log. Note the login prompt does
   *not* echo, so the PTY buffer does not actually contain the one-time code (Spike 01) — but Drydock
