@@ -5,10 +5,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Repository state
 
 **Design-only. There is no application source code yet.** The repository contains the overall design
-document (`docs/design/overall/drydock-design.md`, draft v3), a supplemental one on port forwarding
-(`docs/design/port-forwarding/`, draft v1), their SVG diagrams, a devcontainer definition, and the
-Phase 0 spike results and harness under `docs/design/spikes/`. There are no build, lint, or
-test commands because nothing is built yet.
+document (`docs/design/overall/drydock-design.md`, draft v5), supplemental ones on port forwarding
+(`docs/design/port-forwarding/`, draft v3) and testing (`docs/design/testing/`, draft v1), an
+adversarial security review (`docs/design/security-review.md`), their SVG diagrams, a devcontainer
+definition, and the Phase 0 spike results and harness under `docs/design/spikes/`. There are no
+build, lint, or test commands because nothing is built yet — the testing document specifies what
+they will be.
 
 The devcontainer (`.devcontainer/devcontainer.json`) carries the full toolchain: Go (with
 golangci-lint), Node, **docker-in-docker**, the `devcontainer` CLI, Caddy, `gh`, and
@@ -153,6 +155,35 @@ These come from §2 (Claude Code constraints) and §13.5 (non-negotiables). Most
 
 Phases 2–4 are independently useful; if Phase 5 is blocked by something in §2, what remains is still
 most of the value.
+
+## Testing
+
+`docs/design/testing/testing-design.md` is the plan. Four tiers — unit, component (fake subprocesses,
+real sockets and SQLite), container (real DinD), browser (real Chromium and Caddy) — plus rituals
+triggered by an event rather than a commit. A test lives in the cheapest tier whose reach includes the
+boundary its assertion is about. Five things from it change how code gets written here:
+
+- **Every negative test carries a positive control in the same function.** Nearly every invariant
+  above is a prohibition, and a prohibition is satisfied by a binary that does nothing. A test that
+  would still pass with the feature deleted is not a test of the invariant.
+- **The canary sweep.** Component tests keep all mutable state under one temp root, seed
+  high-entropy canaries, and grep the whole tree plus the SQLite file's raw bytes afterwards. This is
+  how "redact by default" and §4's four deliberate schema absences are covered without a sink list
+  anyone has to remember to extend.
+- **The route table is data**, not `mux.HandleFunc` calls — `{method, pattern, handler, mutating}` —
+  so the auth, `Origin`, CORS, and two-mux-separation meta-tests enumerate it and a route added later
+  is covered without editing a test.
+- **Time, disk, and randomness are injected**, and subprocesses resolve by `PATH` so a fake binary
+  can stand in. A Go mock of the `devcontainer` CLI tests our belief about it; a fake binary tests
+  the argv we actually build, which is a security surface.
+- **The `drydock.workspace` label key is configuration, not a constant.** Reconciliation adopts and
+  deletes by label, so a second Drydock on the same daemon — which is what a test is — will adopt and
+  destroy real workspaces. The SQLite advisory lock does not prevent this.
+
+§15 of that document holds five findings that are changes to the *design* docs, not to it: the
+line-oriented `GET-SECRETS` protocol and `eval "$(drydock-secrets export)"` are both injectable via a
+secret value, `claude_identity` cannot store the blanked-vs-expired distinction §7.3 requires, a
+retired preview slug can be reissued, and the label key above. They are unapplied on purpose.
 
 ## Docs
 
