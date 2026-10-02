@@ -2,7 +2,7 @@
 
 *A single-host server that turns any GitHub repository into a running dev container with a supervised, remote-controllable Claude Code session inside it — one click from a repo list, with push credentials scoped to that repo alone.*
 
-**Status** design document, draft v5 · **Date** 28 August 2026 · §13 auth revised for cross-site previews (see the [security review](../security-review.md) and [port forwarding](../port-forwarding/port-forwarding-design.md))
+**Status** design document, draft v6 · **Date** 2 October 2026 · Phase 0 spikes complete — §7.2, §7.3, §8, §10.3, and §11 revised against measurement (see [spikes](../spikes/)); §13 auth revised for cross-site previews (see the [security review](../security-review.md) and [port forwarding](../port-forwarding/port-forwarding-design.md))
 
 **Runtime** single dev server, local Docker socket · **Reach** LAN, behind Caddy
 
@@ -81,6 +81,8 @@ Steps 2 and 5 mean screen-scraping a TUI. That is the single most brittle depend
 ### 2.3  Credentials live in one relocatable file
 
 On Linux the credential is `~/.claude/.credentials.json`, mode `0600`, and it moves with `CLAUDE_CONFIG_DIR`. That relocatability is the hook Drydock hangs the whole auth story on (§7) — and it is the same hook already in use for per-container Claude config, so the pattern is familiar rather than novel.
+
+**One file is not enough, though.** [Spike 02](../spikes/02-rc-restart.md) found that Remote Control eligibility depends on the `oauthAccount` record in a *second* file in the same directory, `.claude.json`, which also holds the workspace-trust and consent flags a headless start needs. Relocating `CLAUDE_CONFIG_DIR` still carries everything, so §7.1's shared volume is unaffected — but "the credential is one relocatable file" is the wrong mental model for what has to travel, and acting on the narrow version is what makes a copied credential fail in a way that looks like a Drydock bug.
 
 ### 2.4  Logins expire, and unattended sessions die when they do
 
@@ -376,7 +378,7 @@ Every container mounts the same named volume at its `CLAUDE_CONFIG_DIR`. Login h
 | Option | Logins required | Cost |
 |---|---|---|
 | **Shared volume** at `CLAUDE_CONFIG_DIR` | One, for all containers | Containers share config *and* history/state files. Concurrent token refresh is serialised by Claude Code itself (Spike 00). |
-| Per-container volume, credential copied in | One, then copies | Drydock reads the plaintext credential to copy it, and refreshed tokens in one container never reach the others. |
+| ~~Per-container volume, credential copied in~~ | — | **Does not work at all.** Remote Control needs `oauthAccount.organizationUuid`, which lives in `.claude.json`, not in `.credentials.json` — a container with a perfectly valid copied credential makes model requests fine and refuses to start Remote Control ([Spike 02](../spikes/02-rc-restart.md)). It also costs plaintext access and loses refreshes, but those are moot. |
 | Per-container login | One per clone | Defeats the point of the button. |
 
 > [!NOTE]
@@ -401,18 +403,36 @@ That shared fate has a second, sharper form. On a definitive `invalid_grant` —
 
 **Fig 2** — *The two green hops are the ones Drydock cannot avoid owning: a human must carry the code from their browser back into a process Drydock holds the stdin of. Everything else could be automated; those two cannot.*
 
+> [!NOTE]
+> **Measured by [Spike 01](../spikes/01-login-handshake.md) — the handshake is scriptable, with three corrections.**
+>
+> The flow in a container is exactly the one above: `claude auth login --claudeai` prints an authorize URL whose `redirect_uri` is remote (`platform.claude.com`), then waits at `Paste code here if prompted >`. Writing a code into the PTY reaches that prompt and yields one of two verdicts. Three details are not what §7.2 assumed:
+>
+> 1. **The URL wraps mid-token at terminal width.** It is ~450 characters; at 200 columns a line-based regex captures a fragment, which looks like a working scrape until someone clicks the link. Allocate the PTY at **≥ 1000 columns** *and* strip newlines before matching: `https://claude\.com/cai/oauth/authorize\?[A-Za-z0-9&=_%.~+-]+`.
+> 2. **The pasted code is `<code>#<state>`**, and Claude Code rejects a missing half locally. So validate `^[^#\s]+#[^#\s]+$` in Drydock *before* writing to the PTY — a truncated copy is the likeliest user error, and this turns it into an instant, precise failure instead of a terminal round-trip.
+> 3. **Match `Login successful` as a prefix, never as a whole line** — the binary carries several variants (`Login successful.`, `Login successful. Press …`). `Invalid code` is the other terminal verdict; those two plus the timeout are the whole state machine.
+
 Implementation notes that matter:
 
 - **Run it in a scratch container, not a workspace container.** Login is global to the shared volume, so binding it to one workspace makes the UI lie about scope. A tiny `drydock-auth` container that mounts only the credential volume is cleaner and can be started on demand.
-- **Workspace trust first.** Claude Code's startup trust dialog must be accepted in a project directory, and the docs note the trust dialog never saves trust for a home directory. The feature's `postCreate` runs `claude` once in `/workspace` to clear it before the supervisor ever tries Remote Control.
-- **Timeout and cancel.** The handshake holds a PTY open. Give it a five-minute deadline, a cancel endpoint, and a hard kill on the subprocess — a wedged login must never require restarting Drydock.
-- **Never log the PTY buffer verbatim.** It contains the one-time code. Scrape, match, redact, then store.
+- **Three config keys, not one trust dialog.** A headless `remote-control` is stopped by *three* gates, and only trust was on this list. All three live in `$CLAUDE_CONFIG_DIR/.claude.json` and should be **written by the feature** rather than cleared by running `claude` interactively: `projects["<dir>"].hasTrustDialogAccepted`, `remoteDialogSeen` (an `Enable Remote Control? (y/n)` prompt that *hangs* rather than failing), and the `oauthAccount` record. See §11 and [Spike 02](../spikes/02-rc-restart.md).
+- **Timeout and cancel.** The handshake holds a PTY open. Give it a five-minute deadline, a cancel endpoint, and a hard kill on the subprocess — a wedged login must never require restarting Drydock. Verified: a kill at the paste prompt writes no credential and leaves nothing to reap. A *wrong* code does not need a teardown at all — the process stays at the prompt and accepts another, with the same URL still valid, so the UI can simply ask again.
+- **Never log the one-time code.** Note that the prompt does **not echo**, so the PTY buffer does not contain the code — the original reason for this rule does not hold on `2.1.246`. The rule stays for a better one: Drydock *receives* the code over HTTP and holds it in memory, where it can leak through a request log, an error string, an event row, or a crash dump. Keep not storing the PTY buffer verbatim as well, because non-echoing is undocumented behaviour of a pinned version.
 
 ### 7.3  Expiry watch
 
-A poller runs `claude /status`-equivalent output in the auth container every six hours and records `expires_at`. Three days out, the UI shows a persistent banner and every workspace card carries a warning dot. On expiry, supervisors are marked `degraded` rather than restarted — restarting cannot fix a missing credential, and a restart loop would just burn the log.
+A poller runs every six hours in the auth container and records `expires_at`. Three days out, the UI shows a persistent banner and every workspace card carries a warning dot. On expiry, supervisors are marked `degraded` rather than restarted — restarting cannot fix a missing credential, and a restart loop would just burn the log.
 
-A **blanked** credential (`accessToken: ""`, §7.1) is a different condition from an expiring one and needs its own message. Expiring is a countdown the user can ignore for three days; blanked means every workspace is already dead and the only fix is a new login handshake. Detect it on the same poll — an empty `accessToken` is unambiguous — and say "signed out, sign in again", not "expired".
+**No terminal scraping is needed here.** [Spike 01](../spikes/01-login-handshake.md) found `claude auth status --json`, which is machine-readable by default. The poll is two mechanical reads:
+
+| Read | Answers |
+|---|---|
+| `claude auth status --json` | `loggedIn:false` is the **signed-out / blanked** condition. The same call returns `orgId`, which is the field whose absence makes Remote Control refuse to start (§8) — so this doubles as a pre-flight the supervisor can run instead of launching a process that exits 1. |
+| `.credentials.json → claudeAiOauth.expiresAt` | The three-day countdown. `auth status` does **not** report expiry — it answers `loggedIn:true` for a credential that expired an hour ago. Spike 00 established the file is written by atomic rename, so an unsynchronised read is safe. |
+
+A **blanked** credential (`accessToken: ""`, §7.1) is a different condition from an expiring one and needs its own message. Expiring is a countdown the user can ignore for three days; blanked means every workspace is already dead and the only fix is a new login handshake. Say "signed out, sign in again", not "expired".
+
+One wrinkle: `auth status` reports `loggedIn:false` for a blanked credential **and** for a missing one, so it cannot tell them apart on its own. Distinguish by the file — present with empty token strings means blanked and *everyone* just lost access; absent means no one has ever signed in. Those deserve different words, which is the entire point of this section.
 
 ## 8. Session supervision
 
@@ -445,11 +465,47 @@ Three details in that invocation are load-bearing, and two of them exist because
 |---|---|
 | Load secrets at start | Fetch the workspace's granted secrets from the broker and materialize them into the process environment before `exec` (§10.3). |
 | Notice sessions appearing | **A continuous tail, not a one-shot scrape.** Sessions are created on demand, possibly hours after startup, so the supervisor watches the `--verbose` stream for `claude.ai/code/<id>` URLs and upserts `rc_session` rows as they show up. More of the terminal-scraping brittleness §12 already flags — there is no machine-readable alternative. |
-| Detect “not logged in” | `claude remote-control` exits with an error when the account is ineligible. Treat a fast exit with that signature as `awaiting_login`, not as a crash — and do not retry. |
-| Restart policy | Exponential backoff 2s → 60s, cap 6 attempts in 10 min, then park in `degraded` with the last 200 lines retained. |
-| Resume after a Drydock restart | `claude remote-control` in the same directory brings back *every* session the previous server was serving, which is the behaviour to want here. Re-derive `rc_session` rows from the tail rather than trusting the cached ones. |
+| Detect “not logged in” | `claude remote-control` exits with an error when the account is ineligible. Treat a fast exit with that signature as `awaiting_login`, not as a crash — and do not retry. **Exit status is not diagnostic**: every startup failure exits `1`, so match on message text (see the table below). Better still, pre-flight with `claude auth status --json` (§7.3) and never launch a process that cannot succeed. |
+| Restart policy | Exponential backoff 2s → 60s, cap 6 attempts in 10 min, then park in `degraded` with the last 200 lines retained. **A `409` is not a crash** — see below; it must not spend this budget. |
+| Stop it with `SIGTERM`, escalate only on timeout | A graceful stop deregisters the folder, prints `Environment preserved`, and lets the next start in immediately. A `SIGKILL` of a server that had no live session blocks the next start for one to three minutes (Spike 02). The ordinary expectation for supervising a process, with a measured reason behind it. |
+| Resume after a Drydock restart | `claude remote-control` in the same directory reconnects **the same environment and the same sessions**, after a graceful stop *and* after a hard kill, in about two seconds — [Spike 02](../spikes/02-rc-restart.md) confirms this. So the link on the workspace card stays valid across a Drydock restart. Re-derive `rc_session` rows from the tail rather than trusting the cached ones; it is a reconciliation, not a rebuild. |
 | Liveness | The process staying up is not proof of connection. Poll the PTY for the connection-status line and downgrade to `degraded` on a failure notice. |
 | Logs | 1 MB ring buffer per supervisor in memory, last 200 lines mirrored to `event`. Never persist the full buffer — it can contain repo content and, across many sessions, rather a lot of it. |
+
+> [!WARNING]
+> **A refused start is four different conditions wearing the same exit code**
+>
+> [Spike 02](../spikes/02-rc-restart.md) found that every `remote-control` startup failure exits `1`. One of them should be retried and the rest must not be, so the supervisor has to read the message:
+>
+> | Signature | State | Retry? |
+> |---|---|---|
+> | `409` / `already served by a terminal` | the previous server's folder registration has not lapsed | **yes**, patiently |
+> | `Workspace not trusted` | the feature or `postCreate` is broken | no — config error (§11) |
+> | `Unable to determine your organization` | credential present, account record missing | no — `awaiting_login` (§7.3) |
+> | `cannot be used with --spawn` | Drydock built a bad command line | no — bug |
+>
+> The `409` deserves its own state, *waiting for the previous server's registration to lapse*, retried on a flat interval and **not counted against the crash-restart budget**. It was measured at 60–200 s and is not a fixed value, so nothing should be coded against a constant. The exposure is narrow — it only happens when the dying server had no live session, which for a workspace with `--create-session-in-dir` on means a crash in the window before the first session exists — but that is exactly when a crash loop would be running, and against a 170-second refusal the 6-attempt budget is spent before the folder frees. The UI must say *waiting*, not *failed*; this is the §12 "a failure names its step" case.
+
+> [!NOTE]
+> **The durable handle is the environment, not the session**
+>
+> The server advertises one **environment id** per workspace and a single link, with a session count free on every repaint:
+>
+> ```
+> Environment ID: env_01XySFjY3UuosSX8AhpjFNM3
+>     Capacity: 1/4 · New sessions will be created in an isolated worktree
+> Continue coding in the Claude mobile app or https://claude.ai/code?environment=env_01XySFjY3UuosSX8AhpjFNM3
+> ```
+>
+> That `?environment=` URL is what the workspace card should carry, and `Capacity: N/4` is the count §8 wants for "link out with a count" — no enumeration required. Store the environment id in `workspace`; `rc_session` stays a cache of discovered session ids.
+>
+> Three scraping details from Spike 02, all of which cost time to find:
+>
+> - **Per-session URLs are wrapped in OSC 8 hyperlinks** (`\e]8;;<url>\e\\<label>\e]8;;\e\\`), so URL and label run together in the byte stream. Match the **id** — `session_[A-Za-z0-9]+` and `env_[A-Za-z0-9]+` — not the URL; anything parsing to whitespace captures the label too.
+> - ANSI cursor movement rewrites the status block in place, so the same line recurs constantly in the stream. The tail must be idempotent — upsert by id, which this section already requires.
+> - **The pre-created session counts toward capacity**, so `--capacity 4` buys three on-demand sessions, not four.
+>
+> `--continue` is not an option for resuming: it cannot be combined with `--spawn` or `--capacity`. A plain restart is the resume path, and per the table above it is the one that works.
 
 > [!NOTE]
 > **Observed, not owned — and not enumerated**
@@ -609,7 +665,19 @@ And the broker always has current values. It is not a snapshot handed over at se
 | Route | Mechanism | Confidence |
 |---|---|---|
 | **The command pulls** | `eval "$(drydock-secrets export)" && pytest`. Plain shell, no Claude Code internals involved, works the moment the helper exists. | Certain, but it is a convention — it works when the instruction to do it is in front of the agent. The shared `CLAUDE.md` submodule is the natural place to put it. |
-| **The environment pulls** | `CLAUDE_ENV_FILE` points at a script that runs `eval "$(drydock-secrets export)"`. Mechanical, no agent cooperation, no restart. | The documented purpose of the variable is exactly this, and it can only work by being read per command. **Unverified — spike it (§14, Phase 0).** If it holds, this is the answer and the convention becomes a fallback. |
+| **The environment pulls** | `CLAUDE_ENV_FILE` points at a script that runs `eval "$(drydock-secrets export)"`. Mechanical, no agent cooperation, no restart. | **Verified — this is the answer** ([Spike 03](../spikes/03-claude-env-file.md)). The script runs once per Bash command, in the command's own shell: three calls in one session saw three different values. The convention above becomes the fallback. |
+
+> [!WARNING]
+> **Four constraints come with `CLAUDE_ENV_FILE`, and three of them bite quietly**
+>
+> From [Spike 03](../spikes/03-claude-env-file.md). The mechanism is not "a file of `KEY=value` pairs read into an environment" — Claude Code reads the file as **text** and prepends it, as shell code, to every Bash command.
+>
+> 1. **Make it a constant one-liner that delegates to the helper.** The script *text* is read once per session and cached; only its execution repeats. Rewriting the file mid-session has no effect (measured: the file changed on disk and no later command saw it). So nothing Drydock might want to change may live in the text — one line, `eval "$(drydock-secrets export)"`, and the file never needs rewriting for the life of the workspace.
+> 2. **Never inline resolved values.** The whole file text is passed to each command shell as **`argv`**, so it is visible in `ps`. Values stay out of `ps` only because the helper is *invoked* from the prelude and its output is consumed by `eval` — that is what makes the claim above true, not a general property. Keep it short for the same reason: it is prepended to every command's `argv`.
+> 3. **`drydock-secrets export` must be silent on success.** This is a correctness requirement, not tidiness. Prelude stdout *and* stderr are prepended to every Bash result **the agent reads** — a progress line, a deprecation warning, or a stray `set -x` contaminates the model's view of every command for the rest of the session. Diagnostics go to Drydock's event log over the socket. This belongs with the redact-by-default invariant.
+> 4. **Fail closed, by `exit`ing non-zero.** An `exit` in the prelude aborts the command entirely — even a bare `echo` returns the prelude's status and stderr, and the agent correctly reads it as the tool being unavailable. A merely-failing last command does *not* abort. So on a broker outage, `exit 69` with one line of explanation on stderr; the alternative is `pytest` running with `TEST_DATABASE_URL` unset and the agent debugging a connection error in the repo for twenty minutes. A broker outage should make the workspace unusable rather than subtly wrong.
+>
+> One cost to accept: the prelude runs per command, so the broker is called per command. It is a Unix socket to a local process holding values in memory, so this is microseconds — but the broker must stay cheap per call (no GitHub round-trip, no KDF per request; decrypt at grant-resolution time, not per export).
 
 So a restart is not the general answer. It is the answer for the consumers that genuinely hold a frozen environment:
 
@@ -619,6 +687,7 @@ So a restart is not the general answer. It is the answer for the consumers that 
 | A background process the agent already started | That process | `npm run dev &` holds the environment it was born with. Nothing about Drydock changes this — it is true of every environment change on every system. |
 | An MCP server configured for the repo | **Yes** | Claude Code starts MCP servers itself and hands them their environment then. Only restarting the supervisor re-launches them — see the note below on why ending a session is not enough. |
 | Claude Code's own configuration | **Yes** | Anything read at startup, including the reserved names in §10.1. |
+| A change to the `CLAUDE_ENV_FILE` script's *text* | **Yes** | The text is cached per session (Spike 03). Changing which secrets are *granted* needs no restart — the grant set is resolved in the broker on each call and the text never changes — but switching mechanism or inlining anything does. Stated explicitly so a later change does not quietly assume text edits are live. |
 
 > [!WARNING]
 > **When a restart is needed, restart the right thing**
@@ -674,13 +743,31 @@ One published Feature, `drydock-claude`, carries everything Drydock needs inside
 |---|---|
 | `install.sh` | Install Claude Code (pinned version, `DISABLE_AUTOUPDATER=1`), `gh`, and the two shims. Write `~/.gitconfig` credential helper stanza. |
 | `containerEnv` | `CLAUDE_CONFIG_DIR`, `DRYDOCK_BROKER_SOCK`, `PATH` prefix for the shims. |
-| `postCreateCommand` | Assert none of the four Remote-Control-killing variables from §2.1 are set; assert `ANTHROPIC_BASE_URL` is unset; probe the broker socket; accept workspace trust by running `claude` once in the workspace folder. Fail loudly on any of these. |
+| `containerEnv` (cont.) | `CLAUDE_ENV_FILE`, pointing at a one-line script that runs `eval "$(drydock-secrets export)"` — see §10.3 for why it must be exactly one constant line. |
+| `postCreateCommand` | Assert none of the four Remote-Control-killing variables from §2.1 are set; assert `ANTHROPIC_BASE_URL` is unset; probe the broker socket; **write the three `.claude.json` keys** below. Fail loudly on any of these. |
 | `postStartCommand` | Re-probe the socket — a restarted Drydock recreates it, and a stale mount must be reported rather than silently failing on the next push. |
+
+> [!IMPORTANT]
+> **Three config keys gate a headless `remote-control`, and `postCreate` should write all three**
+>
+> "Run `claude` once to accept the trust dialog" answers one of three gates, needs a TTY, and leaves the second one to **hang** a later headless start rather than fail it. [Spike 02](../spikes/02-rc-restart.md) measured each; all three live in `$CLAUDE_CONFIG_DIR/.claude.json` and writing them is deterministic and testable:
+>
+> | Key | Without it |
+> |---|---|
+> | `projects["/workspace"].hasTrustDialogAccepted` | ``Error: Workspace not trusted. Please run `claude` in <dir> first…`` |
+> | `remoteDialogSeen` | an interactive `Enable Remote Control? (y/n)` prompt — the start hangs, looking like a wedge rather than a missing key |
+> | `oauthAccount` (carried by the shared volume, §7.1) | `Error: Unable to determine your organization for Remote Control eligibility` |
+>
+> Two consequences worth holding onto. Trust is keyed on the **absolute path**, and every workspace mounts its clone at the same in-container path, so on the shared volume **one `/workspace` trust record satisfies every container** — an unlooked-for benefit of §7.1. And answering the consent prompt also writes `remoteControlMachineId`, so every container on the shared volume presents the **same machine id**; nothing observed breaks, but it is worth knowing before debugging why fifteen workspaces look like one device.
+>
+> Still open: `--spawn worktree` puts on-demand sessions at *other* paths, and whether a worktree path needs its own trust record is untested. It would fail only for the second and later sessions — the hardest case to notice. Check it in Phase 5.
 
 > [!WARNING]
 > **Pin the version**
 >
 > Drydock scrapes Claude Code's terminal output in two places (the login handshake, the Remote Control session URL). Background auto-updates would change that output without warning, so the Feature pins an exact version and sets `DISABLE_AUTOUPDATER`. Upgrading Claude Code then becomes a deliberate Drydock release with a scrape smoke-test — which is the correct amount of friction for a dependency this brittle.
+>
+> All four spikes now depend on that pin. Everything they measured — the refresh lock (00), the login flow and `auth status` schema (01), the reconnect behaviour, the three config keys and the OSC 8 wrapping (02), and the per-command prelude (03) — is undocumented internals of **`2.1.246`**. Re-run all four harnesses on every bump.
 
 #### Relationship to the existing setup
 
@@ -805,11 +892,11 @@ One genuinely open risk, unchanged by any of the above and now slightly larger: 
 
 ## 14. Build plan
 
-Ordered so the riskiest unknown is settled first. Phase 0 is not optional — it decides whether §7.1 survives contact with reality.
+Ordered so the riskiest unknown is settled first. Phase 0 is not optional — it decides whether §7.1 survives contact with reality. **It is now complete, and §7.1 survived**; what it changed is recorded in §7.2, §7.3, §8, §10.3, and §11.
 
 | Phase | Deliverable | Done when |
 |---|---|---|
-| **0 — Spikes** | ~~Two containers sharing one credential volume, both refreshing~~ — **done, see [Spike 00](../spikes/00-shared-credential-volume.md): safe.** A scripted login handshake against a PTY. A `remote-control` process surviving a supervisor restart. Whether `CLAUDE_ENV_FILE` is re-read before each Bash command (§10.3). | You know whether the shared volume is safe, whether secrets can reach a live session without a restart, and you have a regex that reliably catches the login URL and the session URL. |
+| **0 — Spikes** | **Done — all four.** [00](../spikes/00-shared-credential-volume.md) shared credential volume under concurrent refresh: **safe**. [01](../spikes/01-login-handshake.md) scripted login handshake against a PTY: **scriptable**, patterns recorded, and `auth status --json` takes §7.3 out of the scraping business. [02](../spikes/02-rc-restart.md) `remote-control` surviving a supervisor restart: **it reconnects the same environment and sessions**, plus three startup gates the design had missed. [03](../spikes/03-claude-env-file.md) `CLAUDE_ENV_FILE` re-read per Bash command: **yes, 1:1**. | ✅ The shared volume is safe, secrets reach a live session with no restart, and the login URL and session URL both have measured patterns. One assertion is still reasoned rather than observed — the `Login successful` match (Spike 01 needs a human for the success path); close it with `./run.sh login` before Phase 5. |
 | **1 — Front door** | Unix socket listener, `drydock passwd`, session middleware, `Origin` and `Host` checks, lockout, device list. A Caddy site block pointed at your existing certificate. A stub UI behind it all. | You can sign in from your phone over HTTPS, and every route without a cookie returns `401`. **Nothing else gets built until this is true.** |
 | **2 — Walking skeleton** | Repo list from the App, clone, `devcontainer up`, workspace states, SSE, reconciliation on boot. No Claude, no broker. | The button produces a running container you can `devcontainer exec` into, and Drydock survives a reboot. |
 | **3 — Credentials** | Token broker, per-workspace socket, git helper, `gh` shim, the Feature's install half. | Inside a container: push a branch, open a PR, and read a workflow run — and fail to touch any other repo. |
@@ -826,6 +913,11 @@ Phases 2 through 4 are independently useful. If Phase 5 turns out to be blocked 
 **None.** The one question that could have forced a redesign — *does concurrent credential refresh corrupt the shared volume?* — was answered by [Spike 00](../spikes/00-shared-credential-volume.md): it does not. Claude Code serialises refreshes with a lockfile that lives inside `CLAUDE_CONFIG_DIR`, so the shared volume gets cross-container mutual exclusion for free, and its credential writes are atomic renames. §7.1 stands as designed.
 
 What the spike turned up instead is not a race but a blast radius: a dead login blanks the shared credential for every container at once (§7.1, §7.3). That is a UI and monitoring problem, not an architectural one — but it is the thing most likely to look like a Drydock bug at 2am, because ten workspaces fail simultaneously and none of them is at fault.
+
+Phase 0 is now finished and nothing in it forced a redesign either. Spikes [01](../spikes/01-login-handshake.md), [02](../spikes/02-rc-restart.md), and [03](../spikes/03-claude-env-file.md) all confirmed the mechanism the design bet on, and what they changed was detail: scraping patterns, four startup gates that each fail differently, and a per-command prelude with three constraints on how the secrets helper may behave. Two small things remain genuinely unverified rather than decided, both deliberately parked until Phase 5 because neither changes a structure:
+
+- **The `Login successful` match.** Spike 01 drove the handshake through an *invalid* code, because completing a real one needs a human in a browser. The verdict branch is observed; the success string comes from the binary. `harness-01-login/run.sh login` closes it in two minutes.
+- **Worktree trust.** Trust is per absolute path, and `--spawn worktree` creates sessions at paths nothing has trusted (§11). If it bites, it bites only the second and later sessions in a workspace.
 
 ### 15.2  Deferred, and what would reopen each
 
@@ -850,12 +942,17 @@ Recorded because the reasoning is easier to lose than the decision.
 | Where do agent branches go? | **A `drydock/` namespace** (§9.3). Makes cleanup scriptable and agent branches obvious in the GitHub UI. |
 | Re-prompt for sign-in on destructive actions? | **No.** Typing the repo name is the only friction on delete, deliberately (§13.5). |
 | Is one shared credential volume safe under concurrent refresh? | **Yes** — Claude Code locks in `CLAUDE_CONFIG_DIR` and writes by atomic rename, so the sharing supplies its own mutual exclusion ([Spike 00](../spikes/00-shared-credential-volume.md)). The §7.1 fallbacks are withdrawn; (b) would have made it worse. |
+| Can a rotated secret reach a live session without a restart? | **Yes** — `CLAUDE_ENV_FILE` runs once per Bash command ([Spike 03](../spikes/03-claude-env-file.md)). "The environment pulls" is the mechanism; the `CLAUDE.md` convention is the fallback (§10.3). |
+| Does a supervisor restart lose the running sessions? | **No** — a plain restart in the same directory reconnects the same environment *and* sessions, after a crash as well as a clean stop ([Spike 02](../spikes/02-rc-restart.md)). `--continue` is unusable in server mode, and a `409` on restart is a wait, not a failure (§8). |
+| Does Drydock have to scrape a terminal to watch credential expiry? | **No** — `claude auth status --json` is machine-readable and sees the blanked-credential state; only the countdown needs a file read ([Spike 01](../spikes/01-login-handshake.md), §7.3). |
 
 ---
 
 #### What I would revisit first as this grows
 
-The shared credential volume and the terminal scraping are the two places where Drydock is holding something the way it does because there is no better documented interface, not because it is the right shape. Both would be replaced immediately by a supported headless auth path or a machine-readable session-status output. Spike 00 raised the confidence on the first of those considerably — the concurrency behaviour underneath it turns out to be carefully built rather than accidental — but it did not change its character: it is still undocumented internals of a pinned version, and the spike is the thing that has to be re-run when that pin moves. Everything else — the broker, the socket-as-identity trick, the label-based reconciliation, and the decision to let Caddy own the only listener — would survive a rewrite unchanged. The secrets model in §10 is a third: it works because of a discipline rather than a mechanism, and a discipline is only as good as the day you are in a hurry. If any of the rest turns out to be load-bearing in a way I did not expect, my bet is on the socket-only rule: it is the one constraint that keeps having useful consequences (no forwarded-header allowlist, no local-user exposure, no debug port to forget about) long after the reason it was adopted.
+The shared credential volume and the terminal scraping are the two places where Drydock is holding something the way it does because there is no better documented interface, not because it is the right shape. Both would be replaced immediately by a supported headless auth path or a machine-readable session-status output. Spike 00 raised the confidence on the first of those considerably — the concurrency behaviour underneath it turns out to be carefully built rather than accidental — but it did not change its character: it is still undocumented internals of a pinned version, and the spike is the thing that has to be re-run when that pin moves.
+
+The second shrank. Spike 01 found `claude auth status --json`, so the expiry watch needs no terminal at all, and what remains of the scraping is the login handshake's two matches and the session-discovery tail — both now measured against a pinned version rather than assumed. Spike 02 also moved the session tail onto firmer ground than expected: the durable thing to hold is one environment id per workspace plus a capacity count the server reprints constantly, not a list of sessions to keep accurate. That is a smaller surface than the design was braced for, which makes the four harnesses the real dependency — they are what converts a Claude Code bump from a guess into a half-hour check. Everything else — the broker, the socket-as-identity trick, the label-based reconciliation, and the decision to let Caddy own the only listener — would survive a rewrite unchanged. The secrets model in §10 is a third: it works because of a discipline rather than a mechanism, and a discipline is only as good as the day you are in a hurry. If any of the rest turns out to be load-bearing in a way I did not expect, my bet is on the socket-only rule: it is the one constraint that keeps having useful consequences (no forwarded-header allowlist, no local-user exposure, no debug port to forget about) long after the reason it was adopted.
 
 ---
 

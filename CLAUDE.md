@@ -5,10 +5,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Repository state
 
 **Design-only. There is no application source code yet.** The repository contains the overall design
-document (`docs/design/overall/drydock-design.md`, draft v3), a supplemental one on port forwarding
-(`docs/design/port-forwarding/`, draft v1), their SVG diagrams, a devcontainer definition, and the
-Phase 0 spike results and harness under `docs/design/spikes/`. There are no build, lint, or
-test commands because nothing is built yet.
+document (`docs/design/overall/drydock-design.md`, draft v6), a supplemental one on port forwarding
+(`docs/design/port-forwarding/`, draft v3), their SVG diagrams, a devcontainer definition, and the
+**four completed Phase 0 spikes** with their harnesses under `docs/design/spikes/`. There are no
+build, lint, or test commands because nothing is built yet.
 
 The devcontainer (`.devcontainer/devcontainer.json`) carries the full toolchain: Go (with
 golangci-lint), Node, **docker-in-docker**, the `devcontainer` CLI, Caddy, `gh`, and
@@ -85,6 +85,13 @@ These come from §2 (Claude Code constraints) and §13.5 (non-negotiables). Most
   member.
 - **Remote Control needs a real `claude auth login` credential**, not `CLAUDE_CODE_OAUTH_TOKEN` —
   a setup token can only make model requests. This is why the PTY login handshake (§7.2) exists.
+- **`.credentials.json` alone is not enough.** Remote Control also needs the `oauthAccount` record
+  from `.claude.json` in the same directory — without `organizationUuid` it refuses to start even
+  though the token works fine for model requests (Spike 02). Sharing the whole `CLAUDE_CONFIG_DIR`
+  carries it; copying the credential file does not, which is why that option is struck, not merely
+  second-best. Two more keys in that file gate a headless start: `hasTrustDialogAccepted` for the
+  workspace path, and `remoteDialogSeen` — without the latter the server *hangs* on an interactive
+  `Enable Remote Control? (y/n)` prompt rather than failing. The feature writes all three.
 - **These variables must stay unset in every container:** `ANTHROPIC_BASE_URL` (or point at
   `api.anthropic.com`), `DISABLE_TELEMETRY`, `DO_NOT_TRACK`,
   `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC`, `DISABLE_GROWTHBOOK`. Any of them disables Remote
@@ -102,14 +109,31 @@ These come from §2 (Claude Code constraints) and §13.5 (non-negotiables). Most
 - **No Docker socket in any workspace container.** Docker-out-of-Docker would let one container
   mount another's broker socket.
 - **Redact by default.** Passwords, login codes, session cookies, GitHub tokens, secret values, and
-  PTY buffers never reach the event log, a file, or Caddy's access log. The login PTY buffer
-  contains the one-time code — scrape, match, redact, then store.
+  PTY buffers never reach the event log, a file, or Caddy's access log. Note the login prompt does
+  *not* echo, so the PTY buffer does not actually contain the one-time code (Spike 01) — but Drydock
+  receives that code over HTTP and holds it in memory, where a request log or a crash dump can still
+  leak it, and non-echoing is undocumented behavior of a pinned version. Redact the code, and still
+  never store the PTY buffer verbatim.
+- **`drydock-secrets export` must be silent on success, and must `exit` non-zero on failure.** It
+  runs as a shell prelude before *every* Bash command (Spike 03), so anything it writes to stdout or
+  stderr is prepended to every tool result the agent reads for the rest of the session, and an
+  `exit` is what makes a broker outage fail the command loudly instead of running tests with the
+  secret silently missing. Diagnostics go to Drydock's event log over the socket.
+- **The `CLAUDE_ENV_FILE` script is one constant line that delegates to the helper.** Its *text* is
+  cached per session and is passed to every command shell as `argv` (Spike 03). So a text change
+  needs a supervisor restart, and resolved values must never be inlined — the helper is *invoked*
+  from the prelude, which is the only reason values stay out of `ps`.
+- **Stop a `remote-control` server with `SIGTERM`, escalating to `SIGKILL` only on timeout.** A clean
+  stop deregisters the folder and lets the next start in immediately; a `SIGKILL` of a server with
+  no live session blocks the next start with a `409` for one to three minutes (Spike 02). That `409`
+  is a wait, not a crash, and must not consume the restart budget.
 - **Pin the Claude Code version and set `DISABLE_AUTOUPDATER=1`** in the devcontainer feature. Two
-  places scrape Claude Code's terminal output (the login URL, the `claude.ai/code/<id>` session
-  URLs); a background update would change them without warning. Spike 00 added a third reason that
-  fails harder: the shared credential volume is safe only because of undocumented locking behavior
-  verified against **Claude Code `2.1.246`**. Re-run `docs/design/spikes/harness/` on every bump and
-  update that version here.
+  places scrape Claude Code's terminal output (the login URL, the session URLs); a background update
+  would change them without warning. Every one of the four spikes added a harder reason: all of them
+  measure undocumented internals of **Claude Code `2.1.246`** — the refresh lock, the login flow and
+  `auth status` schema, the reconnect behaviour and the three config gates, and the per-command
+  prelude. **Re-run all four harnesses in `docs/design/spikes/` on every bump** and update that
+  version here.
 - **The shared credential volume must be a local Docker volume — never NFS or CIFS.** Claude Code's
   cross-container refresh lock is a `mkdir(2)`-based lockfile at
   `$CLAUDE_CONFIG_DIR/.oauth_refresh.lock`; network filesystems do not give `mkdir` the atomicity the
@@ -128,7 +152,10 @@ These come from §2 (Claude Code constraints) and §13.5 (non-negotiables). Most
 - **Sessions are observed, not owned.** Drydock never creates a Remote Control session; it tails
   `--verbose` output continuously and upserts `rc_session` rows as sessions appear. If the cache
   drifts, the Claude app is right and Drydock is wrong. The UI links out with a count; it does not
-  reimplement a session browser.
+  reimplement a session browser. The handle to store is the **environment id** (`env_…`, one per
+  workspace, survives restart) and the link is `claude.ai/code?environment=<id>`; `Capacity: N/4`
+  gives the count for free. Scrape **ids**, not URLs — per-session URLs come wrapped in OSC 8
+  hyperlink escapes, so the URL and its label run together in the byte stream (Spike 02).
 - **Agent branches go under a `drydock/` prefix**, configured in the feature rather than left to the
   model to remember. Commits use the App's bot identity.
 - **Nothing stops a workspace automatically.** No idle reaper — distinguishing "idle" from "an agent
@@ -140,9 +167,14 @@ These come from §2 (Claude Code constraints) and §13.5 (non-negotiables). Most
 
 §14 of the design doc orders the phases so the riskiest unknown resolves first. Follow it:
 
-0. **Spikes** — ~~shared credential volume under concurrent refresh~~ **done: safe, see
-   `docs/design/spikes/00-shared-credential-volume.md`** — a scripted PTY login handshake, supervisor
-   restart survival, and whether `CLAUDE_ENV_FILE` is re-read per Bash command.
+0. **Spikes — all four done.** `00` shared credential volume under concurrent refresh: safe. `01`
+   scripted PTY login handshake: scriptable, and `claude auth status --json` removes the expiry
+   watch's terminal scraping. `02` supervisor restart survival: a plain restart reconnects the same
+   environment *and* sessions, plus three `.claude.json` keys gate a headless start. `03`
+   `CLAUDE_ENV_FILE` is re-read and re-executed once per Bash command. Reports and re-runnable
+   harnesses in `docs/design/spikes/`. Two things stay unverified on purpose, both parked for Phase
+   5: the `Login successful` match (needs a human in a browser — run `harness-01-login/run.sh login`)
+   and whether a `--spawn worktree` path needs its own trust record.
 1. **Front door** — socket listener, `drydock passwd`, session middleware, `Origin`/`Host` checks,
    Caddy block. *Nothing else gets built until every route without a cookie returns 401.*
 2. **Walking skeleton** — repo list, clone, `devcontainer up`, states, SSE, boot reconciliation.
@@ -159,7 +191,9 @@ most of the value.
 Design docs live under `docs/design/<scope>/`, with diagrams in a sibling `diagrams/` directory.
 Spike results live under `docs/design/spikes/`, each one a numbered report next to the re-runnable
 harness that produced it — a spike whose evidence cannot be re-checked against a new Claude Code
-version is worth very little.
+version is worth very little. Spike 00's harness is `harness/`; later ones are `harness-NN-<topic>/`,
+each with a README naming the command per result. Keep that pairing: the report cites the mode that
+produced each number, so a finding can be re-measured rather than re-argued.
 
 Diagrams ship as light/dark SVG pairs (`NN-name-light.svg` / `NN-name-dark.svg`) referenced from a
 `<picture>` element with a `prefers-color-scheme: dark` source, and every one carries a descriptive
