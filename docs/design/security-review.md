@@ -8,6 +8,9 @@
 
 **Nature of this review** Both documents are design-only; there is no code. "Severity" below is therefore *design risk* — what the exposure becomes if the system is built exactly as written — and every recommendation is a design change, not a patch. Where the design already names a risk honestly, this review says so rather than re-discovering it.
 
+> [!NOTE]
+> **Resolution.** All nine findings have been addressed, in two steps. First (27 Aug, overall v4 / PF v2) they were folded in with same-site previews *hardened*. Then (28 Aug, **overall v5 / PF v3**) F1's first recommendation was taken outright: **previews moved to a separate registrable domain** (`*.drydock-preview.net`), so they are now cross-site with the UI and `SameSite` — not the `Origin` check — is the primary CSRF boundary. Section numbers in the findings below refer to the versions *reviewed* (overall v3, PF v1); this document is the dated snapshot, not renumbered. Where each landed in the final design: **F1** — separate registrable domain adopted (PF §4); the phishing half drops to a residual lookalike note (PF §10.5). **F2** — `SameSite=Lax` carries CSRF, the exact `Origin`/CORS contract kept as belt-and-braces (PF §10.2, §10.7; overall §13.2, §13.3, §13.5), with a browser-level test (PF §14.1). **F3** — re-resolve the container by label at every dial and scan (PF §8.1, §8.2, §10.7). **F4** — token kept out of the log path (PF §7, §9). **F5** — `--secrets-file` removed from `up` (overall §6). **F6–F9** — cookie-name invariant and Service-Worker note (PF §10.3), relay bound (PF §10.6), `preview_session` lifetimes and pending-token store (PF §5, §7), and a preview-mux resource bound (PF §10.7, §11). The session cookie changed from `SameSite=Strict` to `Lax` (overall §13.2) so the now-cross-site authorize redirect still carries the session.
+
 ---
 
 ## 0. Summary

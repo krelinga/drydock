@@ -2,7 +2,7 @@
 
 *A single-host server that turns any GitHub repository into a running dev container with a supervised, remote-controllable Claude Code session inside it — one click from a repo list, with push credentials scoped to that repo alone.*
 
-**Status** design document, draft v3 · **Date** 25 August 2026
+**Status** design document, draft v5 · **Date** 28 August 2026 · §13 auth revised for cross-site previews (see the [security review](../security-review.md) and [port forwarding](../port-forwarding/port-forwarding-design.md))
 
 **Runtime** single dev server, local Docker socket · **Reach** LAN, behind Caddy
 
@@ -340,7 +340,6 @@ devcontainer up \
   --mount "type=bind,source=/run/drydock/sock/$WS.sock,target=/run/drydock/broker.sock" \
   --remote-env DRYDOCK_WORKSPACE=$WS \
   --remote-env DRYDOCK_REPO=$FULL_NAME \
-  --secrets-file /run/drydock/secrets/$WS.json \
   --json
 ```
 
@@ -348,6 +347,11 @@ devcontainer up \
 > **Sharp edge**
 >
 > `--additional-features` composes with whatever the repo already declares; it does not replace it. If a repo's own `devcontainer.json` pins a conflicting `remoteUser` or sets `containerEnv` for any of the four Remote-Control-killing variables in §2.1, the feature must detect that at `postCreate` time and fail loudly rather than produce a container whose sessions silently never connect.
+
+> [!NOTE]
+> **No secrets at `up` — deliberately**
+>
+> An earlier form of this invocation passed `--secrets-file`; it is gone, and its absence is the point. Repository secrets are delivered at session `exec` time over the broker socket (§10.3), never baked into the container at creation — so `up` handles none, and there is no plaintext secrets file on the host to write, guard, and delete. The feature's `postCreate` needs no repository secret to do its job (§11). This keeps the single delivery story §10.3 argues for and removes the at-rest file §10.2 would otherwise have to worry about. (`--secrets-file` remains available for a genuinely build-time value should one ever appear; it just does not carry §10 repository secrets.)
 
 ### Reconciliation on boot
 
@@ -751,7 +755,7 @@ A password and a session cookie. It is the least sophisticated of the options an
 |---|---|---|
 | Password storage | `argon2id`, parameters encoded in the hash | One password, verified rarely. Tune the cost high — 250 ms of CPU per sign-in is invisible to you and ruinous to a guesser. |
 | Setting the password | `drydock passwd` on the host. No HTTP route, ever. | Removes the entire class of “unauthenticated bootstrap or reset endpoint left enabled” bugs. If you are locked out, you have shell on the box. |
-| Cookie | `__Host-drydock`, 32 random bytes, `Secure`, `HttpOnly`, `SameSite=Strict`, `Path=/` | The `__Host-` prefix makes a browser refuse the cookie unless it is `Secure`, host-only, and path `/` — a subdomain cannot set it, which is a free win now that a real domain is involved. |
+| Cookie | `__Host-drydock`, 32 random bytes, `Secure`, `HttpOnly`, `SameSite=Lax`, `Path=/` | The `__Host-` prefix makes a browser refuse the cookie unless it is `Secure`, host-only, and path `/` — no other host can set it, which is a free win now that a real domain is involved. `SameSite=Lax`, not `Strict`, because the cross-site preview handshake ([port forwarding](../port-forwarding/port-forwarding-design.md) §7) redirects the browser from a preview host to `/preview/authorize`, and the session cookie has to ride that top-level navigation; `Strict` would withhold it and a signed-in user would look signed-out. Lax stays CSRF-safe here because mutations are never `GET` (§5) and every state-changing route also checks `Origin` (§13.3). |
 | Server side | Store `sha256(token)`, never the token | The SQLite file stops being a bag of live credentials. |
 | Expiry | 30-day absolute, 14-day idle, sliding on use | Long enough that a phone stays signed in between uses; short enough that a device you stopped carrying falls off on its own. |
 | Lockout | Exponential backoff per source IP, plus a global cap | The per-IP counter alone is defeated by a botnet; the global cap alone lets one noisy device lock you out. Both, and log every attempt. |
@@ -766,15 +770,15 @@ A password and a session cookie. It is the least sophisticated of the options an
 
 Password auth defends against someone typing at the UI. It does nothing about the more interesting attack, which needs no credential at all: **a page you visit makes your own browser issue the requests.** Two variants, two defenses.
 
-- **Cross-site request forgery.** A page at `evil.example` POSTs to Drydock; the browser attaches your cookie because it is your browser. `SameSite=Strict` stops this for essentially every current browser, and an `Origin` allowlist on every state-changing route stops it for the rest. Do both — `SameSite` is a browser behavior you do not control and cannot test in CI, while the `Origin` check is ten lines you own.
+- **Cross-site request forgery.** A page at `evil.example` POSTs to Drydock; the browser attaches your cookie because it is your browser. `SameSite=Lax` stops this for essentially every current browser — a cross-site `POST` never carries the cookie — and this covers previews too, because [port forwarding](../port-forwarding/port-forwarding-design.md) puts them on a **separate registrable domain** (`*.drydock-preview.net`), so a preview is genuinely cross-site with this UI rather than a same-site sibling. The `Origin` allowlist on every state-changing route is the belt to `SameSite`'s braces — `SameSite` is a browser behavior you do not control and cannot test in CI, while the `Origin` check is ten lines you own. Do both. Keep the `Origin` check exact-string (`https://drydock.example.com`, never a suffix), failing closed on an absent `Origin`, with no reflected CORS — cheap hygiene that also means the day previews are ever mis-hosted on this registrable domain, CSRF is not immediately wide open.
 - **[DNS rebinding](https://github.blog/security/application-security/dns-rebinding-attacks-explained-the-lookup-is-coming-from-inside-the-house/).** The sharper one. A hostile page's domain briefly resolves to Drydock's private address, so the browser considers the request same-origin and sends the cookie voluntarily — `SameSite` does not help, because as far as the browser is concerned nothing is cross-site. What breaks it is that the `Host` header still carries the attacker's domain. Caddy configured as a site block for exactly one hostname turns those requests away before Drydock sees them; Drydock validates `Host` too, so the defense does not live in one config file.
 
 The reason to take this seriously on a home network specifically: the LAN contains devices you did not write and cannot patch — a TV, a printer, a smart plug, a guest's laptop. “Behind the router” has not been a security boundary for a long time, and the whole point of the three gates in Fig 4 is that none of them assumes it is.
 
 > [!NOTE]
-> **The CSRF bullet above has a shelf life**
+> **Previews are cross-site by construction**
 >
-> "`SameSite=Strict` stops this for essentially every current browser" is true while Drydock's hostname is the only thing served from this domain. [Port forwarding](../port-forwarding/port-forwarding-design.md) puts previews on `*.preview.<same domain>`, which is **same-site** with the UI — so `SameSite` stops separating them and the `Origin` allowlist becomes the primary defense rather than the backup. If that design is built, this bullet and the fourth item in §13.5 have to be rewritten, not merely appended to.
+> [Port forwarding](../port-forwarding/port-forwarding-design.md) serves previews from a **separate registrable domain** (`*.drydock-preview.net`), not a subdomain of this one, precisely so `SameSite` keeps separating repo code from the control plane. The cookie is `SameSite=Lax` (§13.2) so the cross-site authorize redirect still carries the session; the `Origin` allowlist stays as belt-and-braces, specified exactly (exact-match, fail-closed on absent `Origin`, no reflected CORS). The supplement's §10.2 carries the reasoning and §10.5 the residual lookalike-phishing note that any separate domain still leaves.
 
 ### 13.4  Blast radius
 
@@ -790,6 +794,7 @@ The reason to take this seriously on a home network specifically: the LAN contai
 
 - **Drydock binds no TCP port.** Not `0.0.0.0`, not `127.0.0.1`. A Unix socket, group-owned, and Caddy is the only member. If a debug flag to bind a port ever exists, it refuses to start unless the address is loopback and prints a warning every time.
 - **No unauthenticated route except the sign-in POST** — and it is the rate-limited one. Auth is middleware around the whole mux, so a route added later is protected by forgetting to think about it, not by remembering.
+- **The `Origin` allowlist is exact-match and fails closed.** Every state-changing route checks `Origin` against the literal UI origin — never a suffix or registrable-domain match — and refuses a request whose `Origin` is absent exactly as hard as one whose `Origin` is wrong. The API emits no permissive or `Origin`-reflecting CORS. This is belt-and-braces behind `SameSite=Lax`, which does the primary CSRF work now that [port forwarding](../port-forwarding/port-forwarding-design.md) keeps previews cross-site (§13.3) — but it is cheap, it is the half you can test in CI, and it is what keeps a future same-registrable-domain mistake from being an instant hole.
 - **The App key and the secrets master key are not in the repo, the database, or the environment.** Mode `0400` files supplied by the service manager and read once at startup. Never environment variables — those leak into `/proc`, into crash reports, and into every child process Drydock spawns. The delivery mechanism is the installation document's business; that they never reach the environment is this one's.
 - **No Docker socket in any workspace container.** Docker-out-of-Docker would let a container mount another container's broker socket, which collapses the whole §9 boundary.
 - **Delete requires typing the repo name — and that is the only friction.** No re-authentication prompt on destructive routes: a valid session is treated as you, because on a single-operator system with a device you do not hand around, a second password prompt buys habituation rather than safety. The name-typing stops the misplaced tap, which is the failure that actually happens.

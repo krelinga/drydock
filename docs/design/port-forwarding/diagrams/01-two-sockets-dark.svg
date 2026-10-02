@@ -76,5 +76,5 @@
   <rect x="16" y="342" width="948" height="70" rx="9" fill="#0f172a" stroke="#fbbf24" stroke-width="1.5" stroke-dasharray="5 3"/>
   <text x="34" y="366" font-size="12" font-weight="600" fill="#fbbf24">The socket is the boundary.</text>
   <text x="34" y="386" font-size="11.5" fill="#e2e8f0">A preview request arrives on a different file descriptor and is served by a different http.Server — so it cannot reach an API handler even if host parsing is wrong.</text>
-  <text x="34" y="404" font-size="11.5" fill="#e2e8f0">Both origins are same-site, so SameSite=Strict does not separate them. The Origin allowlist on the API mux is what does.</text>
+  <text x="34" y="404" font-size="11.5" fill="#e2e8f0">The two origins are cross-site (separate domains), so SameSite keeps a preview off /api/*; the socket split is defense in depth.</text>
 </svg>
