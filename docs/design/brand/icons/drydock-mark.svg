@@ -1,6 +1,6 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32" fill="none" role="img" aria-labelledby="dd-face-t dd-face-d">
-  <title id="dd-face-t">Drydock</title>
-  <desc id="dd-face-d">A drained dock basin with battered side walls, holding a shipping container raised on two keel blocks, the letters D and D stencilled on the container's face.</desc>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32" fill="none" role="img" aria-labelledby="dd-mark-t dd-mark-d">
+  <title id="dd-mark-t">Drydock</title>
+  <desc id="dd-mark-d">A drained dock basin with battered side walls, holding a shipping container raised on two keel blocks, the letters D and D stencilled on the container's face.</desc>
   <style>
     svg{--ink:#0f172a;--accent:#1d4ed8;--bg:#ffffff}
     @media (prefers-color-scheme:dark){svg{--ink:#e2e8f0;--accent:#60a5fa;--bg:#0b1220}}
