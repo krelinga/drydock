@@ -13,6 +13,7 @@
     --rule-faint: #e3e9f1;
     --accent:  #1d4ed8;
     --note:    #6d28d9;
+    --good:    #0f766e;
 
     --fs-step: clamp(0.82rem, 0.2vw + 0.78rem, 0.88rem);
   }
@@ -26,6 +27,7 @@
       --rule-faint: #18233a;
       --accent:#60a5fa;
       --note:  #c4b5fd;
+      --good:  #2dd4bf;
     }
   }
   :root[data-theme="dark"] {
@@ -37,14 +39,28 @@
     --rule-faint: #18233a;
     --accent:#60a5fa;
     --note:  #c4b5fd;
+    --good:  #2dd4bf;
   }
 
-  /* fixed grounds: these never follow the viewer's theme, because the point of
-     the sheet is to show the mark on both at once */
-  .ground-light { --m-ink:#0f172a; --m-acc:#1d4ed8; --m-bg:#ffffff;
-                  background:#ffffff; color:#0f172a; --g-rule:#e2e8f0; }
-  .ground-dark  { --m-ink:#e2e8f0; --m-acc:#60a5fa; --m-bg:#0b1220;
-                  background:#0b1220; color:#e2e8f0; --g-rule:#1e293b; }
+  /* The four surfaces a badge actually has to survive. These never follow the
+     viewer's theme — the point of the sheet is to show all four at once. */
+  .s-white  { background:#ffffff; color:#0f172a; --edge:#e2e8f0; }
+  .s-ltab   { background:#f1f5f9; color:#0f172a; --edge:#dbe3ec; }
+  .s-dpage  { background:#0b1220; color:#e2e8f0; --edge:#1e293b; }
+  .s-dtab   { background:#16203a; color:#e2e8f0; --edge:#273450; }
+
+  /* The badge palettes. Light value by default, lifted value on a dark
+     surface — a badge on a dark page needs more luminance to keep its edge. */
+  .g-teal  { --badge:#0f766e; --knock:#f8fafc; }
+  .g-blue  { --badge:#1d4ed8; --knock:#f8fafc; }
+  .g-steel { --badge:#475569; --knock:#f8fafc; }
+  .s-dpage .g-teal,  .s-dtab .g-teal  { --badge:#0d9488; }
+  .s-dpage .g-blue,  .s-dtab .g-blue  { --badge:#2563eb; }
+  .s-dpage .g-steel, .s-dtab .g-steel { --badge:#64748b; }
+
+  /* the bare mark, for the comparison row */
+  .m-light { --m-ink:#0f172a; --m-acc:#1d4ed8; --m-bg:#ffffff; }
+  .m-dark  { --m-ink:#e2e8f0; --m-acc:#60a5fa; --m-bg:#0b1220; }
 
   * { box-sizing: border-box; }
 
@@ -139,25 +155,32 @@
     padding: 0.1em 0.36em;
   }
 
+  /* ---- decided-so-far strip ------------------------------------------- */
+  .trail { display: flex; flex-wrap: wrap; gap: 1px; background: var(--rule); border: 1px solid var(--rule); }
+  .trail div {
+    background: var(--sheet); padding: 9px 14px; flex: 1 1 150px;
+    display: flex; flex-direction: column; gap: 2px;
+  }
+  .trail dt, .trail b {
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: 0.6rem; letter-spacing: 0.12em; text-transform: uppercase; color: var(--muted);
+    font-weight: 400;
+  }
+  .trail span { font-weight: 500; }
+
   /* ---- candidates ----------------------------------------------------- */
   .cards { display: flex; flex-direction: column; gap: 14px; }
   .card { border: 1px solid var(--rule); }
   .card-head {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 6px 14px;
-    align-items: baseline;
-    padding: 12px 16px;
-    border-bottom: 1px solid var(--rule);
+    display: flex; flex-wrap: wrap; gap: 6px 14px; align-items: baseline;
+    padding: 12px 16px; border-bottom: 1px solid var(--rule);
   }
   .card-head h3 {
     font-family: "IBM Plex Sans Condensed", ui-sans-serif, sans-serif;
     font-weight: 600; font-size: 1.05rem; margin: 0;
   }
-  .file {
-    font-family: "IBM Plex Mono", ui-monospace, monospace;
-    font-size: 0.7rem; color: var(--muted);
-  }
+  .file { font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 0.7rem; color: var(--muted); }
+  .hexes { font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 0.68rem; color: var(--muted); font-variant-numeric: tabular-nums; }
   .tag {
     margin-left: auto;
     font-family: "IBM Plex Mono", ui-monospace, monospace;
@@ -165,8 +188,7 @@
     border: 1px solid var(--rule); color: var(--muted);
     padding: 2px 7px; white-space: nowrap;
   }
-  .tag.pick { border-color: var(--accent); color: var(--accent); }
-  .tag.dead { border-color: var(--note); color: var(--note); }
+  .tag.pick { border-color: var(--good); color: var(--good); }
 
   .stage { display: grid; grid-template-columns: 1fr 1fr; }
   @media (max-width: 640px) { .stage { grid-template-columns: 1fr; } }
@@ -187,43 +209,49 @@
   .mark { display: block; }
 
   .verdict {
-    padding: 12px 16px;
-    border-top: 1px solid var(--rule);
-    font-size: 0.86rem;
-    color: var(--muted);
-    max-width: none;
+    padding: 12px 16px; border-top: 1px solid var(--rule);
+    font-size: 0.86rem; color: var(--muted); max-width: none;
   }
   .verdict b { color: var(--ink); font-weight: 500; }
 
-  /* ---- tab strip ------------------------------------------------------ */
-  .tabstrip {
-    display: flex; gap: 2px; padding: 8px 8px 0;
-    border: 1px solid var(--g-rule); border-bottom: 0;
-    overflow-x: auto;
+  /* ---- edge test ------------------------------------------------------ */
+  .edgegrid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 1px; background: var(--rule); border: 1px solid var(--rule); }
+  @media (max-width: 720px) { .edgegrid { grid-template-columns: repeat(2, 1fr); } }
+  .surface { padding: 18px 16px; display: flex; flex-direction: column; gap: 14px; }
+  .surface-name {
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: 0.6rem; letter-spacing: 0.12em; text-transform: uppercase; opacity: 0.6;
   }
-  .tab {
-    display: flex; align-items: center; gap: 7px;
-    padding: 7px 13px; min-width: 0;
-    font-size: 0.74rem; white-space: nowrap;
-    border-radius: 7px 7px 0 0;
-    opacity: 0.55;
-  }
-  .tab.active { opacity: 1; box-shadow: 0 0 0 1px var(--g-rule); }
-  .ground-dark .tab.active { background: #16203a; }
-  .ground-light .tab.active { background: #f1f5f9; }
-  .tab .fav { width: 16px; height: 16px; flex: none; display: grid; place-items: center; }
-  .stub {
-    width: 14px; height: 14px; border-radius: 3px;
-    font: 500 9px/14px "IBM Plex Mono", monospace; text-align: center; color: #fff;
-  }
-  .tabpage { border: 1px solid var(--g-rule); height: 34px; }
+  .badgerow { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+  .badgecol { display: flex; flex-direction: column; gap: 10px; }
 
-  /* ---- construction --------------------------------------------------- */
-  .construct { display: grid; grid-template-columns: minmax(240px, 320px) minmax(0, 1fr); gap: 26px; align-items: start; }
-  @media (max-width: 720px) { .construct { grid-template-columns: 1fr; } }
-  .gridfig { border: 1px solid var(--rule); padding: 10px; background: var(--sheet); }
-  .gridfig svg { display: block; width: 100%; height: auto; }
-  .figcap { font-size: 0.78rem; color: var(--muted); margin-top: 10px; max-width: 46ch; }
+  /* ---- tables --------------------------------------------------------- */
+  .tablewrap { overflow-x: auto; }
+  table { border-collapse: collapse; font-size: 0.82rem; min-width: 540px; }
+  caption { text-align: left; color: var(--muted); font-size: 0.78rem; padding-bottom: 8px; }
+  th, td { text-align: left; padding: 7px 16px 7px 0; border-bottom: 1px solid var(--rule-faint); }
+  th {
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: 0.64rem; letter-spacing: 0.1em; text-transform: uppercase; color: var(--muted);
+    font-weight: 400; white-space: nowrap;
+  }
+  td { font-variant-numeric: tabular-nums; }
+  td:first-child { font-weight: 500; white-space: nowrap; }
+  td.v { color: var(--muted); }
+  tr.bad td { color: var(--note); }
+  tr.win td:first-child { color: var(--good); }
+  .swatchdot {
+    display: inline-block; width: 10px; height: 10px; border-radius: 2px;
+    margin-right: 7px; vertical-align: -1px; border: 1px solid rgba(128,128,128,0.35);
+  }
+
+  /* ---- radius + tone row ---------------------------------------------- */
+  .optrow { display: flex; gap: 1px; background: var(--rule); border: 1px solid var(--rule); flex-wrap: wrap; }
+  .opt { background: var(--sheet); padding: 16px; flex: 1 1 150px; display: flex; flex-direction: column; gap: 12px; align-items: flex-start; }
+  .opt-name { font-family: "IBM Plex Sans Condensed", sans-serif; font-weight: 600; font-size: 0.86rem; }
+  .opt-note { font-size: 0.76rem; color: var(--muted); }
+  .inset { padding: 14px; display: inline-flex; gap: 14px; align-items: flex-end; }
+
   dl.spec { margin: 0; display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 7px 16px; }
   dl.spec dt {
     font-family: "IBM Plex Mono", ui-monospace, monospace;
@@ -233,28 +261,6 @@
   dl.spec dd { margin: 0; font-size: 0.86rem; min-width: 0; overflow-wrap: anywhere; }
   dl.spec dd code { background: none; padding: 0; color: var(--accent); }
 
-  /* ---- measurements table --------------------------------------------- */
-  .tablewrap { overflow-x: auto; }
-  table { border-collapse: collapse; font-size: 0.82rem; min-width: 480px; }
-  caption { text-align: left; color: var(--muted); font-size: 0.78rem; padding-bottom: 8px; }
-  th, td { text-align: left; padding: 7px 16px 7px 0; border-bottom: 1px solid var(--rule-faint); }
-  th {
-    font-family: "IBM Plex Mono", ui-monospace, monospace;
-    font-size: 0.64rem; letter-spacing: 0.1em; text-transform: uppercase; color: var(--muted);
-    font-weight: 400; white-space: nowrap;
-  }
-  td { font-variant-numeric: tabular-nums; }
-  td:first-child { font-weight: 500; }
-  tr.bad td { color: var(--note); }
-
-  /* ---- palette -------------------------------------------------------- */
-  .swatches { display: grid; grid-template-columns: repeat(auto-fit, minmax(132px, 1fr)); gap: 1px; background: var(--rule); border: 1px solid var(--rule); }
-  .sw { background: var(--sheet); padding: 12px; display: flex; flex-direction: column; gap: 9px; }
-  .chip { height: 42px; border: 1px solid var(--rule); }
-  .sw-name { font-family: "IBM Plex Sans Condensed", sans-serif; font-weight: 600; font-size: 0.82rem; }
-  .sw-hex { font-family: "IBM Plex Mono", monospace; font-size: 0.66rem; color: var(--muted); font-variant-numeric: tabular-nums; }
-
-  /* ---- open questions ------------------------------------------------- */
   ol.calls { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 13px; counter-reset: call; }
   ol.calls li { display: grid; grid-template-columns: 22px minmax(0, 1fr); gap: 12px; max-width: 66ch; counter-increment: call; }
   ol.calls li::before {
@@ -277,35 +283,11 @@
   }
 </style>
 
-<!-- geometry, defined once. the battered basin is now fixed; only the vessel
-     changes between candidates. ------------------------------------------- -->
+<!-- geometry, defined once -------------------------------------------------- -->
 <svg width="0" height="0" style="position:absolute" aria-hidden="true">
   <defs>
-    <symbol id="m-plain" viewBox="0 0 32 32" fill="none">
-      <path d="M3.1 8 8.6 24H23.4L28.9 8" stroke="var(--m-ink)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-      <rect x="12.6" y="20.9" width="2" height="2.2" rx="0.4" fill="var(--m-ink)"/>
-      <rect x="17.4" y="20.9" width="2" height="2.2" rx="0.4" fill="var(--m-ink)"/>
-      <rect x="11" y="10.9" width="10" height="10" rx="1.6" fill="var(--m-acc)"/>
-      <rect x="15.6" y="13.1" width="0.8" height="5.6" rx="0.4" fill="var(--m-bg)"/>
-    </symbol>
-
-    <symbol id="m-twin" viewBox="0 0 32 32" fill="none">
-      <path d="M3.1 8 8.6 24H23.4L28.9 8" stroke="var(--m-ink)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-      <rect x="11.8" y="20.9" width="2" height="2.2" rx="0.4" fill="var(--m-ink)"/>
-      <rect x="18.2" y="20.9" width="2" height="2.2" rx="0.4" fill="var(--m-ink)"/>
-      <path fill="var(--m-acc)" fill-rule="evenodd" d="M10 12.9H11.55A4 4 0 0 1 11.55 20.9H10ZM11.7 14.7H11.85A2.2 2.2 0 0 1 11.85 19.1H11.7Z"/>
-      <path fill="var(--m-acc)" fill-rule="evenodd" d="M16.45 12.9H18A4 4 0 0 1 18 20.9H16.45ZM18.15 14.7H18.3A2.2 2.2 0 0 1 18.3 19.1H18.15Z"/>
-    </symbol>
-
-    <symbol id="m-twin-o" viewBox="0 0 32 32" fill="none">
-      <path d="M3.1 8 8.6 24H23.4L28.9 8" stroke="var(--m-ink)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-      <rect x="11.7" y="20.9" width="2" height="2.2" rx="0.4" fill="var(--m-ink)"/>
-      <rect x="18.3" y="20.9" width="2" height="2.2" rx="0.4" fill="var(--m-ink)"/>
-      <path d="M10.72 20.15V13.65h0.68a3.25 3.25 0 0 1 0 6.5H10.72" stroke="var(--m-acc)" stroke-width="1.5" stroke-linejoin="round"/>
-      <path d="M17.35 20.15V13.65h0.68a3.25 3.25 0 0 1 0 6.5H17.35" stroke="var(--m-acc)" stroke-width="1.5" stroke-linejoin="round"/>
-    </symbol>
-
-    <symbol id="m-face" viewBox="0 0 32 32" fill="none">
+    <!-- the chosen bare mark: battered basin, container, DD stencilled -->
+    <symbol id="m-mark" viewBox="0 0 32 32" fill="none">
       <path d="M3.1 8 8.6 24H23.4L28.9 8" stroke="var(--m-ink)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
       <rect x="12.6" y="20.9" width="2" height="2.2" rx="0.4" fill="var(--m-ink)"/>
       <rect x="17.4" y="20.9" width="2" height="2.2" rx="0.4" fill="var(--m-ink)"/>
@@ -314,6 +296,55 @@
       <path d="M16.8 18.1V13.7h0.5a2.2 2.2 0 0 1 0 4.4H16.8" stroke="var(--m-bg)" stroke-width="0.8" stroke-linejoin="round"/>
     </symbol>
 
+    <!-- badge, one knockout colour. radius varies by symbol. -->
+    <symbol id="b-20" viewBox="0 0 32 32" fill="none">
+      <rect x="1" y="1" width="30" height="30" rx="6" fill="var(--badge)"/>
+      <g transform="translate(16 16) scale(0.78) translate(-16 -16)">
+        <path d="M3.1 8 8.6 24H23.4L28.9 8" stroke="var(--knock)" stroke-width="2.56" stroke-linecap="round" stroke-linejoin="round"/>
+        <rect x="12.6" y="20.9" width="2" height="2.2" rx="0.4" fill="var(--knock)"/>
+        <rect x="17.4" y="20.9" width="2" height="2.2" rx="0.4" fill="var(--knock)"/>
+        <rect x="11" y="10.9" width="10" height="10" rx="1.6" fill="var(--knock)"/>
+        <path d="M12.5 18.1V13.7h0.5a2.2 2.2 0 0 1 0 4.4H12.5" stroke="var(--badge)" stroke-width="1.03" stroke-linejoin="round"/>
+        <path d="M16.8 18.1V13.7h0.5a2.2 2.2 0 0 1 0 4.4H16.8" stroke="var(--badge)" stroke-width="1.03" stroke-linejoin="round"/>
+      </g>
+    </symbol>
+
+    <symbol id="b-25" viewBox="0 0 32 32" fill="none">
+      <rect x="1" y="1" width="30" height="30" rx="7.5" fill="var(--badge)"/>
+      <g transform="translate(16 16) scale(0.78) translate(-16 -16)">
+        <path d="M3.1 8 8.6 24H23.4L28.9 8" stroke="var(--knock)" stroke-width="2.56" stroke-linecap="round" stroke-linejoin="round"/>
+        <rect x="12.6" y="20.9" width="2" height="2.2" rx="0.4" fill="var(--knock)"/>
+        <rect x="17.4" y="20.9" width="2" height="2.2" rx="0.4" fill="var(--knock)"/>
+        <rect x="11" y="10.9" width="10" height="10" rx="1.6" fill="var(--knock)"/>
+        <path d="M12.5 18.1V13.7h0.5a2.2 2.2 0 0 1 0 4.4H12.5" stroke="var(--badge)" stroke-width="1.03" stroke-linejoin="round"/>
+        <path d="M16.8 18.1V13.7h0.5a2.2 2.2 0 0 1 0 4.4H16.8" stroke="var(--badge)" stroke-width="1.03" stroke-linejoin="round"/>
+      </g>
+    </symbol>
+
+    <symbol id="b-30" viewBox="0 0 32 32" fill="none">
+      <rect x="1" y="1" width="30" height="30" rx="9" fill="var(--badge)"/>
+      <g transform="translate(16 16) scale(0.78) translate(-16 -16)">
+        <path d="M3.1 8 8.6 24H23.4L28.9 8" stroke="var(--knock)" stroke-width="2.56" stroke-linecap="round" stroke-linejoin="round"/>
+        <rect x="12.6" y="20.9" width="2" height="2.2" rx="0.4" fill="var(--knock)"/>
+        <rect x="17.4" y="20.9" width="2" height="2.2" rx="0.4" fill="var(--knock)"/>
+        <rect x="11" y="10.9" width="10" height="10" rx="1.6" fill="var(--knock)"/>
+        <path d="M12.5 18.1V13.7h0.5a2.2 2.2 0 0 1 0 4.4H12.5" stroke="var(--badge)" stroke-width="1.03" stroke-linejoin="round"/>
+        <path d="M16.8 18.1V13.7h0.5a2.2 2.2 0 0 1 0 4.4H16.8" stroke="var(--badge)" stroke-width="1.03" stroke-linejoin="round"/>
+      </g>
+    </symbol>
+
+    <!-- tone-on-tone: basin dropped to a mid tint, vessel kept at full knockout -->
+    <symbol id="b-tone" viewBox="0 0 32 32" fill="none">
+      <rect x="1" y="1" width="30" height="30" rx="7.5" fill="var(--badge)"/>
+      <g transform="translate(16 16) scale(0.78) translate(-16 -16)">
+        <path d="M3.1 8 8.6 24H23.4L28.9 8" stroke="#93c5fd" stroke-width="2.56" stroke-linecap="round" stroke-linejoin="round"/>
+        <rect x="12.6" y="20.9" width="2" height="2.2" rx="0.4" fill="#93c5fd"/>
+        <rect x="17.4" y="20.9" width="2" height="2.2" rx="0.4" fill="#93c5fd"/>
+        <rect x="11" y="10.9" width="10" height="10" rx="1.6" fill="var(--knock)"/>
+        <path d="M12.5 18.1V13.7h0.5a2.2 2.2 0 0 1 0 4.4H12.5" stroke="var(--badge)" stroke-width="1.03" stroke-linejoin="round"/>
+        <path d="M16.8 18.1V13.7h0.5a2.2 2.2 0 0 1 0 4.4H16.8" stroke="var(--badge)" stroke-width="1.03" stroke-linejoin="round"/>
+      </g>
+    </symbol>
   </defs>
 </svg>
 
@@ -321,14 +352,14 @@
 
   <div class="titleblock">
     <h1>Drydock Mark
-      <span class="thin">Battered basin, chosen. Three places a &ldquo;DD&rdquo; can live in it.</span>
+      <span class="thin">Three grounds for the badge, scored against the four surfaces it has to survive</span>
     </h1>
     <div class="meta">
       <span>sheet</span><b>BRAND-01</b>
-      <span>revision</span><b>draft v3</b>
-      <span>basin</span><b>battered &middot; settled</b>
-      <span>grid</span><b>32 &times; 32, 2u clear</b>
-      <span>candidates</span><b>3</b>
+      <span>revision</span><b>draft v4</b>
+      <span>mark</span><b>settled</b>
+      <span>badge radius</span><b>7.5u &middot; 25%</b>
+      <span>grounds</span><b>3</b>
     </div>
   </div>
 
@@ -336,192 +367,164 @@
   <section>
     <div class="zone"><span>A</span> &middot; brief</div>
     <div class="body">
-      <h2>The basin is settled; the vessel is the open question</h2>
-      <p class="lede">The battered basin won: straight walls battered inward to a flat floor, a 109&deg;
-        join, no right angle in it. It is fixed in every candidate below and no longer up for
-        discussion. What changes is the vessel sitting in it, because the vessel is the only part of
-        the mark with enough surface to carry two letters.</p>
-      <p>The ask is to work a <strong>DD</strong> into the mark to tie it to the name. That is a real
-        constraint with a hard physical limit, so it is worth stating the limit before the options:
-        <strong>at 16&nbsp;px the whole mark is 16 pixels tall and the vessel is about five of
-        them.</strong> No letterform survives that. So the question is not &ldquo;can the icon say
-        DD&rdquo; &mdash; it is <em>where the letters live, and what size they start reading at</em>.
-        Three places have the room:</p>
-      <p class="muted">&mdash; the vessel's <strong>silhouette</strong>, by making the vessel itself two
-        D-shaped blocks (reads from about 24&nbsp;px);<br>
-        &mdash; the vessel's <strong>face</strong>, stencilled on a container that keeps its own
-        shape (reads from about 48&nbsp;px);<br>
-        &mdash; the <strong>basin walls</strong>, which is the only place letters would survive to
-        16&nbsp;px &mdash; and which does not work. See zone&nbsp;D.</p>
+      <h2>One rule decides the ground, and it rules out the obvious answer</h2>
 
-      <h2 style="margin-top:8px">For comparison: the mark as it stands</h2>
-      <div class="card" style="max-width:620px">
-        <div class="card-head">
-          <h3>Battered, no letters</h3>
-          <span class="file">drydock-mark-battered.svg</span>
-          <span class="tag">v2 &middot; the baseline</span>
-        </div>
-        <div class="stage">
-          <div class="pane ground-light">
-            <div class="hero-row">
-              <svg class="mark" width="64" height="64" aria-label="The battered-basin mark with a plain container"><use href="#m-plain"/></svg>
-              <div class="ramp">
-                <figure><svg class="mark" width="32" height="32" aria-hidden="true"><use href="#m-plain"/></svg><figcaption>32</figcaption></figure>
-                <figure><svg class="mark" width="16" height="16" aria-hidden="true"><use href="#m-plain"/></svg><figcaption>16</figcaption></figure>
-              </div>
-            </div>
-          </div>
-          <div class="pane ground-dark">
-            <div class="hero-row">
-              <svg class="mark" width="64" height="64" aria-hidden="true"><use href="#m-plain"/></svg>
-              <div class="ramp">
-                <figure><svg class="mark" width="32" height="32" aria-hidden="true"><use href="#m-plain"/></svg><figcaption>32</figcaption></figure>
-                <figure><svg class="mark" width="16" height="16" aria-hidden="true"><use href="#m-plain"/></svg><figcaption>16</figcaption></figure>
-              </div>
-            </div>
-          </div>
-        </div>
-        <p class="verdict">Every candidate below is this mark with the vessel changed. Judge them
-          against it: if the letters cost more than they add, this is still here.</p>
+      <div class="trail">
+        <div><b>basin</b><span>Battered &middot; settled</span></div>
+        <div><b>vessel</b><span>Container &middot; settled</span></div>
+        <div><b>letters</b><span>DD stencilled &middot; settled</span></div>
+        <div><b>ground</b><span>Open &mdash; this sheet</span></div>
       </div>
+
+      <p class="lede">A badge brings its own ground, which is the whole reason to have one: it stops
+        depending on a page whose colour Drydock does not control. But the badge itself still sits on
+        that page &mdash; and if its ground is close in value to the surface behind it, the rounded
+        square dissolves and you are left with a floating mark and no badge at all.</p>
+      <p>So the ground has to hold its edge against <strong>four</strong> surfaces, not two: a white
+        page, a light tab strip, a near-black page, and a dark tab strip. That is measurable, and
+        measuring it kills the instinct most people have here &mdash; <strong>a dark, serious, navy
+        badge.</strong> Drydock's own ink, <code>#0f172a</code>, scores <strong>1.05</strong> against a
+        dark page. The badge is invisible: a 1.05 contrast ratio is the same colour. Slate-800 is 1.10.
+        Graphite is 1.56, which is thin.</p>
+      <p>The grounds that work on <em>both</em> are mid-value and saturated &mdash; dark enough to hold
+        white out of them, light enough to separate from a near-black page. Three are worth your time,
+        each with a small luminance lift in dark mode so the dark side is not just &ldquo;the light
+        value, worse&rdquo;.</p>
     </div>
   </section>
 
   <!-- B ------------------------------------------------------------------ -->
   <section>
-    <div class="zone"><span>B</span> &middot; candidates</div>
+    <div class="zone"><span>B</span> &middot; grounds</div>
     <div class="body">
-      <h2>Three ways to get the letters in</h2>
+      <h2>Three that pass</h2>
 
       <div class="cards">
 
-        <!-- twin solid -->
+        <!-- teal -->
         <div class="card">
           <div class="card-head">
-            <h3>Twin &mdash; the vessels <em>are</em> the letters</h3>
-            <span class="file">drydock-mark-dd-twin.svg</span>
+            <h3>Dock teal</h3>
+            <span class="file">drydock-badge-teal.svg</span>
+            <span class="hexes">#0f766e &rarr; #0d9488</span>
             <span class="tag pick">recommended</span>
           </div>
           <div class="stage">
-            <div class="pane ground-light">
-              <div class="pane-label">light ground</div>
+            <div class="pane s-white g-teal">
+              <div class="pane-label">on white</div>
               <div class="hero-row">
-                <svg class="mark" width="96" height="96" aria-label="Drydock mark with two D-shaped vessels"><use href="#m-twin"/></svg>
+                <svg class="mark" width="96" height="96" aria-label="Drydock teal badge"><use href="#b-25"/></svg>
                 <div class="ramp">
-                  <figure><svg class="mark" width="48" height="48" aria-hidden="true"><use href="#m-twin"/></svg><figcaption>48</figcaption></figure>
-                  <figure><svg class="mark" width="32" height="32" aria-hidden="true"><use href="#m-twin"/></svg><figcaption>32</figcaption></figure>
-                  <figure><svg class="mark" width="24" height="24" aria-hidden="true"><use href="#m-twin"/></svg><figcaption>24</figcaption></figure>
-                  <figure><svg class="mark" width="20" height="20" aria-hidden="true"><use href="#m-twin"/></svg><figcaption>20</figcaption></figure>
-                  <figure><svg class="mark" width="16" height="16" aria-hidden="true"><use href="#m-twin"/></svg><figcaption>16</figcaption></figure>
+                  <figure><svg class="mark" width="48" height="48" aria-hidden="true"><use href="#b-25"/></svg><figcaption>48</figcaption></figure>
+                  <figure><svg class="mark" width="32" height="32" aria-hidden="true"><use href="#b-25"/></svg><figcaption>32</figcaption></figure>
+                  <figure><svg class="mark" width="24" height="24" aria-hidden="true"><use href="#b-25"/></svg><figcaption>24</figcaption></figure>
+                  <figure><svg class="mark" width="16" height="16" aria-hidden="true"><use href="#b-25"/></svg><figcaption>16</figcaption></figure>
                 </div>
               </div>
             </div>
-            <div class="pane ground-dark">
-              <div class="pane-label">dark ground</div>
+            <div class="pane s-dpage g-teal">
+              <div class="pane-label">on a dark page</div>
               <div class="hero-row">
-                <svg class="mark" width="96" height="96" aria-hidden="true"><use href="#m-twin"/></svg>
+                <svg class="mark" width="96" height="96" aria-hidden="true"><use href="#b-25"/></svg>
                 <div class="ramp">
-                  <figure><svg class="mark" width="48" height="48" aria-hidden="true"><use href="#m-twin"/></svg><figcaption>48</figcaption></figure>
-                  <figure><svg class="mark" width="32" height="32" aria-hidden="true"><use href="#m-twin"/></svg><figcaption>32</figcaption></figure>
-                  <figure><svg class="mark" width="24" height="24" aria-hidden="true"><use href="#m-twin"/></svg><figcaption>24</figcaption></figure>
-                  <figure><svg class="mark" width="20" height="20" aria-hidden="true"><use href="#m-twin"/></svg><figcaption>20</figcaption></figure>
-                  <figure><svg class="mark" width="16" height="16" aria-hidden="true"><use href="#m-twin"/></svg><figcaption>16</figcaption></figure>
+                  <figure><svg class="mark" width="48" height="48" aria-hidden="true"><use href="#b-25"/></svg><figcaption>48</figcaption></figure>
+                  <figure><svg class="mark" width="32" height="32" aria-hidden="true"><use href="#b-25"/></svg><figcaption>32</figcaption></figure>
+                  <figure><svg class="mark" width="24" height="24" aria-hidden="true"><use href="#b-25"/></svg><figcaption>24</figcaption></figure>
+                  <figure><svg class="mark" width="16" height="16" aria-hidden="true"><use href="#b-25"/></svg><figcaption>16</figcaption></figure>
                 </div>
               </div>
             </div>
           </div>
-          <p class="verdict"><b>Reads as:</b> two vessels in the dock that happen to be D and D &mdash;
-            and &ldquo;more than one workspace in one dock&rdquo; is true of the product, so the letters
-            are earned rather than pasted on. Each letter is 5.55 &times; 8 units, a 0.69 width-to-height
-            ratio, which is squarely in the range that reads as a D rather than a leaf or a pill. Each
-            gets its own keel block. <b>Cost:</b> the vessel stops looking like a shipping container.
-            Below 24&nbsp;px the counters close and you get two accent blobs &mdash; legible as
-            &ldquo;something in the dock&rdquo;, but no longer as letters.</p>
+          <p class="verdict"><b>Why this one.</b> Best numbers of the three by a clear margin &mdash; its
+            worst edge across all four surfaces is <b>4.31</b>, where blue manages 3.12 and steel 3.39.
+            It also solves a problem the blue badge creates: in the architecture diagrams
+            <code>#1d4ed8</code> already <em>means</em> something &mdash; API traffic &mdash; and violet
+            means preview origin. A blue badge makes the brand colour and a semantic colour the same
+            colour. Teal keeps them separate and leaves the accent free to go on meaning what it
+            means. Marine without being an anchor. <b>Cost:</b> a new hue in the palette, and teal is
+            having a moment, so it will date faster than the blue.</p>
         </div>
 
-        <!-- twin outline -->
+        <!-- blue -->
         <div class="card">
           <div class="card-head">
-            <h3>Twin, outlined</h3>
-            <span class="file">drydock-mark-dd-twin-outline.svg</span>
-            <span class="tag">same idea, lighter weight</span>
+            <h3>Accent blue</h3>
+            <span class="file">drydock-badge-blue.svg</span>
+            <span class="hexes">#1d4ed8 &rarr; #2563eb</span>
+            <span class="tag">the conservative pick</span>
           </div>
           <div class="stage">
-            <div class="pane ground-light">
-              <div class="pane-label">light ground</div>
+            <div class="pane s-white g-blue">
+              <div class="pane-label">on white</div>
               <div class="hero-row">
-                <svg class="mark" width="96" height="96" aria-label="Drydock mark with two outlined D-shaped vessels"><use href="#m-twin-o"/></svg>
+                <svg class="mark" width="96" height="96" aria-label="Drydock blue badge"><use href="#b-25"/></svg>
                 <div class="ramp">
-                  <figure><svg class="mark" width="48" height="48" aria-hidden="true"><use href="#m-twin-o"/></svg><figcaption>48</figcaption></figure>
-                  <figure><svg class="mark" width="32" height="32" aria-hidden="true"><use href="#m-twin-o"/></svg><figcaption>32</figcaption></figure>
-                  <figure><svg class="mark" width="24" height="24" aria-hidden="true"><use href="#m-twin-o"/></svg><figcaption>24</figcaption></figure>
-                  <figure><svg class="mark" width="20" height="20" aria-hidden="true"><use href="#m-twin-o"/></svg><figcaption>20</figcaption></figure>
-                  <figure><svg class="mark" width="16" height="16" aria-hidden="true"><use href="#m-twin-o"/></svg><figcaption>16</figcaption></figure>
+                  <figure><svg class="mark" width="48" height="48" aria-hidden="true"><use href="#b-25"/></svg><figcaption>48</figcaption></figure>
+                  <figure><svg class="mark" width="32" height="32" aria-hidden="true"><use href="#b-25"/></svg><figcaption>32</figcaption></figure>
+                  <figure><svg class="mark" width="24" height="24" aria-hidden="true"><use href="#b-25"/></svg><figcaption>24</figcaption></figure>
+                  <figure><svg class="mark" width="16" height="16" aria-hidden="true"><use href="#b-25"/></svg><figcaption>16</figcaption></figure>
                 </div>
               </div>
             </div>
-            <div class="pane ground-dark">
-              <div class="pane-label">dark ground</div>
+            <div class="pane s-dpage g-blue">
+              <div class="pane-label">on a dark page</div>
               <div class="hero-row">
-                <svg class="mark" width="96" height="96" aria-hidden="true"><use href="#m-twin-o"/></svg>
+                <svg class="mark" width="96" height="96" aria-hidden="true"><use href="#b-25"/></svg>
                 <div class="ramp">
-                  <figure><svg class="mark" width="48" height="48" aria-hidden="true"><use href="#m-twin-o"/></svg><figcaption>48</figcaption></figure>
-                  <figure><svg class="mark" width="32" height="32" aria-hidden="true"><use href="#m-twin-o"/></svg><figcaption>32</figcaption></figure>
-                  <figure><svg class="mark" width="24" height="24" aria-hidden="true"><use href="#m-twin-o"/></svg><figcaption>24</figcaption></figure>
-                  <figure><svg class="mark" width="20" height="20" aria-hidden="true"><use href="#m-twin-o"/></svg><figcaption>20</figcaption></figure>
-                  <figure><svg class="mark" width="16" height="16" aria-hidden="true"><use href="#m-twin-o"/></svg><figcaption>16</figcaption></figure>
+                  <figure><svg class="mark" width="48" height="48" aria-hidden="true"><use href="#b-25"/></svg><figcaption>48</figcaption></figure>
+                  <figure><svg class="mark" width="32" height="32" aria-hidden="true"><use href="#b-25"/></svg><figcaption>32</figcaption></figure>
+                  <figure><svg class="mark" width="24" height="24" aria-hidden="true"><use href="#b-25"/></svg><figcaption>24</figcaption></figure>
+                  <figure><svg class="mark" width="16" height="16" aria-hidden="true"><use href="#b-25"/></svg><figcaption>16</figcaption></figure>
                 </div>
               </div>
             </div>
           </div>
-          <p class="verdict"><b>Reads as:</b> letters first. Leaving the counters open keeps them reading
-            as D's two sizes further down than the solid pair does, and the lighter weight stops the
-            accent from dominating the ink. <b>Cost:</b> an outlined vessel is less obviously a solid
-            object sitting in a dock &mdash; it reads a little like a diagram of the mark rather than
-            the mark. Also the first to disappear on a low-contrast ground.</p>
+          <p class="verdict"><b>Why this one.</b> It is already the system accent, so the icon and the
+            documentation are visibly the same product with no new decisions and nothing new to
+            maintain. Passes everything: worst edge 3.12, white knockout 4.94. <b>Cost:</b> the colour
+            is doing two jobs, and it puts Drydock in the same blue as most developer tooling &mdash;
+            findable, but not distinctive, in a row of favicons.</p>
         </div>
 
-        <!-- face -->
+        <!-- steel -->
         <div class="card">
           <div class="card-head">
-            <h3>Stencil &mdash; letters on the container's face</h3>
-            <span class="file">drydock-mark-dd-face.svg</span>
-            <span class="tag">keeps the container</span>
+            <h3>Steel</h3>
+            <span class="file">drydock-badge-steel.svg</span>
+            <span class="hexes">#475569 &rarr; #64748b</span>
+            <span class="tag">the quiet one</span>
           </div>
           <div class="stage">
-            <div class="pane ground-light">
-              <div class="pane-label">light ground</div>
+            <div class="pane s-white g-steel">
+              <div class="pane-label">on white</div>
               <div class="hero-row">
-                <svg class="mark" width="96" height="96" aria-label="Drydock mark with DD stencilled on the container"><use href="#m-face"/></svg>
+                <svg class="mark" width="96" height="96" aria-label="Drydock steel badge"><use href="#b-25"/></svg>
                 <div class="ramp">
-                  <figure><svg class="mark" width="48" height="48" aria-hidden="true"><use href="#m-face"/></svg><figcaption>48</figcaption></figure>
-                  <figure><svg class="mark" width="32" height="32" aria-hidden="true"><use href="#m-face"/></svg><figcaption>32</figcaption></figure>
-                  <figure><svg class="mark" width="24" height="24" aria-hidden="true"><use href="#m-face"/></svg><figcaption>24</figcaption></figure>
-                  <figure><svg class="mark" width="20" height="20" aria-hidden="true"><use href="#m-face"/></svg><figcaption>20</figcaption></figure>
-                  <figure><svg class="mark" width="16" height="16" aria-hidden="true"><use href="#m-face"/></svg><figcaption>16</figcaption></figure>
+                  <figure><svg class="mark" width="48" height="48" aria-hidden="true"><use href="#b-25"/></svg><figcaption>48</figcaption></figure>
+                  <figure><svg class="mark" width="32" height="32" aria-hidden="true"><use href="#b-25"/></svg><figcaption>32</figcaption></figure>
+                  <figure><svg class="mark" width="24" height="24" aria-hidden="true"><use href="#b-25"/></svg><figcaption>24</figcaption></figure>
+                  <figure><svg class="mark" width="16" height="16" aria-hidden="true"><use href="#b-25"/></svg><figcaption>16</figcaption></figure>
                 </div>
               </div>
             </div>
-            <div class="pane ground-dark">
-              <div class="pane-label">dark ground</div>
+            <div class="pane s-dpage g-steel">
+              <div class="pane-label">on a dark page</div>
               <div class="hero-row">
-                <svg class="mark" width="96" height="96" aria-hidden="true"><use href="#m-face"/></svg>
+                <svg class="mark" width="96" height="96" aria-hidden="true"><use href="#b-25"/></svg>
                 <div class="ramp">
-                  <figure><svg class="mark" width="48" height="48" aria-hidden="true"><use href="#m-face"/></svg><figcaption>48</figcaption></figure>
-                  <figure><svg class="mark" width="32" height="32" aria-hidden="true"><use href="#m-face"/></svg><figcaption>32</figcaption></figure>
-                  <figure><svg class="mark" width="24" height="24" aria-hidden="true"><use href="#m-face"/></svg><figcaption>24</figcaption></figure>
-                  <figure><svg class="mark" width="20" height="20" aria-hidden="true"><use href="#m-face"/></svg><figcaption>20</figcaption></figure>
-                  <figure><svg class="mark" width="16" height="16" aria-hidden="true"><use href="#m-face"/></svg><figcaption>16</figcaption></figure>
+                  <figure><svg class="mark" width="48" height="48" aria-hidden="true"><use href="#b-25"/></svg><figcaption>48</figcaption></figure>
+                  <figure><svg class="mark" width="32" height="32" aria-hidden="true"><use href="#b-25"/></svg><figcaption>32</figcaption></figure>
+                  <figure><svg class="mark" width="24" height="24" aria-hidden="true"><use href="#b-25"/></svg><figcaption>24</figcaption></figure>
+                  <figure><svg class="mark" width="16" height="16" aria-hidden="true"><use href="#b-25"/></svg><figcaption>16</figcaption></figure>
                 </div>
               </div>
             </div>
           </div>
-          <p class="verdict"><b>Reads as:</b> a real container, which carries its owner's mark stencilled
-            on the side &mdash; so this is the only option where the letters are doing something the
-            subject actually does. The silhouette is untouched, so nothing is risked at small sizes.
-            <b>Cost:</b> the letters are 3.5 &times; 5.2 units behind a 0.8-unit stroke. They are a
-            header-size detail and nothing else: by 32&nbsp;px they are a texture, by 20&nbsp;px they
-            are gone. If the point is for people to notice the DD, this is the weakest option.</p>
+          <p class="verdict"><b>Why this one.</b> Concrete, not branding &mdash; a dock is a grey
+            structure, and this is the only ground that does not ask you to pick a brand hue at all.
+            Worst edge 3.39, better than blue. <b>Cost:</b> it reads as disabled. A grey badge in a tab
+            strip looks like a page that has not finished loading, and it gives up the one chance the
+            icon has to be memorable.</p>
         </div>
 
       </div>
@@ -530,105 +533,133 @@
 
   <!-- C ------------------------------------------------------------------ -->
   <section>
-    <div class="zone"><span>C</span> &middot; at 16&nbsp;px</div>
+    <div class="zone"><span>C</span> &middot; edge test</div>
     <div class="body">
-      <h2>What the letters cost at favicon size</h2>
-      <p>None of the three says &ldquo;DD&rdquo; here, and none was ever going to. What matters is
-        whether the mark still reads as <em>a thing held in a dock</em>, and whether the three are still
-        distinguishable from each other and from their neighbours.</p>
+      <h2>All three, on all four surfaces, at favicon size</h2>
+      <p>This is the test the dark navy badge fails. Look at the badge <em>outline</em>, not the mark
+        inside it &mdash; the question is whether the rounded square still has a shape.</p>
 
-      <div class="ground-light" style="padding:16px">
-        <div class="tabstrip">
-          <div class="tab active"><span class="fav"><svg class="mark" width="16" height="16" aria-hidden="true"><use href="#m-twin"/></svg></span>Twin</div>
-          <div class="tab"><span class="fav"><svg class="mark" width="16" height="16" aria-hidden="true"><use href="#m-twin-o"/></svg></span>Twin, outlined</div>
-          <div class="tab"><span class="fav"><svg class="mark" width="16" height="16" aria-hidden="true"><use href="#m-face"/></svg></span>Stencil</div>
-          <div class="tab"><span class="fav"><svg class="mark" width="16" height="16" aria-hidden="true"><use href="#m-plain"/></svg></span>No letters</div>
-          <div class="tab"><span class="fav"><span class="stub" style="background:#d97757">C</span></span>Claude</div>
+      <div class="edgegrid">
+        <div class="surface s-white">
+          <div class="surface-name">white page</div>
+          <div class="badgecol">
+            <div class="badgerow g-teal"><svg class="mark" width="32" height="32" aria-hidden="true"><use href="#b-25"/></svg><svg class="mark" width="16" height="16" aria-hidden="true"><use href="#b-25"/></svg><span class="surface-name">teal</span></div>
+            <div class="badgerow g-blue"><svg class="mark" width="32" height="32" aria-hidden="true"><use href="#b-25"/></svg><svg class="mark" width="16" height="16" aria-hidden="true"><use href="#b-25"/></svg><span class="surface-name">blue</span></div>
+            <div class="badgerow g-steel"><svg class="mark" width="32" height="32" aria-hidden="true"><use href="#b-25"/></svg><svg class="mark" width="16" height="16" aria-hidden="true"><use href="#b-25"/></svg><span class="surface-name">steel</span></div>
+          </div>
         </div>
-        <div class="tabpage"></div>
+        <div class="surface s-ltab">
+          <div class="surface-name">light tab strip</div>
+          <div class="badgecol">
+            <div class="badgerow g-teal"><svg class="mark" width="32" height="32" aria-hidden="true"><use href="#b-25"/></svg><svg class="mark" width="16" height="16" aria-hidden="true"><use href="#b-25"/></svg><span class="surface-name">teal</span></div>
+            <div class="badgerow g-blue"><svg class="mark" width="32" height="32" aria-hidden="true"><use href="#b-25"/></svg><svg class="mark" width="16" height="16" aria-hidden="true"><use href="#b-25"/></svg><span class="surface-name">blue</span></div>
+            <div class="badgerow g-steel"><svg class="mark" width="32" height="32" aria-hidden="true"><use href="#b-25"/></svg><svg class="mark" width="16" height="16" aria-hidden="true"><use href="#b-25"/></svg><span class="surface-name">steel</span></div>
+          </div>
+        </div>
+        <div class="surface s-dpage">
+          <div class="surface-name">dark page</div>
+          <div class="badgecol">
+            <div class="badgerow g-teal"><svg class="mark" width="32" height="32" aria-hidden="true"><use href="#b-25"/></svg><svg class="mark" width="16" height="16" aria-hidden="true"><use href="#b-25"/></svg><span class="surface-name">teal</span></div>
+            <div class="badgerow g-blue"><svg class="mark" width="32" height="32" aria-hidden="true"><use href="#b-25"/></svg><svg class="mark" width="16" height="16" aria-hidden="true"><use href="#b-25"/></svg><span class="surface-name">blue</span></div>
+            <div class="badgerow g-steel"><svg class="mark" width="32" height="32" aria-hidden="true"><use href="#b-25"/></svg><svg class="mark" width="16" height="16" aria-hidden="true"><use href="#b-25"/></svg><span class="surface-name">steel</span></div>
+          </div>
+        </div>
+        <div class="surface s-dtab">
+          <div class="surface-name">dark tab strip</div>
+          <div class="badgecol">
+            <div class="badgerow g-teal"><svg class="mark" width="32" height="32" aria-hidden="true"><use href="#b-25"/></svg><svg class="mark" width="16" height="16" aria-hidden="true"><use href="#b-25"/></svg><span class="surface-name">teal</span></div>
+            <div class="badgerow g-blue"><svg class="mark" width="32" height="32" aria-hidden="true"><use href="#b-25"/></svg><svg class="mark" width="16" height="16" aria-hidden="true"><use href="#b-25"/></svg><span class="surface-name">blue</span></div>
+            <div class="badgerow g-steel"><svg class="mark" width="32" height="32" aria-hidden="true"><use href="#b-25"/></svg><svg class="mark" width="16" height="16" aria-hidden="true"><use href="#b-25"/></svg><span class="surface-name">steel</span></div>
+          </div>
+        </div>
       </div>
 
-      <div class="ground-dark" style="padding:16px">
-        <div class="tabstrip">
-          <div class="tab active"><span class="fav"><svg class="mark" width="16" height="16" aria-hidden="true"><use href="#m-twin"/></svg></span>Twin</div>
-          <div class="tab"><span class="fav"><svg class="mark" width="16" height="16" aria-hidden="true"><use href="#m-twin-o"/></svg></span>Twin, outlined</div>
-          <div class="tab"><span class="fav"><svg class="mark" width="16" height="16" aria-hidden="true"><use href="#m-face"/></svg></span>Stencil</div>
-          <div class="tab"><span class="fav"><svg class="mark" width="16" height="16" aria-hidden="true"><use href="#m-plain"/></svg></span>No letters</div>
-          <div class="tab"><span class="fav"><span class="stub" style="background:#d97757">C</span></span>Claude</div>
-        </div>
-        <div class="tabpage"></div>
+      <div class="tablewrap">
+        <table>
+          <caption>WCAG contrast ratio of each candidate ground against the surface behind it. The
+            badge's own colour is the lifted dark value in the two dark columns. Anything under about
+            1.5 has no visible edge; 2 is thin; 3 and up is a badge.</caption>
+          <thead>
+            <tr><th>Ground</th><th>White page</th><th>Light strip</th><th>Dark page</th><th>Dark strip</th><th>Worst</th><th>White knockout</th></tr>
+          </thead>
+          <tbody>
+            <tr class="win"><td><span class="swatchdot" style="background:#0f766e"></span>Dock teal</td><td>5.47</td><td>5.00</td><td>5.00</td><td>4.31</td><td><strong>4.31</strong></td><td class="v">5.23 / 3.58</td></tr>
+            <tr><td><span class="swatchdot" style="background:#1d4ed8"></span>Accent blue</td><td>6.70</td><td>6.12</td><td>3.62</td><td>3.12</td><td><strong>3.12</strong></td><td class="v">6.41 / 4.94</td></tr>
+            <tr><td><span class="swatchdot" style="background:#475569"></span>Steel</td><td>7.58</td><td>6.92</td><td>3.93</td><td>3.39</td><td><strong>3.39</strong></td><td class="v">7.24 / 4.55</td></tr>
+            <tr><td><span class="swatchdot" style="background:#6d28d9"></span>Violet</td><td>7.10</td><td>6.49</td><td>2.64</td><td>2.27</td><td>2.27</td><td class="v">6.79</td></tr>
+            <tr class="bad"><td><span class="swatchdot" style="background:#334155"></span>Graphite</td><td>10.35</td><td>9.45</td><td>1.81</td><td>1.56</td><td>1.56</td><td class="v">9.90</td></tr>
+            <tr class="bad"><td><span class="swatchdot" style="background:#1e293b"></span>Slate 800</td><td>14.63</td><td>13.35</td><td>1.28</td><td>1.10</td><td>1.10</td><td class="v">13.99</td></tr>
+            <tr class="bad"><td><span class="swatchdot" style="background:#0f172a"></span>Ink navy</td><td>17.85</td><td>16.30</td><td>1.05</td><td>1.11</td><td>1.05</td><td class="v">17.07</td></tr>
+          </tbody>
+        </table>
       </div>
-
-      <p class="muted">The stencil is indistinguishable from the no-letters baseline here, which is
-        either its best feature or the proof that it is not worth doing. The twin pair reads as two
-        marks rather than one solid block, which is a genuine difference in silhouette &mdash; the only
-        kind that survives this size.</p>
+      <p class="muted">Violet is listed because it is already in the palette, and it does technically
+        pass &mdash; but it is spoken for: in the port-forwarding diagram it means &ldquo;preview
+        origin&rdquo;. The bottom three rows are the dark badges, kept in the table because they are
+        exactly what looks best in isolation and worst in use.</p>
     </div>
   </section>
 
   <!-- D ------------------------------------------------------------------ -->
   <section>
-    <div class="zone"><span>D</span> &middot; rejected</div>
+    <div class="zone"><span>D</span> &middot; detail</div>
     <div class="body">
-      <h2>Why the walls can't be the letters</h2>
-      <div class="construct">
-        <div>
-          <div class="gridfig ground-light">
-            <svg viewBox="-1 -1 34 34" role="img" aria-label="The rejected attempt: each battered wall given a bowl at its lip so the wall reads as the stem of a letter D. The bowls are narrow relative to the walls and the right-hand one is mirrored.">
-              <defs>
-                <pattern id="g1" width="1" height="1" patternUnits="userSpaceOnUse">
-                  <path d="M1 0V1M0 1H1" stroke="#e2e8f0" stroke-width="0.07"/>
-                </pattern>
-                <pattern id="g8" width="8" height="8" patternUnits="userSpaceOnUse">
-                  <path d="M8 0V8M0 8H8" stroke="#cbd5e1" stroke-width="0.14"/>
-                </pattern>
-              </defs>
-              <rect x="0" y="0" width="32" height="32" fill="url(#g1)"/>
-              <rect x="0" y="0" width="32" height="32" fill="url(#g8)"/>
-              <rect x="0" y="0" width="32" height="32" fill="none" stroke="#94a3b8" stroke-width="0.16"/>
-              <rect x="2" y="2" width="28" height="28" fill="none" stroke="#6d28d9" stroke-width="0.16" stroke-dasharray="1 0.8"/>
-              <g fill="none">
-                <path d="M5.8 8 8.6 24H23.4L26.2 8" stroke="#0f172a" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-                <path d="M5.8 8C9.8 9 9.8 14.5 7.2 16" stroke="#0f172a" stroke-width="2" stroke-linecap="round"/>
-                <path d="M26.2 8C22.2 9 22.2 14.5 24.8 16" stroke="#0f172a" stroke-width="2" stroke-linecap="round"/>
-                <rect x="12.6" y="20.9" width="2" height="2.2" rx="0.4" fill="#0f172a"/>
-                <rect x="17.4" y="20.9" width="2" height="2.2" rx="0.4" fill="#0f172a"/>
-                <rect x="11" y="10.9" width="10" height="10" rx="1.6" fill="#1d4ed8"/>
-                <rect x="15.6" y="13.1" width="0.8" height="5.6" rx="0.4" fill="#ffffff"/>
-              </g>
-            </svg>
-          </div>
-          <p class="figcap"><strong>Fig 1</strong> &mdash; the walls given bowls at their lips. The
-            batter has to be flattened to make room, which narrows the whole mark, and the right-hand
-            letter comes out mirrored.</p>
+      <h2>Corner radius, and the one two-tone that survives</h2>
+
+      <div class="optrow">
+        <div class="opt s-white g-teal">
+          <div class="inset" style="padding:0"><svg class="mark" width="72" height="72" aria-label="Badge with a 20 percent corner radius"><use href="#b-20"/></svg></div>
+          <div><div class="opt-name">rx 6 &middot; 20%</div><div class="opt-note">Squarer. Reads as a tile or a chip; holds its shape best at 16&nbsp;px.</div></div>
         </div>
-        <div style="display:flex;flex-direction:column;gap:18px;min-width:0">
-          <p>Letters in the basin walls are the only version that would survive to 16&nbsp;px, because
-            the walls are the silhouette. It was the first thing tried and it fails on two counts, both
-            structural rather than matters of taste.</p>
-          <p><strong>The proportions are wrong.</strong> A D reads as a D at a width-to-height ratio
-            around 0.6&ndash;0.8. The wall is 16 units tall, and the space available for a bowl between
-            the wall and the container is about 5 units wide, which gives 0.34 &mdash; a leaf, not a
-            letter. Attaching the bowl to only the top half gets to 0.56 and leaves the wall continuing
-            below it as a leg, which turns the D into something closer to a thorn. Flattening the batter
-            to free more width makes it worse, not better.</p>
-          <p><strong>One of them is always mirrored.</strong> A symmetric basin needs its two walls
-            mirrored, and a mirrored D is not a D. Making both face the same way means an asymmetric
-            dock with one wall shelved inward and the other bulging outward, which stops reading as a
-            basin at all.</p>
-          <div class="tablewrap">
-            <table>
-              <caption>Width-to-height of the bowl against the wall it would hang from.</caption>
-              <thead><tr><th>Where the bowl attaches</th><th>Bowl &times; stem</th><th>w : h</th><th></th></tr></thead>
-              <tbody>
-                <tr class="bad"><td>Full wall</td><td>5.4 &times; 16</td><td>0.34</td><td>reads as a leaf</td></tr>
-                <tr class="bad"><td>Top half only</td><td>4.5 &times; 8</td><td>0.56</td><td>a D with a leg</td></tr>
-                <tr class="bad"><td>Top half, flatter batter</td><td>3.2 &times; 8</td><td>0.40</td><td>worse, and narrows the mark</td></tr>
-                <tr><td>Vessel as letters</td><td>5.55 &times; 8</td><td>0.69</td><td>reads as a D</td></tr>
-                <tr><td>Stencilled on the face</td><td>3.5 &times; 5.2</td><td>0.67</td><td>reads as a D</td></tr>
-              </tbody>
-            </table>
-          </div>
+        <div class="opt s-white g-teal">
+          <div class="inset" style="padding:0"><svg class="mark" width="72" height="72" aria-label="Badge with a 25 percent corner radius"><use href="#b-25"/></svg></div>
+          <div><div class="opt-name">rx 7.5 &middot; 25%</div><div class="opt-note">The default here. Closest to what current platforms mask app icons to.</div></div>
+        </div>
+        <div class="opt s-white g-teal">
+          <div class="inset" style="padding:0"><svg class="mark" width="72" height="72" aria-label="Badge with a 30 percent corner radius"><use href="#b-30"/></svg></div>
+          <div><div class="opt-name">rx 9 &middot; 30%</div><div class="opt-note">Softer, friendlier, and starts eating the mark's clear space at the corners.</div></div>
+        </div>
+      </div>
+
+      <h2 style="margin-top:8px">Two-tone</h2>
+      <p>A single knockout colour means the basin, the keel blocks and the container are all the same
+        near-white, and since the blocks touch both the container and the floor they merge into one
+        mass &mdash; the air gap survives as three holes of ground colour under the vessel. It works,
+        but the dock and the vessel stop being separate things.</p>
+      <p>Dropping the <em>basin</em> to a mid tint and keeping the vessel at full knockout restores the
+        hierarchy, and it is the only two-tone that survives the numbers. Every paler tint
+        (blue-200, slate-300, teal-200) lands within 1.4 of white, which is too close to separate from
+        the vessel. <code>#93c5fd</code> sits at 1.72 against the vessel and 3.0&ndash;4.2 against the
+        grounds, which is enough for both.</p>
+
+      <div class="optrow">
+        <div class="opt s-white g-blue">
+          <div class="inset" style="padding:0"><svg class="mark" width="72" height="72" aria-label="Blue badge, two-tone"><use href="#b-tone"/></svg></div>
+          <div><div class="opt-name">blue, two-tone</div><div class="opt-note">Monochromatic: the dock recedes, the vessel is the subject.</div></div>
+        </div>
+        <div class="opt s-dpage g-blue">
+          <div class="inset" style="padding:0"><svg class="mark" width="72" height="72" aria-hidden="true"><use href="#b-tone"/></svg></div>
+          <div><div class="opt-name">on a dark page</div><div class="opt-note">The tint has to be a fixed value, not a themed one, or the hierarchy inverts.</div></div>
+        </div>
+        <div class="opt s-white g-teal">
+          <div class="inset" style="padding:0"><svg class="mark" width="72" height="72" aria-label="Teal badge, two-tone"><use href="#b-tone"/></svg></div>
+          <div><div class="opt-name">teal, two-tone</div><div class="opt-note">Blue on teal is analogous rather than clashing, but it reintroduces the blue the teal ground was chosen to free up.</div></div>
+        </div>
+      </div>
+
+      <h2 style="margin-top:8px">The badge is not a replacement for the bare mark</h2>
+      <div class="optrow">
+        <div class="opt s-white m-light">
+          <div class="inset" style="padding:0"><svg class="mark" width="72" height="72" aria-label="The bare mark on white"><use href="#m-mark"/></svg></div>
+          <div><div class="opt-name">bare mark</div><div class="opt-note">For in-page use, where the page ground is already known: headers, buttons, empty states.</div></div>
+        </div>
+        <div class="opt s-dpage m-dark">
+          <div class="inset" style="padding:0"><svg class="mark" width="72" height="72" aria-hidden="true"><use href="#m-mark"/></svg></div>
+          <div><div class="opt-name">bare mark, dark</div><div class="opt-note">Keeps the accent container, which the badge gives up to a single knockout.</div></div>
+        </div>
+        <div class="opt s-white g-teal">
+          <div class="inset" style="padding:0"><svg class="mark" width="72" height="72" aria-label="The badge on white"><use href="#b-25"/></svg></div>
+          <div><div class="opt-name">badge</div><div class="opt-note">For the favicon, the apple-touch icon, and anywhere the ground is someone else's.</div></div>
         </div>
       </div>
     </div>
@@ -638,16 +669,14 @@
   <section>
     <div class="zone"><span>E</span> &middot; construction</div>
     <div class="body">
-      <h2>What is fixed and what moved</h2>
+      <h2>How the badge is built</h2>
       <dl class="spec">
-        <dt>basin</dt><dd>Settled: <code>M3.1 8 8.6 24H23.4L28.9 8</code>, stroke 2 units, round cap and join. Identical in all three candidates.</dd>
-        <dt>letter D</dt><dd>Stem, then a flat run, then a semicircular bowl whose radius is half the letter height &mdash; so the bowl is a true half-circle and the letter cannot go lopsided when it is resized. Solid versions carry a counter as a second subpath with <code>fill-rule="evenodd"</code>.</dd>
-        <dt>twin, solid</dt><dd>Letters 5.55 &times; 8 at x&nbsp;10 and 16.45, bowl radius 4, counter radius 2.2. Gap 0.9; 1.33 clear of the basin stroke.</dd>
-        <dt>twin, outlined</dt><dd>Same boxes once the 1.5-unit stroke is counted, which is why the path rect is 3.93 wide rather than 5.43 &mdash; the stroke has to be paid for out of the letter, or the two letters collide.</dd>
-        <dt>stencil</dt><dd>Letters 3.5 &times; 5.2 behind a 0.8-unit stroke, 1.1 clear of the container's edge, centred on the container's own centre at y&nbsp;15.9.</dd>
-        <dt>keel blocks</dt><dd>Moved for the twin variants: one block centred under each letter rather than two under one container. x&nbsp;11.8 and 18.2 solid, 11.7 and 18.3 outlined. The stencil keeps the original 12.6 and 17.4.</dd>
-        <dt>air gap</dt><dd>Unchanged at 2.1 units in all three: every vessel's underside still sits at y&nbsp;20.9 and the floor stroke's top edge at y&nbsp;23. That gap is the metaphor and nothing was allowed to spend it.</dd>
-        <dt>symmetry</dt><dd>Every letter pair and block pair sums to 32 across the mark, checked rather than eyeballed.</dd>
+        <dt>badge</dt><dd><code>rect x=1 y=1 w=30 h=30 rx=7.5</code> &mdash; one unit of bleed inside the 32-unit box on every side, so the badge has room to be its own shape rather than running to the edge.</dd>
+        <dt>mark inside</dt><dd>Scaled <code>0.78</code> about the centre. The mark's ink is 27.8 &times; 18 units, so width is the binding constraint: 0.78 puts its edges at x&nbsp;5.16 and 26.84, which is 4.16 units of padding inside the badge &mdash; about 14%, in line with how platforms pad app icons.</dd>
+        <dt>stroke compensation</dt><dd>Every stroke is divided by the scale so the knockout keeps the weight it has at full size: the basin's 2 units become <code>2.56</code>, the stencil's 0.8 becomes <code>1.03</code>. Skipping this is the usual way a scaled-down mark comes out visibly thinner than its standalone version.</dd>
+        <dt>knockout</dt><dd><code>#f8fafc</code>, not pure white &mdash; a hair off white so it does not vibrate against a saturated ground.</dd>
+        <dt>why one colour</dt><dd>The measurement forced it. An accent container with the letters knocked out in the badge ground gives a contrast of <strong>1.00</strong> on the blue badge, because the letters and the ground are then literally the same colour, and 1.82 even with a lifted blue. The container has to be the near-white and the letters the ground.</dd>
+        <dt>theming</dt><dd>Each badge file ships the light ground as a presentation attribute and lifts it under <code>prefers-color-scheme: dark</code>. The knockout does not change.</dd>
       </dl>
     </div>
   </section>
@@ -658,30 +687,28 @@
     <div class="body">
       <h2>What is still yours to call</h2>
       <ol class="calls">
-        <li><div><strong>Whether the DD is worth its cost at all.</strong> The baseline in zone&nbsp;A is
-          still the cleanest mark of the four. The letters buy a tie to the name that only shows above
-          24&nbsp;px, and the twin options buy it by giving up the container silhouette.</div></li>
-        <li><div><strong>If yes: twin or stencil.</strong> Twin puts the letters in the silhouette and
-          makes them the subject. Stencil keeps the container and treats the letters as markings on it,
-          which is what real containers do &mdash; at the price of being invisible below header
-          size.</div></li>
-        <li><div><strong>A wordmark instead.</strong> The letters always read beside the mark, never
-          inside it. A lockup &mdash; the battered mark plus &ldquo;Drydock&rdquo; set alongside &mdash;
-          ties the name down completely and leaves the icon clean for the favicon. The UI header needs
-          one regardless, so this is not a consolation prize.</div></li>
-        <li><div><strong>Whether the accent should be the blue.</strong> Still open from v2. It is the
-          API colour in the architecture diagram, and the mark spends it on the vessel.</div></li>
+        <li><div><strong>Which ground.</strong> Teal on the numbers and on keeping the accent free;
+          blue if you would rather not introduce a hue; steel if the mark should not be branded at
+          all.</div></li>
+        <li><div><strong>Flat or two-tone.</strong> Flat is one colour and no decisions. Two-tone with
+          <code>#93c5fd</code> on the basin restores the dock-versus-vessel hierarchy the single
+          knockout flattens.</div></li>
+        <li><div><strong>Corner radius.</strong> 25% unless you want the squarer tile. Worth knowing
+          that iOS masks the apple-touch icon to its own shape regardless, so this radius only governs
+          the favicon and anywhere the SVG is used directly.</div></li>
+        <li><div><strong>A wordmark.</strong> Still open from v3, and still the only thing that makes
+          the name unambiguous at any size. The UI header needs one regardless.</div></li>
       </ol>
-      <p class="muted">Once a vessel is settled: redraw the badge and the one-colour
-        <code>currentColor</code> form on the winning geometry, cut the light/dark pair for Markdown
-        <code>&lt;picture&gt;</code> embedding, and add the 180&nbsp;px apple-touch PNG.</p>
+      <p class="muted">Once a ground is picked: redraw the one-colour <code>currentColor</code> form,
+        cut the light/dark pair for Markdown <code>&lt;picture&gt;</code> embedding, and export the
+        180&nbsp;px apple-touch PNG from the badge.</p>
     </div>
   </section>
 
   <footer>
     <span>docs/design/brand/</span>
-    <span>brand-design.md &middot; draft v3</span>
-    <span>4 files &middot; icons/</span>
+    <span>brand-design.md &middot; draft v4</span>
+    <span>5 files &middot; icons/</span>
     <span>re-render this sheet after any geometry change</span>
   </footer>
 </div>
