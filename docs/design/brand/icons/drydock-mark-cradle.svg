@@ -1,15 +1,15 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32" fill="none" role="img" aria-labelledby="dd-dock-t dd-dock-d">
-  <title id="dd-dock-t">Drydock</title>
-  <desc id="dd-dock-d">A drained dock basin with stepped side walls, holding a shipping container raised clear of the floor on two keel blocks.</desc>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32" fill="none" role="img" aria-labelledby="dd-cra-t dd-cra-d">
+  <title id="dd-cra-t">Drydock</title>
+  <desc id="dd-cra-d">A drained dock basin drawn as one smooth curve, holding a shipping container raised clear of the floor on two keel blocks.</desc>
   <style>
     svg{--ink:#0f172a;--accent:#1d4ed8;--bg:#ffffff}
     @media (prefers-color-scheme:dark){svg{--ink:#e2e8f0;--accent:#60a5fa;--bg:#0b1220}}
     .s-ink{stroke:var(--ink)}.f-ink{fill:var(--ink)}.f-acc{fill:var(--accent)}.f-bg{fill:var(--bg)}
   </style>
 
-  <!-- basin: inner profile, one altar step per wall, drained floor -->
+  <!-- basin: one continuous curve, vertical at the lips, flat-tangent under the keel -->
   <path class="s-ink" stroke="#0f172a" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
-        d="M3.5 8V15.5h5V24h15v-8.5h5V8"/>
+        d="M3.5 8C3.5 19 5.5 24 16 24s12.5-5 12.5-16"/>
 
   <!-- keel blocks: the hull is held clear of the floor -->
   <rect class="f-ink" fill="#0f172a" x="12.6" y="20.9" width="2" height="2.2" rx="0.4"/>
