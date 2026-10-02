@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32" fill="none" role="img" aria-labelledby="dd-badge-t dd-badge-d">
+  <title id="dd-badge-t">Drydock</title>
+  <desc id="dd-badge-d">A rounded square badge with a drained dock basin and a container on keel blocks knocked out of it.</desc>
+  <style>
+    svg{--badge:#1d4ed8;--knock:#ffffff}
+    @media (prefers-color-scheme:dark){svg{--badge:#2563eb;--knock:#f8fafc}}
+    .f-badge{fill:var(--badge)}.s-knock{stroke:var(--knock)}.f-knock{fill:var(--knock)}
+  </style>
+
+  <rect class="f-badge" fill="#1d4ed8" x="1" y="1" width="30" height="30" rx="7.5"/>
+
+  <g transform="translate(16 16) scale(0.76) translate(-16 -16)">
+    <!-- basin -->
+    <path class="s-knock" stroke="#ffffff" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"
+          d="M3.5 8V15.5h5V24h15v-8.5h5V8"/>
+    <!-- keel blocks -->
+    <rect class="f-knock" fill="#ffffff" x="12.5" y="20.8" width="2.2" height="2.4" rx="0.5"/>
+    <rect class="f-knock" fill="#ffffff" x="17.3" y="20.8" width="2.2" height="2.4" rx="0.5"/>
+    <!-- the container under work -->
+    <rect class="f-knock" fill="#ffffff" x="11" y="10.9" width="10" height="10" rx="1.6"/>
+    <rect class="f-badge" fill="#1d4ed8" x="15.5" y="13.1" width="1" height="5.6" rx="0.5"/>
+  </g>
+</svg>

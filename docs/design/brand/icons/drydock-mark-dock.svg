@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32" fill="none" role="img" aria-labelledby="dd-dock-t dd-dock-d">
+  <title id="dd-dock-t">Drydock</title>
+  <desc id="dd-dock-d">A drained dock basin with stepped side walls, holding a shipping container raised clear of the floor on two keel blocks.</desc>
+  <style>
+    svg{--ink:#0f172a;--accent:#1d4ed8;--bg:#ffffff}
+    @media (prefers-color-scheme:dark){svg{--ink:#e2e8f0;--accent:#60a5fa;--bg:#0b1220}}
+    .s-ink{stroke:var(--ink)}.f-ink{fill:var(--ink)}.f-acc{fill:var(--accent)}.f-bg{fill:var(--bg)}
+  </style>
+
+  <!-- basin: inner profile, one altar step per wall, drained floor -->
+  <path class="s-ink" stroke="#0f172a" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
+        d="M3.5 8V15.5h5V24h15v-8.5h5V8"/>
+
+  <!-- keel blocks: the hull is held clear of the floor -->
+  <rect class="f-ink" fill="#0f172a" x="12.6" y="20.9" width="2" height="2.2" rx="0.4"/>
+  <rect class="f-ink" fill="#0f172a" x="17.4" y="20.9" width="2" height="2.2" rx="0.4"/>
+
+  <!-- the container under work, doors facing out -->
+  <rect class="f-acc" fill="#1d4ed8" x="11" y="10.9" width="10" height="10" rx="1.6"/>
+  <rect class="f-bg" fill="#ffffff" x="15.6" y="13.1" width="0.8" height="5.6" rx="0.4"/>
+</svg>

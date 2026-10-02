@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32" fill="none" role="img" aria-labelledby="dd-mono-t dd-mono-d">
+  <title id="dd-mono-t">Drydock</title>
+  <desc id="dd-mono-d">A drained dock basin with stepped side walls, holding a container raised on keel blocks. Single-colour form, inherits currentColor.</desc>
+
+  <!-- single-colour form: inherits currentColor, for buttons, print and one-bit favicons -->
+  <!-- basin -->
+  <path stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
+        d="M3.5 8V15.5h5V24h15v-8.5h5V8"/>
+  <!-- keel blocks -->
+  <rect fill="currentColor" x="12.6" y="20.9" width="2" height="2.2" rx="0.4"/>
+  <rect fill="currentColor" x="17.4" y="20.9" width="2" height="2.2" rx="0.4"/>
+  <!-- the container under work: outline only, so the mark stays open at one colour -->
+  <rect stroke="currentColor" stroke-width="1.8" x="11.9" y="11.8" width="8.2" height="8.2" rx="1.5"/>
+</svg>

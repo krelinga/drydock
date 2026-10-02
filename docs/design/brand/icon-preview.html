@@ -1,0 +1,657 @@
+<title>Drydock Mark Sheet</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans+Condensed:wght@600;700&family=IBM+Plex+Sans:wght@400;500&display=swap">
+
+<style>
+  :root {
+    --paper:   #e9edf3;
+    --sheet:   #ffffff;
+    --ink:     #10192b;
+    --muted:   #5a6880;
+    --rule:    #ccd5e1;
+    --rule-faint: #e3e9f1;
+    --accent:  #1d4ed8;
+    --note:    #6d28d9;
+
+    /* the mark's own palette, light */
+    --m-ink: #0f172a;
+    --m-acc: #1d4ed8;
+    --m-bg:  #ffffff;
+
+    --fs-step: clamp(0.82rem, 0.2vw + 0.78rem, 0.88rem);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --paper: #060b14;
+      --sheet: #0d1524;
+      --ink:   #e6ebf3;
+      --muted: #93a1b8;
+      --rule:  #253249;
+      --rule-faint: #18233a;
+      --accent:#60a5fa;
+      --note:  #c4b5fd;
+    }
+  }
+  :root[data-theme="dark"] {
+    --paper: #060b14;
+    --sheet: #0d1524;
+    --ink:   #e6ebf3;
+    --muted: #93a1b8;
+    --rule:  #253249;
+    --rule-faint: #18233a;
+    --accent:#60a5fa;
+    --note:  #c4b5fd;
+  }
+
+  /* fixed grounds: these never follow the viewer's theme, because the whole
+     point of the sheet is to show the mark on both at once */
+  .ground-light { --m-ink:#0f172a; --m-acc:#1d4ed8; --m-bg:#ffffff;
+                  --m-badge:#1d4ed8; --m-knock:#ffffff;
+                  background:#ffffff; color:#0f172a; --g-rule:#e2e8f0; }
+  .ground-dark  { --m-ink:#e2e8f0; --m-acc:#60a5fa; --m-bg:#0b1220;
+                  --m-badge:#2563eb; --m-knock:#f8fafc;
+                  background:#0b1220; color:#e2e8f0; --g-rule:#1e293b; }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    background: var(--paper);
+    color: var(--ink);
+    font-family: "IBM Plex Sans", ui-sans-serif, -apple-system, Segoe UI, Roboto, sans-serif;
+    font-size: var(--fs-step);
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .sheet {
+    max-width: 1080px;
+    margin: clamp(0px, 3vw, 44px) auto;
+    background: var(--sheet);
+    border: 1px solid var(--rule);
+  }
+
+  /* ---- title block ---------------------------------------------------- */
+  .titleblock {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    gap: 20px 32px;
+    align-items: end;
+    padding: clamp(20px, 3vw, 34px) clamp(18px, 3vw, 36px) 20px;
+    border-bottom: 1px solid var(--rule);
+  }
+  h1 {
+    font-family: "IBM Plex Sans Condensed", ui-sans-serif, sans-serif;
+    font-weight: 700;
+    font-size: clamp(1.9rem, 4.4vw, 3rem);
+    line-height: 1.02;
+    letter-spacing: -0.015em;
+    margin: 0;
+    text-wrap: balance;
+  }
+  h1 .thin { font-weight: 600; color: var(--muted); display: block; font-size: 0.42em; letter-spacing: 0.02em; margin-top: 10px; }
+  .meta {
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: 0.72rem;
+    color: var(--muted);
+    display: grid;
+    grid-template-columns: auto auto;
+    gap: 2px 14px;
+    white-space: nowrap;
+  }
+  .meta b { font-weight: 500; color: var(--ink); font-variant-numeric: tabular-nums; }
+
+  /* ---- sections ------------------------------------------------------- */
+  section {
+    display: grid;
+    grid-template-columns: 112px minmax(0, 1fr);
+    border-bottom: 1px solid var(--rule);
+  }
+  section:last-of-type { border-bottom: 0; }
+  .zone {
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: 0.66rem;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--muted);
+    padding: clamp(20px, 2.6vw, 30px) 0 0 clamp(18px, 3vw, 36px);
+    border-right: 1px solid var(--rule-faint);
+  }
+  .zone span { color: var(--accent); }
+  .body {
+    padding: clamp(20px, 2.6vw, 30px) clamp(18px, 3vw, 36px) clamp(26px, 3vw, 34px);
+    display: flex;
+    flex-direction: column;
+    gap: 18px;
+    min-width: 0;
+  }
+  h2 {
+    font-family: "IBM Plex Sans Condensed", ui-sans-serif, sans-serif;
+    font-weight: 600;
+    font-size: 1.22rem;
+    letter-spacing: -0.005em;
+    margin: 0;
+    text-wrap: balance;
+  }
+  p { margin: 0; max-width: 64ch; }
+  .lede { font-size: 1.02rem; }
+  strong { font-weight: 500; color: var(--ink); }
+  em { font-style: italic; }
+  .muted { color: var(--muted); }
+  code {
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: 0.86em;
+    background: var(--rule-faint);
+    padding: 0.1em 0.36em;
+  }
+
+  /* ---- candidates ----------------------------------------------------- */
+  .cards { display: flex; flex-direction: column; gap: 14px; }
+  .card { border: 1px solid var(--rule); }
+  .card-head {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px 14px;
+    align-items: baseline;
+    padding: 12px 16px;
+    border-bottom: 1px solid var(--rule);
+  }
+  .card-head h3 {
+    font-family: "IBM Plex Sans Condensed", ui-sans-serif, sans-serif;
+    font-weight: 600; font-size: 1.05rem; margin: 0;
+  }
+  .file {
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: 0.7rem; color: var(--muted);
+  }
+  .tag {
+    margin-left: auto;
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: 0.64rem; letter-spacing: 0.1em; text-transform: uppercase;
+    border: 1px solid var(--accent); color: var(--accent);
+    padding: 2px 7px; white-space: nowrap;
+  }
+  .tag.alt { border-color: var(--rule); color: var(--muted); }
+
+  .stage { display: grid; grid-template-columns: 1fr 1fr; }
+  @media (max-width: 640px) { .stage { grid-template-columns: 1fr; } }
+  .pane { padding: 22px 18px 18px; display: flex; flex-direction: column; gap: 18px; }
+  .pane + .pane { border-left: 1px solid var(--rule); }
+  @media (max-width: 640px) { .pane + .pane { border-left: 0; border-top: 1px solid var(--rule); } }
+  .pane-label {
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: 0.62rem; letter-spacing: 0.14em; text-transform: uppercase; opacity: 0.55;
+  }
+  .hero-row { display: flex; align-items: flex-end; gap: 22px; flex-wrap: wrap; }
+  .ramp { display: flex; align-items: flex-end; gap: 16px; flex-wrap: wrap; }
+  .ramp figure { margin: 0; display: flex; flex-direction: column; align-items: center; gap: 7px; }
+  .ramp figcaption {
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: 0.6rem; opacity: 0.5; font-variant-numeric: tabular-nums;
+  }
+  .mark { display: block; }
+  .mono-wrap { color: var(--m-ink); }
+
+  .verdict {
+    padding: 12px 16px;
+    border-top: 1px solid var(--rule);
+    font-size: 0.86rem;
+    color: var(--muted);
+    max-width: none;
+  }
+  .verdict b { color: var(--ink); font-weight: 500; }
+
+  /* ---- tab strip ------------------------------------------------------ */
+  .tabstrip {
+    display: flex; gap: 2px; padding: 8px 8px 0;
+    border: 1px solid var(--g-rule); border-bottom: 0;
+    overflow-x: auto;
+  }
+  .tab {
+    display: flex; align-items: center; gap: 7px;
+    padding: 7px 13px; min-width: 0;
+    font-size: 0.74rem; white-space: nowrap;
+    border-radius: 7px 7px 0 0;
+    opacity: 0.55;
+  }
+  .tab.active { opacity: 1; background: var(--m-bg); box-shadow: 0 0 0 1px var(--g-rule); }
+  .ground-dark .tab.active { background: #16203a; }
+  .ground-light .tab.active { background: #f1f5f9; }
+  .tab .fav { width: 16px; height: 16px; flex: none; display: grid; place-items: center; }
+  .stub {
+    width: 14px; height: 14px; border-radius: 3px;
+    font: 500 9px/14px "IBM Plex Mono", monospace; text-align: center; color: #fff;
+  }
+  .tabpage { border: 1px solid var(--g-rule); height: 34px; }
+
+  /* ---- construction --------------------------------------------------- */
+  .construct { display: grid; grid-template-columns: minmax(240px, 340px) minmax(0, 1fr); gap: 26px; align-items: start; }
+  @media (max-width: 720px) { .construct { grid-template-columns: 1fr; } }
+  .gridfig { border: 1px solid var(--rule); padding: 10px; background: var(--sheet); }
+  .gridfig svg { display: block; width: 100%; height: auto; }
+  dl.spec { margin: 0; display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 7px 16px; }
+  dl.spec dt {
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: 0.66rem; letter-spacing: 0.1em; text-transform: uppercase; color: var(--muted);
+    padding-top: 2px;
+  }
+  dl.spec dd { margin: 0; font-size: 0.86rem; min-width: 0; overflow-wrap: anywhere; }
+  dl.spec dd code { background: none; padding: 0; color: var(--accent); }
+
+  /* ---- palette -------------------------------------------------------- */
+  .swatches { display: grid; grid-template-columns: repeat(auto-fit, minmax(132px, 1fr)); gap: 1px; background: var(--rule); border: 1px solid var(--rule); }
+  .sw { background: var(--sheet); padding: 12px; display: flex; flex-direction: column; gap: 9px; }
+  .chip { height: 42px; border: 1px solid var(--rule); }
+  .sw-name { font-family: "IBM Plex Sans Condensed", sans-serif; font-weight: 600; font-size: 0.82rem; }
+  .sw-hex { font-family: "IBM Plex Mono", monospace; font-size: 0.66rem; color: var(--muted); font-variant-numeric: tabular-nums; }
+
+  /* ---- open questions ------------------------------------------------- */
+  ul.calls { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 13px; }
+  ul.calls li { display: grid; grid-template-columns: 18px minmax(0, 1fr); gap: 12px; max-width: 66ch; }
+  ul.calls li::before {
+    content: ""; width: 9px; height: 9px; margin-top: 8px;
+    border: 1.5px solid var(--note); border-radius: 50%;
+  }
+
+  footer {
+    padding: 16px clamp(18px, 3vw, 36px);
+    border-top: 1px solid var(--rule);
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 0.66rem; color: var(--muted);
+    display: flex; flex-wrap: wrap; gap: 6px 22px;
+  }
+
+  @media (prefers-reduced-motion: no-preference) {
+    .sheet { animation: rise 0.5s ease-out both; }
+    @keyframes rise { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+  }
+</style>
+
+<!-- geometry, defined once ------------------------------------------------ -->
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <symbol id="m-dock" viewBox="0 0 32 32" fill="none">
+      <path d="M3.5 8V15.5h5V24h15v-8.5h5V8" stroke="var(--m-ink)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+      <rect x="12.6" y="20.9" width="2" height="2.2" rx="0.4" fill="var(--m-ink)"/>
+      <rect x="17.4" y="20.9" width="2" height="2.2" rx="0.4" fill="var(--m-ink)"/>
+      <rect x="11" y="10.9" width="10" height="10" rx="1.6" fill="var(--m-acc)"/>
+      <rect x="15.6" y="13.1" width="0.8" height="5.6" rx="0.4" fill="var(--m-bg)"/>
+    </symbol>
+
+    <symbol id="m-prompt" viewBox="0 0 32 32" fill="none">
+      <path d="M3.5 8V15.5h5V24h15v-8.5h5V8" stroke="var(--m-ink)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+      <rect x="12.6" y="20.9" width="2" height="2.2" rx="0.4" fill="var(--m-ink)"/>
+      <rect x="17.4" y="20.9" width="2" height="2.2" rx="0.4" fill="var(--m-ink)"/>
+      <rect x="11.8" y="11.7" width="8.4" height="8.4" rx="1.5" fill="var(--m-bg)" stroke="var(--m-acc)" stroke-width="1.6"/>
+      <path d="M13.65 13.95 15.35 15.85l-1.7 1.9" stroke="var(--m-ink)" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
+      <path d="M16.65 17.75h1.7" stroke="var(--m-ink)" stroke-width="1.4" stroke-linecap="round"/>
+    </symbol>
+
+    <symbol id="m-badge" viewBox="0 0 32 32" fill="none">
+      <rect x="1" y="1" width="30" height="30" rx="7.5" fill="var(--m-badge)"/>
+      <g transform="translate(16 16) scale(0.76) translate(-16 -16)">
+        <path d="M3.5 8V15.5h5V24h15v-8.5h5V8" stroke="var(--m-knock)" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
+        <rect x="12.5" y="20.8" width="2.2" height="2.4" rx="0.5" fill="var(--m-knock)"/>
+        <rect x="17.3" y="20.8" width="2.2" height="2.4" rx="0.5" fill="var(--m-knock)"/>
+        <rect x="11" y="10.9" width="10" height="10" rx="1.6" fill="var(--m-knock)"/>
+        <rect x="15.5" y="13.1" width="1" height="5.6" rx="0.5" fill="var(--m-badge)"/>
+      </g>
+    </symbol>
+
+    <symbol id="m-mono" viewBox="0 0 32 32" fill="none">
+      <path d="M3.5 8V15.5h5V24h15v-8.5h5V8" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+      <rect x="12.6" y="20.9" width="2" height="2.2" rx="0.4" fill="currentColor"/>
+      <rect x="17.4" y="20.9" width="2" height="2.2" rx="0.4" fill="currentColor"/>
+      <rect x="11.9" y="11.8" width="8.2" height="8.2" rx="1.5" stroke="currentColor" stroke-width="1.8"/>
+    </symbol>
+  </defs>
+</svg>
+
+<div class="sheet">
+
+  <div class="titleblock">
+    <h1>Drydock Mark
+      <span class="thin">Three candidates for the icon, drawn on a 32-unit grid</span>
+    </h1>
+    <div class="meta">
+      <span>sheet</span><b>BRAND-01</b>
+      <span>revision</span><b>draft v1</b>
+      <span>grid</span><b>32 &times; 32, 2u clear</b>
+      <span>stroke</span><b>2u &middot; round</b>
+      <span>candidates</span><b>3 + 1 utility</b>
+    </div>
+  </div>
+
+  <!-- A ------------------------------------------------------------------ -->
+  <section>
+    <div class="zone"><span>A</span> &middot; idea</div>
+    <div class="body">
+      <h2>A dry dock is a basin you drain</h2>
+      <p class="lede">You float a ship in, shut the gate, and pump the water out. The hull settles onto
+        keel blocks and work that was impossible afloat becomes ordinary &mdash; you can walk
+        underneath the thing and change it. The dock is not the ship. It does not sail. It is the
+        prepared, isolated, drained place where the ship gets worked on.</p>
+      <p>Which is what Drydock is to a repo: a clone on host disk, a container brought up around it, an
+        agent inside with credentials scoped to that one repo. The container survives nothing; the
+        clone survives rebuild and delete. <strong>The dock persists, the vessel comes and goes.</strong></p>
+      <p>So every candidate is the same drawing &mdash; a <strong>section through a drained basin</strong>,
+        two stepped walls and a floor, with a <strong>container held clear of the floor on two keel
+        blocks</strong>. The container does double duty on purpose: it is the vessel in the dock and it
+        is the dev container. The gap underneath is the one detail that stops this reading as a generic
+        box in brackets, so nothing may crowd it.</p>
+      <p class="muted">Ruled out, and worth keeping ruled out: a whale or anything Docker-adjacent
+        (Drydock treats Docker as a detail it never scrapes &mdash; borrowing its animal would claim a
+        relationship the design refuses); an anchor, which holds a vessel in place at sea and is the
+        opposite of a dry dock; a <code>D</code> monogram, which survives 16&nbsp;px and says nothing;
+        and a waterline, which read as &ldquo;harbour&rdquo; every time and destroys the only idea the
+        mark carries.</p>
+    </div>
+  </section>
+
+  <!-- B ------------------------------------------------------------------ -->
+  <section>
+    <div class="zone"><span>B</span> &middot; candidates</div>
+    <div class="body">
+      <h2>The choice is what the vessel should be</h2>
+      <p>Both line marks share the basin byte for byte. What differs is the payload: the
+        <em>workspace</em>, drawn as a solid block, or the <em>session</em>, drawn as a container with a
+        live shell on its face. Each is shown on both grounds at full size, then down the size ramp to
+        the favicon.</p>
+
+      <div class="cards">
+
+        <!-- dock -->
+        <div class="card">
+          <div class="card-head">
+            <h3>Dock &amp; container</h3>
+            <span class="file">drydock-mark-dock.svg</span>
+            <span class="tag">proposed default</span>
+          </div>
+          <div class="stage">
+            <div class="pane ground-light">
+              <div class="pane-label">light ground</div>
+              <div class="hero-row">
+                <svg class="mark" width="96" height="96" aria-label="Drydock mark"><use href="#m-dock"/></svg>
+                <div class="ramp">
+                  <figure><svg class="mark" width="48" height="48" aria-hidden="true"><use href="#m-dock"/></svg><figcaption>48</figcaption></figure>
+                  <figure><svg class="mark" width="32" height="32" aria-hidden="true"><use href="#m-dock"/></svg><figcaption>32</figcaption></figure>
+                  <figure><svg class="mark" width="24" height="24" aria-hidden="true"><use href="#m-dock"/></svg><figcaption>24</figcaption></figure>
+                  <figure><svg class="mark" width="20" height="20" aria-hidden="true"><use href="#m-dock"/></svg><figcaption>20</figcaption></figure>
+                  <figure><svg class="mark" width="16" height="16" aria-hidden="true"><use href="#m-dock"/></svg><figcaption>16</figcaption></figure>
+                </div>
+              </div>
+            </div>
+            <div class="pane ground-dark">
+              <div class="pane-label">dark ground</div>
+              <div class="hero-row">
+                <svg class="mark" width="96" height="96" aria-hidden="true"><use href="#m-dock"/></svg>
+                <div class="ramp">
+                  <figure><svg class="mark" width="48" height="48" aria-hidden="true"><use href="#m-dock"/></svg><figcaption>48</figcaption></figure>
+                  <figure><svg class="mark" width="32" height="32" aria-hidden="true"><use href="#m-dock"/></svg><figcaption>32</figcaption></figure>
+                  <figure><svg class="mark" width="24" height="24" aria-hidden="true"><use href="#m-dock"/></svg><figcaption>24</figcaption></figure>
+                  <figure><svg class="mark" width="20" height="20" aria-hidden="true"><use href="#m-dock"/></svg><figcaption>20</figcaption></figure>
+                  <figure><svg class="mark" width="16" height="16" aria-hidden="true"><use href="#m-dock"/></svg><figcaption>16</figcaption></figure>
+                </div>
+              </div>
+            </div>
+          </div>
+          <p class="verdict"><b>Reads as:</b> a workspace parked in a dock. The only interior detail is
+            the door seam, so the silhouette carries the mark all the way down &mdash; at 16&nbsp;px the
+            seam greys out and nothing is lost. <b>Cost:</b> it says &ldquo;container&rdquo; and leaves
+            &ldquo;an agent is live in there&rdquo; to the UI.</p>
+        </div>
+
+        <!-- prompt -->
+        <div class="card">
+          <div class="card-head">
+            <h3>Dock &amp; prompt</h3>
+            <span class="file">drydock-mark-prompt.svg</span>
+            <span class="tag alt">more to say, less to spare</span>
+          </div>
+          <div class="stage">
+            <div class="pane ground-light">
+              <div class="pane-label">light ground</div>
+              <div class="hero-row">
+                <svg class="mark" width="96" height="96" aria-label="Drydock mark, prompt variant"><use href="#m-prompt"/></svg>
+                <div class="ramp">
+                  <figure><svg class="mark" width="48" height="48" aria-hidden="true"><use href="#m-prompt"/></svg><figcaption>48</figcaption></figure>
+                  <figure><svg class="mark" width="32" height="32" aria-hidden="true"><use href="#m-prompt"/></svg><figcaption>32</figcaption></figure>
+                  <figure><svg class="mark" width="24" height="24" aria-hidden="true"><use href="#m-prompt"/></svg><figcaption>24</figcaption></figure>
+                  <figure><svg class="mark" width="20" height="20" aria-hidden="true"><use href="#m-prompt"/></svg><figcaption>20</figcaption></figure>
+                  <figure><svg class="mark" width="16" height="16" aria-hidden="true"><use href="#m-prompt"/></svg><figcaption>16</figcaption></figure>
+                </div>
+              </div>
+            </div>
+            <div class="pane ground-dark">
+              <div class="pane-label">dark ground</div>
+              <div class="hero-row">
+                <svg class="mark" width="96" height="96" aria-hidden="true"><use href="#m-prompt"/></svg>
+                <div class="ramp">
+                  <figure><svg class="mark" width="48" height="48" aria-hidden="true"><use href="#m-prompt"/></svg><figcaption>48</figcaption></figure>
+                  <figure><svg class="mark" width="32" height="32" aria-hidden="true"><use href="#m-prompt"/></svg><figcaption>32</figcaption></figure>
+                  <figure><svg class="mark" width="24" height="24" aria-hidden="true"><use href="#m-prompt"/></svg><figcaption>24</figcaption></figure>
+                  <figure><svg class="mark" width="20" height="20" aria-hidden="true"><use href="#m-prompt"/></svg><figcaption>20</figcaption></figure>
+                  <figure><svg class="mark" width="16" height="16" aria-hidden="true"><use href="#m-prompt"/></svg><figcaption>16</figcaption></figure>
+                </div>
+              </div>
+            </div>
+          </div>
+          <p class="verdict"><b>Reads as:</b> a shell running inside a dock &mdash; the thing Drydock
+            actually hands you. <b>Cost:</b> three weights of line inside one 10-unit box. Watch the
+            16&nbsp;px column above: the chevron is the first thing to close up, and once it does this
+            becomes the other mark with a muddier middle.</p>
+        </div>
+
+        <!-- badge -->
+        <div class="card">
+          <div class="card-head">
+            <h3>Badge</h3>
+            <span class="file">drydock-badge.svg</span>
+            <span class="tag alt">packaging, not an alternative</span>
+          </div>
+          <div class="stage">
+            <div class="pane ground-light">
+              <div class="pane-label">light ground</div>
+              <div class="hero-row">
+                <svg class="mark" width="96" height="96" aria-label="Drydock badge"><use href="#m-badge"/></svg>
+                <div class="ramp">
+                  <figure><svg class="mark" width="48" height="48" aria-hidden="true"><use href="#m-badge"/></svg><figcaption>48</figcaption></figure>
+                  <figure><svg class="mark" width="32" height="32" aria-hidden="true"><use href="#m-badge"/></svg><figcaption>32</figcaption></figure>
+                  <figure><svg class="mark" width="24" height="24" aria-hidden="true"><use href="#m-badge"/></svg><figcaption>24</figcaption></figure>
+                  <figure><svg class="mark" width="20" height="20" aria-hidden="true"><use href="#m-badge"/></svg><figcaption>20</figcaption></figure>
+                  <figure><svg class="mark" width="16" height="16" aria-hidden="true"><use href="#m-badge"/></svg><figcaption>16</figcaption></figure>
+                </div>
+              </div>
+            </div>
+            <div class="pane ground-dark">
+              <div class="pane-label">dark ground</div>
+              <div class="hero-row">
+                <svg class="mark" width="96" height="96" aria-hidden="true"><use href="#m-badge"/></svg>
+                <div class="ramp">
+                  <figure><svg class="mark" width="48" height="48" aria-hidden="true"><use href="#m-badge"/></svg><figcaption>48</figcaption></figure>
+                  <figure><svg class="mark" width="32" height="32" aria-hidden="true"><use href="#m-badge"/></svg><figcaption>32</figcaption></figure>
+                  <figure><svg class="mark" width="24" height="24" aria-hidden="true"><use href="#m-badge"/></svg><figcaption>24</figcaption></figure>
+                  <figure><svg class="mark" width="20" height="20" aria-hidden="true"><use href="#m-badge"/></svg><figcaption>20</figcaption></figure>
+                  <figure><svg class="mark" width="16" height="16" aria-hidden="true"><use href="#m-badge"/></svg><figcaption>16</figcaption></figure>
+                </div>
+              </div>
+            </div>
+          </div>
+          <p class="verdict"><b>Reads as:</b> an app. It brings its own ground, which is the only way to
+            be sure of contrast against browser chrome Drydock does not control. <b>Use:</b> whichever
+            line mark wins gets knocked out of this; it is not a third choice.</p>
+        </div>
+
+        <!-- mono -->
+        <div class="card">
+          <div class="card-head">
+            <h3>One colour</h3>
+            <span class="file">drydock-mark-mono.svg</span>
+            <span class="tag alt">utility &middot; currentColor</span>
+          </div>
+          <div class="stage">
+            <div class="pane ground-light">
+              <div class="pane-label">light ground</div>
+              <div class="hero-row mono-wrap">
+                <svg class="mark" width="96" height="96" aria-label="Drydock mark, one colour"><use href="#m-mono"/></svg>
+                <div class="ramp">
+                  <figure><svg class="mark" width="48" height="48" aria-hidden="true"><use href="#m-mono"/></svg><figcaption>48</figcaption></figure>
+                  <figure><svg class="mark" width="32" height="32" aria-hidden="true"><use href="#m-mono"/></svg><figcaption>32</figcaption></figure>
+                  <figure><svg class="mark" width="24" height="24" aria-hidden="true"><use href="#m-mono"/></svg><figcaption>24</figcaption></figure>
+                  <figure><svg class="mark" width="20" height="20" aria-hidden="true"><use href="#m-mono"/></svg><figcaption>20</figcaption></figure>
+                  <figure><svg class="mark" width="16" height="16" aria-hidden="true"><use href="#m-mono"/></svg><figcaption>16</figcaption></figure>
+                </div>
+              </div>
+            </div>
+            <div class="pane ground-dark">
+              <div class="pane-label">dark ground</div>
+              <div class="hero-row mono-wrap">
+                <svg class="mark" width="96" height="96" aria-hidden="true"><use href="#m-mono"/></svg>
+                <div class="ramp">
+                  <figure><svg class="mark" width="48" height="48" aria-hidden="true"><use href="#m-mono"/></svg><figcaption>48</figcaption></figure>
+                  <figure><svg class="mark" width="32" height="32" aria-hidden="true"><use href="#m-mono"/></svg><figcaption>32</figcaption></figure>
+                  <figure><svg class="mark" width="24" height="24" aria-hidden="true"><use href="#m-mono"/></svg><figcaption>24</figcaption></figure>
+                  <figure><svg class="mark" width="20" height="20" aria-hidden="true"><use href="#m-mono"/></svg><figcaption>20</figcaption></figure>
+                  <figure><svg class="mark" width="16" height="16" aria-hidden="true"><use href="#m-mono"/></svg><figcaption>16</figcaption></figure>
+                </div>
+              </div>
+            </div>
+          </div>
+          <p class="verdict"><b>Reads as:</b> the same mark with the colour taken away. The container has
+            to go hollow or it fills in as a blob, which costs the figure/ground contrast between
+            vessel and basin. <b>Use:</b> buttons, disabled states, print, one-bit favicons &mdash;
+            it inherits <code>currentColor</code>, so it needs no palette of its own.</p>
+        </div>
+
+      </div>
+    </div>
+  </section>
+
+  <!-- C ------------------------------------------------------------------ -->
+  <section>
+    <div class="zone"><span>C</span> &middot; at 16&nbsp;px</div>
+    <div class="body">
+      <h2>The test that actually decides it</h2>
+      <p>Drydock's tab lives next to the Claude app's, because
+        <code>claude.ai/code?environment=&lt;id&gt;</code> sends you back and forth between them all
+        day. This is the mark at its working size, in the company it keeps.</p>
+
+      <div class="ground-light" style="padding:16px">
+        <div class="tabstrip">
+          <div class="tab active"><span class="fav"><svg class="mark" width="16" height="16" aria-hidden="true"><use href="#m-dock"/></svg></span>Drydock</div>
+          <div class="tab"><span class="fav"><svg class="mark" width="16" height="16" aria-hidden="true"><use href="#m-prompt"/></svg></span>Drydock &middot; prompt</div>
+          <div class="tab"><span class="fav"><svg class="mark" width="16" height="16" aria-hidden="true"><use href="#m-badge"/></svg></span>Drydock &middot; badge</div>
+          <div class="tab"><span class="fav"><span class="stub" style="background:#d97757">C</span></span>Claude</div>
+          <div class="tab"><span class="fav"><span class="stub" style="background:#24292f">G</span></span>GitHub</div>
+        </div>
+        <div class="tabpage"></div>
+      </div>
+
+      <div class="ground-dark" style="padding:16px">
+        <div class="tabstrip">
+          <div class="tab active"><span class="fav"><svg class="mark" width="16" height="16" aria-hidden="true"><use href="#m-dock"/></svg></span>Drydock</div>
+          <div class="tab"><span class="fav"><svg class="mark" width="16" height="16" aria-hidden="true"><use href="#m-prompt"/></svg></span>Drydock &middot; prompt</div>
+          <div class="tab"><span class="fav"><svg class="mark" width="16" height="16" aria-hidden="true"><use href="#m-badge"/></svg></span>Drydock &middot; badge</div>
+          <div class="tab"><span class="fav"><span class="stub" style="background:#d97757">C</span></span>Claude</div>
+          <div class="tab"><span class="fav"><span class="stub" style="background:#f0f6fc;color:#24292f">G</span></span>GitHub</div>
+        </div>
+        <div class="tabpage"></div>
+      </div>
+
+      <p class="muted">The badge wins on sheer findability &mdash; a filled shape beats an outline in a
+        row of favicons, every time. The two line marks are quieter and more specific. That is the
+        trade, and it is the reason the badge exists as packaging rather than as a rival.</p>
+    </div>
+  </section>
+
+  <!-- D ------------------------------------------------------------------ -->
+  <section>
+    <div class="zone"><span>D</span> &middot; construction</div>
+    <div class="body">
+      <h2>Everything lands on half a unit</h2>
+      <div class="construct">
+        <div class="gridfig ground-light">
+          <svg viewBox="-1 -1 34 34" role="img" aria-label="The mark drawn over its 32-unit construction grid, with a dashed clear-space boundary two units inside the edge.">
+            <defs>
+              <pattern id="g1" width="1" height="1" patternUnits="userSpaceOnUse">
+                <path d="M1 0V1M0 1H1" stroke="#e2e8f0" stroke-width="0.07"/>
+              </pattern>
+              <pattern id="g8" width="8" height="8" patternUnits="userSpaceOnUse">
+                <path d="M8 0V8M0 8H8" stroke="#cbd5e1" stroke-width="0.14"/>
+              </pattern>
+            </defs>
+            <rect x="0" y="0" width="32" height="32" fill="url(#g1)"/>
+            <rect x="0" y="0" width="32" height="32" fill="url(#g8)"/>
+            <rect x="0" y="0" width="32" height="32" fill="none" stroke="#94a3b8" stroke-width="0.16"/>
+            <rect x="2" y="2" width="28" height="28" fill="none" stroke="#6d28d9" stroke-width="0.16" stroke-dasharray="1 0.8"/>
+            <g fill="none">
+              <path d="M3.5 8V15.5h5V24h15v-8.5h5V8" stroke="#0f172a" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+              <rect x="12.6" y="20.9" width="2" height="2.2" rx="0.4" fill="#0f172a"/>
+              <rect x="17.4" y="20.9" width="2" height="2.2" rx="0.4" fill="#0f172a"/>
+              <rect x="11" y="10.9" width="10" height="10" rx="1.6" fill="#1d4ed8"/>
+              <rect x="15.6" y="13.1" width="0.8" height="5.6" rx="0.4" fill="#ffffff"/>
+            </g>
+          </svg>
+        </div>
+        <dl class="spec">
+          <dt>viewBox</dt><dd><code>0 0 32 32</code>, with 2 units of clear space on every side (dashed). Nothing but the mark enters that band.</dd>
+          <dt>basin</dt><dd>One path, shared by every variant: <code>M3.5 8V15.5h5V24h15v-8.5h5V8</code></dd>
+          <dt>steps</dt><dd>One altar step per wall, 5 units of tread. Real docks have several; at 16&nbsp;px a second step closes into a smudge.</dd>
+          <dt>stroke</dt><dd>2 units, round cap and join &mdash; exactly 1&nbsp;px at a 16&nbsp;px render.</dd>
+          <dt>blocks</dt><dd>2 &times; 2.2 at x&nbsp;12.6 and 17.4, overlapping the floor stroke by 0.1u so no hairline seam opens up at fractional zoom.</dd>
+          <dt>vessel</dt><dd>Every variant's container holds the same 10 &times; 10 footprint, outer edges at x&nbsp;11 and 21 &mdash; 1.5 units clear of each wall's inner face. Outlined variants shrink their path rect to 8.4u to keep that footprint once the stroke counts.</dd>
+          <dt>badge</dt><dd>Mark scaled <code>0.76</code> about centre, stroke thickened to <code>2.6</code> so the knockout weight matches the standalone mark.</dd>
+          <dt>theming</dt><dd>One file per variant. A <code>&lt;style&gt;</code> block sets the light palette on <code>svg</code> and overrides it under <code>prefers-color-scheme: dark</code>; every element also carries its light value as a presentation attribute, so a renderer that strips <code>&lt;style&gt;</code> still gets the light mark instead of a black silhouette.</dd>
+        </dl>
+      </div>
+    </div>
+  </section>
+
+  <!-- E ------------------------------------------------------------------ -->
+  <section>
+    <div class="zone"><span>E</span> &middot; palette</div>
+    <div class="body">
+      <h2>Borrowed from the design diagrams, not invented</h2>
+      <p>These are the values already in <code>docs/design/*/diagrams/</code>, so the icon and the
+        documentation read as the same product. The badge keeps a blue ground in both themes, because a
+        favicon sits on chrome whose colour Drydock does not control.</p>
+      <div class="swatches">
+        <div class="sw"><div class="chip" style="background:#0f172a"></div><div><div class="sw-name">Ink</div><div class="sw-hex">#0f172a &rarr; #e2e8f0</div></div></div>
+        <div class="sw"><div class="chip" style="background:#1d4ed8"></div><div><div class="sw-name">Accent</div><div class="sw-hex">#1d4ed8 &rarr; #60a5fa</div></div></div>
+        <div class="sw"><div class="chip" style="background:#ffffff"></div><div><div class="sw-name">Ground</div><div class="sw-hex">#ffffff &rarr; #0b1220</div></div></div>
+        <div class="sw"><div class="chip" style="background:#2563eb"></div><div><div class="sw-name">Badge ground</div><div class="sw-hex">#1d4ed8 &rarr; #2563eb</div></div></div>
+        <div class="sw"><div class="chip" style="background:#6d28d9"></div><div><div class="sw-name">Note</div><div class="sw-hex">#6d28d9 &rarr; #c4b5fd</div></div></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- F ------------------------------------------------------------------ -->
+  <section>
+    <div class="zone"><span>F</span> &middot; open</div>
+    <div class="body">
+      <h2>What is still yours to call</h2>
+      <ul class="calls">
+        <li><div><strong>Workspace or session.</strong> Solid block, or prompt on the container face.
+          The 16&nbsp;px column in zone&nbsp;B is the evidence; everything else is taste.</div></li>
+        <li><div><strong>Whether the accent should be the blue at all.</strong> It is the API colour in
+          the architecture diagram, and the mark is currently spending it on the container. The violet
+          is unused by the mark and already means &ldquo;preview origin&rdquo; elsewhere.</div></li>
+        <li><div><strong>Whether the door seam earns its place.</strong> It is the one interior detail
+          in the default mark, it is the first thing to vanish, and the mark is fine without it. Keep
+          it for the 96&nbsp;px header, or drop it for one less thing to maintain.</div></li>
+      </ul>
+      <p class="muted">Once a variant is picked: cut the light/dark SVG pair under
+        <code>icons/</code> following the diagram naming convention for Markdown
+        <code>&lt;picture&gt;</code> embedding, add the 180&nbsp;px apple-touch PNG out of the badge, and
+        check the result beside Caddy's padlock in a real tab strip.</p>
+    </div>
+  </section>
+
+  <footer>
+    <span>docs/design/brand/</span>
+    <span>brand-design.md &middot; draft v1</span>
+    <span>4 files &middot; icons/</span>
+    <span>re-render this sheet after any geometry change</span>
+  </footer>
+</div>
