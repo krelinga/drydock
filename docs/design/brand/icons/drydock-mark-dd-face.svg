@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32" fill="none" role="img" aria-labelledby="dd-face-t dd-face-d">
+  <title id="dd-face-t">Drydock</title>
+  <desc id="dd-face-d">A drained dock basin with battered side walls, holding a shipping container raised on two keel blocks, the letters D and D stencilled on the container's face.</desc>
+  <style>
+    svg{--ink:#0f172a;--accent:#1d4ed8;--bg:#ffffff}
+    @media (prefers-color-scheme:dark){svg{--ink:#e2e8f0;--accent:#60a5fa;--bg:#0b1220}}
+    .s-ink{stroke:var(--ink)}.f-ink{fill:var(--ink)}.f-acc{fill:var(--accent)}.s-bg{stroke:var(--bg)}
+  </style>
+
+  <!-- basin: battered walls, 109-degree join to a flat floor, no right angle anywhere -->
+  <path class="s-ink" stroke="#0f172a" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
+        d="M3.1 8 8.6 24H23.4L28.9 8"/>
+
+  <!-- keel blocks: the hull is held clear of the floor -->
+  <rect class="f-ink" fill="#0f172a" x="12.6" y="20.9" width="2" height="2.2" rx="0.4"/>
+  <rect class="f-ink" fill="#0f172a" x="17.4" y="20.9" width="2" height="2.2" rx="0.4"/>
+
+  <!-- the container under work, stencilled the way a real one carries its owner's mark -->
+  <rect class="f-acc" fill="#1d4ed8" x="11" y="10.9" width="10" height="10" rx="1.6"/>
+  <path class="s-bg" stroke="#ffffff" stroke-width="0.8" stroke-linejoin="round"
+        d="M12.5 18.1V13.7h0.5a2.2 2.2 0 0 1 0 4.4H12.5"/>
+  <path class="s-bg" stroke="#ffffff" stroke-width="0.8" stroke-linejoin="round"
+        d="M16.8 18.1V13.7h0.5a2.2 2.2 0 0 1 0 4.4H16.8"/>
+</svg>

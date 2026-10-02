@@ -14,10 +14,6 @@
     --accent:  #1d4ed8;
     --note:    #6d28d9;
 
-    --m-ink: #0f172a;
-    --m-acc: #1d4ed8;
-    --m-bg:  #ffffff;
-
     --fs-step: clamp(0.82rem, 0.2vw + 0.78rem, 0.88rem);
   }
   @media (prefers-color-scheme: dark) {
@@ -46,10 +42,8 @@
   /* fixed grounds: these never follow the viewer's theme, because the point of
      the sheet is to show the mark on both at once */
   .ground-light { --m-ink:#0f172a; --m-acc:#1d4ed8; --m-bg:#ffffff;
-                  --m-badge:#1d4ed8; --m-knock:#ffffff;
                   background:#ffffff; color:#0f172a; --g-rule:#e2e8f0; }
   .ground-dark  { --m-ink:#e2e8f0; --m-acc:#60a5fa; --m-bg:#0b1220;
-                  --m-badge:#2563eb; --m-knock:#f8fafc;
                   background:#0b1220; color:#e2e8f0; --g-rule:#1e293b; }
 
   * { box-sizing: border-box; }
@@ -171,7 +165,7 @@
     border: 1px solid var(--rule); color: var(--muted);
     padding: 2px 7px; white-space: nowrap;
   }
-  .tag.flat { border-color: var(--accent); color: var(--accent); }
+  .tag.pick { border-color: var(--accent); color: var(--accent); }
   .tag.dead { border-color: var(--note); color: var(--note); }
 
   .stage { display: grid; grid-template-columns: 1fr 1fr; }
@@ -225,16 +219,11 @@
   .tabpage { border: 1px solid var(--g-rule); height: 34px; }
 
   /* ---- construction --------------------------------------------------- */
-  .construct { display: grid; grid-template-columns: minmax(240px, 340px) minmax(0, 1fr); gap: 26px; align-items: start; }
+  .construct { display: grid; grid-template-columns: minmax(240px, 320px) minmax(0, 1fr); gap: 26px; align-items: start; }
   @media (max-width: 720px) { .construct { grid-template-columns: 1fr; } }
   .gridfig { border: 1px solid var(--rule); padding: 10px; background: var(--sheet); }
   .gridfig svg { display: block; width: 100%; height: auto; }
-  .legend { display: flex; flex-wrap: wrap; gap: 4px 16px; margin-top: 10px; }
-  .legend span {
-    font-family: "IBM Plex Mono", ui-monospace, monospace;
-    font-size: 0.64rem; display: flex; align-items: center; gap: 6px;
-  }
-  .legend i { width: 14px; height: 0; border-top: 2px solid currentColor; display: block; }
+  .figcap { font-size: 0.78rem; color: var(--muted); margin-top: 10px; max-width: 46ch; }
   dl.spec { margin: 0; display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 7px 16px; }
   dl.spec dt {
     font-family: "IBM Plex Mono", ui-monospace, monospace;
@@ -246,10 +235,8 @@
 
   /* ---- measurements table --------------------------------------------- */
   .tablewrap { overflow-x: auto; }
-  table { border-collapse: collapse; font-size: 0.82rem; min-width: 440px; }
-  caption {
-    text-align: left; color: var(--muted); font-size: 0.78rem; padding-bottom: 8px;
-  }
+  table { border-collapse: collapse; font-size: 0.82rem; min-width: 480px; }
+  caption { text-align: left; color: var(--muted); font-size: 0.78rem; padding-bottom: 8px; }
   th, td { text-align: left; padding: 7px 16px 7px 0; border-bottom: 1px solid var(--rule-faint); }
   th {
     font-family: "IBM Plex Mono", ui-monospace, monospace;
@@ -258,6 +245,7 @@
   }
   td { font-variant-numeric: tabular-nums; }
   td:first-child { font-weight: 500; }
+  tr.bad td { color: var(--note); }
 
   /* ---- palette -------------------------------------------------------- */
   .swatches { display: grid; grid-template-columns: repeat(auto-fit, minmax(132px, 1fr)); gap: 1px; background: var(--rule); border: 1px solid var(--rule); }
@@ -289,11 +277,11 @@
   }
 </style>
 
-<!-- geometry, defined once. every variant shares the container and keel blocks;
-     only the basin path differs. ------------------------------------------- -->
+<!-- geometry, defined once. the battered basin is now fixed; only the vessel
+     changes between candidates. ------------------------------------------- -->
 <svg width="0" height="0" style="position:absolute" aria-hidden="true">
   <defs>
-    <symbol id="m-battered" viewBox="0 0 32 32" fill="none">
+    <symbol id="m-plain" viewBox="0 0 32 32" fill="none">
       <path d="M3.1 8 8.6 24H23.4L28.9 8" stroke="var(--m-ink)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
       <rect x="12.6" y="20.9" width="2" height="2.2" rx="0.4" fill="var(--m-ink)"/>
       <rect x="17.4" y="20.9" width="2" height="2.2" rx="0.4" fill="var(--m-ink)"/>
@@ -301,29 +289,31 @@
       <rect x="15.6" y="13.1" width="0.8" height="5.6" rx="0.4" fill="var(--m-bg)"/>
     </symbol>
 
-    <symbol id="m-cradle" viewBox="0 0 32 32" fill="none">
-      <path d="M3.5 8C3.5 19 5.5 24 16 24s12.5-5 12.5-16" stroke="var(--m-ink)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-      <rect x="12.6" y="20.9" width="2" height="2.2" rx="0.4" fill="var(--m-ink)"/>
-      <rect x="17.4" y="20.9" width="2" height="2.2" rx="0.4" fill="var(--m-ink)"/>
-      <rect x="11" y="10.9" width="10" height="10" rx="1.6" fill="var(--m-acc)"/>
-      <rect x="15.6" y="13.1" width="0.8" height="5.6" rx="0.4" fill="var(--m-bg)"/>
+    <symbol id="m-twin" viewBox="0 0 32 32" fill="none">
+      <path d="M3.1 8 8.6 24H23.4L28.9 8" stroke="var(--m-ink)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+      <rect x="11.8" y="20.9" width="2" height="2.2" rx="0.4" fill="var(--m-ink)"/>
+      <rect x="18.2" y="20.9" width="2" height="2.2" rx="0.4" fill="var(--m-ink)"/>
+      <path fill="var(--m-acc)" fill-rule="evenodd" d="M10 12.9H11.55A4 4 0 0 1 11.55 20.9H10ZM11.7 14.7H11.85A2.2 2.2 0 0 1 11.85 19.1H11.7Z"/>
+      <path fill="var(--m-acc)" fill-rule="evenodd" d="M16.45 12.9H18A4 4 0 0 1 18 20.9H16.45ZM18.15 14.7H18.3A2.2 2.2 0 0 1 18.3 19.1H18.15Z"/>
     </symbol>
 
-    <symbol id="m-flared" viewBox="0 0 32 32" fill="none">
-      <path d="M3 8C4.6 19 5.5 24 16 24s11.4-5 13-16" stroke="var(--m-ink)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-      <rect x="12.6" y="20.9" width="2" height="2.2" rx="0.4" fill="var(--m-ink)"/>
-      <rect x="17.4" y="20.9" width="2" height="2.2" rx="0.4" fill="var(--m-ink)"/>
-      <rect x="11" y="10.9" width="10" height="10" rx="1.6" fill="var(--m-acc)"/>
-      <rect x="15.6" y="13.1" width="0.8" height="5.6" rx="0.4" fill="var(--m-bg)"/>
+    <symbol id="m-twin-o" viewBox="0 0 32 32" fill="none">
+      <path d="M3.1 8 8.6 24H23.4L28.9 8" stroke="var(--m-ink)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+      <rect x="11.7" y="20.9" width="2" height="2.2" rx="0.4" fill="var(--m-ink)"/>
+      <rect x="18.3" y="20.9" width="2" height="2.2" rx="0.4" fill="var(--m-ink)"/>
+      <path d="M10.72 20.15V13.65h0.68a3.25 3.25 0 0 1 0 6.5H10.72" stroke="var(--m-acc)" stroke-width="1.5" stroke-linejoin="round"/>
+      <path d="M17.35 20.15V13.65h0.68a3.25 3.25 0 0 1 0 6.5H17.35" stroke="var(--m-acc)" stroke-width="1.5" stroke-linejoin="round"/>
     </symbol>
 
-    <symbol id="m-stepped" viewBox="0 0 32 32" fill="none">
-      <path d="M3.5 8V15.5h5V24h15v-8.5h5V8" stroke="var(--m-ink)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+    <symbol id="m-face" viewBox="0 0 32 32" fill="none">
+      <path d="M3.1 8 8.6 24H23.4L28.9 8" stroke="var(--m-ink)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
       <rect x="12.6" y="20.9" width="2" height="2.2" rx="0.4" fill="var(--m-ink)"/>
       <rect x="17.4" y="20.9" width="2" height="2.2" rx="0.4" fill="var(--m-ink)"/>
       <rect x="11" y="10.9" width="10" height="10" rx="1.6" fill="var(--m-acc)"/>
-      <rect x="15.6" y="13.1" width="0.8" height="5.6" rx="0.4" fill="var(--m-bg)"/>
+      <path d="M12.5 18.1V13.7h0.5a2.2 2.2 0 0 1 0 4.4H12.5" stroke="var(--m-bg)" stroke-width="0.8" stroke-linejoin="round"/>
+      <path d="M16.8 18.1V13.7h0.5a2.2 2.2 0 0 1 0 4.4H16.8" stroke="var(--m-bg)" stroke-width="0.8" stroke-linejoin="round"/>
     </symbol>
+
   </defs>
 </svg>
 
@@ -331,209 +321,207 @@
 
   <div class="titleblock">
     <h1>Drydock Mark
-      <span class="thin">Three basins without a right angle in them</span>
+      <span class="thin">Battered basin, chosen. Three places a &ldquo;DD&rdquo; can live in it.</span>
     </h1>
     <div class="meta">
       <span>sheet</span><b>BRAND-01</b>
-      <span>revision</span><b>draft v2</b>
+      <span>revision</span><b>draft v3</b>
+      <span>basin</span><b>battered &middot; settled</b>
       <span>grid</span><b>32 &times; 32, 2u clear</b>
-      <span>stroke</span><b>2u &middot; round</b>
       <span>candidates</span><b>3</b>
     </div>
   </div>
 
   <!-- A ------------------------------------------------------------------ -->
   <section>
-    <div class="zone"><span>A</span> &middot; idea</div>
+    <div class="zone"><span>A</span> &middot; brief</div>
     <div class="body">
-      <h2>A dry dock is a basin you drain</h2>
-      <p class="lede">You float a ship in, shut the gate, and pump the water out. The hull settles onto
-        keel blocks and work that was impossible afloat becomes ordinary &mdash; you can walk
-        underneath the thing and change it. The dock is not the ship. It does not sail. It is the
-        prepared, isolated, drained place where the ship gets worked on.</p>
-      <p>Which is what Drydock is to a repo: a clone on host disk, a container brought up around it, an
-        agent inside with credentials scoped to that one repo. The container survives nothing; the
-        clone survives rebuild and delete. <strong>The dock persists, the vessel comes and goes.</strong></p>
-      <p>So every candidate is a <strong>section through a drained basin</strong> with a
-        <strong>container held clear of the floor on two keel blocks</strong>. The container does double
-        duty on purpose: it is the vessel in the dock and it is the dev container. The gap underneath is
-        the one detail that stops this reading as a generic box in brackets, so every candidate below is
-        measured on whether it keeps that gap open.</p>
+      <h2>The basin is settled; the vessel is the open question</h2>
+      <p class="lede">The battered basin won: straight walls battered inward to a flat floor, a 109&deg;
+        join, no right angle in it. It is fixed in every candidate below and no longer up for
+        discussion. What changes is the vessel sitting in it, because the vessel is the only part of
+        the mark with enough surface to carry two letters.</p>
+      <p>The ask is to work a <strong>DD</strong> into the mark to tie it to the name. That is a real
+        constraint with a hard physical limit, so it is worth stating the limit before the options:
+        <strong>at 16&nbsp;px the whole mark is 16 pixels tall and the vessel is about five of
+        them.</strong> No letterform survives that. So the question is not &ldquo;can the icon say
+        DD&rdquo; &mdash; it is <em>where the letters live, and what size they start reading at</em>.
+        Three places have the room:</p>
+      <p class="muted">&mdash; the vessel's <strong>silhouette</strong>, by making the vessel itself two
+        D-shaped blocks (reads from about 24&nbsp;px);<br>
+        &mdash; the vessel's <strong>face</strong>, stencilled on a container that keeps its own
+        shape (reads from about 48&nbsp;px);<br>
+        &mdash; the <strong>basin walls</strong>, which is the only place letters would survive to
+        16&nbsp;px &mdash; and which does not work. See zone&nbsp;D.</p>
 
-      <h2 style="margin-top:8px">What v1 got wrong, and what it was for</h2>
-      <p>Draft v1 drew the basin as <strong>stepped walls</strong> &mdash; one altar step per side, every
-        corner square. Rejected: too many right angles. Worth recording what the steps were doing,
-        though, so the replacements get judged rather than just preferred for being new. The steps read
-        as <em>masonry</em>: cut, built, load-bearing. They were the detail that made the enclosure say
-        <em>dock</em> rather than bowl, bin, or basket.</p>
+      <h2 style="margin-top:8px">For comparison: the mark as it stands</h2>
       <div class="card" style="max-width:620px">
         <div class="card-head">
-          <h3>Stepped</h3>
-          <span class="file">v1 &middot; removed from icons/</span>
-          <span class="tag dead">superseded</span>
+          <h3>Battered, no letters</h3>
+          <span class="file">drydock-mark-battered.svg</span>
+          <span class="tag">v2 &middot; the baseline</span>
         </div>
         <div class="stage">
           <div class="pane ground-light">
             <div class="hero-row">
-              <svg class="mark" width="64" height="64" aria-label="The superseded stepped-basin mark"><use href="#m-stepped"/></svg>
+              <svg class="mark" width="64" height="64" aria-label="The battered-basin mark with a plain container"><use href="#m-plain"/></svg>
               <div class="ramp">
-                <figure><svg class="mark" width="32" height="32" aria-hidden="true"><use href="#m-stepped"/></svg><figcaption>32</figcaption></figure>
-                <figure><svg class="mark" width="16" height="16" aria-hidden="true"><use href="#m-stepped"/></svg><figcaption>16</figcaption></figure>
+                <figure><svg class="mark" width="32" height="32" aria-hidden="true"><use href="#m-plain"/></svg><figcaption>32</figcaption></figure>
+                <figure><svg class="mark" width="16" height="16" aria-hidden="true"><use href="#m-plain"/></svg><figcaption>16</figcaption></figure>
               </div>
             </div>
           </div>
           <div class="pane ground-dark">
             <div class="hero-row">
-              <svg class="mark" width="64" height="64" aria-hidden="true"><use href="#m-stepped"/></svg>
+              <svg class="mark" width="64" height="64" aria-hidden="true"><use href="#m-plain"/></svg>
               <div class="ramp">
-                <figure><svg class="mark" width="32" height="32" aria-hidden="true"><use href="#m-stepped"/></svg><figcaption>32</figcaption></figure>
-                <figure><svg class="mark" width="16" height="16" aria-hidden="true"><use href="#m-stepped"/></svg><figcaption>16</figcaption></figure>
+                <figure><svg class="mark" width="32" height="32" aria-hidden="true"><use href="#m-plain"/></svg><figcaption>32</figcaption></figure>
+                <figure><svg class="mark" width="16" height="16" aria-hidden="true"><use href="#m-plain"/></svg><figcaption>16</figcaption></figure>
               </div>
             </div>
           </div>
         </div>
-        <p class="verdict">Kept here only for comparison. Any curved basin gives up the masonry reading
-          and leans harder on the keel blocks to carry the dock, since nothing else in the mark is
-          specific to a dock.</p>
+        <p class="verdict">Every candidate below is this mark with the vessel changed. Judge them
+          against it: if the letters cost more than they add, this is still here.</p>
       </div>
     </div>
   </section>
 
   <!-- B ------------------------------------------------------------------ -->
   <section>
-    <div class="zone"><span>B</span> &middot; basins</div>
+    <div class="zone"><span>B</span> &middot; candidates</div>
     <div class="body">
-      <h2>Same vessel, three ways to hold it</h2>
-      <p>All three keep the container and keel blocks byte for byte and change only the basin path. None
-        of them contains a right angle. Each is shown on both grounds at full size, then down the size
-        ramp to the favicon.</p>
+      <h2>Three ways to get the letters in</h2>
 
       <div class="cards">
 
-        <!-- battered -->
+        <!-- twin solid -->
         <div class="card">
           <div class="card-head">
-            <h3>Battered</h3>
-            <span class="file">drydock-mark-battered.svg</span>
-            <span class="tag flat">flat floor &middot; 109&deg; join</span>
+            <h3>Twin &mdash; the vessels <em>are</em> the letters</h3>
+            <span class="file">drydock-mark-dd-twin.svg</span>
+            <span class="tag pick">recommended</span>
           </div>
           <div class="stage">
             <div class="pane ground-light">
               <div class="pane-label">light ground</div>
               <div class="hero-row">
-                <svg class="mark" width="96" height="96" aria-label="Drydock mark, battered basin"><use href="#m-battered"/></svg>
+                <svg class="mark" width="96" height="96" aria-label="Drydock mark with two D-shaped vessels"><use href="#m-twin"/></svg>
                 <div class="ramp">
-                  <figure><svg class="mark" width="48" height="48" aria-hidden="true"><use href="#m-battered"/></svg><figcaption>48</figcaption></figure>
-                  <figure><svg class="mark" width="32" height="32" aria-hidden="true"><use href="#m-battered"/></svg><figcaption>32</figcaption></figure>
-                  <figure><svg class="mark" width="24" height="24" aria-hidden="true"><use href="#m-battered"/></svg><figcaption>24</figcaption></figure>
-                  <figure><svg class="mark" width="20" height="20" aria-hidden="true"><use href="#m-battered"/></svg><figcaption>20</figcaption></figure>
-                  <figure><svg class="mark" width="16" height="16" aria-hidden="true"><use href="#m-battered"/></svg><figcaption>16</figcaption></figure>
+                  <figure><svg class="mark" width="48" height="48" aria-hidden="true"><use href="#m-twin"/></svg><figcaption>48</figcaption></figure>
+                  <figure><svg class="mark" width="32" height="32" aria-hidden="true"><use href="#m-twin"/></svg><figcaption>32</figcaption></figure>
+                  <figure><svg class="mark" width="24" height="24" aria-hidden="true"><use href="#m-twin"/></svg><figcaption>24</figcaption></figure>
+                  <figure><svg class="mark" width="20" height="20" aria-hidden="true"><use href="#m-twin"/></svg><figcaption>20</figcaption></figure>
+                  <figure><svg class="mark" width="16" height="16" aria-hidden="true"><use href="#m-twin"/></svg><figcaption>16</figcaption></figure>
                 </div>
               </div>
             </div>
             <div class="pane ground-dark">
               <div class="pane-label">dark ground</div>
               <div class="hero-row">
-                <svg class="mark" width="96" height="96" aria-hidden="true"><use href="#m-battered"/></svg>
+                <svg class="mark" width="96" height="96" aria-hidden="true"><use href="#m-twin"/></svg>
                 <div class="ramp">
-                  <figure><svg class="mark" width="48" height="48" aria-hidden="true"><use href="#m-battered"/></svg><figcaption>48</figcaption></figure>
-                  <figure><svg class="mark" width="32" height="32" aria-hidden="true"><use href="#m-battered"/></svg><figcaption>32</figcaption></figure>
-                  <figure><svg class="mark" width="24" height="24" aria-hidden="true"><use href="#m-battered"/></svg><figcaption>24</figcaption></figure>
-                  <figure><svg class="mark" width="20" height="20" aria-hidden="true"><use href="#m-battered"/></svg><figcaption>20</figcaption></figure>
-                  <figure><svg class="mark" width="16" height="16" aria-hidden="true"><use href="#m-battered"/></svg><figcaption>16</figcaption></figure>
+                  <figure><svg class="mark" width="48" height="48" aria-hidden="true"><use href="#m-twin"/></svg><figcaption>48</figcaption></figure>
+                  <figure><svg class="mark" width="32" height="32" aria-hidden="true"><use href="#m-twin"/></svg><figcaption>32</figcaption></figure>
+                  <figure><svg class="mark" width="24" height="24" aria-hidden="true"><use href="#m-twin"/></svg><figcaption>24</figcaption></figure>
+                  <figure><svg class="mark" width="20" height="20" aria-hidden="true"><use href="#m-twin"/></svg><figcaption>20</figcaption></figure>
+                  <figure><svg class="mark" width="16" height="16" aria-hidden="true"><use href="#m-twin"/></svg><figcaption>16</figcaption></figure>
                 </div>
               </div>
             </div>
           </div>
-          <p class="verdict"><b>Reads as:</b> excavated and built. Battered walls are what real dock walls
-            do, so this is the closest thing to the stepped version with no square corner in it, and the
-            only candidate that keeps a genuinely flat floor &mdash; which is what keel blocks stand on.
-            <b>Cost:</b> it is still angular. If the objection to v1 was angles rather than
-            <em>right</em> angles, this does not answer it.</p>
+          <p class="verdict"><b>Reads as:</b> two vessels in the dock that happen to be D and D &mdash;
+            and &ldquo;more than one workspace in one dock&rdquo; is true of the product, so the letters
+            are earned rather than pasted on. Each letter is 5.55 &times; 8 units, a 0.69 width-to-height
+            ratio, which is squarely in the range that reads as a D rather than a leaf or a pill. Each
+            gets its own keel block. <b>Cost:</b> the vessel stops looking like a shipping container.
+            Below 24&nbsp;px the counters close and you get two accent blobs &mdash; legible as
+            &ldquo;something in the dock&rdquo;, but no longer as letters.</p>
         </div>
 
-        <!-- cradle -->
+        <!-- twin outline -->
         <div class="card">
           <div class="card-head">
-            <h3>Cradle</h3>
-            <span class="file">drydock-mark-cradle.svg</span>
-            <span class="tag">one curve &middot; vertical lips</span>
+            <h3>Twin, outlined</h3>
+            <span class="file">drydock-mark-dd-twin-outline.svg</span>
+            <span class="tag">same idea, lighter weight</span>
           </div>
           <div class="stage">
             <div class="pane ground-light">
               <div class="pane-label">light ground</div>
               <div class="hero-row">
-                <svg class="mark" width="96" height="96" aria-label="Drydock mark, cradle basin"><use href="#m-cradle"/></svg>
+                <svg class="mark" width="96" height="96" aria-label="Drydock mark with two outlined D-shaped vessels"><use href="#m-twin-o"/></svg>
                 <div class="ramp">
-                  <figure><svg class="mark" width="48" height="48" aria-hidden="true"><use href="#m-cradle"/></svg><figcaption>48</figcaption></figure>
-                  <figure><svg class="mark" width="32" height="32" aria-hidden="true"><use href="#m-cradle"/></svg><figcaption>32</figcaption></figure>
-                  <figure><svg class="mark" width="24" height="24" aria-hidden="true"><use href="#m-cradle"/></svg><figcaption>24</figcaption></figure>
-                  <figure><svg class="mark" width="20" height="20" aria-hidden="true"><use href="#m-cradle"/></svg><figcaption>20</figcaption></figure>
-                  <figure><svg class="mark" width="16" height="16" aria-hidden="true"><use href="#m-cradle"/></svg><figcaption>16</figcaption></figure>
+                  <figure><svg class="mark" width="48" height="48" aria-hidden="true"><use href="#m-twin-o"/></svg><figcaption>48</figcaption></figure>
+                  <figure><svg class="mark" width="32" height="32" aria-hidden="true"><use href="#m-twin-o"/></svg><figcaption>32</figcaption></figure>
+                  <figure><svg class="mark" width="24" height="24" aria-hidden="true"><use href="#m-twin-o"/></svg><figcaption>24</figcaption></figure>
+                  <figure><svg class="mark" width="20" height="20" aria-hidden="true"><use href="#m-twin-o"/></svg><figcaption>20</figcaption></figure>
+                  <figure><svg class="mark" width="16" height="16" aria-hidden="true"><use href="#m-twin-o"/></svg><figcaption>16</figcaption></figure>
                 </div>
               </div>
             </div>
             <div class="pane ground-dark">
               <div class="pane-label">dark ground</div>
               <div class="hero-row">
-                <svg class="mark" width="96" height="96" aria-hidden="true"><use href="#m-cradle"/></svg>
+                <svg class="mark" width="96" height="96" aria-hidden="true"><use href="#m-twin-o"/></svg>
                 <div class="ramp">
-                  <figure><svg class="mark" width="48" height="48" aria-hidden="true"><use href="#m-cradle"/></svg><figcaption>48</figcaption></figure>
-                  <figure><svg class="mark" width="32" height="32" aria-hidden="true"><use href="#m-cradle"/></svg><figcaption>32</figcaption></figure>
-                  <figure><svg class="mark" width="24" height="24" aria-hidden="true"><use href="#m-cradle"/></svg><figcaption>24</figcaption></figure>
-                  <figure><svg class="mark" width="20" height="20" aria-hidden="true"><use href="#m-cradle"/></svg><figcaption>20</figcaption></figure>
-                  <figure><svg class="mark" width="16" height="16" aria-hidden="true"><use href="#m-cradle"/></svg><figcaption>16</figcaption></figure>
+                  <figure><svg class="mark" width="48" height="48" aria-hidden="true"><use href="#m-twin-o"/></svg><figcaption>48</figcaption></figure>
+                  <figure><svg class="mark" width="32" height="32" aria-hidden="true"><use href="#m-twin-o"/></svg><figcaption>32</figcaption></figure>
+                  <figure><svg class="mark" width="24" height="24" aria-hidden="true"><use href="#m-twin-o"/></svg><figcaption>24</figcaption></figure>
+                  <figure><svg class="mark" width="20" height="20" aria-hidden="true"><use href="#m-twin-o"/></svg><figcaption>20</figcaption></figure>
+                  <figure><svg class="mark" width="16" height="16" aria-hidden="true"><use href="#m-twin-o"/></svg><figcaption>16</figcaption></figure>
                 </div>
               </div>
             </div>
           </div>
-          <p class="verdict"><b>Reads as:</b> held. One continuous curve, vertical at the lips so the arms
-            stand up rather than splay, flat-tangent under the keel so the blocks have something to sit
-            on. The softest of the three and the calmest at 16&nbsp;px, because there is no corner
-            anywhere for the rasteriser to blur. <b>Cost:</b> closest to reading as a plain bowl. The
-            keel blocks are doing all the work of saying <em>dock</em>.</p>
+          <p class="verdict"><b>Reads as:</b> letters first. Leaving the counters open keeps them reading
+            as D's two sizes further down than the solid pair does, and the lighter weight stops the
+            accent from dominating the ink. <b>Cost:</b> an outlined vessel is less obviously a solid
+            object sitting in a dock &mdash; it reads a little like a diagram of the mark rather than
+            the mark. Also the first to disappear on a low-contrast ground.</p>
         </div>
 
-        <!-- flared -->
+        <!-- face -->
         <div class="card">
           <div class="card-head">
-            <h3>Flared</h3>
-            <span class="file">drydock-mark-flared.svg</span>
-            <span class="tag">one curve &middot; 8&deg; open lips</span>
+            <h3>Stencil &mdash; letters on the container's face</h3>
+            <span class="file">drydock-mark-dd-face.svg</span>
+            <span class="tag">keeps the container</span>
           </div>
           <div class="stage">
             <div class="pane ground-light">
               <div class="pane-label">light ground</div>
               <div class="hero-row">
-                <svg class="mark" width="96" height="96" aria-label="Drydock mark, flared basin"><use href="#m-flared"/></svg>
+                <svg class="mark" width="96" height="96" aria-label="Drydock mark with DD stencilled on the container"><use href="#m-face"/></svg>
                 <div class="ramp">
-                  <figure><svg class="mark" width="48" height="48" aria-hidden="true"><use href="#m-flared"/></svg><figcaption>48</figcaption></figure>
-                  <figure><svg class="mark" width="32" height="32" aria-hidden="true"><use href="#m-flared"/></svg><figcaption>32</figcaption></figure>
-                  <figure><svg class="mark" width="24" height="24" aria-hidden="true"><use href="#m-flared"/></svg><figcaption>24</figcaption></figure>
-                  <figure><svg class="mark" width="20" height="20" aria-hidden="true"><use href="#m-flared"/></svg><figcaption>20</figcaption></figure>
-                  <figure><svg class="mark" width="16" height="16" aria-hidden="true"><use href="#m-flared"/></svg><figcaption>16</figcaption></figure>
+                  <figure><svg class="mark" width="48" height="48" aria-hidden="true"><use href="#m-face"/></svg><figcaption>48</figcaption></figure>
+                  <figure><svg class="mark" width="32" height="32" aria-hidden="true"><use href="#m-face"/></svg><figcaption>32</figcaption></figure>
+                  <figure><svg class="mark" width="24" height="24" aria-hidden="true"><use href="#m-face"/></svg><figcaption>24</figcaption></figure>
+                  <figure><svg class="mark" width="20" height="20" aria-hidden="true"><use href="#m-face"/></svg><figcaption>20</figcaption></figure>
+                  <figure><svg class="mark" width="16" height="16" aria-hidden="true"><use href="#m-face"/></svg><figcaption>16</figcaption></figure>
                 </div>
               </div>
             </div>
             <div class="pane ground-dark">
               <div class="pane-label">dark ground</div>
               <div class="hero-row">
-                <svg class="mark" width="96" height="96" aria-hidden="true"><use href="#m-flared"/></svg>
+                <svg class="mark" width="96" height="96" aria-hidden="true"><use href="#m-face"/></svg>
                 <div class="ramp">
-                  <figure><svg class="mark" width="48" height="48" aria-hidden="true"><use href="#m-flared"/></svg><figcaption>48</figcaption></figure>
-                  <figure><svg class="mark" width="32" height="32" aria-hidden="true"><use href="#m-flared"/></svg><figcaption>32</figcaption></figure>
-                  <figure><svg class="mark" width="24" height="24" aria-hidden="true"><use href="#m-flared"/></svg><figcaption>24</figcaption></figure>
-                  <figure><svg class="mark" width="20" height="20" aria-hidden="true"><use href="#m-flared"/></svg><figcaption>20</figcaption></figure>
-                  <figure><svg class="mark" width="16" height="16" aria-hidden="true"><use href="#m-flared"/></svg><figcaption>16</figcaption></figure>
+                  <figure><svg class="mark" width="48" height="48" aria-hidden="true"><use href="#m-face"/></svg><figcaption>48</figcaption></figure>
+                  <figure><svg class="mark" width="32" height="32" aria-hidden="true"><use href="#m-face"/></svg><figcaption>32</figcaption></figure>
+                  <figure><svg class="mark" width="24" height="24" aria-hidden="true"><use href="#m-face"/></svg><figcaption>24</figcaption></figure>
+                  <figure><svg class="mark" width="20" height="20" aria-hidden="true"><use href="#m-face"/></svg><figcaption>20</figcaption></figure>
+                  <figure><svg class="mark" width="16" height="16" aria-hidden="true"><use href="#m-face"/></svg><figcaption>16</figcaption></figure>
                 </div>
               </div>
             </div>
           </div>
-          <p class="verdict"><b>Reads as:</b> open to receive &mdash; the lips lean 8&deg; outward, which
-            gives the mark motion the other two do not have and suits a dock whose gate is open.
-            <b>Cost:</b> the flare spends the clear-space margin (its lip starts half a unit further in
-            to pay for it), and splayed arms read slightly more like a vessel's own hull than like
-            walls, which muddles what is holding what.</p>
+          <p class="verdict"><b>Reads as:</b> a real container, which carries its owner's mark stencilled
+            on the side &mdash; so this is the only option where the letters are doing something the
+            subject actually does. The silhouette is untouched, so nothing is risked at small sizes.
+            <b>Cost:</b> the letters are 3.5 &times; 5.2 units behind a 0.8-unit stroke. They are a
+            header-size detail and nothing else: by 32&nbsp;px they are a texture, by 20&nbsp;px they
+            are gone. If the point is for people to notice the DD, this is the weakest option.</p>
         </div>
 
       </div>
@@ -544,49 +532,49 @@
   <section>
     <div class="zone"><span>C</span> &middot; at 16&nbsp;px</div>
     <div class="body">
-      <h2>The test that actually decides it</h2>
-      <p>Drydock's tab lives next to the Claude app's, because
-        <code>claude.ai/code?environment=&lt;id&gt;</code> sends you back and forth between them all
-        day. This is the mark at its working size, in the company it keeps.</p>
+      <h2>What the letters cost at favicon size</h2>
+      <p>None of the three says &ldquo;DD&rdquo; here, and none was ever going to. What matters is
+        whether the mark still reads as <em>a thing held in a dock</em>, and whether the three are still
+        distinguishable from each other and from their neighbours.</p>
 
       <div class="ground-light" style="padding:16px">
         <div class="tabstrip">
-          <div class="tab active"><span class="fav"><svg class="mark" width="16" height="16" aria-hidden="true"><use href="#m-battered"/></svg></span>Battered</div>
-          <div class="tab"><span class="fav"><svg class="mark" width="16" height="16" aria-hidden="true"><use href="#m-cradle"/></svg></span>Cradle</div>
-          <div class="tab"><span class="fav"><svg class="mark" width="16" height="16" aria-hidden="true"><use href="#m-flared"/></svg></span>Flared</div>
+          <div class="tab active"><span class="fav"><svg class="mark" width="16" height="16" aria-hidden="true"><use href="#m-twin"/></svg></span>Twin</div>
+          <div class="tab"><span class="fav"><svg class="mark" width="16" height="16" aria-hidden="true"><use href="#m-twin-o"/></svg></span>Twin, outlined</div>
+          <div class="tab"><span class="fav"><svg class="mark" width="16" height="16" aria-hidden="true"><use href="#m-face"/></svg></span>Stencil</div>
+          <div class="tab"><span class="fav"><svg class="mark" width="16" height="16" aria-hidden="true"><use href="#m-plain"/></svg></span>No letters</div>
           <div class="tab"><span class="fav"><span class="stub" style="background:#d97757">C</span></span>Claude</div>
-          <div class="tab"><span class="fav"><span class="stub" style="background:#24292f">G</span></span>GitHub</div>
         </div>
         <div class="tabpage"></div>
       </div>
 
       <div class="ground-dark" style="padding:16px">
         <div class="tabstrip">
-          <div class="tab active"><span class="fav"><svg class="mark" width="16" height="16" aria-hidden="true"><use href="#m-battered"/></svg></span>Battered</div>
-          <div class="tab"><span class="fav"><svg class="mark" width="16" height="16" aria-hidden="true"><use href="#m-cradle"/></svg></span>Cradle</div>
-          <div class="tab"><span class="fav"><svg class="mark" width="16" height="16" aria-hidden="true"><use href="#m-flared"/></svg></span>Flared</div>
+          <div class="tab active"><span class="fav"><svg class="mark" width="16" height="16" aria-hidden="true"><use href="#m-twin"/></svg></span>Twin</div>
+          <div class="tab"><span class="fav"><svg class="mark" width="16" height="16" aria-hidden="true"><use href="#m-twin-o"/></svg></span>Twin, outlined</div>
+          <div class="tab"><span class="fav"><svg class="mark" width="16" height="16" aria-hidden="true"><use href="#m-face"/></svg></span>Stencil</div>
+          <div class="tab"><span class="fav"><svg class="mark" width="16" height="16" aria-hidden="true"><use href="#m-plain"/></svg></span>No letters</div>
           <div class="tab"><span class="fav"><span class="stub" style="background:#d97757">C</span></span>Claude</div>
-          <div class="tab"><span class="fav"><span class="stub" style="background:#f0f6fc;color:#24292f">G</span></span>GitHub</div>
         </div>
         <div class="tabpage"></div>
       </div>
 
-      <p class="muted">At this size the basin is three or four pixels of ink either side of the
-        container, so what separates the candidates is almost entirely the <em>outline silhouette</em>
-        &mdash; whether the arms read as straight, standing, or splayed. If none of them reads as a dock
-        here, the answer is a filled badge rather than a different curve.</p>
+      <p class="muted">The stencil is indistinguishable from the no-letters baseline here, which is
+        either its best feature or the proof that it is not worth doing. The twin pair reads as two
+        marks rather than one solid block, which is a genuine difference in silhouette &mdash; the only
+        kind that survives this size.</p>
     </div>
   </section>
 
   <!-- D ------------------------------------------------------------------ -->
   <section>
-    <div class="zone"><span>D</span> &middot; construction</div>
+    <div class="zone"><span>D</span> &middot; rejected</div>
     <div class="body">
-      <h2>One vessel, three profiles, measured not eyeballed</h2>
+      <h2>Why the walls can't be the letters</h2>
       <div class="construct">
         <div>
           <div class="gridfig ground-light">
-            <svg viewBox="-1 -1 34 34" role="img" aria-label="The three basin profiles drawn over one 32-unit construction grid, with the shared container and keel blocks in place and a dashed clear-space boundary two units inside the edge.">
+            <svg viewBox="-1 -1 34 34" role="img" aria-label="The rejected attempt: each battered wall given a bowl at its lip so the wall reads as the stem of a letter D. The bowls are narrow relative to the walls and the right-hand one is mirrored.">
               <defs>
                 <pattern id="g1" width="1" height="1" patternUnits="userSpaceOnUse">
                   <path d="M1 0V1M0 1H1" stroke="#e2e8f0" stroke-width="0.07"/>
@@ -599,73 +587,68 @@
               <rect x="0" y="0" width="32" height="32" fill="url(#g8)"/>
               <rect x="0" y="0" width="32" height="32" fill="none" stroke="#94a3b8" stroke-width="0.16"/>
               <rect x="2" y="2" width="28" height="28" fill="none" stroke="#6d28d9" stroke-width="0.16" stroke-dasharray="1 0.8"/>
-
-              <!-- shared vessel, held back so the profiles read -->
-              <g opacity="0.3">
+              <g fill="none">
+                <path d="M5.8 8 8.6 24H23.4L26.2 8" stroke="#0f172a" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                <path d="M5.8 8C9.8 9 9.8 14.5 7.2 16" stroke="#0f172a" stroke-width="2" stroke-linecap="round"/>
+                <path d="M26.2 8C22.2 9 22.2 14.5 24.8 16" stroke="#0f172a" stroke-width="2" stroke-linecap="round"/>
                 <rect x="12.6" y="20.9" width="2" height="2.2" rx="0.4" fill="#0f172a"/>
                 <rect x="17.4" y="20.9" width="2" height="2.2" rx="0.4" fill="#0f172a"/>
                 <rect x="11" y="10.9" width="10" height="10" rx="1.6" fill="#1d4ed8"/>
-              </g>
-
-              <g fill="none" stroke-width="0.5" stroke-linecap="round" stroke-linejoin="round">
-                <path d="M3.1 8 8.6 24H23.4L28.9 8" stroke="#0f172a"/>
-                <path d="M3.5 8C3.5 19 5.5 24 16 24s12.5-5 12.5-16" stroke="#1d4ed8"/>
-                <path d="M3 8C4.6 19 5.5 24 16 24s11.4-5 13-16" stroke="#6d28d9"/>
+                <rect x="15.6" y="13.1" width="0.8" height="5.6" rx="0.4" fill="#ffffff"/>
               </g>
             </svg>
           </div>
-          <div class="legend">
-            <span style="color:#0f172a"><i></i>battered</span>
-            <span style="color:#1d4ed8"><i></i>cradle</span>
-            <span style="color:#6d28d9"><i></i>flared</span>
+          <p class="figcap"><strong>Fig 1</strong> &mdash; the walls given bowls at their lips. The
+            batter has to be flattened to make room, which narrows the whole mark, and the right-hand
+            letter comes out mirrored.</p>
+        </div>
+        <div style="display:flex;flex-direction:column;gap:18px;min-width:0">
+          <p>Letters in the basin walls are the only version that would survive to 16&nbsp;px, because
+            the walls are the silhouette. It was the first thing tried and it fails on two counts, both
+            structural rather than matters of taste.</p>
+          <p><strong>The proportions are wrong.</strong> A D reads as a D at a width-to-height ratio
+            around 0.6&ndash;0.8. The wall is 16 units tall, and the space available for a bowl between
+            the wall and the container is about 5 units wide, which gives 0.34 &mdash; a leaf, not a
+            letter. Attaching the bowl to only the top half gets to 0.56 and leaves the wall continuing
+            below it as a leg, which turns the D into something closer to a thorn. Flattening the batter
+            to free more width makes it worse, not better.</p>
+          <p><strong>One of them is always mirrored.</strong> A symmetric basin needs its two walls
+            mirrored, and a mirrored D is not a D. Making both face the same way means an asymmetric
+            dock with one wall shelved inward and the other bulging outward, which stops reading as a
+            basin at all.</p>
+          <div class="tablewrap">
+            <table>
+              <caption>Width-to-height of the bowl against the wall it would hang from.</caption>
+              <thead><tr><th>Where the bowl attaches</th><th>Bowl &times; stem</th><th>w : h</th><th></th></tr></thead>
+              <tbody>
+                <tr class="bad"><td>Full wall</td><td>5.4 &times; 16</td><td>0.34</td><td>reads as a leaf</td></tr>
+                <tr class="bad"><td>Top half only</td><td>4.5 &times; 8</td><td>0.56</td><td>a D with a leg</td></tr>
+                <tr class="bad"><td>Top half, flatter batter</td><td>3.2 &times; 8</td><td>0.40</td><td>worse, and narrows the mark</td></tr>
+                <tr><td>Vessel as letters</td><td>5.55 &times; 8</td><td>0.69</td><td>reads as a D</td></tr>
+                <tr><td>Stencilled on the face</td><td>3.5 &times; 5.2</td><td>0.67</td><td>reads as a D</td></tr>
+              </tbody>
+            </table>
           </div>
         </div>
-        <dl class="spec">
-          <dt>viewBox</dt><dd><code>0 0 32 32</code>, with 2 units of clear space on every side (dashed). Nothing but the mark enters that band.</dd>
-          <dt>vessel</dt><dd>Shared by all three: container 10 &times; 10 at x&nbsp;11, corner radius 1.6; keel blocks 2 &times; 2.2 at x&nbsp;12.6 and 17.4, overlapping the floor stroke so no hairline seam opens up at fractional zoom.</dd>
-          <dt>stroke</dt><dd>2 units, round cap and join &mdash; exactly 1&nbsp;px at a 16&nbsp;px render.</dd>
-          <dt>symmetry</dt><dd>Both curved paths close with the <code>s</code> shorthand, which reflects the previous control point &mdash; so the right wall is the mirror of the left for free, and editing one lip cannot desynchronise the other.</dd>
-          <dt>lip x</dt><dd>Set by the round cap, not the path: a cap reaches a full unit past its endpoint in every direction. The flared variant starts at x&nbsp;3.0 rather than 3.5 precisely because its lip leans outward, which spends that margin.</dd>
-          <dt>control arm</dt><dd>The curved basins' horizontal control sits at x&nbsp;5.5. At the first-draft 8.5 the curve rose into the keel-block zone &mdash; see the table below.</dd>
-        </dl>
       </div>
-
-      <div class="tablewrap">
-        <table>
-          <caption>Measured on the sampled path, stroke width included. Air gap is between the container's flat underside and the top edge of the floor stroke; side clearance is the shortest distance from the basin stroke to the container.</caption>
-          <thead>
-            <tr><th>Variant</th><th>Clear space</th><th>Side clearance</th><th>Air gap, centre</th><th>Air gap, min</th></tr>
-          </thead>
-          <tbody>
-            <tr><td>Battered</td><td>2.10</td><td>2.10</td><td>2.10</td><td>2.10</td></tr>
-            <tr><td>Cradle</td><td>2.50</td><td>1.48</td><td>2.10</td><td>1.89</td></tr>
-            <tr><td>Flared</td><td>2.00</td><td>1.45</td><td>2.10</td><td>1.88</td></tr>
-            <tr><td class="muted">Cradle, first draft</td><td class="muted">2.50</td><td class="muted">0.99</td><td class="muted">2.10</td><td class="muted">1.71</td></tr>
-            <tr><td class="muted">Stepped, v1</td><td class="muted">2.50</td><td class="muted">1.50</td><td class="muted">2.10</td><td class="muted">2.10</td></tr>
-          </tbody>
-        </table>
-      </div>
-      <p class="muted">The first-draft row is why this table exists: the curve looked fine and was
-        quietly closing the gap the whole mark depends on. A flat floor gets the constant 2.10 for free;
-        the curved pair only match it because the control arm was pulled back to 5.5.</p>
     </div>
   </section>
 
   <!-- E ------------------------------------------------------------------ -->
   <section>
-    <div class="zone"><span>E</span> &middot; palette</div>
+    <div class="zone"><span>E</span> &middot; construction</div>
     <div class="body">
-      <h2>Borrowed from the design diagrams, not invented</h2>
-      <p>These are the values already in <code>docs/design/*/diagrams/</code>, so the icon and the
-        documentation read as the same product. A badge form would keep a blue ground in both themes,
-        because a favicon sits on chrome whose colour Drydock does not control.</p>
-      <div class="swatches">
-        <div class="sw"><div class="chip" style="background:#0f172a"></div><div><div class="sw-name">Ink</div><div class="sw-hex">#0f172a &rarr; #e2e8f0</div></div></div>
-        <div class="sw"><div class="chip" style="background:#1d4ed8"></div><div><div class="sw-name">Accent</div><div class="sw-hex">#1d4ed8 &rarr; #60a5fa</div></div></div>
-        <div class="sw"><div class="chip" style="background:#ffffff"></div><div><div class="sw-name">Ground</div><div class="sw-hex">#ffffff &rarr; #0b1220</div></div></div>
-        <div class="sw"><div class="chip" style="background:#2563eb"></div><div><div class="sw-name">Badge ground</div><div class="sw-hex">#1d4ed8 &rarr; #2563eb</div></div></div>
-        <div class="sw"><div class="chip" style="background:#6d28d9"></div><div><div class="sw-name">Note</div><div class="sw-hex">#6d28d9 &rarr; #c4b5fd</div></div></div>
-      </div>
+      <h2>What is fixed and what moved</h2>
+      <dl class="spec">
+        <dt>basin</dt><dd>Settled: <code>M3.1 8 8.6 24H23.4L28.9 8</code>, stroke 2 units, round cap and join. Identical in all three candidates.</dd>
+        <dt>letter D</dt><dd>Stem, then a flat run, then a semicircular bowl whose radius is half the letter height &mdash; so the bowl is a true half-circle and the letter cannot go lopsided when it is resized. Solid versions carry a counter as a second subpath with <code>fill-rule="evenodd"</code>.</dd>
+        <dt>twin, solid</dt><dd>Letters 5.55 &times; 8 at x&nbsp;10 and 16.45, bowl radius 4, counter radius 2.2. Gap 0.9; 1.33 clear of the basin stroke.</dd>
+        <dt>twin, outlined</dt><dd>Same boxes once the 1.5-unit stroke is counted, which is why the path rect is 3.93 wide rather than 5.43 &mdash; the stroke has to be paid for out of the letter, or the two letters collide.</dd>
+        <dt>stencil</dt><dd>Letters 3.5 &times; 5.2 behind a 0.8-unit stroke, 1.1 clear of the container's edge, centred on the container's own centre at y&nbsp;15.9.</dd>
+        <dt>keel blocks</dt><dd>Moved for the twin variants: one block centred under each letter rather than two under one container. x&nbsp;11.8 and 18.2 solid, 11.7 and 18.3 outlined. The stencil keeps the original 12.6 and 17.4.</dd>
+        <dt>air gap</dt><dd>Unchanged at 2.1 units in all three: every vessel's underside still sits at y&nbsp;20.9 and the floor stroke's top edge at y&nbsp;23. That gap is the metaphor and nothing was allowed to spend it.</dd>
+        <dt>symmetry</dt><dd>Every letter pair and block pair sums to 32 across the mark, checked rather than eyeballed.</dd>
+      </dl>
     </div>
   </section>
 
@@ -675,30 +658,30 @@
     <div class="body">
       <h2>What is still yours to call</h2>
       <ol class="calls">
-        <li><div><strong>Which basin.</strong> Battered keeps the built, excavated reading and a flat
-          floor. Cradle is the calmest and the least likely to blur at 16&nbsp;px. Flared has the most
-          motion and the least certainty about what is holding what.</div></li>
-        <li><div><strong>What the vessel should be.</strong> v1 also offered the container with a
-          <code>&gt;_</code> prompt on its face &mdash; the <em>session</em> rather than the
-          <em>workspace</em>. Unresolved, and orthogonal to the basin; it gets redrawn on whichever
-          basin wins rather than kept alive on a rejected one.</div></li>
-        <li><div><strong>Whether the door seam earns its place.</strong> It is the one interior detail,
-          it is the first thing to vanish as the icon shrinks, and the mark is fine without it.</div></li>
-        <li><div><strong>Whether the accent should be the blue at all.</strong> It is the API colour in
-          the architecture diagram, and the mark is currently spending it on the container. The violet
-          is unused by the mark and already means &ldquo;preview origin&rdquo; elsewhere.</div></li>
+        <li><div><strong>Whether the DD is worth its cost at all.</strong> The baseline in zone&nbsp;A is
+          still the cleanest mark of the four. The letters buy a tie to the name that only shows above
+          24&nbsp;px, and the twin options buy it by giving up the container silhouette.</div></li>
+        <li><div><strong>If yes: twin or stencil.</strong> Twin puts the letters in the silhouette and
+          makes them the subject. Stencil keeps the container and treats the letters as markings on it,
+          which is what real containers do &mdash; at the price of being invisible below header
+          size.</div></li>
+        <li><div><strong>A wordmark instead.</strong> The letters always read beside the mark, never
+          inside it. A lockup &mdash; the battered mark plus &ldquo;Drydock&rdquo; set alongside &mdash;
+          ties the name down completely and leaves the icon clean for the favicon. The UI header needs
+          one regardless, so this is not a consolation prize.</div></li>
+        <li><div><strong>Whether the accent should be the blue.</strong> Still open from v2. It is the
+          API colour in the architecture diagram, and the mark spends it on the vessel.</div></li>
       </ol>
-      <p class="muted">Once a basin and a payload are settled: redraw the badge and the one-colour
-        <code>currentColor</code> form on the winning geometry (both existed in v1 and were dropped with
-        the stepped basin, since both embedded it), cut the light/dark pair for Markdown
+      <p class="muted">Once a vessel is settled: redraw the badge and the one-colour
+        <code>currentColor</code> form on the winning geometry, cut the light/dark pair for Markdown
         <code>&lt;picture&gt;</code> embedding, and add the 180&nbsp;px apple-touch PNG.</p>
     </div>
   </section>
 
   <footer>
     <span>docs/design/brand/</span>
-    <span>brand-design.md &middot; draft v2</span>
-    <span>3 files &middot; icons/</span>
+    <span>brand-design.md &middot; draft v3</span>
+    <span>4 files &middot; icons/</span>
     <span>re-render this sheet after any geometry change</span>
   </footer>
 </div>

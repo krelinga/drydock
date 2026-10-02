@@ -1,6 +1,6 @@
 # Drydock brand mark — design note
 
-**Status: draft v2, three candidates. Nothing is chosen yet.**
+**Status: draft v3. Basin settled (battered). Vessel undecided — three candidates.**
 
 This note covers one asset: the Drydock icon. It exists because Phase 1 ships a LAN-facing web UI that
 needs a favicon and a header mark, and because `claude.ai/code?environment=<id>` sends people back and
@@ -18,11 +18,10 @@ around it, and an agent inside with scoped credentials — a prepared place wher
 happens, separate from the repo itself. The container survives nothing; the clone survives rebuild and
 delete (§1 of the overall design). The dock persists, the vessel comes and goes.
 
-So the mark is a **section through a drained basin** with a **shipping container** resting clear of the
-floor on **two keel blocks**. The container is doing double duty, and deliberately: it is the vessel in
-the dock, and it is the dev container. The gap under it is the whole point of a dry dock, and it is the
-single detail that stops the mark reading as a generic "box in brackets" — so nothing may crowd it, and
-every candidate is measured on whether it keeps that gap open.
+So the mark is a **section through a drained basin** with a **vessel resting clear of the floor on keel
+blocks**. The gap under the vessel is the whole point of a dry dock, and it is the single detail that
+stops the mark reading as a generic "box in brackets". It is fixed at 2.1 units in every variant and
+nothing is allowed to spend it.
 
 Rejected, with reasons worth keeping:
 
@@ -31,76 +30,116 @@ Rejected, with reasons worth keeping:
   relationship the design explicitly refuses.
 - **An anchor, a wheel, a porthole.** Nautical decoration with no mapping to anything in the system.
   An anchor is for holding a vessel in place at sea; it is the opposite of a dry dock.
-- **A `D` monogram.** Survives 16 px fine, says nothing, and there are a great many `D`s.
 - **A waterline.** Every version read as "harbour" rather than "dry dock". The drained basin is the
   distinguishing feature, and drawing water in it destroys the only idea the mark carries.
 
-## What changed in v2
+## The basin is settled
 
-Draft v1 drew the basin as **stepped walls** — one altar step per side, all corners square. That was
-rejected: too many right angles. Worth recording what the steps were doing, so the replacement is
-judged against it rather than just preferred for being new. The steps read as *masonry* — a cut,
-built, load-bearing structure — and they were the detail that made the enclosure say "dock" instead of
-"bowl", "bin", or "basket". Any curved basin gives that up and leans harder on the keel blocks to carry
-the dock reading, since nothing else in the mark is specific to a dock.
+| Draft | Basin | Outcome |
+| --- | --- | --- |
+| v1 | Stepped walls, one altar step per side | Rejected: too many right angles |
+| v2 | Battered / cradle / flared | **Battered chosen** |
 
-All three v2 candidates therefore keep the container and keel blocks byte for byte and change only the
-basin, and **none of them contains a right angle**.
+**Battered** is straight walls battered inward to a flat floor, joining it at 109° — no right angle in
+the mark. Path, shared by every candidate and no longer up for discussion:
+
+```
+M3.1 8 8.6 24H23.4L28.9 8
+```
+
+Worth recording what the v1 steps were doing, because the current mark no longer has it: they read as
+*masonry* — cut, built, load-bearing — and they were the detail that made the enclosure say *dock*
+rather than bowl or bin. The battered walls keep most of that (battered walls are what real dock walls
+do) without a square corner. The curved alternatives gave it up entirely, which is part of why they
+lost; they are in git history if that reading is ever wanted back.
+
+## The "DD" question
+
+The brief for v3: work a **DD** into the mark to tie it to the name. There is a hard physical limit
+worth stating before the options. **At 16 px the whole mark is 16 pixels tall and the vessel is about
+five of them.** No letterform survives that. So the question is not whether the icon can say DD — it is
+*where the letters live, and what size they start reading at.*
+
+A `D` reads as a `D` at a width-to-height ratio of roughly 0.6–0.8. Below that it reads as a leaf or a
+lens. That single number decides where letters can go:
+
+| Placement | Letter box | w : h | Verdict |
+| --- | --- | --- | --- |
+| Basin wall, bowl on the full wall | 5.4 × 16 | 0.34 | Reads as a leaf |
+| Basin wall, bowl on the top half | 4.5 × 8 | 0.56 | A `D` with a leg — closer to a thorn |
+| Basin wall, flatter batter for room | 3.2 × 8 | 0.40 | Worse, and it narrows the whole mark |
+| **Vessel as letters** | 5.55 × 8 | **0.69** | Reads as a `D` |
+| **Stencilled on the vessel's face** | 3.5 × 5.2 | **0.67** | Reads as a `D` |
+
+### Why the walls can't be the letters
+
+Letters in the basin walls are the only version that would survive to 16 px, because the walls *are*
+the silhouette. It was the first thing tried. It fails on two structural counts, neither a matter of
+taste:
+
+1. **The proportions are wrong.** The wall is 16 units tall and only about 5 units of width are
+   available for a bowl between the wall and the vessel — 0.34. Attaching the bowl to the top half only
+   reaches 0.56 and leaves the wall continuing below as a leg, which turns the `D` into a thorn.
+   Flattening the batter to free width makes the ratio worse *and* narrows the mark.
+2. **One of them is always mirrored.** A symmetric basin needs its two walls mirrored, and a mirrored
+   `D` is not a `D`. Making both face the same way means an asymmetric dock with one wall shelved
+   inward and the other bulging outward, which stops reading as a basin at all.
+
+`icon-preview.html` zone D renders the attempt so this is checkable rather than asserted.
 
 ## Candidates
 
-All three files are in `icons/`. Each is a single self-adapting SVG: a `<style>` block defines the light
-palette on `svg` and overrides it under `prefers-color-scheme: dark`, and every element also carries its
-light value as a presentation attribute, so a renderer that strips `<style>` still gets the light mark
-rather than a black silhouette.
+All in `icons/`, each a single self-adapting SVG: a `<style>` block defines the light palette on `svg`
+and overrides it under `prefers-color-scheme: dark`, and every element also carries its light value as
+a presentation attribute, so a renderer that strips `<style>` still gets the light mark rather than a
+black silhouette.
 
-| File | Basin | Reads as |
-| --- | --- | --- |
-| `drydock-mark-battered.svg` | Straight walls battered inward to a flat floor; the wall/floor join is 109° | Excavated and built. Closest in feel to the stepped version without a square corner in it |
-| `drydock-mark-cradle.svg` | One continuous curve, vertical at the lips, flat-tangent under the keel | Calm, and the most obviously "held". Softest of the three |
-| `drydock-mark-flared.svg` | One curve whose walls lean 8° open at the lip | Open to receive. More motion; the lips read as a mouth rather than a wall |
+| File | Vessel | Letters read from | Cost |
+| --- | --- | --- | --- |
+| `drydock-mark-dd-twin.svg` | Two solid `D` blocks, one keel block each | ~24 px | The vessel stops looking like a container |
+| `drydock-mark-dd-twin-outline.svg` | The same two `D`s, outlined | ~20 px | Reads a little like a diagram of the mark |
+| `drydock-mark-dd-face.svg` | The container, `DD` stencilled on its face | ~48 px | Invisible below header size |
+| `drydock-mark-battered.svg` | Plain container with a door seam | — | The v2 baseline, kept for comparison |
 
-The battered variant is the only one that keeps a genuinely flat floor, which matters more than it
-looks: a flat floor is what keel blocks stand on, and it holds the air gap under the container at a
-constant 2.1 units all the way across. The curved pair taper to 1.89 at the edge of the container's
-underside — close enough to read the same, but they get there by being tuned rather than by the form
-wanting it.
+**Twin** is the recommendation. Two vessels in one dock is *true of the product* — a dock holds more
+than one workspace — so the letters are earned by the subject rather than pasted onto it, and they sit
+in the silhouette, which is the only thing that survives shrinking. **Stencil** is the one option where
+the letters do something the subject genuinely does (containers carry their owner's mark stencilled on
+the side) and it risks nothing at small sizes, but it is a header-size detail and nothing else.
+
+The baseline is still the cleanest of the four. The letters buy a tie to the name that only shows above
+24 px, and the twin options buy it by giving up the container silhouette. That trade is the decision.
 
 ## Construction
 
 - **32-unit `viewBox`**, 2 units of clear space on every side. Everything is placed on halves of a unit
   so a 16 px render lands on pixel edges rather than straddling them.
-- **Stroke 2 units**, round caps and joins — 1 px at a 16 px render.
-- **Every variant's container occupies the same 10 × 10 footprint**, outer edges at x 11 and 21, with a
-  1.6-unit corner radius. **Keel blocks** are 2 × 2.2 rects at x 12.6 and 17.4, overlapping the floor
-  stroke so no hairline seam opens up between block and floor at fractional zoom.
-- **Basin paths**, each exactly mirror-symmetric about x = 16 by construction:
+- **Stroke 2 units** on the basin, round caps and joins — 1 px at a 16 px render.
+- **The letter `D`** is a stem, a flat run, then a semicircular bowl whose radius is exactly half the
+  letter height. Making the bowl a true half-circle means the letter cannot go lopsided when it is
+  resized. Solid versions carry their counter as a second subpath with `fill-rule="evenodd"`.
+- **Twin, solid:** letters 5.55 × 8 at x 10 and 16.45; bowl radius 4, counter radius 2.2; gap 0.9;
+  1.33 clear of the basin stroke.
+- **Twin, outlined:** the same outer boxes once the 1.5-unit stroke is counted — which is why the path
+  rect is 3.93 wide rather than 5.43. The stroke has to be paid for out of the letter or the two
+  letters collide; the first attempt at the outlined pair overlapped by 0.1 units for exactly this
+  reason.
+- **Stencil:** letters 3.5 × 5.2 behind a 0.8-unit stroke, 1.1 clear of the container's edge, centred
+  on the container's own centre at y 15.9.
+- **Keel blocks** move for the twin variants: one block centred under each letter (x 11.8 and 18.2
+  solid, 11.7 and 18.3 outlined) rather than two under one container. The stencil keeps the original
+  12.6 and 17.4.
+- **Air gap** is 2.1 units in every variant: every vessel's underside sits at y 20.9 and the floor
+  stroke's top edge at y 23.
+- **Symmetry** is checked, not eyeballed: every letter pair and block pair sums to 32 across the mark.
 
-  | Variant | Path |
-  | --- | --- |
-  | Battered | `M3.1 8 8.6 24H23.4L28.9 8` |
-  | Cradle | `M3.5 8C3.5 19 5.5 24 16 24s12.5-5 12.5-16` |
-  | Flared | `M3 8C4.6 19 5.5 24 16 24s11.4-5 13-16` |
+Two earlier measured near-misses, kept because both are easy to reintroduce:
 
-  Both curved paths use the `s` shorthand for the second half, which reflects the previous control
-  point — so the right wall is the mirror of the left for free, and editing one lip cannot desynchronise
-  the other.
-
-Two numbers were found by measurement rather than by eye, and both are easy to break by nudging a
-control point:
-
-- **The curved basins' horizontal control arm sits at x 5.5.** At the first-draft value of 8.5 the
-  curve rose into the keel-block zone: side clearance to the container fell to 0.99 units and the air
-  gap under its underside to 1.71. Pulling the arm to 5.5 flattens the floor under the keel and
-  restores 1.46 of side clearance with a 1.89–2.10 gap.
-- **The lip x-positions are set by the round cap, not the path.** A round cap extends a full unit past
-  the endpoint in every direction, so the leftmost ink is roughly one unit left of the lip. The flared
-  variant starts at x 3.0 rather than 3.5 precisely because its lip leans 8° outward, which spends the
-  margin the clear-space band would otherwise keep.
-
-Earlier drafts of the outlined container also had to shrink their *path* rect to 8.4 units to hold the
-10 × 10 footprint once the stroke was counted; the first attempt did not, left 0.5 units of clearance,
-and the container visibly touched the wall below 24 px.
+- A round cap reaches a full unit past its endpoint in every direction, so **lip positions are set by
+  the cap, not the path**. This is why the battered lips sit at x 3.1 rather than 3.5.
+- The v2 curved basins needed their horizontal control arm at x 5.5. At the first-draft 8.5 the curve
+  rose into the keel-block zone, cutting side clearance to 0.99 and the air gap to 1.71 — the curve was
+  quietly closing the gap the whole mark depends on.
 
 ## Palette
 
@@ -119,20 +158,21 @@ favicon sits on browser chrome whose colour Drydock does not control.
 
 ## Still open
 
-1. **Which basin.** Battered, cradle, or flared.
-2. **What the vessel should be.** v1 also offered the container with a `>_` prompt on its face — the
-   *session* rather than the *workspace*. That question is unresolved and orthogonal to the basin; the
-   prompt payload will be redrawn on whichever basin wins rather than kept alive on a rejected one.
-3. **Whether the door seam earns its place.** It is the one interior detail, it is the first thing to
-   vanish as the icon shrinks, and the mark is fine without it.
+1. **Whether the DD is worth its cost at all.** The plain battered mark is still the cleanest of the
+   four.
+2. **If yes: twin or stencil.** Letters as the subject, or letters as markings on the subject.
+3. **A wordmark instead.** The letters always read beside the mark and never inside it. A lockup — the
+   battered mark plus "Drydock" set alongside — ties the name down completely and leaves the icon clean
+   for the favicon. The UI header needs one regardless, so this is not a consolation prize.
 4. **Whether the accent should be the blue at all.** It is the API colour in the architecture diagram,
-   and the mark currently spends it on the container.
+   and the mark spends it on the vessel.
+5. **The `>_` prompt payload** from v1 — the *session* rather than the *workspace* — is still
+   unresolved and now competes with the letters for the same surface.
 
-## Once a basin and a payload are chosen
+## Once a vessel is chosen
 
 1. Redraw the **badge** (accent rounded square, mark knocked out) and the **one-colour `currentColor`
-   form** on the winning geometry. Both existed in v1 and were dropped when the stepped basin was, since
-   both embedded it.
+   form** on the winning geometry. Both existed in v1 and were dropped when the stepped basin was.
 2. Cut the light/dark SVG pair under `icons/` as `NN-name-light.svg` / `NN-name-dark.svg`, matching the
    diagram convention, for embedding in Markdown through `<picture>`. The self-adapting single file
    stays — it is what the UI and the favicon link to.
@@ -141,8 +181,9 @@ favicon sits on browser chrome whose colour Drydock does not control.
 4. Check the mark against Caddy's TLS padlock and the Claude app's own icon in a tab strip — those are
    the two icons it will sit beside in practice.
 
-`icon-preview.html` renders every candidate on both grounds down to 16 px, over its construction grid.
-Re-render it after any geometry change; it is what caught both measured problems above.
+`icon-preview.html` renders every candidate on both grounds down to 16 px and renders the rejected
+walls-as-letters attempt beside its numbers. Re-render it after any geometry change; it is what has
+caught every measured problem so far.
 
 Accessibility: every file carries `role="img"` with `<title>`/`<desc>` referenced from
 `aria-labelledby`. Inline uses in the UI should set `aria-hidden="true"` when adjacent text already
