@@ -1,0 +1,7 @@
+devcontainer_version: 0.89.0
+docker_version:       29.8.2-1 (the devcontainer's inner DinD daemon)
+recorded_at:          2026-10-04T06:23:48Z
+command:              devcontainer up --workspace-folder <mktemp dir> --id-label drydock.test.1f88a59d.workspace=fixture   (stdout only; stderr is log text; exit 0)
+config:               {"name":"drydock-fixture","image":"debian:bookworm-slim"}
+provenance:           recorded
+must_yield:           ContainerRunning, the 64-hex containerId, remoteUser "root"

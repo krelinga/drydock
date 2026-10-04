@@ -1,0 +1,7 @@
+devcontainer_version: 0.89.0
+docker_version:       29.8.2-1 (the devcontainer's inner DinD daemon)
+recorded_at:          2026-10-04T06:23:57Z
+command:              devcontainer up --workspace-folder <mktemp dir> --id-label drydock.test.1f88a59d.workspace=fixture --json   (exit 1)
+config:               {"name":"drydock-fixture","image":"debian:bookworm-slim"}
+provenance:           recorded
+must_yield:           an ERROR, not a verdict. stdout is EMPTY: `--json` is not a flag of `up` in 0.89.0 (the result JSON is always on stdout), yet design §6 step 6 passes it. The usage text ending "Unknown argument: json" is in the sibling .stderr

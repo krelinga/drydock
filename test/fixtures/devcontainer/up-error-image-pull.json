@@ -1,0 +1,1 @@
+{"outcome":"error","message":"Command failed: docker pull drydock-fixture-no-such-image:does-not-exist","description":"An error occurred setting up the container."}

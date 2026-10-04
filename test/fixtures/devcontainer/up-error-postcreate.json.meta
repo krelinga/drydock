@@ -1,0 +1,7 @@
+devcontainer_version: 0.89.0
+docker_version:       29.8.2-1 (the devcontainer's inner DinD daemon)
+recorded_at:          2026-10-04T06:24:32Z
+command:              devcontainer up --workspace-folder <mktemp dir> --id-label drydock.test.1f88a59d.workspace=postcreate   (stdout only; exit 1)
+config:               {"name":"drydock-fixture","image":"debian:bookworm-slim","postCreateCommand":"echo drydock-fixture-postcreate; exit 7"}
+provenance:           recorded
+must_yield:           ContainerFailed WITH a containerId -- the container was created and left running, so a failed up can still own a container

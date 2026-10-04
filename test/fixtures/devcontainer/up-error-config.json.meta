@@ -1,0 +1,7 @@
+devcontainer_version: 0.89.0
+docker_version:       29.8.2-1 (the devcontainer's inner DinD daemon)
+recorded_at:          2026-10-04T06:24:09Z
+command:              devcontainer up --workspace-folder <mktemp dir> --id-label drydock.test.1f88a59d.workspace=fixture   (stdout only; exit 1)
+config:               {"name":"drydock-fixture", "image":     <- truncated, malformed JSON on purpose
+provenance:           recorded
+must_yield:           ContainerFailed, no containerId. The CLI reports a truncated file as "missing one of image/dockerFile/dockerComposeFile", not as a parse error
