@@ -3,6 +3,7 @@ package githubtest
 import (
 	"os"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -53,6 +54,27 @@ type Backend struct {
 	// Live is true against GitHub itself; Fake is nil then.
 	Live bool
 	Fake *Fake
+}
+
+// GitURL is a repository's clone URL on this backend, with git's remote
+// switched on for the fake.
+func (b Backend) GitURL(t *testing.T, fullName string) string {
+	t.Helper()
+	if b.Live {
+		return "https://github.com/" + fullName + ".git"
+	}
+	if b.Fake.gitBackend == "" {
+		b.Fake.EnableGit(t)
+	}
+	return b.Fake.URL + "/" + fullName + ".git"
+}
+
+// GitHost is the host git reports to a credential helper for GitURL.
+func (b Backend) GitHost() string {
+	if b.Live {
+		return "github.com"
+	}
+	return strings.TrimPrefix(b.Fake.URL, "http://")
 }
 
 // NewBackend returns the dev App against GitHub when EnvLiveAppID and

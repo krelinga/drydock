@@ -36,6 +36,10 @@ type Config struct {
 
 	// WorkspaceRoot is where clones live: /srv/drydock/ws/<id>/repo.
 	WorkspaceRoot string
+	// BrokerDir holds one token-broker socket per workspace (§6 step 5),
+	// each bind-mounted into its own container. Drydock makes it 0700:
+	// that directory, not the sockets' mode, is what keeps host users out.
+	BrokerDir string
 	// DatabasePath is the SQLite file. An advisory lock on it refuses a
 	// second Drydock — though see LabelPrefix for what that does *not*
 	// cover.
@@ -92,6 +96,7 @@ func Default() Config {
 		PreviewSocket:      "/run/drydock/preview.sock",
 		SocketGroup:        "drydock",
 		WorkspaceRoot:      "/srv/drydock/ws",
+		BrokerDir:          "/run/drydock/sock",
 		DatabasePath:       "/var/lib/drydock/drydock.db",
 		LabelPrefix:        "drydock",
 		SupervisorCapacity: 4,
