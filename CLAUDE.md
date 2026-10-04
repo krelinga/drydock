@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **Design-only. There is no application source code yet.** The repository contains the overall design
 document (`docs/design/overall/drydock-design.md`, draft v7), supplemental ones on port forwarding
-(`docs/design/port-forwarding/`, draft v4), testing (`docs/design/testing/`, draft v3) and the Vue
+(`docs/design/port-forwarding/`, draft v4), testing (`docs/design/testing/`, draft v4) and the Vue
 frontend (`docs/design/frontend/`, draft v4), an adversarial security review
 (`docs/design/security-review.md`), their SVG diagrams, a devcontainer definition, and the **four
 completed Phase 0 spikes** with their harnesses under `docs/design/spikes/`. There are no build,
