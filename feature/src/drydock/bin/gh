@@ -7,18 +7,24 @@
 # The token reaches the child's environment, never its argv.
 set -u
 
-self=$(cd "$(dirname "$0")" && pwd -P)
+# The first gh on PATH that is not this script, under any name: the Feature
+# links the shim from /usr/local/bin as well as keeping it in its own
+# directory, so skipping only this directory would find the other copy and
+# exec it forever.
+self=$(readlink -f "$0")
 real=
 IFS=:
 for d in $PATH; do
 	[ -n "$d" ] || continue
-	[ "$(cd "$d" 2>/dev/null && pwd -P)" = "$self" ] && continue
+	[ "$(readlink -f "$d/gh" 2>/dev/null)" = "$self" ] && continue
 	if [ -x "$d/gh" ]; then
 		real=$d/gh
 		break
 	fi
 done
 unset IFS
+# A gh the Feature moved out of /usr/local/bin to make room for this shim.
+[ -n "$real" ] || { [ -x /usr/local/drydock/real/gh ] && real=/usr/local/drydock/real/gh; }
 if [ -z "$real" ]; then
 	echo "drydock: gh is not installed" >&2
 	exit 127

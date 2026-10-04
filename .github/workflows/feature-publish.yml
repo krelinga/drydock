@@ -1,0 +1,29 @@
+# Publishes the devcontainer Feature to ghcr.io/krelinga/drydock/drydock when
+# feature/src changes on main. The version is devcontainer-feature.json's own,
+# independent of Drydock's release: bump it there to publish, and the action
+# skips a version that already exists. Drydock references it by major tag
+# (ghcr.io/krelinga/drydock/drydock:0) in --additional-features.
+name: feature-publish
+
+on:
+  push:
+    branches: [main]
+    paths: ["feature/src/**"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: devcontainers/action@v1
+        with:
+          publish-features: "true"
+          base-path-to-features: ./feature/src
+          features-namespace: krelinga/drydock
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

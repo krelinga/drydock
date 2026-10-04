@@ -1,0 +1,43 @@
+#!/bin/sh
+# drydock-hook — every git hook in a Drydock workspace, through core.hooksPath.
+#
+# pre-push enforces the branch prefix (design §9.3: agent branches go under
+# drydock/, configured rather than left to the model to remember). Every hook,
+# pre-push included, then runs the repository's own hook of the same name, so
+# setting core.hooksPath does not silence it. A repository that sets its own
+# core.hooksPath bypasses this guard; that is acceptable, because it is a
+# convention, not a boundary: the token can push anywhere in the repository.
+set -u
+name=$(basename "$0")
+own="$(git rev-parse --git-common-dir 2>/dev/null)/hooks/$name"
+
+if [ "$name" = pre-push ]; then
+	prefix=drydock/
+	if [ -r /usr/local/drydock/etc/feature.env ]; then
+		while IFS='=' read -r k v; do
+			[ "$k" = BRANCH_PREFIX ] && prefix=$v
+		done </usr/local/drydock/etc/feature.env
+	fi
+	refs=$(cat)
+	if [ -n "$prefix" ]; then
+		bad=$(printf '%s\n' "$refs" | while read -r _ _ remote _; do
+			[ -n "$remote" ] || continue
+			case $remote in "refs/heads/$prefix"*) ;; *) echo "$remote" ;; esac
+		done)
+		if [ -n "$bad" ]; then
+			echo "drydock: pushes go under refs/heads/$prefix; refused:" >&2
+			printf '  %s\n' $bad >&2
+			echo "drydock: push to a $prefix branch and open a pull request." >&2
+			exit 1
+		fi
+	fi
+	if [ -x "$own" ]; then
+		printf '%s\n' "$refs" | "$own" "$@"
+		exit $?
+	fi
+	exit 0
+fi
+
+[ -x "$own" ] && exec "$own" "$@"
+# git feeds some hooks on stdin; a hook that exits without reading it is fine.
+exit 0

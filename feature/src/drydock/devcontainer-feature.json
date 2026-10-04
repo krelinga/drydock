@@ -1,0 +1,37 @@
+{
+  "id": "drydock",
+  "version": "0.1.0",
+  "name": "Drydock",
+  "description": "What a Drydock workspace needs inside its container: GitHub access through the per-workspace token broker (a git credential helper and a gh shim), the agent's commit identity, and the drydock/ branch guard.",
+  "documentationURL": "https://github.com/krelinga/drydock/blob/main/docs/design/overall/drydock-design.md#11-the-devcontainer-feature",
+  "options": {
+    "botName": {
+      "type": "string",
+      "default": "",
+      "description": "git user.name for commits made in the workspace: the GitHub App's bot, e.g. krelinga-drydock[bot]. Empty leaves it unset."
+    },
+    "botEmail": {
+      "type": "string",
+      "default": "",
+      "description": "git user.email: <bot-user-id>+<app-slug>[bot]@users.noreply.github.com, where the number is the bot USER id, not the App ID (design §9.3)."
+    },
+    "branchPrefix": {
+      "type": "string",
+      "default": "drydock/",
+      "description": "Pushes are refused outside refs/heads/<branchPrefix>. Empty disables the guard."
+    },
+    "requireBroker": {
+      "type": "boolean",
+      "default": true,
+      "description": "Fail the container's start when the broker socket does not answer. false only for testing the Feature itself."
+    }
+  },
+  "dependsOn": {
+    "ghcr.io/devcontainers/features/github-cli:1": {}
+  },
+  "containerEnv": {
+    "DRYDOCK_BROKER_SOCK": "/run/drydock/broker.sock",
+    "PATH": "/usr/local/drydock/bin:${PATH}"
+  },
+  "postStartCommand": "/usr/local/drydock/bin/drydock-probe"
+}

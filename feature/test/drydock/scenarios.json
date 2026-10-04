@@ -1,0 +1,24 @@
+{
+  "debian": {
+    "image": "mcr.microsoft.com/devcontainers/base:debian",
+    "features": {
+      "drydock": {
+        "requireBroker": false,
+        "botName": "krelinga-drydock-dev[bot]",
+        "botEmail": "337849865+krelinga-drydock-dev[bot]@users.noreply.github.com"
+      }
+    }
+  },
+  "ubuntu-bare": {
+    "image": "ubuntu:noble",
+    "features": {
+      "drydock": { "requireBroker": false }
+    }
+  },
+  "no-guard": {
+    "image": "mcr.microsoft.com/devcontainers/base:debian",
+    "features": {
+      "drydock": { "requireBroker": false, "branchPrefix": "" }
+    }
+  }
+}
