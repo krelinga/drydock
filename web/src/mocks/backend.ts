@@ -1,8 +1,8 @@
 // A pretend Drydock for the MSW harness (frontend §10): the three
-// /api/auth/session routes, GET /api/repos and its refresh, the event stream
-// with Last-Event-ID replay and `resync`, and the gate's behaviour for
-// everything else,
-// shaped exactly as internal/api writes them — the same codes, the same
+// /api/auth/session routes, GET /api/repos and its refresh, the workspace
+// routes Phase 2 has (list, read, create, start), the event stream with
+// Last-Event-ID replay and `resync`, and the gate's behaviour for everything
+// else, shaped exactly as internal/api writes them — the same codes, the same
 // statuses, the same Retry-After, the same 401-before-404 ordering for an
 // unknown /api path. The specs and `npm run dev:mock` share it, so what the UI
 // is developed against is what it is tested against.
@@ -13,7 +13,10 @@
 // why cookie semantics belong to the browser tier (testing §10).
 
 import { http, HttpResponse, sse, type HttpHandler } from 'msw'
-import type { CatalogView, Device, InstallationView, RepoView, SessionInfo, StreamEvent, WorkspaceState } from '../api/types'
+import type {
+  CatalogView, Device, InstallationView, RepoView, SessionInfo, StepView, StreamEvent, WorkspaceDetail,
+  WorkspaceList, WorkspaceState, WorkspaceView,
+} from '../api/types'
 
 export const MOCK_PASSWORD = 'drydock'
 const LOCKOUT_AFTER = 5
@@ -55,6 +58,26 @@ export interface MockBackend {
   refreshMode: 'auto' | 'manual'
   refreshDelayMs: number
   pendingRefreshes: number
+
+  /**
+   * How many workspaces may hold or build a container at once: the cap
+   * `POST /api/workspaces` answers `409 at_capacity` against.
+   */
+  capacity: number
+  /**
+   * `auto` plays a create's or a start's events on a timer, one per
+   * `scriptIntervalMs`, as the server's own goroutine would — the create's
+   * first event before the 202, since the server commits the row and its
+   * event together. `manual` plays nothing: the whole script lands in
+   * `scripts` for a spec to play, so the in-flight state can be observed.
+   */
+  scriptMode: 'auto' | 'manual'
+  scriptIntervalMs: number
+  scripts: Record<string, Array<() => void>>
+  /** The step the next create fails at, once (dev:mock's `failNext`). */
+  failNext: string | null
+  /** Hands out increasing ULID-shaped ids. */
+  idSeq: number
 }
 
 export interface MockWorkspace {
@@ -62,6 +85,10 @@ export interface MockWorkspace {
   repository_id: number
   branch: string
   state: WorkspaceState
+  state_detail: string | null
+  container_id: string | null
+  created_at: string
+  steps: Record<string, StepView>
 }
 
 const CURRENT_ID = 'c0ffee0000000000000000000000000000000000000000000000000000000001'
@@ -108,16 +135,38 @@ function sampleRepos(now: number): Array<Omit<RepoView, 'workspace'>> {
   ]
 }
 
-function sampleWorkspaces(): Record<string, MockWorkspace> {
-  return {
-    [WS_RUNNING]: { id: WS_RUNNING, repository_id: 1, branch: 'main', state: 'running' },
-    [WS_FAILED]: { id: WS_FAILED, repository_id: 2, branch: 'main', state: 'failed' },
-    [WS_REMOVED]: { id: WS_REMOVED, repository_id: 5, branch: 'main', state: 'stopped' },
+/**
+ * The sample workspaces, made the way the server makes them: by playing
+ * their events into the log, so each one's row, steps and history agree.
+ * WS_RUNNING cloned and came up; WS_FAILED failed at `up`; WS_REMOVED ran and
+ * was stopped. Nothing is subscribed yet, so this publishes to no one.
+ */
+function seedWorkspaces(b: MockBackend, now: number): void {
+  const plays: Array<[string, number, string | undefined, number]> = [
+    [WS_RUNNING, 1, undefined, 3 * 3600e3],
+    [WS_FAILED, 2, 'up', 26 * 3600e3],
+    [WS_REMOVED, 5, undefined, 9 * 86400e3],
+  ]
+  // Oldest first, so the log's ids run in time order like the server's.
+  for (const [id, repo, failAt, ago] of plays.sort((x, y) => y[3] - x[3])) {
+    cloneScript(b, repo, id, failAt).forEach((play, i) => play(new Date(now - ago + i * 4000).toISOString()))
+    if (id === WS_REMOVED) {
+      emit(b, 'workspace.state', {
+        workspace_id: id, at: new Date(now - ago + 3600e3).toISOString(),
+        message: 'Stopped.', data: { state: 'stopped', from: 'running' },
+      })
+    }
   }
 }
 
 export function newBackend(overrides: Partial<MockBackend> = {}): MockBackend {
   const now = Date.now()
+  const b = newBackendBare(now, overrides)
+  if (overrides.workspaces === undefined && overrides.events === undefined) seedWorkspaces(b, now)
+  return b
+}
+
+function newBackendBare(now: number, overrides: Partial<MockBackend>): MockBackend {
   return {
     signedIn: false,
     notConfigured: false,
@@ -130,7 +179,7 @@ export function newBackend(overrides: Partial<MockBackend> = {}): MockBackend {
     refreshError: null,
     installations: SAMPLE_INSTALLATIONS,
     repos: sampleRepos(now),
-    workspaces: sampleWorkspaces(),
+    workspaces: {},
     events: [],
     replayWindow: 1000,
     subscribers: new Set(),
@@ -138,8 +187,55 @@ export function newBackend(overrides: Partial<MockBackend> = {}): MockBackend {
     refreshMode: 'auto',
     refreshDelayMs: 1200,
     pendingRefreshes: 0,
+    capacity: 4,
+    scriptMode: 'auto',
+    scriptIntervalMs: 900,
+    scripts: {},
+    failNext: null,
+    idSeq: 0,
     ...overrides,
   }
+}
+
+/** A fresh ULID-shaped id that sorts after every sample and every earlier one. */
+export function nextWorkspaceId(b: MockBackend): string {
+  b.idSeq++
+  return `01JC${String(b.idSeq).padStart(22, '0')}`
+}
+
+/** States that hold or build a container: what a second create is refused for. */
+const HOLDING = new Set<WorkspaceState>(['pending', 'cloning', 'building', 'running', 'stopped', 'deleting'])
+/** States that count against the cap: what is building or running. */
+const OCCUPYING = new Set<WorkspaceState>(['pending', 'cloning', 'building', 'running'])
+
+/** One row as `GET /api/workspaces` writes it. */
+export function workspaceView(b: MockBackend, w: MockWorkspace): WorkspaceView {
+  return {
+    id: w.id,
+    repository_id: w.repository_id,
+    full_name: b.repos.find((r) => r.id === w.repository_id)?.full_name ?? '',
+    branch: w.branch,
+    state: w.state,
+    state_detail: w.state_detail,
+    container_id: w.container_id,
+    created_at: w.created_at,
+    steps: structuredClone(w.steps),
+  }
+}
+
+/** `GET /api/workspaces`: every row, newest first. */
+export function workspaceList(b: MockBackend): WorkspaceList {
+  return {
+    workspaces: Object.values(b.workspaces)
+      .sort((x, y) => y.id.localeCompare(x.id))
+      .map((w) => workspaceView(b, w)),
+  }
+}
+
+/** `GET /api/workspaces/:id`: the row and its latest 50 events, newest first. */
+export function workspaceDetail(b: MockBackend, w: MockWorkspace): WorkspaceDetail {
+  const events = b.events.filter((e) => e.workspace_id === w.id).slice(-50).reverse()
+  return { ...workspaceView(b, w), events }
 }
 
 /** GET /api/repos, joined as internal/catalog/view.go joins it. */
@@ -165,7 +261,11 @@ export function catalogView(b: MockBackend): CatalogView {
 export function emit(
   b: MockBackend,
   kind: string,
-  fields: { workspace_id?: string; level?: StreamEvent['level']; message?: string; data?: Record<string, unknown> } = {},
+  fields: {
+    workspace_id?: string; level?: StreamEvent['level']; message?: string; data?: Record<string, unknown>
+    /** Backdates the event; the seed uses it. */
+    at?: string
+  } = {},
 ): StreamEvent {
   const last = b.events[b.events.length - 1]
   const ev: StreamEvent = {
@@ -173,7 +273,7 @@ export function emit(
     level: fields.level ?? 'info',
     kind,
     message: fields.message ?? kind,
-    at: new Date().toISOString(),
+    at: fields.at ?? new Date().toISOString(),
     ...(fields.workspace_id !== undefined ? { workspace_id: fields.workspace_id } : {}),
     ...(fields.data !== undefined ? { data: fields.data } : {}),
   }
@@ -184,8 +284,36 @@ export function emit(
     const cur = b.workspaces[id]
     const repository_id = typeof d.repository_id === 'number' ? d.repository_id : cur?.repository_id
     if (repository_id !== undefined) {
-      b.workspaces[id] = { id, repository_id, branch: String(d.branch ?? cur?.branch ?? 'main'), state: d.state as WorkspaceState }
+      const state = d.state as WorkspaceState
+      const row: MockWorkspace = cur ?? {
+        id, repository_id, branch: 'main', state, state_detail: null, container_id: null, created_at: ev.at, steps: {},
+      }
+      b.workspaces[id] = {
+        ...row,
+        repository_id,
+        branch: String(d.branch ?? row.branch),
+        state,
+        state_detail: typeof d.detail === 'string' ? d.detail : null,
+        // The container exists once `up` brought it to running; a create starts clean.
+        container_id: state === 'running' && row.container_id === null
+          ? `c0ffee${id.slice(-10).toLowerCase()}${'0'.repeat(48)}`.slice(0, 64)
+          : state === 'pending' ? null : row.container_id,
+        steps: state === 'pending' ? {} : row.steps,
+        created_at: state === 'pending' && cur === undefined ? ev.at : row.created_at,
+      }
     }
+  }
+  if (id !== undefined && kind === 'workspace.step' && typeof d.step === 'string') {
+    const cur = b.workspaces[id]
+    if (cur !== undefined) {
+      const step: StepView = { status: d.status as StepView['status'], at: ev.at }
+      if (typeof d.detail === 'string') step.detail = d.detail
+      b.workspaces[id] = { ...cur, steps: { ...cur.steps, [d.step]: step } }
+    }
+  }
+  if (id !== undefined && kind === 'workspace.adopted' && typeof d.container_id === 'string') {
+    const cur = b.workspaces[id]
+    if (cur !== undefined) b.workspaces[id] = { ...cur, container_id: d.container_id }
   }
   if (id !== undefined && kind === 'workspace.gone') delete b.workspaces[id]
   for (const s of b.subscribers) s(ev)
@@ -214,33 +342,104 @@ export function completeRefresh(b: MockBackend, ok = true): StreamEvent {
  * ends it with that step failed and the workspace failed, naming the step.
  */
 export function cloneScript(
-  b: MockBackend, repositoryId: number, id: string, failAt?: string,
-): Array<() => void> {
-  const st = (state: WorkspaceState, data: Record<string, unknown> = {}, level: StreamEvent['level'] = 'info') =>
-    () => { emit(b, 'workspace.state', { workspace_id: id, level, data: { state, ...data } }) }
-  const step = (name: string, status: string, detail?: string) =>
-    () => { emit(b, 'workspace.step', { workspace_id: id, level: status === 'failed' ? 'error' : 'info', data: { step: name, status, ...(detail ? { detail } : {}) } }) }
-  const out: Array<() => void> = [st('pending', { repository_id: repositoryId, branch: 'main' })]
+  b: MockBackend, repositoryId: number, id: string, failAt?: string, branch = 'main',
+): Array<(at?: string) => void> {
+  const steps = new ScriptSteps(b, id)
+  const out: Array<(at?: string) => void> = [
+    steps.state('pending', { repository_id: repositoryId, branch }, 'Workspace created.'),
+  ]
   const plan: Array<[string, WorkspaceState | null]> = [
     ['allocate', null], ['clone', 'cloning'], ['resolve_config', null], ['credential_volume', null],
     ['broker_socket', null], ['up', 'building'], ['verify', null],
   ]
-  let from: WorkspaceState = 'pending'
-  for (const [name, enter] of plan) {
-    if (enter !== null) {
-      out.push(st(enter, { from }))
-      from = enter
+  // Phase 2 stops at verify: session_server is Phase 5's supervisor.
+  return steps.run(out, plan, 'pending', failAt)
+}
+
+/**
+ * The events a start emits: stopped or failed back to building, then the
+ * steps that bring a container up again — the clone and its config survive,
+ * so they are not rerun.
+ */
+export function startScript(b: MockBackend, id: string, failAt?: string): Array<(at?: string) => void> {
+  const from = b.workspaces[id]?.state ?? 'stopped'
+  const steps = new ScriptSteps(b, id)
+  return steps.run([], [
+    ['credential_volume', 'building'], ['broker_socket', null], ['up', null], ['verify', null],
+  ], from, failAt)
+}
+
+/** What a failed step says: a `workspace.Public` sentence, never a raw error. */
+const FAILED_SENTENCE: Record<string, string> = {
+  allocate: 'Could not allocate the workspace directory.',
+  clone: 'Could not clone the repository from GitHub.',
+  resolve_config: 'Could not read the dev container configuration.',
+  credential_volume: 'Could not prepare the credential volume.',
+  broker_socket: 'Could not open the broker socket.',
+  up: 'The container did not start. The service log has the build output.',
+  verify: 'The container started but did not pass its checks.',
+}
+
+class ScriptSteps {
+  constructor(private b: MockBackend, private id: string) {}
+
+  state(state: WorkspaceState, data: Record<string, unknown>, message: string, level: StreamEvent['level'] = 'info') {
+    return (at?: string) => {
+      emit(this.b, 'workspace.state', { workspace_id: this.id, level, message, data: { state, ...data }, ...(at ? { at } : {}) })
     }
-    out.push(step(name, 'started'))
-    if (name === failAt) {
-      const detail = `The ${name.replace('_', ' ')} step failed.`
-      out.push(step(name, 'failed', detail), st('failed', { from, detail }, 'error'))
-      return out
-    }
-    out.push(step(name, 'done'))
   }
-  out.push(st('running', { from }))
-  return out
+
+  step(name: string, status: string, detail?: string) {
+    const message = status === 'failed' ? detail ?? `Step ${name} failed.` : `Step ${name} ${status}.`
+    return (at?: string) => {
+      emit(this.b, 'workspace.step', {
+        workspace_id: this.id, level: status === 'failed' ? 'error' : 'info', message,
+        data: { step: name, status, ...(detail ? { detail } : {}) }, ...(at ? { at } : {}),
+      })
+    }
+  }
+
+  run(
+    out: Array<(at?: string) => void>, plan: Array<[string, WorkspaceState | null]>, from: WorkspaceState, failAt?: string,
+  ): Array<(at?: string) => void> {
+    const said: Partial<Record<WorkspaceState, string>> = { cloning: 'Cloning.', building: 'Building the container.' }
+    for (const [name, enter] of plan) {
+      if (enter !== null) {
+        out.push(this.state(enter, { from }, said[enter] ?? enter))
+        from = enter
+      }
+      out.push(this.step(name, 'started'))
+      if (name === failAt) {
+        const detail = FAILED_SENTENCE[name] ?? `The ${name} step failed.`
+        out.push(this.step(name, 'failed', detail), this.state('failed', { from, detail }, `Failed. ${detail}`, 'error'))
+        return out
+      }
+      out.push(this.step(name, 'done'))
+    }
+    out.push(this.state('running', { from }, 'Running.'))
+    return out
+  }
+}
+
+/**
+ * Plays a script as the server would: its first event now — the server
+ * commits the transition and its event before answering 202 — and the rest
+ * from a goroutine. In `manual` mode all of it is held for a spec.
+ */
+function schedule(b: MockBackend, id: string, script: Array<(at?: string) => void>): void {
+  if (b.scriptMode === 'manual') {
+    b.scripts[id] = script
+    return
+  }
+  script[0]?.()
+  script.slice(1).forEach((play, i) => setTimeout(() => play(), (i + 1) * b.scriptIntervalMs))
+}
+
+/** Plays a held script (manual mode) to the end, or its first `n` events. */
+export function playScript(b: MockBackend, id: string, n?: number): void {
+  const script = b.scripts[id] ?? []
+  const now = script.splice(0, n ?? script.length)
+  for (const play of now) play()
 }
 
 function envelope(status: number, code: string, message: string, headers: Record<string, string> = {}) {
@@ -327,6 +526,69 @@ export function handlersFor(b: MockBackend): HttpHandler[] {
         b.pendingRefreshes = 1
         if (b.refreshMode === 'auto') setTimeout(() => completeRefresh(b), b.refreshDelayMs)
       }
+      return HttpResponse.json({}, { status: 202 })
+    }),
+
+    http.get('/api/workspaces', ({ request }) => {
+      record(request)
+      if (!b.signedIn) return unauthenticated()
+      return HttpResponse.json(workspaceList(b), { headers: { 'Cache-Control': 'no-store' } })
+    }),
+
+    // POST /api/workspaces, checked in the order the server's one IMMEDIATE
+    // transaction checks it: the body, the repository, the duplicate, the cap.
+    http.post('/api/workspaces', async ({ request }) => {
+      record(request)
+      if (!b.signedIn) return unauthenticated()
+      if (!b.appConfigured) return appNotConfigured()
+      let body: { repository_id?: unknown; branch?: unknown } | null
+      try {
+        body = (await request.json()) as typeof body
+      } catch {
+        body = null
+      }
+      const repoId = body?.repository_id
+      const branch = body?.branch
+      if (body === null || typeof body !== 'object' || !Number.isInteger(repoId)
+        || (branch !== undefined && (typeof branch !== 'string' || branch === ''))) {
+        return envelope(400, 'bad_request', 'Send a JSON body with a repository_id.')
+      }
+      const repo = b.repos.find((r) => r.id === repoId)
+      if (repo === undefined || repo.removed) return envelope(404, 'not_found', 'No such repository.')
+      const rows = Object.values(b.workspaces)
+      if (rows.some((w) => w.repository_id === repoId && HOLDING.has(w.state))) {
+        return envelope(409, 'in_progress', 'That repository already has a workspace.')
+      }
+      if (rows.filter((w) => OCCUPYING.has(w.state)).length >= b.capacity) {
+        return envelope(409, 'at_capacity', 'The concurrent-container cap is reached.')
+      }
+      const id = nextWorkspaceId(b)
+      const failAt = b.failNext ?? undefined
+      b.failNext = null
+      schedule(b, id, cloneScript(b, repo.id, id, failAt, typeof branch === 'string' ? branch : repo.default_branch))
+      return HttpResponse.json({ id }, { status: 202 })
+    }),
+
+    http.get('/api/workspaces/:id', ({ request, params }) => {
+      record(request)
+      if (!b.signedIn) return unauthenticated()
+      const w = b.workspaces[String(params.id)]
+      if (w === undefined) return envelope(404, 'not_found', 'No such workspace.')
+      return HttpResponse.json(workspaceDetail(b, w), { headers: { 'Cache-Control': 'no-store' } })
+    }),
+
+    http.post('/api/workspaces/:id/start', ({ request, params }) => {
+      record(request)
+      if (!b.signedIn) return unauthenticated()
+      const id = String(params.id)
+      const w = b.workspaces[id]
+      if (w === undefined) return envelope(404, 'not_found', 'No such workspace.')
+      if (w.state !== 'stopped' && w.state !== 'failed') {
+        return envelope(409, 'in_progress', 'The workspace is not stopped or failed.')
+      }
+      const failAt = b.failNext ?? undefined
+      b.failNext = null
+      schedule(b, id, startScript(b, id, failAt))
       return HttpResponse.json({}, { status: 202 })
     }),
 

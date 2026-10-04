@@ -5,10 +5,13 @@
 
 import { describe, expect, it } from 'vitest'
 import type { StreamEvent } from '../api/types'
-import { emptyEntities, hasStubs, reduce, reduceAll, workspaceForRepo, type Action, type Entities } from './reducer'
 import {
-  CLONE_FAILS_AT_UP, CLONE_OK, DELETE, ORPHAN, RECONCILE, REFRESH_FAILED, REFRESHED, WS, WS2,
-  catalogBody, stateEvent,
+  FEED_LIMIT, currentStep, emptyEntities, failedStep, hasStubs, reduce, reduceAll, workspaceForRepo,
+  type Action, type Entities,
+} from './reducer'
+import {
+  CLONE_FAILS_AT_UP, CLONE_OK, DELETE, ORPHAN, RECONCILE, REFRESH_FAILED, REFRESHED, START_AFTER_FAIL, WS, WS2,
+  catalogBody, detailBody, listBody, stateEvent, stepEvent, tokenIssued, ws2View, wsView,
 } from './reducer.fixtures'
 
 const events = (evs: StreamEvent[]): Action[] => evs.map((event) => ({ type: 'event', event }))
@@ -61,6 +64,8 @@ describe('a recorded clone', () => {
     play(CLONE_OK.slice(5), before)
     reduce(before, { type: 'resync', id: 99 })
     reduce(before, { type: 'snapshot', at: 99, view: catalogBody() })
+    reduce(before, { type: 'workspaces', at: 99, view: listBody() })
+    reduce(before, { type: 'workspace', at: 99, view: detailBody() })
     expect(JSON.stringify(before)).toBe(frozen)
   })
 })
@@ -169,17 +174,27 @@ describe('an event for an unknown workspace', () => {
     expect(hasStubs(move)).toBe(true)
   })
 
-  it('the refetch places the stub, and a stub the snapshot does not know is dropped', () => {
+  it('the refetch places the stub, and a stub the workspace list does not know is dropped', () => {
+    const stub = play([stateEvent(9, WS, 'building', { from: 'cloning' }), stateEvent(10, WS2, 'cloning')])
+    const placed = reduce(stub, { type: 'workspaces', at: 10, view: listBody(wsView({ state: 'building' })) })
+    expect(placed.workspaces[WS]).toMatchObject({ state: 'building', repositoryId: 1, fullName: 'krelinga/drydock' })
+    // WS2 has no row as of 10, so it is dropped rather than asking for
+    // refetches forever.
+    expect(placed.workspaces[WS2]).toBeUndefined()
+    expect(hasStubs(placed)).toBe(false)
+  })
+
+  it('the catalog places a stub too, but its silence drops nothing', () => {
     const stub = play([stateEvent(9, WS, 'building', { from: 'cloning' }), stateEvent(10, WS2, 'cloning')])
     const placed = reduce(stub, {
       type: 'snapshot', at: 10,
       view: catalogBody({ repos: [{ ...catalogBody().repos[0]!, workspace: { id: WS, state: 'building' } }] }),
     })
     expect(placed.workspaces[WS]).toMatchObject({ state: 'building', repositoryId: 1 })
-    // WS2 is unknown to the server's view as of 10 (e.g. deleting, which the
-    // join excludes), so it is dropped rather than asking for refetches forever.
-    expect(placed.workspaces[WS2]).toBeUndefined()
-    expect(hasStubs(placed)).toBe(false)
+    // The catalog joins only each repo's newest workspace, so not mentioning
+    // WS2 is not evidence it is gone: it stays, still a stub.
+    expect(placed.workspaces[WS2]).toMatchObject({ state: 'cloning', repositoryId: null })
+    expect(hasStubs(placed)).toBe(true)
   })
 
   it('the orphan adopted at boot arrives whole; workspace.adopted only marks a known one', () => {
@@ -293,5 +308,194 @@ describe('snapshots', () => {
     expect(workspaceForRepo(snap, 2)).toBeNull()
     const e = play(CLONE_FAILS_AT_UP.map((x) => ({ ...x, id: x.id + 100 })), snap)
     expect(workspaceForRepo(e, 2)).toMatchObject({ id: WS2, state: 'failed' })
+  })
+})
+
+describe('the step timeline', () => {
+  it('keeps each step\'s latest status, and the progress line the newest step', () => {
+    const e = play(CLONE_OK)
+    const w = e.workspaces[WS]!
+    expect(Object.keys(w.steps)).toEqual(['allocate', 'clone', 'resolve_config', 'up'])
+    expect(w.steps.up).toMatchObject({ status: 'done', eventId: 12, at: CLONE_OK[11]!.at })
+    expect(currentStep(w)).toEqual({ name: 'up', status: 'done', detail: null })
+  })
+
+  it('a late event for an earlier step lands in its own row and leaves the progress line alone', () => {
+    // 6 (clone done) arrives after 10 (up started).
+    const e = play([...CLONE_OK.slice(0, 5), ...CLONE_OK.slice(6, 10), CLONE_OK[5]!])
+    const w = e.workspaces[WS]!
+    expect(w.steps.clone).toMatchObject({ status: 'done', eventId: 6 })
+    expect(w.step).toEqual({ name: 'up', status: 'started', detail: null })
+    // Control: an older event for that same row does not overwrite it.
+    const back = play([CLONE_OK[4]!], e) // 5: clone started
+    expect(back.workspaces[WS]!.steps.clone?.status).toBe('done')
+  })
+
+  it('names the failed step, and a start that reruns it replaces the failure', () => {
+    const failed = play(CLONE_FAILS_AT_UP)
+    expect(failedStep(failed.workspaces[WS2]!)).toBe('up')
+    expect(failed.workspaces[WS2]!.steps.up).toMatchObject({ status: 'failed', detail: 'The container start step failed.' })
+
+    const started = play(START_AFTER_FAIL, failed)
+    expect(started.workspaces[WS2]).toMatchObject({ state: 'running', detail: null })
+    expect(started.workspaces[WS2]!.steps.up).toMatchObject({ status: 'done', detail: null, eventId: 52 })
+    expect(failedStep(started.workspaces[WS2]!)).toBeNull()
+  })
+
+  it('a create starts a fresh timeline; a start does not', () => {
+    const e = play([...CLONE_FAILS_AT_UP, ...START_AFTER_FAIL.slice(0, 1)])
+    // Control: the move to building kept the previous run's rows.
+    expect(e.workspaces[WS2]!.steps.up?.status).toBe('failed')
+    // A stub that saw a step before its create: the create (lower id) keeps it.
+    const early = play([stepEvent(2, WS, 'allocate', 'started'), CLONE_OK[0]!])
+    expect(early.workspaces[WS]!.steps.allocate?.status).toBe('started')
+    // But a row written before a create is not this workspace's history.
+    const before = play([stepEvent(5, WS, 'up', 'failed'), stateEvent(7, WS, 'pending', { repository_id: 1, branch: 'main' })])
+    expect(before.workspaces[WS]!.steps).toEqual({})
+    expect(before.workspaces[WS]!.step).toBeNull()
+  })
+})
+
+describe('the workspace list snapshot', () => {
+  it('places every workspace whole: name, steps, container, detail', () => {
+    const e = reduce(emptyEntities(), { type: 'workspaces', at: 25, view: listBody() })
+    expect(e.workspaces[WS]).toMatchObject({
+      state: 'running', repositoryId: 1, fullName: 'krelinga/drydock', containerId: 'c0ffee0123456789',
+      createdAt: CLONE_OK[0]!.at, stateAt: 25,
+    })
+    expect(e.workspaces[WS]!.steps.up).toMatchObject({ status: 'done', eventId: 25 })
+    expect(e.workspaces[WS2]).toMatchObject({ state: 'failed', detail: 'The container start step failed.' })
+    // From a snapshot alone, the card can still name the failed step.
+    expect(failedStep(e.workspaces[WS2]!)).toBe('up')
+    expect(currentStep(e.workspaces[WS]!)).toMatchObject({ name: 'up', status: 'done' })
+    expect(hasStubs(e)).toBe(false)
+    expect(e.lastEventId).toBe(25)
+  })
+
+  it('is the authority on existence: an unlisted workspace nothing newer touched is dropped', () => {
+    const e = play([...CLONE_OK, ...CLONE_FAILS_AT_UP])
+    const listed = reduce(e, { type: 'workspaces', at: 25, view: listBody(wsView()) })
+    expect(listed.workspaces[WS2]).toBeUndefined()
+    // Control: the same list asked before WS2's last event keeps it.
+    const early = reduce(e, { type: 'workspaces', at: 24, view: listBody(wsView()) })
+    expect(early.workspaces[WS2]?.state).toBe('failed')
+  })
+
+  it('keeps an event newer than the snapshot position, per field and per step', () => {
+    const e = play([...CLONE_OK, stateEvent(14, WS, 'stopped', { from: 'running' }), stepEvent(15, WS, 'verify', 'started')])
+    // The body was asked at 13 and carries verify's row from an earlier run.
+    const body = wsView({ steps: { ...wsView().steps, verify: { status: 'failed', detail: 'old', at: CLONE_OK[0]!.at } } })
+    const merged = reduce(e, { type: 'workspaces', at: 13, view: listBody(body) })
+    expect(merged.workspaces[WS]?.state).toBe('stopped')
+    expect(merged.workspaces[WS]?.steps.verify).toMatchObject({ status: 'started', eventId: 15 })
+    // The body's other steps and facts still land.
+    expect(merged.workspaces[WS]).toMatchObject({ fullName: 'krelinga/drydock', containerId: 'c0ffee0123456789' })
+    // Control: a list asked after both is believed for both.
+    const later = reduce(e, {
+      type: 'workspaces', at: 15,
+      view: listBody(wsView({ steps: { verify: { status: 'done', at: CLONE_OK[0]!.at } } })),
+    })
+    expect(later.workspaces[WS]?.state).toBe('running')
+    expect(later.workspaces[WS]?.steps.verify?.status).toBe('done')
+  })
+
+  it('beats a straggling event from before it', () => {
+    const snap = reduce(emptyEntities(), { type: 'workspaces', at: 25, view: listBody() })
+    const e = play([stateEvent(9, WS, 'building'), stepEvent(10, WS, 'up', 'started')], snap)
+    expect(e.workspaces[WS]?.state).toBe('running')
+    expect(e.workspaces[WS]?.steps.up?.status).toBe('done')
+    // Control: events after it apply.
+    const after = play([stateEvent(26, WS, 'stopped')], snap)
+    expect(after.workspaces[WS]?.state).toBe('stopped')
+  })
+
+  it('never resurrects a deleted workspace, and lists `deleting` until the gone', () => {
+    const deleting = reduce(play([...CLONE_OK, DELETE[0]!]), {
+      type: 'workspaces', at: 30, view: listBody(wsView({ state: 'deleting' })),
+    })
+    expect(deleting.workspaces[WS]?.state).toBe('deleting')
+    const gone = play([DELETE[1]!], deleting)
+    const stale = reduce(gone, { type: 'workspaces', at: 29, view: listBody(wsView()) })
+    expect(stale.workspaces[WS]).toBeUndefined()
+    // Control: the same body places WS on entities that never saw it deleted.
+    expect(reduce(emptyEntities(), { type: 'workspaces', at: 29, view: listBody(wsView()) }).workspaces[WS]?.state).toBe('running')
+  })
+
+  it('clears a resync when taken at or after it', () => {
+    const stale = reduce(play(CLONE_OK), { type: 'resync', id: 500 })
+    expect(reduce(stale, { type: 'workspaces', at: 499, view: listBody() }).staleSince).toBe(500)
+    expect(reduce(stale, { type: 'workspaces', at: 500, view: listBody() }).staleSince).toBeNull()
+  })
+
+  it('is idempotent: the same body twice changes nothing more', () => {
+    const once = reduce(play(CLONE_OK), { type: 'workspaces', at: 13, view: listBody() })
+    const twice = reduce(once, { type: 'workspaces', at: 13, view: listBody() })
+    expect(twice).toEqual(once)
+  })
+
+  it('makes the join whole: an older workspace on a repo is listed beside the newest', () => {
+    const older = { ...ws2View(), id: '01JA0000000000000000000009', repository_id: 1, state: 'running' as const }
+    const e = reduce(emptyEntities(), { type: 'workspaces', at: 25, view: listBody(wsView(), older) })
+    expect(Object.keys(e.workspaces).sort()).toEqual(['01JA0000000000000000000009', WS])
+    // The catalog row still joins the newest.
+    expect(workspaceForRepo(e, 1)?.id).toBe(WS)
+  })
+})
+
+describe('the workspace detail snapshot and the feed', () => {
+  it('every event naming a workspace joins its feed, newest first — token events too', () => {
+    const e = play([...CLONE_OK.slice(0, 3), tokenIssued(4, WS), RECONCILE[3]!])
+    expect(e.feeds[WS]!.map((x) => x.id)).toEqual([4, 3, 2, 1])
+    // Control: an event naming no workspace joins no feed.
+    expect(Object.keys(e.feeds)).toEqual([WS])
+  })
+
+  it('a replayed event is not doubled, and leaves the feed by identity', () => {
+    const e = play(CLONE_OK)
+    const again = play(CLONE_OK.slice(5), e)
+    expect(again.feeds[WS]).toBe(e.feeds[WS])
+    expect(e.feeds[WS]!.length).toBe(13)
+  })
+
+  it('merges the detail body\'s events with the stream\'s by id, never doubling', () => {
+    // The stream delivered 10–13; the body (asked at 9) carries 1–9.
+    const live = play(CLONE_OK.slice(9))
+    const merged = reduce(live, { type: 'workspace', at: 9, view: detailBody({}, CLONE_OK.slice(0, 9)) })
+    expect(merged.feeds[WS]!.map((x) => x.id)).toEqual([13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1])
+    // And the body asked later, overlapping all of it, adds nothing.
+    const again = reduce(merged, { type: 'workspace', at: 13, view: detailBody() })
+    expect(again.feeds[WS]!.map((x) => x.id)).toEqual(merged.feeds[WS]!.map((x) => x.id))
+  })
+
+  it('caps the feed, keeping the newest', () => {
+    const many = Array.from({ length: FEED_LIMIT + 10 }, (_, i) => tokenIssued(100 + i, WS))
+    const e = play(many)
+    expect(e.feeds[WS]!.length).toBe(FEED_LIMIT)
+    expect(e.feeds[WS]![0]!.id).toBe(100 + FEED_LIMIT + 9)
+    // An event older than everything kept falls off without changing the feed.
+    expect(play([tokenIssued(50, WS)], e).feeds[WS]).toBe(e.feeds[WS])
+  })
+
+  it('places its workspace, but names one so drops none and clears no resync', () => {
+    const base = reduce(play(CLONE_FAILS_AT_UP), { type: 'resync', id: 40 })
+    const e = reduce(base, { type: 'workspace', at: 40, view: detailBody() })
+    expect(e.workspaces[WS]).toMatchObject({ state: 'running', fullName: 'krelinga/drydock' })
+    expect(e.workspaces[WS2]?.state).toBe('failed')
+    expect(e.staleSince).toBe(40)
+  })
+
+  it('ignores a deleted workspace\'s body, and drops the feed with the workspace', () => {
+    const e = play([...CLONE_OK, ...DELETE])
+    expect(e.feeds[WS]).toBeUndefined()
+    const late = reduce(e, { type: 'workspace', at: 31, view: detailBody() })
+    expect(late.workspaces[WS]).toBeUndefined()
+    expect(late.feeds[WS]).toBeUndefined()
+    // Control: the deleting event itself was in the feed before the gone.
+    expect(play([...CLONE_OK, DELETE[0]!]).feeds[WS]![0]!.id).toBe(30)
+  })
+
+  it('an adoption records the container id', () => {
+    const e = play([...CLONE_OK, RECONCILE[1]!])
+    expect(e.workspaces[WS]).toMatchObject({ adopted: true, containerId: 'c0ffee' })
   })
 })

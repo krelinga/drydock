@@ -2,11 +2,19 @@
 //
 // It is pure — (entities, action) → entities, never mutating its input — so
 // every case it handles is a plain Vitest test over a recorded event sequence
-// (reducer.spec.ts). Three kinds of input reach it:
+// (reducer.spec.ts). Five kinds of input reach it:
 //
-//   event     an unnamed frame off GET /api/events
-//   resync    the one named frame: replay could not close the gap
-//   snapshot  a GET /api/repos body, with the stream position it was asked at
+//   event       an unnamed frame off GET /api/events
+//   resync      the one named frame: replay could not close the gap
+//   snapshot    a GET /api/repos body, with the stream position it was asked at
+//   workspaces  a GET /api/workspaces body, likewise
+//   workspace   a GET /api/workspaces/:id body — one workspace and its recent
+//               events — likewise
+//
+// Of the three snapshots only `workspaces` is the authority on which
+// workspaces exist: it lists every row, where the catalog joins only each
+// repository's newest (and not a `deleting` one) and the detail names one. So
+// it alone drops a workspace it does not mention.
 //
 // Ordering is by event id, not arrival. Every field that events write carries
 // the id of the event that last wrote it, and an event at or below that id is
@@ -29,27 +37,52 @@
 //
 // Every other kind (token.*, container.unclaimed, system.reconcile, and
 // whatever a later phase adds) advances the stream position and changes no
-// entity: the activity feed is where those belong, and an unknown kind must
-// never be an error — the server names nothing precisely so a kind the client
-// does not know reaches this branch rather than vanishing (events_routes.go).
+// workspace or repository: if it names a workspace it joins that workspace's
+// feed, and that is all. An unknown kind must never be an error — the server
+// names nothing precisely so a kind the client does not know reaches this
+// branch rather than vanishing (events_routes.go).
 
-import { WORKSPACE_STATES, type CatalogView, type InstallationView, type RepoView, type StreamEvent, type WorkspaceState } from '../api/types'
+import {
+  WORKSPACE_STATES, WORKSPACE_STEPS, type CatalogView, type InstallationView, type RepoView, type StepStatus,
+  type StreamEvent, type WorkspaceDetail, type WorkspaceList, type WorkspaceState, type WorkspaceView,
+} from '../api/types'
 
 export interface StepInfo {
   name: string
-  status: 'started' | 'done' | 'failed'
+  status: StepStatus
   detail: string | null
 }
+
+/** One step's latest status, versioned on its own. */
+export interface StepRecord {
+  status: StepStatus
+  detail: string | null
+  /** When the server says it happened. */
+  at: string
+  /** The id of the event (or snapshot position) that wrote it. */
+  eventId: number
+}
+
+/** How many events a workspace's feed keeps: what GET /api/workspaces/:id returns. */
+export const FEED_LIMIT = 50
 
 export interface Workspace {
   id: string
   /** Null when only an event without one has been seen (a stub). */
   repositoryId: number | null
+  /** From a snapshot: the workspace list's own, or the catalog row's. */
+  fullName: string | null
   branch: string | null
   /** Null for a stub: an event named this workspace before anything said its state. */
   state: WorkspaceState | null
+  /** `state_detail`: the server's sentence about the state. Shown, never parsed. */
   detail: string | null
+  /** The most recent step event: what the card's progress line names. */
   step: StepInfo | null
+  /** Each step's latest status, by name: the detail view's timeline. */
+  steps: Record<string, StepRecord>
+  containerId: string | null
+  createdAt: string | null
   adopted: boolean
   /** The id of the event (or snapshot position) that last wrote `state`. */
   stateAt: number
@@ -87,8 +120,9 @@ export interface Entities {
   /**
    * The id of a `resync` no snapshot has yet caught up with, or null. While it
    * is set the entities may be wrong: render them, but label them. Only a
-   * snapshot taken at or after this id clears it — one already in flight
-   * when the resync arrived predates the gap and does not.
+   * catalog or workspace-list snapshot taken at or after this id clears it —
+   * one already in flight when the resync arrived predates the gap and does
+   * not, and a single workspace's detail says nothing about the rest.
    */
   staleSince: number | null
   workspaces: Record<string, Workspace>
@@ -98,6 +132,12 @@ export interface Entities {
    * rather than resurrecting it.
    */
   gone: Record<string, number>
+  /**
+   * Each workspace's recent events, newest first, at most FEED_LIMIT. Fed by
+   * every event naming a workspace — token.issued included — and by the
+   * detail snapshot, merged by id so the two never double an entry.
+   */
+  feeds: Record<string, StreamEvent[]>
   repos: Record<number, Repo>
   /** The server's order (newest push first); `repos` is keyed, this is the list. */
   repoOrder: number[]
@@ -113,6 +153,8 @@ export type Action =
   | { type: 'event'; event: StreamEvent }
   | { type: 'resync'; id: number }
   | { type: 'snapshot'; at: number; view: CatalogView }
+  | { type: 'workspaces'; at: number; view: WorkspaceList }
+  | { type: 'workspace'; at: number; view: WorkspaceDetail }
 
 export function emptyEntities(): Entities {
   return {
@@ -120,6 +162,7 @@ export function emptyEntities(): Entities {
     staleSince: null,
     workspaces: {},
     gone: {},
+    feeds: {},
     repos: {},
     repoOrder: [],
     installations: {},
@@ -146,6 +189,10 @@ export function reduce(prev: Entities, action: Action): Entities {
       }
     case 'snapshot':
       return applySnapshot(prev, action.at, action.view)
+    case 'workspaces':
+      return applyWorkspaceList(prev, action.at, action.view)
+    case 'workspace':
+      return applyWorkspaceDetail(prev, action.at, action.view)
   }
 }
 
@@ -158,6 +205,10 @@ function isState(v: unknown): v is WorkspaceState {
   return typeof v === 'string' && (WORKSPACE_STATES as readonly string[]).includes(v)
 }
 
+function isStepStatus(v: unknown): v is StepStatus {
+  return v === 'started' || v === 'done' || v === 'failed'
+}
+
 function str(v: unknown): string | null {
   return typeof v === 'string' && v !== '' ? v : null
 }
@@ -168,8 +219,8 @@ function num(v: unknown): number | null {
 
 function stub(id: string): Workspace {
   return {
-    id, repositoryId: null, branch: null, state: null, detail: null, step: null,
-    adopted: false, stateAt: 0, stepAt: 0,
+    id, repositoryId: null, fullName: null, branch: null, state: null, detail: null, step: null,
+    steps: {}, containerId: null, createdAt: null, adopted: false, stateAt: 0, stepAt: 0,
   }
 }
 
@@ -193,7 +244,6 @@ function applyEvent(prev: Entities, ev: StreamEvent): Entities {
     }
   }
 
-  if (!ev.kind.startsWith('workspace.')) return base
   const wsId = str(ev.workspace_id)
   if (wsId === null) return base
   if (prev.gone[wsId] !== undefined) return base // deleted; nothing brings it back
@@ -201,13 +251,21 @@ function applyEvent(prev: Entities, ev: StreamEvent): Entities {
   if (ev.kind === 'workspace.gone') {
     const workspaces = { ...base.workspaces }
     delete workspaces[wsId]
-    return { ...base, workspaces, gone: { ...base.gone, [wsId]: ev.id } }
+    const feeds = { ...base.feeds }
+    delete feeds[wsId]
+    return { ...base, workspaces, feeds, gone: { ...base.gone, [wsId]: ev.id } }
   }
+
+  // Every event naming a workspace joins its feed, whatever its kind.
+  const feed = mergeFeed(base.feeds[wsId], [ev])
+  const fed = feed === base.feeds[wsId] ? base : { ...base, feeds: { ...base.feeds, [wsId]: feed } }
+
+  if (!ev.kind.startsWith('workspace.')) return fed
 
   // Every other workspace.* kind names a workspace that exists. One this
   // client has never heard of becomes a stub, so the event is not lost and
   // the store can see that a refetch is owed (the stub's state is null).
-  const known = base.workspaces[wsId]
+  const known = fed.workspaces[wsId]
   const cur = known ?? stub(wsId)
   let next: Workspace = cur
 
@@ -223,32 +281,59 @@ function applyEvent(prev: Entities, ev: StreamEvent): Entities {
         branch: str(data.branch) ?? cur.branch,
         adopted: data.adopted === true ? true : cur.adopted,
       }
-      // A new run through the steps begins at pending (a create) or at a
-      // rebuild's move out of a resting state; the previous run's last step
-      // must not be shown as this run's progress.
-      if (data.state === 'pending' && next.stepAt < ev.id) next = { ...next, step: null, stepAt: ev.id }
+      // A new run through the steps begins at pending (a create); nothing
+      // written before it belongs to this workspace's timeline. Start moves
+      // stopped or failed to building instead, and each step it reruns
+      // overwrites its own row, so the timeline is "latest per step" — the
+      // same thing the server's `steps` reports.
+      if (data.state === 'pending') {
+        if (next.stepAt < ev.id) next = { ...next, step: null, stepAt: ev.id }
+        const kept = Object.entries(next.steps).filter(([, r]) => r.eventId > ev.id)
+        if (kept.length !== Object.keys(next.steps).length) next = { ...next, steps: Object.fromEntries(kept) }
+      }
       break
     }
     case 'workspace.step': {
       const name = str(data.step)
       const status = data.status
-      if (name === null || (status !== 'started' && status !== 'done' && status !== 'failed')) break
-      if (ev.id <= cur.stepAt) break
-      next = { ...cur, step: { name, status, detail: str(data.detail) }, stepAt: ev.id }
+      if (name === null || !isStepStatus(status)) break
+      const detail = str(data.detail)
+      // The timeline and the progress line are versioned apart: a late
+      // event for one step still lands in its own row after a newer step has
+      // moved the progress line on.
+      const old = cur.steps[name]
+      if (old === undefined || ev.id > old.eventId) {
+        next = { ...next, steps: { ...cur.steps, [name]: { status, detail, at: ev.at, eventId: ev.id } } }
+      }
+      if (ev.id > cur.stepAt) next = { ...next, step: { name, status, detail }, stepAt: ev.id }
       break
     }
-    case 'workspace.adopted':
+    case 'workspace.adopted': {
       // A known row matched to its container at boot; the state is unchanged.
-      next = cur.adopted ? cur : { ...cur, adopted: true }
+      const containerId = str(data.container_id) ?? cur.containerId
+      if (!cur.adopted || containerId !== cur.containerId) next = { ...cur, adopted: true, containerId }
       break
+    }
     default:
       // A workspace kind from a later phase: create the stub if it was
       // unknown, change nothing else.
       break
   }
 
-  if (next === cur && known !== undefined) return base
-  return { ...base, workspaces: { ...base.workspaces, [wsId]: next } }
+  if (next === cur && known !== undefined) return fed
+  return { ...fed, workspaces: { ...fed.workspaces, [wsId]: next } }
+}
+
+/** Merges events into a feed: by id, newest first, capped. Returns `feed` itself when nothing changed. */
+function mergeFeed(feed: StreamEvent[] | undefined, add: StreamEvent[]): StreamEvent[] {
+  const cur = feed ?? []
+  const have = new Set(cur.map((e) => e.id))
+  const fresh = add.filter((e) => Number.isInteger(e.id) && e.id > 0 && !have.has(e.id))
+  if (fresh.length === 0) return feed ?? cur
+  const out = [...cur, ...fresh].sort((a, b) => b.id - a.id).slice(0, FEED_LIMIT)
+  // Everything new fell off the end: nothing visible changed.
+  if (feed !== undefined && out.length === cur.length && out.every((e, i) => e === cur[i])) return feed
+  return out
 }
 
 function toRepo(r: RepoView): Repo {
@@ -272,10 +357,12 @@ function toRepo(r: RepoView): Repo {
  * before the request was made) and maybe some after. So for each workspace:
  * if an event newer than `at` has already been applied, ours is the fresher
  * fact and is kept; otherwise the snapshot's state wins, at version `at`, so
- * a straggling event from before the snapshot cannot undo it. A workspace the
- * snapshot does not mention, and that nothing after `at` has touched, is gone
- * from the server's view and is dropped — which is also how a stub the
- * refetch could not explain stops asking for refetches.
+ * a straggling event from before the snapshot cannot undo it.
+ *
+ * A workspace the catalog does not mention is kept. The catalog joins only
+ * each repository's newest workspace, and never a `deleting` one, so its
+ * silence says nothing about whether an older one exists; GET
+ * /api/workspaces is what can say that (applyWorkspaceList).
  *
  * Repositories carry no event ids; the snapshot is their only source, so it
  * replaces them outright.
@@ -286,8 +373,7 @@ function applySnapshot(prev: Entities, at: number, view: CatalogView): Entities 
   const installations: Record<number, InstallationView> = {}
   for (const i of view.installations) installations[i.id] = i
 
-  const seen = new Set<string>()
-  const workspaces: Record<string, Workspace> = {}
+  const workspaces: Record<string, Workspace> = { ...prev.workspaces }
   for (const r of view.repos) {
     repos[r.id] = toRepo(r)
     repoOrder.push(r.id)
@@ -295,22 +381,17 @@ function applySnapshot(prev: Entities, at: number, view: CatalogView): Entities 
     if (w === null || !isState(w.state)) continue
     const gone = prev.gone[w.id]
     if (gone !== undefined) continue // the snapshot predates the delete, or races it
-    seen.add(w.id)
     const cur = prev.workspaces[w.id]
     if (cur !== undefined && cur.stateAt > at) {
-      workspaces[w.id] = cur.repositoryId === null ? { ...cur, repositoryId: r.id } : cur
+      workspaces[w.id] = cur.repositoryId === null ? { ...cur, repositoryId: r.id, fullName: r.full_name } : cur
     } else if (cur !== undefined && cur.state === w.state) {
-      workspaces[w.id] = { ...cur, repositoryId: r.id, stateAt: Math.max(cur.stateAt, at) }
+      workspaces[w.id] = { ...cur, repositoryId: r.id, fullName: cur.fullName ?? r.full_name, stateAt: Math.max(cur.stateAt, at) }
     } else {
       workspaces[w.id] = {
         ...(cur ?? stub(w.id)),
-        repositoryId: r.id, state: w.state, detail: null, stateAt: at,
+        repositoryId: r.id, fullName: r.full_name, state: w.state, detail: null, stateAt: at,
       }
     }
-  }
-  for (const [id, w] of Object.entries(prev.workspaces)) {
-    if (seen.has(id)) continue
-    if (w.stateAt > at || w.stepAt > at) workspaces[id] = w
   }
 
   return {
@@ -325,6 +406,118 @@ function applySnapshot(prev: Entities, at: number, view: CatalogView): Entities 
     catalogRefreshError: view.last_refresh_error,
     catalogLoaded: true,
   }
+}
+
+/**
+ * One workspace from a GET /api/workspaces(/:id) body taken at `at`, merged
+ * over what the entities already hold. The rule is applySnapshot's: a fact an
+ * event newer than `at` wrote is kept, anything else takes the body's,
+ * versioned at `at`. State and its detail move together; each step is
+ * versioned on its own, so a step event that beat the body keeps its row.
+ */
+function mergeView(cur: Workspace | undefined, at: number, v: WorkspaceView): Workspace {
+  const base = cur ?? stub(v.id)
+  const steps: Record<string, StepRecord> = { ...base.steps }
+  for (const [name, sv] of Object.entries(v.steps ?? {})) {
+    if (!isStepStatus(sv.status)) continue
+    const old = steps[name]
+    if (old !== undefined && old.eventId > at) continue
+    steps[name] = { status: sv.status, detail: str(sv.detail), at: sv.at, eventId: at }
+  }
+  const eventsWin = base.stateAt > at
+  return {
+    ...base,
+    repositoryId: v.repository_id,
+    fullName: v.full_name,
+    branch: v.branch,
+    state: eventsWin ? base.state : v.state,
+    detail: eventsWin ? base.detail : v.state_detail,
+    stateAt: eventsWin ? base.stateAt : at,
+    containerId: v.container_id ?? (eventsWin ? base.containerId : null),
+    createdAt: v.created_at,
+    steps,
+  }
+}
+
+function isView(v: WorkspaceView): boolean {
+  return typeof v.id === 'string' && v.id !== '' && isState(v.state)
+}
+
+/**
+ * Merges a GET /api/workspaces body: every workspace with a row. Unlike the
+ * catalog it is the authority on existence — a workspace it does not list,
+ * and that no event after `at` has touched, is gone from the server and is
+ * dropped. That is also how a stub the refetch could not explain stops
+ * asking for refetches.
+ */
+function applyWorkspaceList(prev: Entities, at: number, view: WorkspaceList): Entities {
+  const workspaces: Record<string, Workspace> = {}
+  for (const v of view.workspaces) {
+    if (!isView(v) || prev.gone[v.id] !== undefined) continue
+    workspaces[v.id] = mergeView(prev.workspaces[v.id], at, v)
+  }
+  for (const [id, w] of Object.entries(prev.workspaces)) {
+    if (workspaces[id] !== undefined) continue
+    if (w.stateAt > at || w.stepAt > at) workspaces[id] = w
+  }
+  const feeds: Record<string, StreamEvent[]> = {}
+  for (const [id, f] of Object.entries(prev.feeds)) {
+    if (workspaces[id] !== undefined || f.some((e) => e.id > at)) feeds[id] = f
+  }
+  return {
+    ...prev,
+    lastEventId: Math.max(prev.lastEventId, at),
+    staleSince: prev.staleSince !== null && at < prev.staleSince ? prev.staleSince : null,
+    workspaces,
+    feeds,
+  }
+}
+
+/**
+ * Merges a GET /api/workspaces/:id body: the one workspace, and its recent
+ * events into its feed. It names one workspace, so it drops none — and it
+ * does not clear a resync, because the rest of the entities are no fresher
+ * for it.
+ */
+function applyWorkspaceDetail(prev: Entities, at: number, view: WorkspaceDetail): Entities {
+  if (!isView(view) || prev.gone[view.id] !== undefined) {
+    return at > prev.lastEventId ? { ...prev, lastEventId: at } : prev
+  }
+  const events = (view.events ?? []).filter((e) => str(e.workspace_id) === view.id)
+  return {
+    ...prev,
+    lastEventId: Math.max(prev.lastEventId, at),
+    workspaces: { ...prev.workspaces, [view.id]: mergeView(prev.workspaces[view.id], at, view) },
+    feeds: { ...prev.feeds, [view.id]: mergeFeed(prev.feeds[view.id], events) },
+  }
+}
+
+const stepOrder = (n: string) => (WORKSPACE_STEPS as readonly string[]).indexOf(n)
+
+/**
+ * The step the card names: the most recent step event, or — when only a
+ * snapshot has been seen — the latest-written row of the timeline, ties
+ * broken by run order.
+ */
+export function currentStep(w: Workspace): StepInfo | null {
+  if (w.step !== null) return w.step
+  let best: [string, StepRecord] | null = null
+  for (const entry of Object.entries(w.steps)) {
+    if (best === null || entry[1].eventId > best[1].eventId
+      || (entry[1].eventId === best[1].eventId && stepOrder(entry[0]) > stepOrder(best[0]))) best = entry
+  }
+  return best === null ? null : { name: best[0], status: best[1].status, detail: best[1].detail }
+}
+
+/** The step a failed workspace failed at, or null when nothing says. */
+export function failedStep(w: Workspace): string | null {
+  if (w.step?.status === 'failed') return w.step.name
+  let best: [string, StepRecord] | null = null
+  for (const entry of Object.entries(w.steps)) {
+    if (entry[1].status !== 'failed') continue
+    if (best === null || entry[1].eventId > best[1].eventId) best = entry
+  }
+  return best?.[0] ?? null
 }
 
 /** The newest workspace holding a repository: the join the home list shows. */

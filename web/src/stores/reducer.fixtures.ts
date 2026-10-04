@@ -5,7 +5,7 @@
 // internal/catalog and internal/broker — so a reducer test over these is a
 // test against the server's shapes, not against our memory of them.
 
-import type { CatalogView, StreamEvent } from '../api/types'
+import type { CatalogView, StepView, StreamEvent, WorkspaceDetail, WorkspaceList, WorkspaceView } from '../api/types'
 
 export const WS = '01JA0000000000000000000010'
 export const WS2 = '01JA0000000000000000000011'
@@ -77,6 +77,57 @@ export const REFRESH_FAILED = (id: number): StreamEvent =>
 
 export const stateEvent = (id: number, ws: string, state: string, extra: Record<string, unknown> = {}): StreamEvent =>
   ev(id, 'workspace.state', ws, { state, ...extra })
+
+/** A `token.issued` naming a workspace: changes no entity, joins the feed. */
+export const tokenIssued = (id: number, ws: string): StreamEvent =>
+  ev(id, 'token.issued', ws, { scope: 'gh', expires_at: at(id + 3600) }, 'Issued a gh token.')
+
+export const stepEvent = (id: number, ws: string, step: string, status: string, detail?: string): StreamEvent =>
+  ev(id, 'workspace.step', ws, { step, status, ...(detail !== undefined ? { detail } : {}) },
+    status === 'failed' ? detail ?? step : `${step} ${status}`, status === 'failed' ? 'error' : 'info')
+
+/** A start of WS2 after CLONE_FAILS_AT_UP: failed → building, `up` rerun, running. */
+export const START_AFTER_FAIL: StreamEvent[] = [
+  ev(50, 'workspace.state', WS2, { state: 'building', from: 'failed' }, 'Building the container.'),
+  ev(51, 'workspace.step', WS2, { step: 'up', status: 'started' }),
+  ev(52, 'workspace.step', WS2, { step: 'up', status: 'done' }),
+  ev(53, 'workspace.state', WS2, { state: 'running', from: 'building' }, 'Running.'),
+]
+
+const step = (status: StepView['status'], n: number, detail?: string): StepView =>
+  ({ status, at: at(n), ...(detail !== undefined ? { detail } : {}) })
+
+/** WS as GET /api/workspaces writes it after CLONE_OK. */
+export function wsView(over: Partial<WorkspaceView> = {}): WorkspaceView {
+  return {
+    id: WS, repository_id: 1, full_name: 'krelinga/drydock', branch: 'main', state: 'running',
+    state_detail: null, container_id: 'c0ffee0123456789', created_at: at(1),
+    steps: {
+      allocate: step('done', 3), clone: step('done', 6), resolve_config: step('done', 8), up: step('done', 12),
+    },
+    ...over,
+  }
+}
+
+/** WS2 as GET /api/workspaces writes it after CLONE_FAILS_AT_UP. */
+export function ws2View(over: Partial<WorkspaceView> = {}): WorkspaceView {
+  return {
+    id: WS2, repository_id: 2, full_name: 'krelinga/homelab', branch: 'main', state: 'failed',
+    state_detail: 'The container start step failed.', container_id: null, created_at: at(20),
+    steps: { up: step('failed', 24, 'The container start step failed.') },
+    ...over,
+  }
+}
+
+/** GET /api/workspaces: newest first. */
+export function listBody(...views: WorkspaceView[]): WorkspaceList {
+  return { workspaces: views.length > 0 ? views : [ws2View(), wsView()] }
+}
+
+/** GET /api/workspaces/:id for WS, with the events it names, newest first. */
+export function detailBody(over: Partial<WorkspaceView> = {}, events: StreamEvent[] = CLONE_OK): WorkspaceDetail {
+  return { ...wsView(over), events: events.filter((e) => e.workspace_id === (over.id ?? WS)).slice().reverse() }
+}
 
 /** GET /api/repos with WS running on repo 1 and nothing on repo 2. */
 export function catalogBody(over: Partial<CatalogView> = {}): CatalogView {
