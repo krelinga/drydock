@@ -37,7 +37,7 @@ printf "%s\n" "$PW" | ./drydock passwd --db x.db  # set the operator password (n
 | `internal/auth` | argon2id with a floor and rehash-on-sign-in, sessions stored only as SHA-256, and a lockout that is per-IP backoff plus a global cap, kept in `auth_attempt` so a restart does not reset it. |
 | `internal/server` | Assembles the front door: store, auth, both muxes, two `0660` group-owned sockets, and no TCP listener — asserted on the running process. |
 | `cmd/drydock` | `serve` and `passwd`, and no third command. `passwd` deliberately skips the instance lock so it works while the server runs. |
-| `deploy/Caddyfile` | The entire LAN-facing surface, every value an env placeholder so the shipped file is the tested file. |
+| `deploy/Caddyfile`, `deploy/preview.caddy` | The entire LAN-facing surface, every value an env placeholder so the shipped files are the tested files. The preview site is a separate, optional file imported by glob, so a first deployment needs no wildcard certificate. |
 | `test/component/` | Real binaries, nothing mocked. Today: the Caddyfile conformance test (testing §3.2), mutation-checked against the Caddyfile itself. |
 | `test/fixtures/` | The corpus: 35 fixtures from `2.1.289` and devcontainer CLI `0.89.0`, plus `record.sh`, which is testing §11.1 step 3. Some are hand-written or synthetic, and their `.meta` says which. |
 

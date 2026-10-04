@@ -5,11 +5,9 @@
 # that ships — a tested copy of a config is not a tested config.
 #
 #   DRYDOCK_UI_HOST          drydock.example.com
-#   DRYDOCK_PREVIEW_DOMAIN   drydock-preview.net   (a DIFFERENT registrable domain)
 #   DRYDOCK_UI_CERT/_KEY     the UI host's certificate, provisioned externally
-#   DRYDOCK_PREVIEW_CERT/_KEY  a wildcard for *.DRYDOCK_PREVIEW_DOMAIN
 #   DRYDOCK_API_SOCKET       /run/drydock/http.sock
-#   DRYDOCK_PREVIEW_SOCKET   /run/drydock/preview.sock
+#   DRYDOCK_CADDY_SITES      /etc/caddy/drydock.d   (optional sites; see preview.caddy)
 {
 	# The admin API is NOT left on its default, localhost:2019. Any local
 	# process can reach a loopback port, and anything that can POST a config to
@@ -45,23 +43,11 @@
 	}
 }
 
-*.{$DRYDOCK_PREVIEW_DOMAIN} {
-	tls {$DRYDOCK_PREVIEW_CERT} {$DRYDOCK_PREVIEW_KEY}
-	# No `encode` here: compressing a dev server that already compresses or
-	# streams buys nothing and has broken HMR in the wild.
-	reverse_proxy unix/{$DRYDOCK_PREVIEW_SOCKET:/run/drydock/preview.sock} {
-		flush_interval -1
-		header_up X-Forwarded-For {remote_host}
-	}
-	# No cookie handling here, deliberately: Drydock's preview mux has to READ
-	# the preview cookie to authenticate, and strips it one hop later, before
-	# the container (port forwarding §7).
-	#
-	# No access log on this block, deliberately: the handshake puts a one-time
-	# token in the query string. If a global `log` directive is ever added,
-	# redact query strings for this host.
-}
+# Optional sites — today only the preview site, deploy/preview.caddy. A glob
+# that matches nothing is fine, so a deployment without the preview wildcard
+# certificate simply omits the file.
+import {$DRYDOCK_CADDY_SITES:/etc/caddy/drydock.d}/*.caddy
 
-# Two site blocks, two registrable domains. A request for any other host — an
-# attacker's rebound name, a bare IP, a sibling of the UI host — matches no
-# block and is refused here, before Drydock exists (§13.3).
+# A request for any host without a site block — an attacker's rebound name, a
+# bare IP, a sibling of the UI host — matches nothing and is refused here,
+# before Drydock exists (§13.3).

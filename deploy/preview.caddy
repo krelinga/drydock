@@ -1,0 +1,28 @@
+# The preview site (port forwarding §9) — optional, and kept out of the main
+# Caddyfile on purpose. It needs a wildcard certificate on a SEPARATE
+# registrable domain, which a first deployment may not have yet, and previews
+# are not built until after Phase 2. Install this file into the directory the
+# main Caddyfile imports (DRYDOCK_CADDY_SITES, default /etc/caddy/drydock.d)
+# only once that certificate exists; until then the import matches nothing and
+# Caddy serves the UI alone.
+#
+#   DRYDOCK_PREVIEW_DOMAIN     drydock-preview.net   (a DIFFERENT registrable domain)
+#   DRYDOCK_PREVIEW_CERT/_KEY  a wildcard for *.DRYDOCK_PREVIEW_DOMAIN
+#   DRYDOCK_PREVIEW_SOCKET     /run/drydock/preview.sock
+
+*.{$DRYDOCK_PREVIEW_DOMAIN} {
+	tls {$DRYDOCK_PREVIEW_CERT} {$DRYDOCK_PREVIEW_KEY}
+	# No `encode` here: compressing a dev server that already compresses or
+	# streams buys nothing and has broken HMR in the wild.
+	reverse_proxy unix/{$DRYDOCK_PREVIEW_SOCKET:/run/drydock/preview.sock} {
+		flush_interval -1
+		header_up X-Forwarded-For {remote_host}
+	}
+	# No cookie handling here, deliberately: Drydock's preview mux has to READ
+	# the preview cookie to authenticate, and strips it one hop later, before
+	# the container (port forwarding §7).
+	#
+	# No access log on this block, deliberately: the handshake puts a one-time
+	# token in the query string. If a global `log` directive is ever added,
+	# redact query strings for this host.
+}

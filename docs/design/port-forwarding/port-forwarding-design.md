@@ -308,7 +308,7 @@ HMR is the whole point of previewing a dev server, so `Upgrade` must survive the
 
 ## 9. Caddy configuration
 
-The one LAN-facing file, extended. **This is the only place this design touches §13.1.** The shipped version is `deploy/Caddyfile`, which also moves Caddy's admin API off its default `localhost:2019` onto a `0600` Unix socket — see the warning under the overall design's §13.1; the block below omits that global option for brevity, not because it is optional.
+The one LAN-facing file, extended. **This is the only place this design touches §13.1.** The shipped version is `deploy/Caddyfile` plus `deploy/preview.caddy` — the preview site is a separate file imported by glob, so a deployment without the wildcard certificate yet simply omits it — and the main file also moves Caddy's admin API off its default `localhost:2019` onto a `0600` Unix socket — see the warning under the overall design's §13.1; the block below omits that global option for brevity, not because it is optional.
 
 ```
 drydock.example.com {

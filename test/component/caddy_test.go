@@ -84,6 +84,7 @@ var env struct {
 	root                 string // everything every Caddy writes lives under here
 	pool                 *x509.CertPool
 	apiSock, previewSock string
+	sites                string // optional-sites dir holding a copy of deploy/preview.caddy
 	api, preview         *recorder
 	main                 *caddyProc // the shipped Caddyfile, unmodified
 	skip                 string
@@ -165,7 +166,13 @@ func setup() (func(), error) {
 		}
 		os.RemoveAll(root)
 	}
-	env.main, err = startCaddy(shippedCaddyfile(), "main")
+	// The optional-sites directory holds a byte-for-byte copy of the shipped
+	// preview site, exactly as an operator installs it.
+	if env.sites, err = sitesDir("with-preview", true); err != nil {
+		stopBackends()
+		return nil, err
+	}
+	env.main, err = startCaddy(shippedCaddyfile(), env.sites, "main")
 	if err != nil {
 		stopBackends()
 		return nil, err
@@ -185,7 +192,7 @@ type caddyProc struct {
 // startCaddy runs `caddy run` on the given Caddyfile with this package's
 // certificates and backends, on fresh ports, with its own data directories so
 // two instances never contend for Caddy's storage lock.
-func startCaddy(caddyfile, tag string) (*caddyProc, error) {
+func startCaddy(caddyfile, sites, tag string) (*caddyProc, error) {
 	dir := filepath.Join(env.root, tag)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, err
@@ -207,6 +214,7 @@ func startCaddy(caddyfile, tag string) (*caddyProc, error) {
 		"DRYDOCK_API_SOCKET="+env.apiSock, "DRYDOCK_PREVIEW_SOCKET="+env.previewSock,
 		"DRYDOCK_HTTPS_PORT="+c.port, "DRYDOCK_HTTP_PORT="+freePort(),
 		"DRYDOCK_CADDY_ADMIN=unix/"+c.adminSock+"|0600",
+		"DRYDOCK_CADDY_SITES="+sites,
 	)
 	if err := c.cmd.Start(); err != nil {
 		f.Close()
@@ -491,7 +499,7 @@ func TestForwardedForStaysReplacedWhenProxiesAreTrusted(t *testing.T) {
 	if err := os.WriteFile(path, []byte(derived), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	c, err := startCaddy(path, "trusted-proxies")
+	c, err := startCaddy(path, env.sites, "trusted-proxies")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -507,5 +515,57 @@ func TestForwardedForStaysReplacedWhenProxiesAreTrusted(t *testing.T) {
 	got := env.api.last().Header.Values("X-Forwarded-For")
 	if len(got) != 1 || got[0] != "127.0.0.1" {
 		t.Errorf("with trusted_proxies set, the backend saw X-Forwarded-For %q; want exactly [127.0.0.1]", got)
+	}
+}
+
+// sitesDir builds an optional-sites directory: empty, or holding a byte-for-byte
+// copy of deploy/preview.caddy.
+func sitesDir(name string, withPreview bool) (string, error) {
+	dir := filepath.Join(env.root, "sites-"+name)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return "", err
+	}
+	if withPreview {
+		b, err := os.ReadFile(filepath.Join(filepath.Dir(shippedCaddyfile()), "preview.caddy"))
+		if err != nil {
+			return "", err
+		}
+		if err := os.WriteFile(filepath.Join(dir, "preview.caddy"), b, 0o600); err != nil {
+			return "", err
+		}
+	}
+	return dir, nil
+}
+
+// TestUIOnlyDeployment is the first real deployment: no preview wildcard
+// certificate yet, so no preview.caddy installed. Caddy must still load the
+// shipped file and serve the UI — and a preview hostname must reach nothing,
+// rather than falling through to some other block.
+func TestUIOnlyDeployment(t *testing.T) {
+	need(t)
+	empty, err := sitesDir("empty", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c, err := startCaddy(shippedCaddyfile(), empty, "ui-only")
+	if err != nil {
+		t.Fatalf("the shipped Caddyfile does not load without the preview site: %v", err)
+	}
+	defer c.stop()
+	req, _ := http.NewRequest("GET", "https://"+uiHost+"/api/repos", nil)
+	resp, err := c.client.Do(req)
+	if err != nil || resp.StatusCode != 200 {
+		t.Fatalf("UI host on a UI-only deployment: %v %v", resp, err)
+	}
+	resp.Body.Close()
+	if env.api.count() != 1 {
+		t.Fatalf("control: the UI request did not reach the API socket")
+	}
+	req, _ = http.NewRequest("GET", "https://"+previewHost+"/", nil)
+	if resp, err := c.client.Do(req); err == nil {
+		resp.Body.Close()
+	}
+	if env.preview.count() != 0 {
+		t.Error("a preview hostname reached the preview socket with no preview site installed")
 	}
 }
