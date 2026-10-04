@@ -91,6 +91,12 @@ exists in Phase 1. A `drydock-playwright-cache` volume on `~/.cache/ms-playwrigh
 mounted so that ~114 MB download survives rebuilds, the same reasoning as the DinD volume beside it.
 **Both changes need a container rebuild to take effect.**
 
+A third volume, `drydock-gh-config` on `~/.config/gh`, keeps `gh`'s login across rebuilds. The intended
+login is a **fine-grained token scoped to this repository alone** (`! gh auth login --with-token`),
+not the default OAuth login, which reaches every repository the account can. The directory is `0700`
+because `hosts.yml` holds the token in plain text — there is no keyring here. Like the Playwright
+volume, it makes Docker create its parent (`~/.config`) as root, which `postCreateCommand` chowns back.
+
 `devcontainer-lock.json` is a **generated artifact — never hand-edit it.** The CLI regenerates it
 from the resolved feature set on every build, so an added feature needs no lock entry: leave it out
 and the tag is resolved fresh. The digests in it are trusted *input* during resolution (they pin
