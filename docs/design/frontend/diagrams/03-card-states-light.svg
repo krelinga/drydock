@@ -46,7 +46,7 @@
         <rect x="30" y="266" width="100" height="24" rx="3" fill="none" stroke="#1B6B58" stroke-width="1.2"/>
         <text x="80" y="282" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="8.5" fill="#1B6B58">Open in Claude</text>
 
-        <text x="192" y="197" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="8" fill="#48525E" opacity=".55">running · waiting</text>
+        <text x="192" y="197" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="8" fill="#48525E" opacity=".55">running · waiting_registration</text>
         <rect x="192" y="204" width="162" height="104" rx="4" fill="none" stroke="#48525E" stroke-width="1.1"/>
         <line x1="193.6" y1="205" x2="193.6" y2="307" stroke="#95590F" stroke-width="3.2"/>
         <text x="207" y="228" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="9" fill="#95590F">◌</text>

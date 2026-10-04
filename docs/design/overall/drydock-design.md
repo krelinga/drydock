@@ -323,9 +323,11 @@ The broker speaks a deliberately tiny line protocol over the per-container Unix 
 There is no `repository` parameter, and the `GET-SECRETS` verb in §10.3 takes no arguments at all. The broker derives both the repo and the grant set from which socket the connection arrived on, so a compromised container cannot ask for a different repo's token or another repo's secrets — it can only ask for its own, which it already had.
 
 > [!NOTE]
-> **The UI needs eight additions to the table above**
+> **The UI needs six more additions to the table above**
 >
-> A client built on "every mutation is a `202`, follow the stream" needs a handful of things this table does not yet promise: `id:` on every SSE event with `Last-Event-ID` replay and a heartbeat, the in-flight login readable back from `GET /api/auth/claude`, a `409` on a duplicate workspace create, a route onto the supervisor's log ring buffer, and a consistent error envelope. They are enumerated with their reasons in the [frontend design](../frontend/frontend-design.md) §4.5 rather than here, so this table stays the server's own contract — but they are requirements, not wishes, and three of them are the difference between a correct UI and a plausible one.
+> A client built on "every mutation is a `202`, follow the stream" needs things this table does not yet promise: `id:` on every SSE event with `Last-Event-ID` replay and a heartbeat, the in-flight login readable back from `GET /api/auth/claude`, a `409` on a duplicate workspace create, a route onto the supervisor's log ring buffer, a consistent error envelope, and the capacity fraction plus the matched refused-start signature. They are enumerated with their reasons in the [frontend design](../frontend/frontend-design.md) §4.5 rather than here, so this table stays the server's own contract — but they are requirements, not wishes.
+>
+> Three of its original nine are already answered by §4 as of v7, and for the reason §4 gives itself: `claude_identity.state` carries the five-way login verdict, `workspace.environment_id` is the card's only link, and `supervisor.state` has `waiting_registration` so a `409` wait is not stored as a failure. A UI is simply where "a state inferred differently by every reader" becomes visible.
 
 ## 6. Clone → container
 
