@@ -66,6 +66,16 @@ type Config struct {
 	// create beyond it is refused rather than queued: nothing here stops a
 	// workspace on its own, so the operator chooses what to stop.
 	ContainerCap int
+
+	// GitHubAppID and GitHubAppKey are the GitHub App (§9): its numeric App
+	// ID — not the Client ID — and the path of its private key, a file
+	// readable by Drydock alone (mode 0400, §13.5). Never the key itself and
+	// never an environment variable. Both or neither: without them Drydock
+	// serves, but has no repository list.
+	GitHubAppID  int64
+	GitHubAppKey string
+	// GitHubAPI is the REST API's base URL; a test points it at a fake.
+	GitHubAPI string
 }
 
 // WorkspaceLabel is the full label key used for adoption and deletion.
@@ -122,6 +132,12 @@ func (c Config) Validate() error {
 	}
 	if c.ContainerCap < 1 {
 		return fmt.Errorf("container cap must be at least 1")
+	}
+	if (c.GitHubAppID != 0) != (c.GitHubAppKey != "") {
+		return fmt.Errorf("the GitHub App needs both its App ID and its private key path, or neither")
+	}
+	if c.GitHubAppID < 0 {
+		return fmt.Errorf("GitHub App ID %d must be positive", c.GitHubAppID)
 	}
 	return nil
 }

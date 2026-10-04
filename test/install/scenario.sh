@@ -104,6 +104,28 @@ check "the preview site is gone" [ ! -e /etc/caddy/drydock.d/preview.caddy ]
 check "a preview host no longer answers" [ "$(status --resolve "a-b.$PREVIEW:443:127.0.0.1" "https://a-b.$PREVIEW/")" = 000 ]
 check "the UI still does" [ "$(status -b "$jar" "https://$UI/api/auth/session")" = 200 ]
 
+section "the GitHub App"
+check "control: without an App the repo list says so (503)" [ "$(status -b "$jar" "https://$UI/api/repos")" = 503 ]
+openssl genrsa -traditional -out /root/app.pem 2048 2>/dev/null && chmod 0644 /root/app.pem # looser on purpose
+install v0.0.2 --github-app-id Iv23liAbCdEf
+check "a Client ID instead of the App ID is refused" [ "$rc" != 0 ] && grep -q "numeric App ID" <<<"$out"
+install v0.0.2 --github-app-id 5189455
+check "an App ID with no key yet is refused" [ "$rc" != 0 ] && grep -q "needs --github-app-key" <<<"$out"
+pid_d=$(mainpid drydock)
+install v0.0.2 --github-app-id 5189455 --github-app-key /root/app.pem
+check "configuring the App succeeds" [ "$rc" = 0 ] || printf '%s\n' "$out"
+check "the key is drydock's alone, mode 0400" [ "$(stat -c '%U %G %a' /etc/drydock/github-app.pem)" = "drydock drydock 400" ]
+check "drydock was restarted onto it" [ "$(mainpid drydock)" != "$pid_d" ]
+check "the repo list is now configured (200)" [ "$(status -b "$jar" "https://$UI/api/repos")" = 200 ]
+check "the key is passed as a path" tr '\0' ' ' <"/proc/$(mainpid drydock)/cmdline" | grep -q -- "--github-app-key=/etc/drydock/github-app.pem"
+keyline=$(sed -n 2p /root/app.pem)
+check "the key is not in drydock's environment" bash -c "! tr '\\0' '\\n' </proc/$(mainpid drydock)/environ | grep -qF -- '$keyline'"
+check "nor in its settings file" bash -c "! grep -qF -- '$keyline' /etc/drydock/drydock.env"
+pid_d=$(mainpid drydock)
+install v0.0.2
+check "a re-run without the flags keeps the App" [ "$rc" = 0 ] && grep -q -- "--github-app-id" /etc/systemd/system/drydock.service
+check "and restarts nothing" [ "$(mainpid drydock)" = "$pid_d" ]
+
 section "a key caddy cannot read is refused before anything changes"
 cp /etc/ssl/drydock/ui.key /root/private.key && chmod 0600 /root/private.key
 before=$(sha256sum /etc/drydock/drydock.env)

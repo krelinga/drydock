@@ -24,9 +24,11 @@ import (
 
 	"github.com/krelinga/drydock/internal/api"
 	"github.com/krelinga/drydock/internal/auth"
+	"github.com/krelinga/drydock/internal/catalog"
 	"github.com/krelinga/drydock/internal/config"
 	"github.com/krelinga/drydock/internal/container"
 	"github.com/krelinga/drydock/internal/events"
+	"github.com/krelinga/drydock/internal/github"
 	"github.com/krelinga/drydock/internal/reconcile"
 	"github.com/krelinga/drydock/internal/store"
 	"github.com/krelinga/drydock/internal/subproc"
@@ -44,10 +46,12 @@ type Server struct {
 	// and boot reconciliation (§6). No route drives them yet.
 	Workspaces *workspace.Store
 	Reconciler *reconcile.Reconciler
-	api        *http.Server
-	preview    *http.Server
-	apiLn      net.Listener
-	prevLn     net.Listener
+	// Catalog is nil when no GitHub App is configured.
+	Catalog *catalog.Catalog
+	api     *http.Server
+	preview *http.Server
+	apiLn   net.Listener
+	prevLn  net.Listener
 }
 
 // New opens the store (taking the single-instance lock), builds both muxes,
@@ -83,7 +87,26 @@ func New(ctx context.Context, cfg config.Config, env sys.Env) (*Server, error) {
 	s.Workspaces = &workspace.Store{DB: db.DB, Events: s.Events, Env: env, Root: cfg.WorkspaceRoot, Cap: cfg.ContainerCap}
 	s.Reconciler = &reconcile.Reconciler{Workspaces: s.Workspaces, Events: s.Events,
 		Containers: container.Manager{Run: subproc.Exec{}, LabelPrefix: cfg.LabelPrefix}}
+	// The App key is read here, once, from its file (§13.5). A configured
+	// key that cannot be read, or that others can read, stops the server:
+	// starting without the repository list it was configured for would be
+	// a quieter failure than refusing to start.
+	var repoCatalog api.RepoCatalog
+	if cfg.GitHubAppID != 0 {
+		key, err := github.LoadKey(cfg.GitHubAppKey)
+		if err != nil {
+			db.Close()
+			return nil, err
+		}
+		s.Catalog = &catalog.Catalog{DB: db.DB, Events: s.Events, Clock: env.Clock,
+			GitHub: &github.Client{AppID: cfg.GitHubAppID, Key: key, BaseURL: cfg.GitHubAPI, Clock: env.Clock,
+				HTTP: &http.Client{Timeout: 30 * time.Second}}}
+		repoCatalog = s.Catalog
+	}
 	handlers := api.SessionRoutes{Auth: svc}.Handlers()
+	for name, h := range (api.RepoRoutes{Catalog: repoCatalog}).Handlers() {
+		handlers[name] = h
+	}
 	for name, h := range (api.EventRoutes{Log: s.Events, Clock: env.Clock, Alive: svc.Sessions.Alive}).Handlers() {
 		handlers[name] = h
 	}
@@ -163,6 +186,13 @@ func (s *Server) Serve(ctx context.Context) error {
 				"Could not reconcile workspaces with Docker at startup; nothing was changed. See the service log.", nil)
 		}
 	}()
+	refreshing := make(chan struct{})
+	go func() {
+		defer close(refreshing)
+		if s.Catalog != nil {
+			s.Catalog.Run(ctx, func(f string, a ...any) { fmt.Fprintf(os.Stderr, f+"\n", a...) })
+		}
+	}()
 	errc := make(chan error, 2)
 	go func() { errc <- s.api.Serve(s.apiLn) }()
 	go func() { errc <- s.preview.Serve(s.prevLn) }()
@@ -179,7 +209,8 @@ func (s *Server) Serve(ctx context.Context) error {
 	defer cancel()
 	_ = s.api.Shutdown(shutCtx)
 	_ = s.preview.Shutdown(shutCtx)
-	<-reconciled // it may still be writing; the database closes after it
+	<-reconciled // they may still be writing; the database closes after them
+	<-refreshing
 	s.DB.Close()
 	if errors.Is(serveErr, http.ErrServerClosed) {
 		serveErr = nil

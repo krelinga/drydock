@@ -46,6 +46,14 @@ CREATE TABLE event (
   at           TEXT
 , data TEXT);
 
+-- table installation
+CREATE TABLE installation (
+  id           INTEGER PRIMARY KEY,
+  account      TEXT NOT NULL,
+  account_type TEXT NOT NULL,
+  refreshed_at TEXT NOT NULL
+);
+
 -- table instance
 CREATE TABLE instance (
   id           INTEGER PRIMARY KEY CHECK (id = 1),
@@ -81,7 +89,7 @@ CREATE TABLE repository (
   archived         INTEGER,
   pushed_at        TEXT,
   refreshed_at     TEXT
-);
+, removed_at TEXT);
 
 -- table secret
 CREATE TABLE secret (

@@ -21,6 +21,7 @@ import (
 
 	"github.com/krelinga/drydock/internal/api"
 	"github.com/krelinga/drydock/internal/config"
+	"github.com/krelinga/drydock/internal/github/githubtest"
 	"github.com/krelinga/drydock/internal/store"
 	"github.com/krelinga/drydock/internal/sys"
 	"github.com/krelinga/drydock/internal/web"
@@ -727,4 +728,88 @@ func TestRefusesAChangedLabelPrefix(t *testing.T) {
 	again.apiLn.Close()
 	again.prevLn.Close()
 	again.DB.Close()
+}
+
+// TestRepoListEndToEnd: the App configured, the catalog refreshed at boot
+// from a fake GitHub, and GET /api/repos through the real gate and socket.
+// Without an App the same route says so, rather than answering an empty list.
+func TestRepoListEndToEnd(t *testing.T) {
+	dir := t.TempDir()
+	cfg := testConfig(t, dir)
+
+	// Control first: no App, no list — and a code that says why.
+	plain := start(t)
+	cookie := plain.signIn(t)
+	if resp := plain.do(t, req{method: "GET", path: "/api/repos", cookie: cookie}); resp.StatusCode != 503 || code(t, resp) != api.CodeAppNotConfigured {
+		t.Errorf("without an App: %d", resp.StatusCode)
+	}
+
+	f := githubtest.New(t, 5189455, time.Now)
+	f.Installations = []githubtest.Installation{{ID: 77, Account: "krelinga", Repos: []githubtest.Repo{
+		{ID: 1, FullName: "krelinga/drydock", DefaultBranch: "main", PushedAt: time.Now(),
+			Files: []string{".devcontainer/devcontainer.json"}},
+	}}}
+	keyPath := filepath.Join(dir, "app.pem")
+	os.WriteFile(keyPath, githubtest.KeyPEM(t), 0o400)
+	cfg.GitHubAppID, cfg.GitHubAppKey, cfg.GitHubAPI = 5189455, keyPath, f.URL
+
+	srv, err := New(context.Background(), cfg, sys.Production())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- srv.Serve(ctx) }()
+	t.Cleanup(func() { cancel(); <-done })
+	r := &running{cfg: cfg, srv: srv, client: unixClient(cfg.APISocket)}
+	cookie = r.signIn(t)
+
+	var body struct {
+		Repos []struct {
+			FullName        string `json:"full_name"`
+			HasDevcontainer *bool  `json:"has_devcontainer"`
+		}
+		Installations []struct {
+			SettingsURL string `json:"settings_url"`
+		}
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for len(body.Repos) == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("the boot refresh never filled the list")
+		}
+		time.Sleep(20 * time.Millisecond)
+		resp := r.do(t, req{method: "GET", path: "/api/repos", cookie: cookie})
+		if resp.StatusCode != 200 {
+			t.Fatalf("GET /api/repos = %d", resp.StatusCode)
+		}
+		json.NewDecoder(resp.Body).Decode(&body)
+	}
+	if body.Repos[0].FullName != "krelinga/drydock" || body.Repos[0].HasDevcontainer == nil || !*body.Repos[0].HasDevcontainer ||
+		len(body.Installations) != 1 || body.Installations[0].SettingsURL == "" {
+		t.Errorf("body %+v", body)
+	}
+	before := f.Count("GET /app/installations")
+	if resp := r.do(t, req{method: "POST", path: "/api/repos/refresh", origin: uiOrigin, cookie: cookie}); resp.StatusCode != 202 {
+		t.Errorf("POST /api/repos/refresh = %d, want 202", resp.StatusCode)
+	}
+	for f.Count("GET /app/installations") == before {
+		if time.Now().After(deadline.Add(5 * time.Second)) {
+			t.Fatal("the manual refresh never reached GitHub")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+// A configured App key that others can read stops the server at startup
+// (§13.5), rather than serving without the list it was configured for.
+func TestRefusesAnOpenAppKey(t *testing.T) {
+	dir := t.TempDir()
+	cfg := testConfig(t, dir)
+	keyPath := filepath.Join(dir, "app.pem")
+	os.WriteFile(keyPath, githubtest.KeyPEM(t), 0o644)
+	cfg.GitHubAppID, cfg.GitHubAppKey = 5189455, keyPath
+	if _, err := New(context.Background(), cfg, sys.Production()); err == nil || !strings.Contains(err.Error(), "0400") {
+		t.Errorf("New with a 0644 key: %v", err)
+	}
 }
