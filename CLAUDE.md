@@ -7,15 +7,31 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 **Design-only. There is no application source code yet.** The repository contains the overall design
 document (`docs/design/overall/drydock-design.md`, draft v7), supplemental ones on port forwarding
 (`docs/design/port-forwarding/`, draft v4), testing (`docs/design/testing/`, draft v4) and the Vue
-frontend (`docs/design/frontend/`, draft v4), an adversarial security review
+frontend (`docs/design/frontend/`, draft v4), a settled brand mark (`docs/design/brand/`, v1.0,
+with the shipping icon assets), an adversarial security review
 (`docs/design/security-review.md`), their SVG diagrams, a devcontainer definition, and the **four
 completed Phase 0 spikes** with their harnesses under `docs/design/spikes/`. There are no build,
 lint, or test commands because nothing is built yet — the testing document specifies what they will
 be.
 
+Two of those docs ship something runnable, and both are the thing to open before arguing about the
+subject in prose. `docs/design/frontend/prototype/prototype.html` is a clickable harness for every
+non-trivial UI surface at 360 px, with a switch for the fleet-wide login state; the frontend
+document's figures are distilled from it. `docs/design/brand/icon-preview.html` renders every icon
+form on both grounds down to 16 px beside the Claude and GitHub favicons, with the measured
+clearances and contrast ratios. Both are single self-contained files — open them in a browser.
+
 The devcontainer (`.devcontainer/devcontainer.json`) carries the full toolchain: Go (with
 golangci-lint), Node, **docker-in-docker**, the `devcontainer` CLI, Caddy, `gh`, and
 `sqlite3`/`socat`/`nc`/`jq`.
+
+**The repository is two languages now, and that was decided rather than drifted into.** The frontend
+design settles on Vue 3 + TypeScript + Vite, so `npm`, a `node_modules`, and a TypeScript toolchain
+are here whether any other part wants them or not — which is what withdrew the testing plan's
+`chromedp` fallback in favour of Playwright, since the cost it was being charged for was already
+paid. Node is present for the `devcontainer` CLI, so Vitest needs nothing new. **Playwright's
+browser binaries are not installed** (`npx playwright install --with-deps`), and the browser tier
+also wants a local CA — see the open spike in the build order below.
 
 `devcontainer-lock.json` is a **generated artifact — never hand-edit it.** The CLI regenerates it
 from the resolved feature set on every build, so an added feature needs no lock entry: leave it out
@@ -181,6 +197,19 @@ These come from §2 (Claude Code constraints) and §13.5 (non-negotiables). Most
   thinking" wrong destroys work. Capacity is a hand-managed cap plus a stop button.
 - **Every step of clone → container writes an event**, so a failure names its step rather than
   reporting "failed".
+- **A fault with one cause gets one message and one button, wherever it manifests.** A blanked
+  shared credential takes every workspace down at once, and rendering each card from its own row —
+  the obvious implementation — produces ten *Restart session server* buttons, none of which can
+  work, with the one genuinely different fault buried among them. So fleet-wide identity state
+  overrides per-card presentation, and the override stays narrow: only what the credential actually
+  broke is replaced, and a card whose image build failed keeps its own status and its own action. A
+  per-card action that cannot work is never shown disabled; it is replaced by the action that can.
+  Frontend design §6.6.
+- **`blanked` and `absent` are different sentences.** *"Signed out. Sign in again."* means everyone
+  just lost access; *"No one has signed in yet."* is the expected first-run state. `auth status
+  --json` reports `loggedIn:false` for both and only the credential file separates them (§7.3), so
+  rendering them alike is how a routine first run and the worst failure in the system end up looking
+  identical.
 
 ## Build order
 
@@ -194,6 +223,15 @@ These come from §2 (Claude Code constraints) and §13.5 (non-negotiables). Most
    harnesses in `docs/design/spikes/`. Two things stay unverified on purpose, both parked for Phase
    5: the `Login successful` match (needs a human in a browser — run `harness-01-login/run.sh login`)
    and whether a `--spawn worktree` path needs its own trust record.
+
+   **One spike is still open, and it is new.** The testing plan wants a fifth, Phase-0-shaped
+   question answered before the browser tier is built: *can a headless Chromium under Playwright be
+   made to trust a locally-generated CA, such that a `__Host-` cookie set over the local HTTPS
+   listener is accepted and replayed?* It is an afternoon's work, and the tier's value collapses if
+   the answer is `ignoreHTTPSErrors` — that flag disables the very semantics the three cookie
+   assertions are about, which are the ones port forwarding §14.1 actually asked for. If it cannot
+   be made to work, those assertions move to the release checklist, which is a loss worth naming
+   rather than absorbing quietly.
 1. **Front door** — socket listener, `drydock passwd`, session middleware, `Origin`/`Host` checks,
    Caddy block. *Nothing else gets built until every route without a cookie returns 401.*
 2. **Walking skeleton** — repo list, clone, `devcontainer up`, states, SSE, boot reconciliation.
@@ -246,9 +284,45 @@ columns exist (`claude_identity.state`, `workspace.environment_id`, and `waiting
 the label prefix is configuration. Each has test rows in §8.2, §8.5 and §8.6 — a finding closed in
 prose with no test is one that reopens quietly.
 
+## Brand
+
+`docs/design/brand/brand-design.md` settles the icon at v1.0 and records why each alternative lost.
+The mark is a section through a **drained** basin holding a container clear of the floor on keel
+blocks, `DD` stencilled on its face — the drained basin is the only idea it carries, which is why
+drawing water in it (every "harbour" variant) was rejected, along with anything Docker-adjacent,
+since the design treats Docker as an implementation detail it never scrapes. Phase 1 needs a favicon
+and a header mark, so these ship with the front door.
+
+Four things about the assets that are easy to get wrong:
+
+- **Two forms, different jobs.** `drydock-mark.svg` for in-page use where the ground is known;
+  `drydock-badge.svg` (the mark knocked out of a steel rounded square) wherever the surface belongs
+  to someone else — favicon, app icon. `drydock-mark-mono.svg` inherits `currentColor` and carries
+  **no letters**, because a stencil needs something to be knocked out of.
+- **The SVGs and the PNGs are not generated from one source.** Change a path in `icons/` and you must
+  change `render-icons.mjs` too and re-run it; nothing warns you when they drift. It takes a JSON
+  argv of `[path, size, mode, colors]` entries and uses only Node builtins:
+  ```sh
+  node docs/design/brand/render-icons.mjs '[["docs/design/brand/icons/favicon-16.png",16,"badge","steel"],
+    ["docs/design/brand/icons/favicon-32.png",32,"badge","steel"],
+    ["docs/design/brand/icons/apple-touch-icon-180.png",180,"bleed","steel"]]'
+  ```
+  As of this writing the committed PNGs match the renderer byte-for-byte.
+- **Re-render `icon-preview.html` after any geometry change.** It is what caught every measured
+  problem in the note — the badge ground is steel because ink navy scores **1.05** against a dark
+  page, and the badge is a single knockout because keeping the accent container scores **1.00**
+  between the letters and their ground.
+- **The badge ground is deliberately not a brand colour.** Steel leaves `#1d4ed8` meaning *API
+  traffic* and `#6d28d9` meaning *preview origin* in the diagrams, rather than making a brand colour
+  and a semantic colour the same colour.
+
+Still open: a wordmark. The stencilled `DD` is gone by 20 px, so the name is only unambiguous in a
+lockup, and the UI header needs one regardless.
+
 ## Docs
 
-Design docs live under `docs/design/<scope>/`, with diagrams in a sibling `diagrams/` directory.
+Design docs live under `docs/design/<scope>/`, with diagrams in a sibling `diagrams/` directory —
+except `brand/`, whose assets are products rather than illustrations and live in `icons/`.
 Spike results live under `docs/design/spikes/`, each one a numbered report next to the re-runnable
 harness that produced it — a spike whose evidence cannot be re-checked against a new Claude Code
 version is worth very little. Spike 00's harness is `harness/`; later ones are `harness-NN-<topic>/`,
