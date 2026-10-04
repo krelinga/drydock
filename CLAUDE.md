@@ -20,6 +20,8 @@ Phase 1 — a `drydock` binary that serves the gated API on two Unix sockets beh
 ```sh
 go build ./... && go vet ./... && go test ./...   # the whole suite; the Caddy test needs `caddy` on PATH
 gofmt -l .                                        # must print nothing
+cd web && npm ci && npm run check                 # the UI: types, tests, dist is current, size budget
+test/install/run.sh                               # the installer, in a systemd container
 go build -o drydock ./cmd/drydock                 # the one binary
 printf "%s\n" "$PW" | ./drydock passwd --db x.db  # set the operator password (no HTTP route can)
 ./drydock serve --db x.db --ui-origin https://drydock.example.com --ui-host drydock.example.com \
@@ -36,8 +38,12 @@ printf "%s\n" "$PW" | ./drydock passwd --db x.db  # set the operator password (n
 | `internal/classify` | The five classifiers, implemented and tested against the corpus: login, identity, refusal, discovery, container. Built in parallel by four agents, one file each. |
 | `internal/auth` | argon2id with a floor and rehash-on-sign-in, sessions stored only as SHA-256, and a lockout that is per-IP backoff plus a global cap, kept in `auth_attempt` so a restart does not reset it. |
 | `internal/server` | Assembles the front door: store, auth, both muxes, two `0660` group-owned sockets, and no TCP listener — asserted on the running process. |
-| `cmd/drydock` | `serve` and `passwd`, and no third command. `passwd` deliberately skips the instance lock so it works while the server runs. |
+| `cmd/drydock` | `serve`, `passwd` and `version`, and nothing that binds TCP or sets a password over HTTP. `passwd` deliberately skips the instance lock so it works while the server runs; `--if-unset` makes it a no-op that never reads stdin once a password exists, which is what keeps an installer re-run from signing everyone out. `version` is stamped by `-ldflags -X main.version=`. |
+| `internal/web`, `web/` | The Vue 3 app in `web/`, embedded from `internal/web/dist`, which is **committed build output** — the Go build needs no Node, and `npm run check:dist` fails when it is stale. Never hand-edit `dist`; rebuild it. |
 | `deploy/Caddyfile`, `deploy/preview.caddy` | The entire LAN-facing surface, every value an env placeholder so the shipped files are the tested files. The preview site is a separate, optional file imported by glob, so a first deployment needs no wildcard certificate. |
+| `deploy/install.sh` | The installer and upgrader, one file in two modes: standalone (`curl … \| sudo bash`) it downloads and verifies the release tarball and runs the copy inside; from the tarball it installs. Settings persist in `/etc/drydock/drydock.env`, parsed, never `source`d. Idempotent: files are written only when they change, and only what changed is restarted. |
+| `deploy/package.sh` | Builds the release assets — the same script in CI and in the installer test. |
+| `test/install/` | `run.sh` runs the installer against real systemd and the official Caddy package in a privileged DinD container: fresh install, no-op re-run, upgrade, rollback, previews on and off, an unreadable key, a foreign Caddyfile. Not part of `go test`. |
 | `test/component/` | Real binaries, nothing mocked. Today: the Caddyfile conformance test (testing §3.2), mutation-checked against the Caddyfile itself. |
 | `test/fixtures/` | The corpus: 35 fixtures from `2.1.289` and devcontainer CLI `0.89.0`, plus `record.sh`, which is testing §11.1 step 3. Some are hand-written or synthetic, and their `.meta` says which. |
 
@@ -104,6 +110,24 @@ Read `docs/design/overall/drydock-design.md` before making architectural decisio
 opinionated, and most "why is it like this?" questions are answered there with reasoning that is
 easy to lose. When a change contradicts it, update the doc in the same change rather than letting
 the two drift.
+
+## Releases
+
+**Commit subjects are conventional commits, and that is load-bearing.** release-please reads them
+off `main` (PRs are squash-merged, so it is the PR title, which `pr-title.yml` checks): `feat:` and
+`fix:` cut a release, `feat!:` a breaking one, and everything else — `docs:`, `test:`, `chore:`,
+`ci:`, `refactor:` — does not. A design-doc change is `docs:` even when it is large.
+
+Merging release-please's PR tags `vX.Y.Z` (no component prefix: one root package) and, in the same
+workflow, runs the suite and uploads the assets under **fixed names** so
+`releases/latest/download/<name>` always resolves: `drydock_linux_{amd64,arm64}.tar.gz` (binary,
+`install.sh`, both Caddy files, `VERSION`), `SHA256SUMS`, and `install.sh` stamped with its tag. It
+is one workflow, not a tag-triggered second one, because tags pushed with `GITHUB_TOKEN` trigger
+nothing. The repo setting *Allow GitHub Actions to create and approve pull requests* must be on.
+
+The README's one-liner is the contract: change an asset name, a flag, or `/etc/drydock/drydock.env`
+and an existing install's re-run is what breaks. `test/install/run.sh` installs from a local copy of
+the release assets via `DRYDOCK_DOWNLOAD_BASE`, so it exercises the one-liner's path.
 
 ## What Drydock is
 
