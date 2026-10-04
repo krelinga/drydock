@@ -4,3 +4,8 @@
 
 # Go build output. The binary is built, never committed.
 /drydock
+
+# The web UI's toolchain. The built bundle is NOT ignored: internal/web/dist
+# is committed so that `go build` never needs Node (frontend §3).
+/web/node_modules/
+/web/coverage/
