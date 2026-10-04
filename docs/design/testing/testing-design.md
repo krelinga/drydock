@@ -755,4 +755,4 @@ The tiering itself I expect to survive unchanged, because it is derived from whe
 
 ---
 
-*Supplements `docs/design/overall/drydock-design.md` draft v6 and `docs/design/port-forwarding/port-forwarding-design.md` draft v3. §15 contains five findings that are changes to those documents rather than to this one; they are deliberately left unapplied here so the decisions are made where the reasoning lives.*
+*Supplements `docs/design/overall/drydock-design.md` draft v7, `docs/design/port-forwarding/port-forwarding-design.md` draft v4, and `docs/design/frontend/frontend-design.md` draft v4. §15 contains five findings that were changes to those documents rather than to this one; **all five are applied** as of overall v7 and port-forwarding v4, so that section is a dated record of the reasoning rather than an open list.*
