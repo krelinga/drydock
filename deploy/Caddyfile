@@ -1,0 +1,67 @@
+# Drydock's entire LAN-facing surface (design §13.1, port forwarding §9).
+#
+# Every deployment-specific value is an environment placeholder, so the file the
+# conformance test runs (test/component/caddy_test.go) is byte-for-byte the file
+# that ships — a tested copy of a config is not a tested config.
+#
+#   DRYDOCK_UI_HOST          drydock.example.com
+#   DRYDOCK_PREVIEW_DOMAIN   drydock-preview.net   (a DIFFERENT registrable domain)
+#   DRYDOCK_UI_CERT/_KEY     the UI host's certificate, provisioned externally
+#   DRYDOCK_PREVIEW_CERT/_KEY  a wildcard for *.DRYDOCK_PREVIEW_DOMAIN
+#   DRYDOCK_API_SOCKET       /run/drydock/http.sock
+#   DRYDOCK_PREVIEW_SOCKET   /run/drydock/preview.sock
+{
+	# The admin API is NOT left on its default, localhost:2019. Any local
+	# process can reach a loopback port, and anything that can POST a config to
+	# Caddy can point Caddy — a member of the drydock socket group — at
+	# Drydock's socket on its own terms. That would quietly undo §13.1's whole
+	# argument for a group-owned socket over a loopback port. A 0600 Unix
+	# socket keeps `caddy reload` working for the operator and nobody else.
+	admin {$DRYDOCK_CADDY_ADMIN:unix//run/caddy/admin.sock|0600}
+
+	# Overridable only so the conformance test can run without root.
+	https_port {$DRYDOCK_HTTPS_PORT:443}
+	http_port {$DRYDOCK_HTTP_PORT:80}
+}
+
+{$DRYDOCK_UI_HOST} {
+	tls {$DRYDOCK_UI_CERT} {$DRYDOCK_UI_KEY}
+	encode zstd gzip
+	reverse_proxy unix/{$DRYDOCK_API_SOCKET:/run/drydock/http.sock} {
+		# Do not buffer: /api/events is a long-lived SSE stream. Redundant
+		# with Caddy 2.11's defaults, which already flush event streams and
+		# chunked responses promptly (measured); kept so a changed default
+		# cannot quietly start buffering. The conformance test guards the
+		# behaviour, which is what matters, not this line.
+		flush_interval -1
+		# REPLACES any client-supplied value rather than appending, which is
+		# what lets Drydock take the header at face value for its lockout
+		# (§13.2): only Caddy can reach the socket, so the address is exactly
+		# as trustworthy as Caddy is. Redundant TODAY — Caddy >=2.5 drops an
+		# untrusted client's header on its own — and essential the day anyone
+		# adds `trusted_proxies` (say, for Tailscale in front, §13.1). The
+		# conformance test runs these blocks under that global to prove it.
+		header_up X-Forwarded-For {remote_host}
+	}
+}
+
+*.{$DRYDOCK_PREVIEW_DOMAIN} {
+	tls {$DRYDOCK_PREVIEW_CERT} {$DRYDOCK_PREVIEW_KEY}
+	# No `encode` here: compressing a dev server that already compresses or
+	# streams buys nothing and has broken HMR in the wild.
+	reverse_proxy unix/{$DRYDOCK_PREVIEW_SOCKET:/run/drydock/preview.sock} {
+		flush_interval -1
+		header_up X-Forwarded-For {remote_host}
+	}
+	# No cookie handling here, deliberately: Drydock's preview mux has to READ
+	# the preview cookie to authenticate, and strips it one hop later, before
+	# the container (port forwarding §7).
+	#
+	# No access log on this block, deliberately: the handshake puts a one-time
+	# token in the query string. If a global `log` directive is ever added,
+	# redact query strings for this host.
+}
+
+# Two site blocks, two registrable domains. A request for any other host — an
+# attacker's rebound name, a bare IP, a sibling of the UI host — matches no
+# block and is refused here, before Drydock exists (§13.3).

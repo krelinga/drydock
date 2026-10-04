@@ -2,7 +2,7 @@
 
 *Reaching a dev server running inside a workspace container from a phone or tablet on the LAN — without giving repository code a foothold on Drydock's own origin.*
 
-**Status** design document, draft v4 · **Date** 4 October 2026 · slugs are retired rather than deleted, so a stale bookmark cannot be reissued to another workspace ([testing plan](../testing/testing-design.md) §15.4); previews moved to a separate registrable domain (cross-site) per the [security review](../security-review.md)
+**Status** design document, draft v5 · **Date** 4 October 2026 · §9 points at the shipped `deploy/Caddyfile` and its admin-socket global option · slugs are retired rather than deleted, so a stale bookmark cannot be reissued to another workspace ([testing plan](../testing/testing-design.md) §15.4); previews moved to a separate registrable domain (cross-site) per the [security review](../security-review.md)
 
 **Supplements** [`../overall/drydock-design.md`](../overall/drydock-design.md) · **Depends on** §3, §6, §13 of that document
 
@@ -308,7 +308,7 @@ HMR is the whole point of previewing a dev server, so `Upgrade` must survive the
 
 ## 9. Caddy configuration
 
-The one LAN-facing file, extended. **This is the only place this design touches §13.1.**
+The one LAN-facing file, extended. **This is the only place this design touches §13.1.** The shipped version is `deploy/Caddyfile`, which also moves Caddy's admin API off its default `localhost:2019` onto a `0600` Unix socket — see the warning under the overall design's §13.1; the block below omits that global option for brevity, not because it is optional.
 
 ```
 drydock.example.com {

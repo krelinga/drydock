@@ -2,7 +2,7 @@
 
 *A single-host server that turns any GitHub repository into a running dev container with a supervised, remote-controllable Claude Code session inside it — one click from a repo list, with push credentials scoped to that repo alone.*
 
-**Status** design document, draft v10 · **Date** 4 October 2026 · corrected against the classifier fan-out: `devcontainer up` has no `--json` flag and names no failed step (§2.5, §6), joining lines before matching the login URL corrupts `state` (§7.2), session ids come only from OSC 8 targets (§8), and the identity classifier's rules are recorded (§7.3) · re-measured on Claude Code `2.1.289` after an unpinned rebuild moved the version: the authorize-URL wrapping claim in §7.2 is **retracted**, the retryable refusal signature in §8 no longer contains `409`, and an untrusted workspace **hangs** on a PTY rather than failing fast (§11) · §5 corrected: the sign-in POST is the **only** unauthenticated route, not the three `/api/auth/session` verbs — `GET` there returns the device list, and the error was found by implementing the route table (see the callout in §5, and the [testing plan](../testing/testing-design.md) §5.1) · five findings from the [testing plan](../testing/testing-design.md) §15 applied — §4, §6, §10.1, §10.3 and §13.5; Phase 0 spikes complete — §7.2, §7.3, §8, §10.3, and §11 revised against measurement (see [spikes](../spikes/)); §13 auth revised for cross-site previews (see the [security review](../security-review.md) and [port forwarding](../port-forwarding/port-forwarding-design.md)) · the UI this document describes in passing is specified in the [frontend design](../frontend/frontend-design.md)
+**Status** design document, draft v11 · **Date** 4 October 2026 · §13.1: Caddy's admin API moved off `localhost:2019`, which undid this section's own argument for a socket over a loopback port; the Caddyfile now ships as `deploy/Caddyfile` and is tested · corrected against the classifier fan-out: `devcontainer up` has no `--json` flag and names no failed step (§2.5, §6), joining lines before matching the login URL corrupts `state` (§7.2), session ids come only from OSC 8 targets (§8), and the identity classifier's rules are recorded (§7.3) · re-measured on Claude Code `2.1.289` after an unpinned rebuild moved the version: the authorize-URL wrapping claim in §7.2 is **retracted**, the retryable refusal signature in §8 no longer contains `409`, and an untrusted workspace **hangs** on a PTY rather than failing fast (§11) · §5 corrected: the sign-in POST is the **only** unauthenticated route, not the three `/api/auth/session` verbs — `GET` there returns the device list, and the error was found by implementing the route table (see the callout in §5, and the [testing plan](../testing/testing-design.md) §5.1) · five findings from the [testing plan](../testing/testing-design.md) §15 applied — §4, §6, §10.1, §10.3 and §13.5; Phase 0 spikes complete — §7.2, §7.3, §8, §10.3, and §11 revised against measurement (see [spikes](../spikes/)); §13 auth revised for cross-site previews (see the [security review](../security-review.md) and [port forwarding](../port-forwarding/port-forwarding-design.md)) · the UI this document describes in passing is specified in the [frontend design](../frontend/frontend-design.md)
 
 **Runtime** single dev server, local Docker socket · **Reach** LAN, behind Caddy
 
@@ -904,7 +904,11 @@ Caddy holds a real, publicly-trusted certificate for a name on a domain you own.
 Two properties of that result the design does depend on, and would have to be revisited if either stopped holding. The certificate must be trusted by every device with nothing installed on them, which is what makes a phone and a tablet first-class clients rather than a per-device profile chore. And there must be a *hostname*, not just an address: strict `Host` matching in §13.3 is what turns away rebound requests, and there is nothing to match against if the UI is reached at an IP.
 
 ```
-# Caddyfile — the entire LAN-facing surface
+# Caddyfile — the entire LAN-facing surface (as shipped: deploy/Caddyfile)
+{
+    admin unix//run/caddy/admin.sock|0600    # NOT the default localhost:2019 — see below
+}
+
 drydock.example.com {
     tls /etc/caddy/certs/drydock.pem /etc/caddy/certs/drydock.key   # provisioned externally
     encode zstd gzip
@@ -917,6 +921,13 @@ drydock.example.com {
 # is anything else matches nothing and is refused here, before Drydock exists.
 ```
 
+> [!WARNING]
+> **Caddy's admin API must not stay on its default, `localhost:2019`**
+>
+> Earlier drafts of this block left it there, and that quietly undid this section's own argument. The case for a group-owned socket over a loopback port is that a loopback port is reachable by *every* local process — and Caddy's default admin endpoint *is* a loopback port. Anything that can POST a config to it can reconfigure the one process that is a member of the socket's group, and point it at Drydock on its own terms. The shipped `deploy/Caddyfile` moves admin to a `0600` Unix socket, which keeps `caddy reload` working for the operator and no one else; `admin off` is the stricter alternative, at the cost of restarting Caddy for every config change.
+>
+> The Caddyfile is now a tested artifact (testing §3.2): the conformance test runs the shipped file byte for byte under real Caddy, and asserts nothing listens on `localhost:2019` and that the admin socket is mode `0600`. It also found that two lines in the reverse-proxy block are redundant with Caddy 2.11's defaults and kept as insurance: `flush_interval -1`, since Caddy already flushes streams promptly, and `header_up X-Forwarded-For {remote_host}`, since Caddy already drops an untrusted client's header. The second becomes essential the day anyone sets `trusted_proxies` — putting Tailscale in front, say — and the test runs the shipped site blocks under exactly that global to prove it holds.
+)
 Reaching this from outside the house is deliberately not Drydock's problem. Tailscale in front of the same Caddy solves it with no change to anything below — the site block, the socket, and the session model all stay as they are. What the design does rule out is the other route: publishing Caddy to the internet would turn a one-password service into an internet-facing one and would force §13.2 to grow a second factor before it was safe.
 
 ### 13.2  Session authentication

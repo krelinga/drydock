@@ -5,8 +5,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Repository state
 
 **Mostly design, with the first code in.** The repository contains the overall design
-document (`docs/design/overall/drydock-design.md`, draft v10), supplemental ones on port forwarding
-(`docs/design/port-forwarding/`, draft v4), testing (`docs/design/testing/`, draft v8) and the Vue
+document (`docs/design/overall/drydock-design.md`, draft v11), supplemental ones on port forwarding
+(`docs/design/port-forwarding/`, draft v5), testing (`docs/design/testing/`, draft v9) and the Vue
 frontend (`docs/design/frontend/`, draft v4), a settled brand mark (`docs/design/brand/`, v1.0,
 with the shipping icon assets), an adversarial security review
 (`docs/design/security-review.md`), their SVG diagrams, a devcontainer definition, and **five
@@ -14,12 +14,16 @@ completed spikes** with their harnesses under `docs/design/spikes/` — the four
 `04`, the browser-tier local CA, which the testing plan asked for later.
 
 The Go module is `github.com/krelinga/drydock`. What exists so far: the **five testability seams**
-from testing §5, the recorded fixture corpus, the five classifiers built on it, and the start of
-Phase 1 (the store):
+from testing §5, the recorded fixture corpus, the five classifiers built on it, and the server side of
+Phase 1 — a `drydock` binary that serves the gated API on two Unix sockets behind a tested Caddyfile:
 
 ```sh
-go build ./... && go vet ./... && go test ./...   # the whole suite today
+go build ./... && go vet ./... && go test ./...   # the whole suite; the Caddy test needs `caddy` on PATH
 gofmt -l .                                        # must print nothing
+go build -o drydock ./cmd/drydock                 # the one binary
+printf "%s\n" "$PW" | ./drydock passwd --db x.db  # set the operator password (no HTTP route can)
+./drydock serve --db x.db --ui-origin https://drydock.example.com --ui-host drydock.example.com \
+  --socket-group drydock                          # see `./drydock serve -h` for the rest
 ```
 
 | Package | Is |
@@ -30,6 +34,11 @@ gofmt -l .                                        # must print nothing
 | `internal/config` | Settings that must not be constants, `LabelPrefix` chief among them, plus a `Validate` that refuses configurations which silently undo a design property. |
 | `internal/store` | SQLite in WAL mode, the single-instance lock, and §4's schema with its enumerations as `CHECK` constraints. A golden snapshot pins the schema. |
 | `internal/classify` | The five classifiers, implemented and tested against the corpus: login, identity, refusal, discovery, container. Built in parallel by four agents, one file each. |
+| `internal/auth` | argon2id with a floor and rehash-on-sign-in, sessions stored only as SHA-256, and a lockout that is per-IP backoff plus a global cap, kept in `auth_attempt` so a restart does not reset it. |
+| `internal/server` | Assembles the front door: store, auth, both muxes, two `0660` group-owned sockets, and no TCP listener — asserted on the running process. |
+| `cmd/drydock` | `serve` and `passwd`, and no third command. `passwd` deliberately skips the instance lock so it works while the server runs. |
+| `deploy/Caddyfile` | The entire LAN-facing surface, every value an env placeholder so the shipped file is the tested file. |
+| `test/component/` | Real binaries, nothing mocked. Today: the Caddyfile conformance test (testing §3.2), mutation-checked against the Caddyfile itself. |
 | `test/fixtures/` | The corpus: 35 fixtures from `2.1.289` and devcontainer CLI `0.89.0`, plus `record.sh`, which is testing §11.1 step 3. Some are hand-written or synthetic, and their `.meta` says which. |
 
 Three things about that code worth knowing before extending it:
@@ -146,6 +155,10 @@ These come from §2 (Claude Code constraints) and §13.5 (non-negotiables). Most
 
 - **No TCP listener.** Not `0.0.0.0`, not `127.0.0.1`. Unix socket only, group-owned, Caddy the only
   member.
+- **Caddy's admin API is never left on `localhost:2019`.** That default is a loopback port any local
+  process can reach, and whatever can reconfigure Caddy — the one member of the socket's group — can
+  point it at Drydock on its own terms, undoing the argument for the socket. `deploy/Caddyfile` puts
+  it on a `0600` Unix socket; the conformance test asserts nothing listens on 2019.
 - **Remote Control needs a real `claude auth login` credential**, not `CLAUDE_CODE_OAUTH_TOKEN` —
   a setup token can only make model requests. This is why the PTY login handshake (§7.2) exists.
 - **`.credentials.json` alone is not enough.** Remote Control also needs the `oauthAccount` record
@@ -296,7 +309,11 @@ These come from §2 (Claude Code constraints) and §13.5 (non-negotiables). Most
    no-system-state fallback. Only real NSS trust still refuses a cert served for the wrong host.
 
 1. **Front door** — socket listener, `drydock passwd`, session middleware, `Origin`/`Host` checks,
-   Caddy block. *Nothing else gets built until every route without a cookie returns 401.*
+   Caddy block. *Nothing else gets built until every route without a cookie returns 401.* **Server side
+   done:** every API route is gated end to end against the real server over a real socket, and the
+   Caddyfile is tested under real Caddy. **Still open for Phase 1:** the frontend shell (sign-in view,
+   the `401` path, the embed pipeline) and a real deployment, since "sign in from your phone over
+   HTTPS" needs the externally provisioned certificate.
 2. **Walking skeleton** — repo list, clone, `devcontainer up`, states, SSE, boot reconciliation.
 3. **Credentials** — token broker, per-workspace socket, git credential helper, `gh` shim.
 4. **Secrets** — encrypted store, `GET-SECRETS`, `drydock-secrets export`, grants UI.
