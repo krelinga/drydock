@@ -1,0 +1,286 @@
+package store
+
+import (
+	"context"
+	"errors"
+	"flag"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+)
+
+var update = flag.Bool("update", false, "rewrite testdata/schema.golden from the current migrations")
+
+func openTemp(t *testing.T) (*DB, string) {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "drydock.db")
+	db, err := Open(context.Background(), path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+	return db, path
+}
+
+func pragma(t *testing.T, db *DB, name string) string {
+	t.Helper()
+	var v string
+	if err := db.QueryRow("PRAGMA " + name).Scan(&v); err != nil {
+		t.Fatalf("PRAGMA %s: %v", name, err)
+	}
+	return v
+}
+
+func TestOpenAppliesWALForeignKeysAndSchema(t *testing.T) {
+	db, _ := openTemp(t)
+	if got := pragma(t, db, "journal_mode"); got != "wal" {
+		t.Errorf("journal_mode = %q; want wal", got)
+	}
+	// foreign_keys is per-connection. Ask on several pooled connections at
+	// once so a pragma applied to only one of them shows up as a failure.
+	db.SetMaxOpenConns(4)
+	ctx := context.Background()
+	conns := make([]interface{ Close() error }, 0, 4)
+	for i := 0; i < 4; i++ {
+		c, err := db.Conn(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		conns = append(conns, c)
+		var fk int
+		if err := c.QueryRowContext(ctx, "PRAGMA foreign_keys").Scan(&fk); err != nil {
+			t.Fatal(err)
+		}
+		if fk != 1 {
+			t.Errorf("connection %d: foreign_keys = %d; want 1", i, fk)
+		}
+	}
+	for _, c := range conns {
+		c.Close()
+	}
+	if v, err := db.SchemaVersion(ctx); err != nil || v != len(migrations) {
+		t.Errorf("schema version = %d, %v; want %d", v, err, len(migrations))
+	}
+}
+
+// TestSecondInstanceIsRefused is §12's "two Drydocks on one host": refuse to
+// start rather than run two supervisors against one container.
+func TestSecondInstanceIsRefused(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "drydock.db")
+
+	first, err := Open(ctx, path)
+	if err != nil {
+		t.Fatalf("first Open: %v", err) // positive control: the lock is takeable at all
+	}
+	second, err := Open(ctx, path)
+	if err == nil {
+		second.Close()
+		t.Fatal("second Open succeeded while the first held the lock")
+	}
+	if !errors.Is(err, ErrLocked) {
+		t.Errorf("second Open error = %v; want ErrLocked", err)
+	}
+
+	// And it is released by Close, so a restart is not wedged by its own
+	// previous run.
+	first.Close()
+	third, err := Open(ctx, path)
+	if err != nil {
+		t.Fatalf("Open after Close: %v", err)
+	}
+	third.Close()
+}
+
+func TestReopenKeepsDataAndDoesNotRemigrate(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "drydock.db")
+	db, err := Open(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO operator (id, password_hash) VALUES (1, 'x')`); err != nil {
+		t.Fatal(err)
+	}
+	db.Close()
+
+	db, err = Open(ctx, path)
+	if err != nil {
+		t.Fatalf("reopen: %v", err) // a re-run CREATE TABLE would fail here
+	}
+	defer db.Close()
+	var n int
+	if err := db.QueryRow(`SELECT count(*) FROM operator`).Scan(&n); err != nil || n != 1 {
+		t.Errorf("operator rows after reopen = %d, %v; want 1", n, err)
+	}
+}
+
+// TestNewerSchemaIsRefused: an older binary must not run against a database a
+// newer one has migrated, because it would write rows the newer code no longer
+// expects.
+func TestNewerSchemaIsRefused(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "drydock.db")
+	db, err := Open(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec("PRAGMA user_version = 999"); err != nil {
+		t.Fatal(err)
+	}
+	db.Close()
+	if db, err := Open(ctx, path); err == nil {
+		db.Close()
+		t.Fatal("Open accepted a schema newer than this binary knows")
+	} else if !strings.Contains(err.Error(), "999") {
+		t.Errorf("error does not name the version it refused: %v", err)
+	}
+}
+
+type column struct{ table, name string }
+
+func allColumns(t *testing.T, db *DB) []column {
+	t.Helper()
+	rows, err := db.Query(`
+		SELECT m.name, p.name
+		FROM sqlite_schema m, pragma_table_info(m.name) p
+		WHERE m.type = 'table' AND m.name NOT LIKE 'sqlite_%'
+		ORDER BY m.name, p.cid`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var out []column
+	for rows.Next() {
+		var c column
+		if err := rows.Scan(&c.table, &c.name); err != nil {
+			t.Fatal(err)
+		}
+		out = append(out, c)
+	}
+	return out
+}
+
+// TestSchemaHasNothingToSteal is §4's four deliberate absences, asserted by
+// walking every column of every table rather than by checking the four places
+// they were meant to be absent from — so a column that reappears somewhere
+// unexpected is caught too.
+func TestSchemaHasNothingToSteal(t *testing.T) {
+	db, _ := openTemp(t)
+	cols := allColumns(t, db)
+	if len(cols) < 40 {
+		t.Fatalf("only %d columns found: the assertions below would pass vacuously", len(cols))
+	}
+	banned := map[string]string{
+		"value":        "no plaintext secret value (§4); the secret is ciphertext+nonce",
+		"token":        "no stored session or GitHub token (§4)",
+		"github_token": "tokens live in a bounded in-memory cache, never the database (§4)",
+		"password":     "the operator password is stored only as an argon2id hash",
+		"cookie":       "auth_session.id is the SHA-256 of the cookie, never the cookie",
+		"secret_value": "no plaintext secret value (§4)",
+	}
+	for _, c := range cols {
+		if why, bad := banned[strings.ToLower(c.name)]; bad {
+			t.Errorf("%s.%s exists: %s", c.table, c.name, why)
+		}
+	}
+
+	// Positive control: the columns that *replace* those are present, so the
+	// check above is looking at the real schema and not an empty one.
+	want := []column{
+		{"secret", "ciphertext"}, {"secret", "nonce"},
+		{"operator", "password_hash"}, {"auth_session", "id"},
+		{"token_grant", "permissions"},
+	}
+	have := map[column]bool{}
+	for _, c := range cols {
+		have[c] = true
+	}
+	for _, w := range want {
+		if !have[w] {
+			t.Errorf("expected column %s.%s is missing", w.table, w.name)
+		}
+	}
+}
+
+// TestEnumerationsAreEnforced is the CHECK-constraint tightening in migration
+// 1, and in particular the one with teeth: supervisor.state has no 'failed',
+// so a 409 wait cannot be stored as one.
+func TestEnumerationsAreEnforced(t *testing.T) {
+	db, _ := openTemp(t)
+	mustExec := func(q string, args ...any) {
+		t.Helper()
+		if _, err := db.Exec(q, args...); err != nil {
+			t.Fatalf("%s: %v", q, err)
+		}
+	}
+	mustExec(`INSERT INTO repository (id, installation_id, full_name, default_branch) VALUES (1, 1, 'o/r', 'main')`)
+	mustExec(`INSERT INTO workspace (id, repository_id, host_path, branch, state) VALUES ('w', 1, '/x', 'main', 'running')`)
+
+	insertSupervisor := func(state string) error {
+		_, err := db.Exec(`INSERT INTO supervisor (id, workspace_id, state, capacity) VALUES (?, 'w', ?, 4)`,
+			"s-"+state, state)
+		return err
+	}
+	if err := insertSupervisor("waiting_registration"); err != nil {
+		t.Errorf("waiting_registration refused, but it is the state a 409 must be stored as: %v", err)
+	}
+	if err := insertSupervisor("failed"); err == nil {
+		t.Error("supervisor.state accepted 'failed': a 409 wait could now be recorded as a failure")
+	}
+
+	if _, err := db.Exec(`INSERT INTO claude_identity (id, volume_name, state) VALUES (1, 'v', 'blanked')`); err != nil {
+		t.Errorf("claude_identity refused 'blanked': %v", err)
+	}
+	if _, err := db.Exec(`UPDATE claude_identity SET state = 'signed_out' WHERE id = 1`); err == nil {
+		t.Error("claude_identity.state accepted a value outside its five")
+	}
+
+	if _, err := db.Exec(`INSERT INTO secret (id, name, ciphertext, nonce, reach) VALUES ('a','A',x'00',x'00','   ')`); err == nil {
+		t.Error("secret accepted a blank reach: §10.4 makes that field the control")
+	}
+	if _, err := db.Exec(`INSERT INTO secret (id, name, ciphertext, nonce, reach) VALUES ('b','B',x'00',x'00','reads staging data')`); err != nil {
+		t.Errorf("secret refused a real reach: %v", err)
+	}
+}
+
+// TestSchemaGolden pins the whole schema. Any change shows up as a diff in
+// review rather than as a surprise in someone's database; regenerate with
+// `go test ./internal/store -run Golden -update`.
+func TestSchemaGolden(t *testing.T) {
+	db, _ := openTemp(t)
+	rows, err := db.Query(`SELECT type, name, sql FROM sqlite_schema WHERE sql IS NOT NULL AND name NOT LIKE 'sqlite_%' ORDER BY type, name`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var b strings.Builder
+	for rows.Next() {
+		var typ, name, sql string
+		if err := rows.Scan(&typ, &name, &sql); err != nil {
+			t.Fatal(err)
+		}
+		b.WriteString("-- " + typ + " " + name + "\n" + sql + ";\n\n")
+	}
+	got := b.String()
+	if got == "" {
+		t.Fatal("empty schema")
+	}
+	golden := filepath.Join("testdata", "schema.golden")
+	if *update {
+		if err := os.MkdirAll("testdata", 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(golden, []byte(got), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	want, err := os.ReadFile(golden)
+	if err != nil {
+		t.Fatalf("read golden (run with -update to create it): %v", err)
+	}
+	if got != string(want) {
+		t.Errorf("schema differs from %s; if the change is intended, rerun with -update and review the diff", golden)
+	}
+}

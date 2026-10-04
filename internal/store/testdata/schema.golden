@@ -1,0 +1,147 @@
+-- index auth_attempt_at
+CREATE INDEX auth_attempt_at    ON auth_attempt (at);
+
+-- index auth_attempt_ip_at
+CREATE INDEX auth_attempt_ip_at ON auth_attempt (source_ip, at);
+
+-- table auth_attempt
+CREATE TABLE auth_attempt (
+  id        INTEGER PRIMARY KEY AUTOINCREMENT,
+  source_ip TEXT NOT NULL,
+  outcome   TEXT NOT NULL CHECK (outcome IN ('ok','bad_password','locked_out')),
+  at        TEXT NOT NULL
+);
+
+-- table auth_session
+CREATE TABLE auth_session (
+  id                  TEXT PRIMARY KEY,  -- sha256 of the cookie token; never the token
+  label               TEXT,
+  created_ip          TEXT,
+  created_at          TEXT NOT NULL,
+  last_seen_at        TEXT NOT NULL,
+  absolute_expires_at TEXT NOT NULL
+);
+
+-- table claude_identity
+CREATE TABLE claude_identity (
+  id              INTEGER PRIMARY KEY CHECK (id = 1),
+  volume_name     TEXT NOT NULL,
+  account_email   TEXT,
+  logged_in_at    TEXT,
+  state           TEXT NOT NULL CHECK (state IN ('ok','expiring','expired','blanked','absent')),
+  expires_at      TEXT,
+  last_checked_at TEXT
+);
+
+-- table event
+CREATE TABLE event (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  workspace_id TEXT,
+  level        TEXT,
+  kind         TEXT,
+  message      TEXT,
+  at           TEXT
+);
+
+-- table operator
+CREATE TABLE operator (
+  id            INTEGER PRIMARY KEY CHECK (id = 1),
+  password_hash TEXT NOT NULL,   -- argon2id, params encoded in the hash
+  updated_at    TEXT
+);
+
+-- table rc_session
+CREATE TABLE rc_session (
+  id            TEXT PRIMARY KEY,
+  supervisor_id TEXT NOT NULL REFERENCES supervisor(id) ON DELETE CASCADE,
+  name          TEXT,
+  is_primary    INTEGER,
+  first_seen_at TEXT,
+  last_seen_at  TEXT
+);
+
+-- table repository
+CREATE TABLE repository (
+  id               INTEGER PRIMARY KEY,
+  installation_id  INTEGER NOT NULL,
+  full_name        TEXT NOT NULL,
+  default_branch   TEXT NOT NULL,
+  has_devcontainer INTEGER,
+  private          INTEGER,
+  archived         INTEGER,
+  pushed_at        TEXT,
+  refreshed_at     TEXT
+);
+
+-- table secret
+CREATE TABLE secret (
+  id           TEXT PRIMARY KEY,
+  name         TEXT NOT NULL UNIQUE,
+  ciphertext   BLOB NOT NULL,
+  nonce        BLOB NOT NULL,
+  reach        TEXT NOT NULL CHECK (length(trim(reach)) > 0),
+  description  TEXT,
+  all_repos    INTEGER NOT NULL DEFAULT 0,
+  inject_hosts TEXT,
+  created_at   TEXT,
+  rotated_at   TEXT
+);
+
+-- table secret_access
+CREATE TABLE secret_access (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  secret_id    TEXT NOT NULL,
+  workspace_id TEXT NOT NULL,
+  at           TEXT
+);
+
+-- table secret_grant
+CREATE TABLE secret_grant (
+  secret_id     TEXT NOT NULL REFERENCES secret(id) ON DELETE CASCADE,
+  repository_id INTEGER NOT NULL REFERENCES repository(id),
+  granted_at    TEXT,
+  PRIMARY KEY (secret_id, repository_id)
+);
+
+-- table supervisor
+CREATE TABLE supervisor (
+  id                TEXT PRIMARY KEY,
+  workspace_id      TEXT NOT NULL REFERENCES workspace(id),
+  state             TEXT NOT NULL CHECK (state IN
+                      ('starting','waiting_registration','awaiting_login','serving','degraded','exited')),
+  pid               INTEGER,
+  restart_count     INTEGER NOT NULL DEFAULT 0,
+  capacity          INTEGER NOT NULL,
+  last_error        TEXT,
+  started_at        TEXT,
+  last_heartbeat_at TEXT
+);
+
+-- table token_grant
+CREATE TABLE token_grant (
+  id            TEXT PRIMARY KEY,
+  workspace_id  TEXT NOT NULL,
+  repository_id INTEGER NOT NULL,
+  permissions   TEXT NOT NULL,
+  issued_at     TEXT,
+  expires_at    TEXT,
+  requested_by  TEXT CHECK (requested_by IN ('git-credential','gh','api'))
+);
+
+-- table workspace
+CREATE TABLE workspace (
+  id             TEXT PRIMARY KEY,
+  repository_id  INTEGER NOT NULL REFERENCES repository(id),
+  host_path      TEXT NOT NULL,
+  branch         TEXT NOT NULL,
+  config_path    TEXT,
+  state          TEXT NOT NULL CHECK (state IN
+                   ('pending','cloning','building','running','stopped','failed','deleting')),
+  state_detail   TEXT,
+  container_id   TEXT,
+  remote_user    TEXT,
+  environment_id TEXT,
+  created_at     TEXT,
+  last_active_at TEXT
+);
+
