@@ -85,11 +85,21 @@ func (ce *contractEnv) git(t *testing.T, workspaceOf, dir string, args ...string
 	t.Helper()
 	full := append([]string{"-c", "credential.helper=", "-c", "credential.helper=" + filepath.Join(binDir, "drydock-credential")}, args...)
 	cmd := exec.Command("git", full...)
+	// Never inside a repository this test did not make. In CI the test's
+	// working directory is the drydock checkout, whose .git/config carries
+	// actions/checkout's http.extraheader with the workflow's own token; git
+	// sends that header and never consults the credential helper, so every
+	// request went out as krelinga/drydock and the testbeds were "not
+	// found". GIT_CEILING_DIRECTORIES keeps git from walking up into one.
+	if dir == "" {
+		dir = t.TempDir()
+	}
 	cmd.Dir = dir
 	cmd.Env = []string{
 		"PATH=" + binDir + ":" + os.Getenv("PATH"),
 		"HOME=" + t.TempDir(),
 		"GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_SYSTEM=/dev/null", "GIT_TERMINAL_PROMPT=0",
+		"GIT_CEILING_DIRECTORIES=" + filepath.Dir(dir),
 		"DRYDOCK_BROKER_SOCK=" + ce.broker.SocketPath(ce.ws[workspaceOf]),
 		"DRYDOCK_GITHUB_HOST=" + ce.backend.GitHost(),
 		// The dev App's bot identity (design §9.3's note: bot *user* id).
