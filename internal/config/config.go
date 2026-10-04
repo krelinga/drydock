@@ -60,6 +60,12 @@ type Config struct {
 	// `remote-control` server. Note the pre-created session counts toward
 	// it, so 4 buys three on-demand sessions (Spike 02).
 	SupervisorCapacity int
+
+	// ContainerCap is how many workspaces may hold a container, or be
+	// building one, at once (§1: 5–15, bounded by the dev server's RAM). A
+	// create beyond it is refused rather than queued: nothing here stops a
+	// workspace on its own, so the operator chooses what to stop.
+	ContainerCap int
 }
 
 // WorkspaceLabel is the full label key used for adoption and deletion.
@@ -79,6 +85,7 @@ func Default() Config {
 		DatabasePath:       "/var/lib/drydock/drydock.db",
 		LabelPrefix:        "drydock",
 		SupervisorCapacity: 4,
+		ContainerCap:       10,
 	}
 }
 
@@ -112,6 +119,9 @@ func (c Config) Validate() error {
 	}
 	if c.SupervisorCapacity < 1 {
 		return fmt.Errorf("supervisor capacity must be at least 1")
+	}
+	if c.ContainerCap < 1 {
+		return fmt.Errorf("container cap must be at least 1")
 	}
 	return nil
 }

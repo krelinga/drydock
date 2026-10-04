@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 var update = flag.Bool("update", false, "rewrite testdata/schema.golden from the current migrations")
@@ -282,5 +283,51 @@ func TestSchemaGolden(t *testing.T) {
 	}
 	if got != string(want) {
 		t.Errorf("schema differs from %s; if the change is intended, rerun with -update and review the diff", golden)
+	}
+}
+
+// TestTransactionsTakeTheWriteLockAtBegin: a deferred transaction that reads
+// and then writes cannot wait for a writer that committed in between — SQLite
+// fails it at once with SQLITE_BUSY — so every check-then-write in Drydock
+// (the duplicate-workspace check, the cap) relies on BEGIN holding the lock.
+// A second transaction must wait at BEGIN, not proceed to its reads.
+func TestTransactionsTakeTheWriteLockAtBegin(t *testing.T) {
+	ctx := context.Background()
+	db, err := Open(ctx, filepath.Join(t.TempDir(), "drydock.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	first, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	begun := make(chan error, 1)
+	go func() {
+		second, err := db.BeginTx(ctx, nil)
+		if err == nil {
+			// database/sql may defer BEGIN to the first statement; run one
+			// so the lock is actually requested.
+			_, err = second.ExecContext(ctx, `SELECT 1`)
+			second.Rollback()
+		}
+		begun <- err
+	}()
+	select {
+	case err := <-begun:
+		t.Fatalf("a second transaction began while the first held the database (err %v)", err)
+	case <-time.After(300 * time.Millisecond):
+	}
+	// Control: it begins as soon as the first ends, so the wait above was
+	// the lock and not something else stuck.
+	first.Rollback()
+	select {
+	case err := <-begun:
+		if err != nil {
+			t.Fatalf("the second transaction failed after the first ended: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("control: the second transaction never began")
 	}
 }

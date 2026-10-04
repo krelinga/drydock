@@ -161,5 +161,11 @@ func pragmas() url.Values {
 	q.Add("_pragma", "foreign_keys(1)")
 	q.Add("_pragma", "busy_timeout(5000)")
 	q.Add("_pragma", "synchronous(NORMAL)")
+	// Every transaction takes the write lock at BEGIN. A deferred one that
+	// reads, then writes, cannot wait for a writer that committed in between:
+	// SQLite fails it with SQLITE_BUSY at once, busy_timeout or not. Drydock's
+	// transactions are check-then-write — the duplicate-workspace check, the
+	// cap — so each one must hold the lock across its check.
+	q.Set("_txlock", "immediate")
 	return q
 }

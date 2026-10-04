@@ -364,6 +364,8 @@ What happens between the click and a usable session. Every step writes an event,
 7. **Verify.** `devcontainer exec` a probe: `claude --version`, `git -C /workspace remote -v`, and one broker round-trip. A green probe is what moves the workspace to `running`.
 8. **Start the session server.** Hand off to the supervisor (§8).
 
+Each step writes a `workspace.step` event as it starts and as it ends, and a failure moves the workspace to `failed` with a detail naming the step. The detail is Drydock's sentence, never the step's raw error: a failed clone's error contains the token-bearing URL from step 2. Step 8's failure leaves the workspace `running` — the container is fine, and the supervisor's own states carry the rest.
+
 #### Step 6, in full
 
 ```bash
