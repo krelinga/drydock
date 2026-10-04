@@ -79,3 +79,45 @@ func TestPasswdNeverPrintsThePassword(t *testing.T) {
 		t.Error("passwd echoed the password")
 	}
 }
+
+// TestPasswdIfUnset is what makes the installer safe to re-run: on a first
+// install it sets the password; on every later run it must neither prompt nor
+// change anything — an upgrade that reset the password would end every session.
+func TestPasswdIfUnset(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "drydock.db")
+	var out, errOut bytes.Buffer
+	if rc := passwd([]string{"--db", path, "--if-unset"}, strings.NewReader("first long password\n"), &out, &errOut); rc != 0 {
+		t.Fatalf("first install: rc %d: %s", rc, errOut.String())
+	}
+	db, _ := store.OpenAdmin(context.Background(), path)
+	svc := auth.New(db.DB, sys.Production())
+	res, err := svc.SignIn(context.Background(), "192.0.2.1", "first long password", "")
+	if err != nil {
+		t.Fatalf("control: the first install's password does not work: %v", err)
+	}
+
+	// A re-run. Its stdin is poisoned: if passwd reads it, it sets a new
+	// password. Under `curl | bash` that stdin would be the rest of the script.
+	poison := &readTrap{}
+	out.Reset()
+	if rc := passwd([]string{"--db", path, "--if-unset"}, poison, &out, &errOut); rc != 0 {
+		t.Fatalf("re-run: rc %d: %s", rc, errOut.String())
+	}
+	if poison.read {
+		t.Error("--if-unset read stdin although a password was set")
+	}
+	if _, err := svc.Sessions.Lookup(context.Background(), res.Cookie); err != nil {
+		t.Errorf("a re-run ended the existing session: %v", err)
+	}
+	if !strings.Contains(out.String(), "already set") {
+		t.Errorf("re-run said %q; want it to say the password was left alone", out.String())
+	}
+	db.Close()
+}
+
+type readTrap struct{ read bool }
+
+func (r *readTrap) Read(p []byte) (int, error) {
+	r.read = true
+	return copy(p, "a different long password\n"), nil
+}

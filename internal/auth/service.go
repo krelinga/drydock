@@ -123,6 +123,14 @@ func (s *Service) SignIn(ctx context.Context, ip, password, label string) (SignI
 	return SignInResult{Cookie: cookie, Session: sess, FailedSinceLastSignIn: failed, FailedSources: sources}, nil
 }
 
+// HasPassword reports whether an operator password has been set, so the
+// installer can prompt for one on a first install and never on a re-run.
+func (s *Service) HasPassword(ctx context.Context) (bool, error) {
+	var n int
+	err := s.DB.QueryRowContext(ctx, `SELECT count(*) FROM operator WHERE id = 1`).Scan(&n)
+	return n == 1, err
+}
+
 // SetPassword is `drydock passwd`. It also ends every session: a password is
 // changed because it may be known to someone else, and a change that leaves
 // that someone signed in has not done its job.

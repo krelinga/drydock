@@ -1,9 +1,10 @@
-// Command drydock is the whole server: one binary, two subcommands.
+// Command drydock is the whole server: one binary, three subcommands.
 //
-//	drydock serve  [flags]   run the front door on its two Unix sockets
-//	drydock passwd [flags]   set the operator password
+//	drydock serve   [flags]   run the front door on its two Unix sockets
+//	drydock passwd  [flags]   set the operator password
+//	drydock version           print the release this binary was built from
 //
-// There is deliberately no third. In particular there is no flag that binds a
+// There is deliberately nothing else. In particular there is no flag that binds a
 // TCP port (design §13.5), and no way to set the password except from a shell
 // on the host (§13.2) — which removes the "unauthenticated bootstrap endpoint
 // left enabled" class of bug by not having the endpoint.
@@ -30,6 +31,10 @@ import (
 	"github.com/krelinga/drydock/internal/sys"
 )
 
+// version is the release this binary was built from, stamped at release time
+// with -ldflags "-X main.version=v1.2.3". A local build says "dev".
+var version = "dev"
+
 func main() {
 	if len(os.Args) < 2 {
 		usage(os.Stderr)
@@ -40,6 +45,8 @@ func main() {
 		os.Exit(serve(os.Args[2:]))
 	case "passwd":
 		os.Exit(passwd(os.Args[2:], os.Stdin, os.Stdout, os.Stderr))
+	case "version", "--version":
+		fmt.Println(version)
 	case "-h", "--help", "help":
 		usage(os.Stdout)
 	default:
@@ -51,8 +58,9 @@ func main() {
 
 func usage(w io.Writer) {
 	fmt.Fprint(w, `usage:
-  drydock serve  [flags]   run the front door on its two Unix sockets
-  drydock passwd [flags]   set the operator password (ends every session)
+  drydock serve   [flags]   run the front door on its two Unix sockets
+  drydock passwd  [flags]   set the operator password (ends every session)
+  drydock version           print the release this binary was built from
 
 Run either with -h for its flags.
 `)
@@ -98,14 +106,9 @@ func passwd(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("passwd", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.StringVar(&dbPath, "db", dbPath, "SQLite database path")
+	ifUnset := fs.Bool("if-unset", false, "do nothing, without prompting, if a password is already set (for installers)")
 	if err := fs.Parse(args); err != nil {
 		return 2
-	}
-
-	pw, err := readPassword(stdin, stderr)
-	if err != nil {
-		fmt.Fprintf(stderr, "drydock passwd: %v\n", err)
-		return 1
 	}
 
 	ctx := context.Background()
@@ -116,7 +119,28 @@ func passwd(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		return 1
 	}
 	defer db.Close()
-	if err := auth.New(db.DB, sys.Production()).SetPassword(ctx, pw); err != nil {
+	svc := auth.New(db.DB, sys.Production())
+
+	// Checked before prompting, so a re-run of the installer never asks for a
+	// password — and never ends every session as a side effect of upgrading.
+	if *ifUnset {
+		set, err := svc.HasPassword(ctx)
+		if err != nil {
+			fmt.Fprintf(stderr, "drydock passwd: %v\n", err)
+			return 1
+		}
+		if set {
+			fmt.Fprintln(stdout, "A password is already set; leaving it unchanged.")
+			return 0
+		}
+	}
+
+	pw, err := readPassword(stdin, stderr)
+	if err != nil {
+		fmt.Fprintf(stderr, "drydock passwd: %v\n", err)
+		return 1
+	}
+	if err := svc.SetPassword(ctx, pw); err != nil {
 		fmt.Fprintf(stderr, "drydock passwd: %v\n", err)
 		return 1
 	}
