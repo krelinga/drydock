@@ -40,6 +40,10 @@ jobs:
         with:
           go-version-file: go.mod
 
+      # The container tier runs real `devcontainer up` (test/container), so
+      # DRYDOCK_REQUIRE_DOCKER needs the CLI too, pinned to the corpus's version.
+      - name: Install the devcontainer CLI
+        run: npm install -g @devcontainers/cli@0.89.0
       - name: Install Caddy
         env:
           CADDY_VERSION: 2.11.7 # keep in step with ci.yml

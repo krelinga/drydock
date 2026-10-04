@@ -5,7 +5,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Repository state
 
 **Mostly design, with the first code in.** The repository contains the overall design
-document (`docs/design/overall/drydock-design.md`, draft v16), supplemental ones on port forwarding
+document (`docs/design/overall/drydock-design.md`, draft v17), supplemental ones on port forwarding
 (`docs/design/port-forwarding/`, draft v5), testing (`docs/design/testing/`, draft v9) and the Vue
 frontend (`docs/design/frontend/`, draft v5), a settled brand mark (`docs/design/brand/`, v1.0,
 with the shipping icon assets), an adversarial security review
@@ -53,7 +53,7 @@ printf "%s\n" "$PW" | ./drydock passwd --db x.db  # set the operator password (n
 | `deploy/install.sh` | The installer and upgrader, one file in two modes: standalone (`curl … \| sudo bash`) it downloads and verifies the release tarball and runs the copy inside; from the tarball it installs. Settings persist in `/etc/drydock/drydock.env`, parsed, never `source`d. Idempotent: files are written only when they change, and only what changed is restarted. |
 | `deploy/package.sh` | Builds the release assets — the same script in CI and in the installer test. |
 | `test/install/` | `run.sh` runs the installer against real systemd and the official Caddy package in a privileged container: fresh install, no-op re-run, upgrade, rollback, previews on and off, an unreadable key, a foreign Caddyfile. `live.sh vX.Y.Z` runs the README one-liner against a *published* release from GitHub. Neither is part of `go test`; CI runs the first, the release workflow the second. |
-| `test/container/` | The container tier: real Docker (the devcontainer's DinD, or the CI runner's). Adopt-an-orphan and died-unobserved against real containers, each test under its own random label prefix. Skips without Docker unless `DRYDOCK_REQUIRE_DOCKER` is set, which CI does. |
+| `test/container/` | The container tier: real Docker (the devcontainer's DinD, or the CI runner's) and the real `devcontainer` CLI. Adopt-an-orphan and died-unobserved against real containers, and Phase 3's deliverable end to end. That is a real `devcontainer up` with the Feature from this checkout and the broker socket bind-mounted. Inside, git pushes a `drydock/` branch through the helper; a push to `main` is refused, the other repository is unreachable, and there is no socket but its own and no Docker socket. Each test runs under its own random label prefix. Skips without Docker unless `DRYDOCK_REQUIRE_DOCKER` is set, which CI does. |
 | `test/component/` | Real binaries, nothing mocked. Today: the Caddyfile conformance test (testing §3.2), mutation-checked against the Caddyfile itself. |
 | `test/fixtures/` | The corpus: 35 fixtures from `2.1.289` and devcontainer CLI `0.89.0`, plus `record.sh`, which is testing §11.1 step 3. Some are hand-written or synthetic, and their `.meta` says which. |
 
