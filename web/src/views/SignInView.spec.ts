@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import type { VueWrapper } from '@vue/test-utils'
 import { http, HttpResponse } from 'msw'
 import { freshBackend, mountApp, settle, server, useMockApi } from '../test/setup'
@@ -38,7 +38,10 @@ describe('SignInView', () => {
     freshBackend()
     const second = await mountApp('/signin?return=/secrets')
     await attempt(second.wrapper, MOCK_PASSWORD)
-    expect(second.router.currentRoute.value.fullPath).toBe('/secrets')
+    // /secrets is a lazy chunk, and its first import is compiled on demand —
+    // slower than settle()'s ticks on a cold CI runner. Wait for the
+    // navigation itself rather than for a fixed number of ticks.
+    await vi.waitFor(() => expect(second.router.currentRoute.value.fullPath).toBe('/secrets'))
   })
 
   it('reports a lockout with its wait, from the code and Retry-After', async () => {
