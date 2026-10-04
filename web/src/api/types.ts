@@ -53,6 +53,7 @@ export type ErrorCode =
   | 'bad_password'
   | 'locked_out'
   | 'not_configured'
+  | 'app_not_configured'
   | 'internal'
   | 'network'
   | 'unparseable'

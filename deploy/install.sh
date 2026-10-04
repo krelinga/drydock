@@ -37,6 +37,9 @@ CADDYFILE=/etc/caddy/Caddyfile
 SITES_DIR=/etc/caddy/drydock.d
 CADDY_DROPIN=/etc/systemd/system/caddy.service.d/drydock.conf
 DB=/var/lib/drydock/drydock.db
+# The GitHub App's private key: the one credential Drydock stores (design §4).
+# A file Drydock alone can read, never an environment variable (§13.5).
+APP_KEY=$CONF_DIR/github-app.pem
 API_SOCKET=/run/drydock/http.sock
 
 # Markers that identify files this installer owns. A Caddyfile without the
@@ -65,6 +68,10 @@ Install or upgrade Drydock. Run as root.
   --preview-cert PATH   a wildcard certificate for *.D          } three or none
   --preview-key PATH    its private key                         }
   --no-preview          stop serving previews (removes the preview site)
+  --github-app-id ID    the GitHub App's numeric App ID (not its Client ID)  } for the
+  --github-app-key PATH its private key (.pem); copied to                  } repository
+                        /etc/drydock/github-app.pem, mode 0400, owned by     } list; the
+                        drydock. Give it again only to replace the key.      } ID is kept
   --version vX.Y.Z      install that release instead of the latest (download mode)
   --take-over-caddy     replace an existing /etc/caddy/Caddyfile this installer
                         did not write (it is backed up first)
@@ -153,6 +160,7 @@ load_config() {
 		DRYDOCK_PREVIEW_DOMAIN) : "${PREVIEW_DOMAIN:=$value}" ;;
 		DRYDOCK_PREVIEW_CERT) : "${PREVIEW_CERT:=$value}" ;;
 		DRYDOCK_PREVIEW_KEY) : "${PREVIEW_KEY:=$value}" ;;
+		DRYDOCK_GITHUB_APP_ID) : "${APP_ID:=$value}" ;;
 		esac
 	done <"$CONF"
 	if [ "${NO_PREVIEW:-0}" = 1 ]; then
@@ -194,6 +202,39 @@ validate_config() {
 		;;
 	*) die "--preview-domain, --preview-cert and --preview-key go together: give all three or none" ;;
 	esac
+
+	if [ -n "${APP_ID:-}" ]; then
+		[[ "$APP_ID" =~ ^[1-9][0-9]*$ ]] || die "--github-app-id must be the numeric App ID, not \"$APP_ID\" (the Client ID starts with Iv)"
+		if [ -z "${APP_KEY_SRC:-}" ] && [ ! -f "$APP_KEY" ]; then
+			die "--github-app-id needs --github-app-key the first time: there is no key at $APP_KEY yet"
+		fi
+	elif [ -n "${APP_KEY_SRC:-}" ]; then
+		die "--github-app-key needs --github-app-id"
+	fi
+	if [ -n "${APP_KEY_SRC:-}" ]; then
+		[ -f "$APP_KEY_SRC" ] || die "no such file: $APP_KEY_SRC"
+		grep -q -- '-----BEGIN .*PRIVATE KEY-----' "$APP_KEY_SRC" ||
+			die "$APP_KEY_SRC is not a PEM private key (download it from the App's settings page: Private keys → Generate)"
+	fi
+}
+
+# install_app_key copies the App key into place, readable by drydock alone.
+# Only when a new one was given: a re-run without --github-app-key keeps the
+# key that is there.
+install_app_key() {
+	[ -n "${APP_KEY_SRC:-}" ] || return 0
+	local tmp
+	tmp=$(mktemp "$CONF_DIR/.github-app.XXXXXX")
+	cat "$APP_KEY_SRC" >"$tmp"
+	chown drydock:drydock "$tmp"
+	chmod 0400 "$tmp"
+	if [ -f "$APP_KEY" ] && cmp -s "$tmp" "$APP_KEY"; then
+		rm -f "$tmp"
+		return 0
+	fi
+	mv -f "$tmp" "$APP_KEY"
+	KEY_CHANGED=1
+	say "installed the GitHub App key at $APP_KEY (mode 0400, owner drydock)"
 }
 
 check_prerequisites() {
@@ -259,11 +300,21 @@ DRYDOCK_UI_KEY=$UI_KEY
 DRYDOCK_PREVIEW_DOMAIN=${PREVIEW_DOMAIN:-}
 DRYDOCK_PREVIEW_CERT=${PREVIEW_CERT:-}
 DRYDOCK_PREVIEW_KEY=${PREVIEW_KEY:-}
+DRYDOCK_GITHUB_APP_ID=${APP_ID:-}
 EOF
 }
 
 write_unit() {
-	write_if_changed "$UNIT" 0644 UNIT_CHANGED <<'EOF'
+	# The App flags appear only when an App is configured: systemd cannot
+	# drop an empty argument, and Drydock refuses an ID without a key rather
+	# than ignoring one.
+	local app_flags=""
+	if [ -n "${APP_ID:-}" ]; then
+		app_flags=" \\
+  --github-app-id=\${DRYDOCK_GITHUB_APP_ID} \\
+  --github-app-key=$APP_KEY"
+	fi
+	write_if_changed "$UNIT" 0644 UNIT_CHANGED <<EOF
 # Written by the Drydock installer; re-running it overwrites this file.
 [Unit]
 Description=Drydock
@@ -274,11 +325,11 @@ After=network.target
 User=drydock
 Group=drydock
 EnvironmentFile=/etc/drydock/drydock.env
-ExecStart=/usr/local/bin/drydock serve \
-  --ui-origin=https://${DRYDOCK_UI_HOST} \
-  --ui-host=${DRYDOCK_UI_HOST} \
-  --preview-domain=${DRYDOCK_PREVIEW_DOMAIN} \
-  --socket-group=drydock
+ExecStart=/usr/local/bin/drydock serve \\
+  --ui-origin=https://\${DRYDOCK_UI_HOST} \\
+  --ui-host=\${DRYDOCK_UI_HOST} \\
+  --preview-domain=\${DRYDOCK_PREVIEW_DOMAIN} \\
+  --socket-group=drydock$app_flags
 # /run/drydock holds the sockets: group drydock, so Caddy (a supplementary
 # member) can reach them and nothing else can. /var/lib/drydock holds the
 # database, readable by Drydock alone.
@@ -380,7 +431,7 @@ wait_for_drydock() {
 
 start_drydock() {
 	systemctl enable --quiet drydock
-	if [ "${BINARY_CHANGED:-0}" = 1 ] || [ "${UNIT_CHANGED:-0}" = 1 ] || [ "${ENV_CHANGED:-0}" = 1 ] ||
+	if [ "${BINARY_CHANGED:-0}" = 1 ] || [ "${UNIT_CHANGED:-0}" = 1 ] || [ "${ENV_CHANGED:-0}" = 1 ] || [ "${KEY_CHANGED:-0}" = 1 ] ||
 		! systemctl is-active --quiet drydock; then
 		say "starting drydock"
 		systemctl restart drydock # SIGTERM first: a clean stop
@@ -450,6 +501,7 @@ install_bundle() {
 
 	ensure_account
 	install_binary "$here"
+	install_app_key
 	write_env_file
 	write_unit
 	write_caddy_dropin
@@ -482,6 +534,8 @@ main() {
 		--preview-cert) PREVIEW_CERT="${2:?--preview-cert needs a value}"; shift 2 ;;
 		--preview-key) PREVIEW_KEY="${2:?--preview-key needs a value}"; shift 2 ;;
 		--no-preview) NO_PREVIEW=1; shift ;;
+		--github-app-id) APP_ID="${2:?--github-app-id needs a value}"; shift 2 ;;
+		--github-app-key) APP_KEY_SRC="${2:?--github-app-key needs a value}"; shift 2 ;;
 		--version) version="${2:?--version needs a value}"; shift 2 ;;
 		--take-over-caddy) TAKE_OVER_CADDY=1; shift ;;
 		--no-password) NO_PASSWORD=1; shift ;;
@@ -515,6 +569,8 @@ main() {
 	[ -n "${PREVIEW_CERT:-}" ] && args+=(--preview-cert "$PREVIEW_CERT")
 	[ -n "${PREVIEW_KEY:-}" ] && args+=(--preview-key "$PREVIEW_KEY")
 	[ "${NO_PREVIEW:-0}" = 1 ] && args+=(--no-preview)
+	[ -n "${APP_ID:-}" ] && args+=(--github-app-id "$APP_ID")
+	[ -n "${APP_KEY_SRC:-}" ] && args+=(--github-app-key "$APP_KEY_SRC")
 	[ "${TAKE_OVER_CADDY:-0}" = 1 ] && args+=(--take-over-caddy)
 	[ "${NO_PASSWORD:-0}" = 1 ] && args+=(--no-password)
 	download_and_reexec "$version" "${args[@]}"

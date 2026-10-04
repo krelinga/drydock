@@ -41,6 +41,17 @@ wildcard certificate, and are optional. Add them on any run with `--preview-doma
 `--preview-cert` and `--preview-key`; take them away with `--no-preview`. `--version vX.Y.Z` installs
 a specific release, and `--help` lists the rest.
 
+**The repository list needs the GitHub App.** Create it as described in the design (§9.3 lists the
+permissions), download its private key, and pass both to the installer once:
+
+```sh
+curl -fsSL https://github.com/krelinga/drydock/releases/latest/download/install.sh \
+  | sudo bash -s -- --github-app-id 123456 --github-app-key ~/drydock.private-key.pem
+```
+
+The installer copies the key to `/etc/drydock/github-app.pem`, readable by the `drydock` user alone,
+and re-runs keep it. Use the numeric **App ID** from the App's settings page, not its Client ID.
+
 To change the password later: `sudo -u drydock drydock passwd --db /var/lib/drydock/drydock.db`.
 It signs out every device.
 

@@ -12,6 +12,7 @@ const SENTENCES: Record<string, string> = {
   unauthenticated: 'Your session has ended. Sign in again.',
   bad_password: 'That password is not right.',
   not_configured: 'Drydock has no password yet. Run `drydock passwd` on the host.',
+  app_not_configured: 'No GitHub App is set up yet, so there are no repositories to show.',
   forbidden_origin: "This request did not come from Drydock's own page. Reload and try again.",
   forbidden_host: 'This page was not reached at Drydock’s own address.',
   not_found: 'Drydock has no such thing.',

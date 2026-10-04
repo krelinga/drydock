@@ -173,4 +173,20 @@ CREATE TABLE instance (
   created_at   TEXT NOT NULL
 );
 `,
+
+	// 4 — the catalog's other half. installation records the accounts the
+	// App is installed on, because the settings link the UI gives for a
+	// missing repository (§9.4) differs for a user and an organization.
+	// repository.removed_at marks a repository the installation no longer
+	// covers but a workspace still holds: §12 keeps that workspace and its
+	// unpushed work, so the row cannot simply be deleted.
+	`
+CREATE TABLE installation (
+  id           INTEGER PRIMARY KEY,
+  account      TEXT NOT NULL,
+  account_type TEXT NOT NULL,
+  refreshed_at TEXT NOT NULL
+);
+ALTER TABLE repository ADD COLUMN removed_at TEXT;
+`,
 }

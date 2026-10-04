@@ -41,6 +41,9 @@ const (
 	CodeBadPassword      = "bad_password"
 	CodeLockedOut        = "locked_out"
 	CodeNotConfigured    = "not_configured"
+	// CodeAppNotConfigured: no GitHub App is configured, so there is no
+	// repository list. Distinct from not_configured, which is the password.
+	CodeAppNotConfigured = "app_not_configured"
 	CodeInternal         = "internal"
 )
 
