@@ -1,0 +1,54 @@
+# The GitHub contract tests against the real thing: the dev App
+# (krelinga-drydock-dev, installed on krelinga/drydock-testbed-a and -b only)
+# and the same test functions that run against githubtest's fake on every
+# `go test`. A failure here and a pass there means the fake believes something
+# about GitHub that is not true (testing §6.1).
+#
+# Nightly as well as on changes: GitHub can change under unchanged code, and
+# noticing that is the point of a contract test.
+name: github-live
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  schedule:
+    - cron: "17 9 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# One live run at a time: they share the testbed repositories.
+concurrency:
+  group: github-live
+  cancel-in-progress: false
+
+jobs:
+  contract:
+    # A pull request from a fork gets no secrets; skip rather than fail.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      # The key reaches the test as a file, mode 0400, as it would reach
+      # Drydock; github.LoadKey refuses anything looser.
+      - name: Write the dev App key
+        env:
+          KEY: ${{ secrets.DRYDOCK_DEV_APP_KEY }}
+        run: |
+          test -n "$KEY" || { echo "::error::the DRYDOCK_DEV_APP_KEY secret is not set"; exit 1; }
+          umask 077
+          printf '%s\n' "$KEY" > "$RUNNER_TEMP/dev-app.pem"
+          chmod 0400 "$RUNNER_TEMP/dev-app.pem"
+
+      # -count=1: a cached pass is a statement about yesterday's GitHub.
+      - run: go test -count=1 -v -run Contract ./internal/github/... ./internal/catalog/
+        env:
+          DRYDOCK_GITHUB_LIVE_APP_ID: ${{ vars.DRYDOCK_DEV_APP_ID }}
+          DRYDOCK_GITHUB_LIVE_APP_KEY: ${{ runner.temp }}/dev-app.pem
+          DRYDOCK_REQUIRE_GITHUB_LIVE: "1"

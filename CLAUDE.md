@@ -147,6 +147,17 @@ in CI is a silent pass of the Caddyfile test — then `npm run check`, then `tes
 `CADDY_VERSION` is pinned; the devcontainer's Caddy feature is not, so bump the pin when a rebuild
 moves it. Releases are amd64 only, by choice.
 
+**The GitHub contract tests** (`.github/workflows/github-live.yml`) run the `TestContract*` functions
+against the real dev App, `krelinga-drydock-dev` (App ID 5189839), which is installed on
+`krelinga/drydock-testbed-a` (declares a dev container) and `-b` (does not) and nothing else. The same
+functions run against `githubtest`'s fake on every `go test`, through `githubtest.NewBackend`. So when
+the live run fails and the fake run passes, the fake holds a belief about GitHub that is wrong, and
+the failing test names it. The job runs on PRs, on `main`, nightly and on demand. It needs the
+repository secret `DRYDOCK_DEV_APP_KEY` (the `.pem`) and the variable `DRYDOCK_DEV_APP_ID`.
+`DRYDOCK_REQUIRE_GITHUB_LIVE` stops it quietly testing the fake. **The testbed repos are fixtures**:
+change one and you must change `githubtest.Testbed()` too. Both must stay private, or the scoping
+tests test nothing.
+
 The README's one-liner is the contract: change an asset name, a flag, or `/etc/drydock/drydock.env`
 and an existing install's re-run is what breaks. `test/install/run.sh` installs from a local copy of
 the release assets via `DRYDOCK_DOWNLOAD_BASE`, so it exercises the one-liner's path.
