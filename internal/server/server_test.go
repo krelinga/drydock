@@ -530,7 +530,7 @@ func TestUnknownAPIPathIsGatedAndJSON(t *testing.T) {
 	}
 	authed := r.do(t, req{method: "PUT", path: "/api/auth/session", origin: uiOrigin, cookie: cookie})
 	allow := authed.Header.Get("Allow")
-	if msg := isEnvelope(t, authed, http.StatusMethodNotAllowed, api.CodeBadRequest); msg != "" || !strings.Contains(allow, "GET") {
+	if msg := isEnvelope(t, authed, http.StatusMethodNotAllowed, api.CodeMethodNotAllowed); msg != "" || !strings.Contains(allow, "GET") {
 		t.Errorf("PUT /api/auth/session with a cookie: %s, Allow %q", msg, allow)
 	}
 

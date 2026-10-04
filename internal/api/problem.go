@@ -31,13 +31,17 @@ const (
 	CodeForbiddenOrigin = "forbidden_origin"
 	CodeForbiddenHost   = "forbidden_host"
 	CodeNotFound        = "not_found"
-	CodeNotImplemented  = "not_implemented"
-	CodeInProgress      = "in_progress"
-	CodeBadRequest      = "bad_request"
-	CodeBadPassword     = "bad_password"
-	CodeLockedOut       = "locked_out"
-	CodeNotConfigured   = "not_configured"
-	CodeInternal        = "internal"
+	// CodeMethodNotAllowed is a declared path under a method it does not take.
+	// Distinct from bad_request, which means the body or query was wrong: a
+	// 405 is a client bug in which route it called, not in what it sent.
+	CodeMethodNotAllowed = "method_not_allowed"
+	CodeNotImplemented   = "not_implemented"
+	CodeInProgress       = "in_progress"
+	CodeBadRequest       = "bad_request"
+	CodeBadPassword      = "bad_password"
+	CodeLockedOut        = "locked_out"
+	CodeNotConfigured    = "not_configured"
+	CodeInternal         = "internal"
 )
 
 // WriteError sends the envelope. Nothing else in the codebase should write an

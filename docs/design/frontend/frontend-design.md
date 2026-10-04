@@ -2,7 +2,7 @@
 
 *A Vue single-page app, built once and embedded in the Go binary, whose central design rule is that it owns no state machine of its own: every mutation is a `202` and a wait, and the server's event stream is the only thing that ever changes what you see.*
 
-**Status** design document, draft v4 · **Date** 4 October 2026 · rebased onto overall draft v7: three §4.5 asks are now schema columns and the supervisor state is `waiting_registration`, and §10's tier split now lives in the [testing plan](../testing/testing-design.md) §10.3, whose draft v4 adds a frontend tier and withdraws its `chromedp` fallback · the card carries one environment id and a capacity fraction, a bad login code retries in place (§6.1, §6.2, §6.6, §9) · wireframes for §6 are Figs 3–6, distilled from `prototype/prototype.html` · supplements the [overall design](../overall/drydock-design.md) (§4 schema, §5 API, §8 sessions, §10 secrets, §13 auth), [port forwarding](../port-forwarding/port-forwarding-design.md) (§6 ports API, §10.5 phishing) and the [testing plan](../testing/testing-design.md) (§10 browser tier)
+**Status** design document, draft v5 · **Date** 4 October 2026 · §3 and §13.1: `dist/` is committed, guarded by a byte-for-byte rebuild check · §4.5 gains two asks Phase 1 found unmet — per-device revoke and delivering the failed-attempt notice · rebased onto overall draft v7: three §4.5 asks are now schema columns and the supervisor state is `waiting_registration`, and §10's tier split now lives in the [testing plan](../testing/testing-design.md) §10.3, whose draft v4 adds a frontend tier and withdraws its `chromedp` fallback · the card carries one environment id and a capacity fraction, a bad login code retries in place (§6.1, §6.2, §6.6, §9) · wireframes for §6 are Figs 3–6, distilled from `prototype/prototype.html` · supplements the [overall design](../overall/drydock-design.md) (§4 schema, §5 API, §8 sessions, §10 secrets, §13 auth), [port forwarding](../port-forwarding/port-forwarding-design.md) (§6 ports API, §10.5 phishing) and the [testing plan](../testing/testing-design.md) (§10 browser tier)
 
 **Runtime** no runtime. A `dist/` directory in `go:embed`, served from the same Unix socket as the API
 
@@ -133,10 +133,10 @@ web/                           # not shipped; built
 
 internal/web/
   embed.go                     # //go:embed dist
-  dist/                        # build output, committed? see below
+  dist/                        # build output, committed (see below)
 ```
 
-Whether `dist/` is committed or built in CI is a packaging question and packaging is out of scope for the overall design, so this document declines it too — but it names the constraint: **the Go build must not require Node.** Either a committed `dist/` or a CI artifact satisfies that; a `go generate` that shells out to `npm` does not.
+**`dist/` is committed** (settled in v5, when Phase 1 built it). The constraint was always that **the Go build must not require Node**, and of the two answers that honor it, a committed `dist/` is the one that also keeps `go install`, a plain `go build`, and the release workflow free of a Node step — the release builds from the tag with Go alone. The cost of committing build output is drift: a binary could ship a UI no source in the repository describes. `npm run check:dist` closes that by rebuilding into a scratch directory and failing on any byte of difference, and CI runs it on every pull request. Never hand-edit `dist/`; change the source and rebuild. A `go generate` that shells out to `npm` remains ruled out.
 
 #### Serving it
 
@@ -246,6 +246,13 @@ The routes in §5 of the overall design are a backend contract and mostly comple
 | 7 | **A consistent error envelope** — `{"error":{"code":"…","message":"…","detail":"…"}}` — with a stable machine-readable `code`. | §9 maps the §12 failure modes to specific sentences. The alternative is matching on prose, which breaks the first time a message is reworded. |
 | 8 | **`GET /api/workspaces/:id` includes whether the resolved config declares MCP servers**, and the installation-settings URL appears in `GET /api/repos`. | The first drives #5's message on a live workspace; the second is what makes §9.4's "link straight to the installation settings page" a link rather than a sentence. |
 | 9 | **`GET /api/workspaces/:id` returns the capacity fraction (`used` / `total`), and for a refused supervisor start the matched signature** — not the raw message. ~~And the `environment_id`~~ — **settled in v7**: it is a `workspace` column, described there as "the card's only link". | §6.1. The card renders a capacity fraction, so it needs both numbers rather than a session list. And §8 gives four refused-start causes behind one exit code, each needing a different card message; classifying them from prose in the client is the string-matching §9's error envelope exists to avoid. |
+
+Two more surfaced when Phase 1 built the device list and the sign-in screen against the real route table, and neither is a route yet:
+
+| # | Addition | Why the UI cannot work without it |
+|---|---|---|
+| 10 | **Revoke one device**: a `DELETE` on a single session by its id. Today `DELETE /api/auth/session` signs out the current device, or with `?all=true` every device. | §5's device list exists so a lost phone can be signed out. With only "this one" and "all", the operator's only move against one lost device is to sign out everything — workable, and what the Settings screen offers until this lands, but not the design. |
+| 11 | **The failed-attempt notice reaches the client.** The server already counts bad-password attempts since the last successful sign-in, and their sources (`auth.SignInResult`), but the sign-in `POST` answers `204` with no body, so the count is computed and dropped. Either a body on that response or a field on `GET /api/auth/session`, shown once. | §8's last bullet and overall §12: a stale saved password on a forgotten device shows up only here. A count nobody sees is the same as no count. |
 
 Three of these went from asks to schema in v7 — `claude_identity.state`, `workspace.environment_id`, and `supervisor.state`'s `waiting_registration` value — and the overall design's own reasoning for all three is the one this document argues from: *"a state the prose requires and the schema cannot hold is a state that gets inferred differently by every reader."* A UI is simply the reader where that divergence becomes visible.
 
@@ -538,7 +545,7 @@ Phases 1 and 2 are the ones that cannot be reordered: the reducer and the state 
 
 | Question | Leaning |
 |---|---|
-| Is `dist/` committed, or built in CI? | Out of scope per §3 — but the constraint (no Node in the Go build) has to be honored by whichever answer packaging picks, so flag it there rather than letting it be discovered. |
+| ~~Is `dist/` committed, or built in CI?~~ | **Settled in v5: committed**, guarded by `npm run check:dist` in CI. See §3. |
 | Does the home list default to `Running` collapsed or expanded when nothing is running? | Expanded, with an empty state pointing at the catalog. A collapsed empty section on first run reads as a broken app. |
 | Tailwind after all? | No, per §3.1 — but the reopen trigger is honest: if the component count passes roughly twenty-five, the tokens file stops being the cheaper option. |
 

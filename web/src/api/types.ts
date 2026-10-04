@@ -46,6 +46,7 @@ export type ErrorCode =
   | 'forbidden_origin'
   | 'forbidden_host'
   | 'not_found'
+  | 'method_not_allowed'
   | 'not_implemented'
   | 'in_progress'
   | 'bad_request'

@@ -15,6 +15,7 @@ const SENTENCES: Record<string, string> = {
   forbidden_origin: "This request did not come from Drydock's own page. Reload and try again.",
   forbidden_host: 'This page was not reached at Drydock’s own address.',
   not_found: 'Drydock has no such thing.',
+  method_not_allowed: 'This page asked Drydock for something the wrong way. Reload and try again.',
   not_implemented: 'That is not built yet.',
   in_progress: 'Already in progress.',
   bad_request: 'Drydock did not understand that request.',
