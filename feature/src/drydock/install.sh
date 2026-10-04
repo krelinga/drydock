@@ -45,9 +45,16 @@ if [ -e /usr/local/bin/gh ] && [ "$(readlink /usr/local/bin/gh || true)" != "$PR
 	# A real gh where the shim must go: keep it, where the shim looks last.
 	mv /usr/local/bin/gh "$PREFIX/real/gh"
 fi
-for t in drydock-broker drydock-credential drydock-probe gh; do
+for t in drydock-broker drydock-credential drydock-probe drydock-secrets gh; do
 	ln -sf "$PREFIX/bin/$t" "/usr/local/bin/$t"
 done
+
+# CLAUDE_ENV_FILE's script (design §10.3, Spike 03): one constant line that
+# delegates to the helper. Claude Code reads its text once per session and
+# passes it as argv to every command, so it must never hold a value and never
+# need rewriting — which is why it is a file shipped with the Feature rather
+# than anything generated here.
+install -m 0644 "$here/etc/claude-env.sh" "$PREFIX/etc/claude-env.sh"
 
 # Hooks: a pre-push guard, and pass-throughs so core.hooksPath does not
 # silence the repository's own hooks.

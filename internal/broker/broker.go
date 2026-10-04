@@ -18,6 +18,7 @@ import (
 
 	"github.com/krelinga/drydock/internal/events"
 	"github.com/krelinga/drydock/internal/github"
+	"github.com/krelinga/drydock/internal/secrets"
 	"github.com/krelinga/drydock/internal/sys"
 	"github.com/krelinga/drydock/internal/workspace"
 )
@@ -32,6 +33,9 @@ type Broker struct {
 	DB     *sql.DB
 	Events *events.Log
 	Env    sys.Env
+	// Secrets answers GET-SECRETS. Nil when no master key is configured,
+	// and then there are no secrets: every workspace gets count=0.
+	Secrets SecretSource
 
 	mu        sync.Mutex
 	listeners map[string]net.Listener
@@ -165,7 +169,56 @@ func (b *Broker) handle(wsID string, conn net.Conn) {
 		conn.Write([]byte("OK\n"))
 	case "GET-TOKEN":
 		conn.Write([]byte(b.token(ctx, wsID, req.Scope)))
+	case "GET-SECRETS":
+		conn.Write([]byte(b.secrets(ctx, wsID)))
 	}
+}
+
+// SecretSource is what GET-SECRETS needs from internal/secrets.
+type SecretSource interface {
+	Resolve(ctx context.Context, repositoryID int64) ([]secrets.Entry, error)
+	RecordAccess(ctx context.Context, workspaceID string, delivered []secrets.Entry) error
+}
+
+// secrets answers one GET-SECRETS: the workspace's repository's grant set,
+// read from the store's decrypted snapshot.
+//
+// This runs before every Bash command an agent issues (Spike 03), so it
+// stays cheap: one indexed row read for the binding, a map lookup for the
+// grant set, and the access rows — no GitHub request and no decryption. A
+// failure is an ERR line, which the client turns into `exit 69`: a command
+// that cannot have its secrets does not run (§10.3 constraint 4).
+func (b *Broker) secrets(ctx context.Context, wsID string) string {
+	bd, err := b.binding(ctx, wsID)
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		return errLine(ReasonRevoked)
+	case err != nil:
+		return errLine(ReasonUnavailable)
+	case bd.state == string(workspace.Deleting):
+		return errLine(ReasonRevoked)
+	}
+	// Archived or removed from the installation does not stop secrets: the
+	// grant is the operator's decision, not GitHub's, and §12 keeps a
+	// removed repository's workspace working on what it already has.
+	if b.Secrets == nil {
+		return secretsAnswer(nil, nil)
+	}
+	got, err := b.Secrets.Resolve(ctx, bd.repositoryID)
+	if err != nil {
+		return errLine(ReasonUnavailable)
+	}
+	// Recorded before it is sent, and not sent if it cannot be recorded:
+	// "which workspaces ever held this?" (§10.4) has no other answer.
+	if err := b.Secrets.RecordAccess(ctx, wsID, got); err != nil {
+		return errLine(ReasonUnavailable)
+	}
+	names := make([]string, len(got))
+	values := make([]string, len(got))
+	for i, e := range got {
+		names[i], values[i] = e.Name, e.Value
+	}
+	return secretsAnswer(names, values)
 }
 
 // binding is what the broker reads, per request, about the workspace a

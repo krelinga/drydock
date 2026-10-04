@@ -3,6 +3,8 @@ package api
 import (
 	"encoding/json"
 	"net/http"
+
+	"github.com/krelinga/drydock/internal/secrets"
 )
 
 // Error is the one error shape every route returns, from frontend §4.5 #7.
@@ -45,6 +47,35 @@ const (
 	// repository list. Distinct from not_configured, which is the password.
 	CodeAppNotConfigured = "app_not_configured"
 	CodeInternal         = "internal"
+
+	// The secret routes' refusals (design §10.1). Each is one sentence in
+	// the UI, and the detail names the rule or the character — never the
+	// value.
+	//
+	// CodeSecretsNotConfigured: no master key, so nothing can be stored.
+	CodeSecretsNotConfigured = "secrets_not_configured"
+	// CodeSecretNameInvalid: not an environment variable name.
+	CodeSecretNameInvalid = secrets.CodeNameInvalid
+	// CodeSecretNameReserved: a name on §10.1's reserved list; the detail
+	// says why that one.
+	CodeSecretNameReserved = secrets.CodeNameReserved
+	// CodeSecretValueEmpty: indistinguishable from unset, so refused.
+	CodeSecretValueEmpty = secrets.CodeValueEmpty
+	// CodeSecretValueControl: a newline, carriage return, NUL, tab or other
+	// control character — or bytes that are not UTF-8. The detail names
+	// the character and its byte offset. A newline would forge a line in
+	// GET-SECRETS (§10.3).
+	CodeSecretValueControl = secrets.CodeValueControl
+	// CodeSecretValueTooLong: over 32 KiB.
+	CodeSecretValueTooLong = secrets.CodeValueTooLong
+	// CodeSecretReachRequired: blank (or over-long) reach. The field is the
+	// control (§10.4), not documentation.
+	CodeSecretReachRequired = secrets.CodeReachRequired
+	// CodeSecretDescriptionInvalid: over-long or not text.
+	CodeSecretDescriptionInvalid = secrets.CodeDescriptionBad
+	// CodeUnknownRepository: a grant names a repository id the catalog
+	// does not have.
+	CodeUnknownRepository = secrets.CodeUnknownRepo
 )
 
 // WriteError sends the envelope. Nothing else in the codebase should write an

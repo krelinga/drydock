@@ -204,6 +204,44 @@ func TestRemovedRepositories(t *testing.T) {
 	}
 }
 
+// A dropped repository that holds a secret grant is still deleted, and its
+// grant with it. secret_grant references the repository row, so before this
+// the delete failed on the foreign key and so did every refresh after it.
+// Control: the grant of a repository that stays is untouched.
+func TestRemovedRepositoryTakesItsSecretGrants(t *testing.T) {
+	ctx := context.Background()
+	e := newEnv(t)
+	e.refresh(t)
+	for _, q := range []string{
+		`INSERT INTO secret (id, name, ciphertext, nonce, reach) VALUES ('s1', 'TEST_KEY', x'00', x'00', 'a test key')`,
+		`INSERT INTO secret_grant (secret_id, repository_id) VALUES ('s1', 2), ('s1', 3)`,
+	} {
+		if _, err := e.cat.DB.ExecContext(ctx, q); err != nil {
+			t.Fatal(err)
+		}
+	}
+	e.fake.Mu.Lock()
+	e.fake.Installations[0].Repos = e.fake.Installations[0].Repos[2:] // drops rootfile (2)
+	e.fake.Mu.Unlock()
+	if _, err := e.cat.Refresh(ctx); err != nil {
+		t.Fatalf("a refresh dropping a granted repository failed: %v", err)
+	}
+	if _, ok := e.list(t)["krelinga/rootfile"]; ok {
+		t.Error("the dropped repository is still listed")
+	}
+	var grants []int64
+	rows, _ := e.cat.DB.QueryContext(ctx, `SELECT repository_id FROM secret_grant ORDER BY repository_id`)
+	for rows.Next() {
+		var r int64
+		rows.Scan(&r)
+		grants = append(grants, r)
+	}
+	rows.Close()
+	if len(grants) != 1 || grants[0] != 3 {
+		t.Errorf("grants after the drop = %v; want [3]", grants)
+	}
+}
+
 // A refresh that fails changes nothing and says why — in GitHub's words,
 // which name the problem without carrying a credential.
 func TestFailedRefreshKeepsTheCache(t *testing.T) {

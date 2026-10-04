@@ -31,6 +31,7 @@ import (
 	"github.com/krelinga/drydock/internal/events"
 	"github.com/krelinga/drydock/internal/github"
 	"github.com/krelinga/drydock/internal/reconcile"
+	"github.com/krelinga/drydock/internal/secrets"
 	"github.com/krelinga/drydock/internal/store"
 	"github.com/krelinga/drydock/internal/subproc"
 	"github.com/krelinga/drydock/internal/sys"
@@ -50,10 +51,16 @@ type Server struct {
 	// Catalog and Broker are nil when no GitHub App is configured.
 	Catalog *catalog.Catalog
 	Broker  *broker.Broker
-	api     *http.Server
-	preview *http.Server
-	apiLn   net.Listener
-	prevLn  net.Listener
+	// Secrets is nil when no master key is configured. With one, the broker
+	// (when there is an App) answers GET-SECRETS from it.
+	Secrets *secrets.Store
+	// reconciled closes when boot reconciliation has finished, so a test
+	// can set up workspace rows reconciliation would otherwise move.
+	reconciled chan struct{}
+	api        *http.Server
+	preview    *http.Server
+	apiLn      net.Listener
+	prevLn     net.Listener
 }
 
 // New opens the store (taking the single-instance lock), builds both muxes,
@@ -85,7 +92,7 @@ func New(ctx context.Context, cfg config.Config, env sys.Env) (*Server, error) {
 		return nil, err
 	}
 
-	s := &Server{DB: db, Auth: svc, Events: events.New(db.DB, env.Clock)}
+	s := &Server{DB: db, Auth: svc, Events: events.New(db.DB, env.Clock), reconciled: make(chan struct{})}
 	s.Workspaces = &workspace.Store{DB: db.DB, Events: s.Events, Env: env, Root: cfg.WorkspaceRoot, Cap: cfg.ContainerCap}
 	s.Reconciler = &reconcile.Reconciler{Workspaces: s.Workspaces, Events: s.Events,
 		Containers: container.Manager{Run: subproc.Exec{}, LabelPrefix: cfg.LabelPrefix}}
@@ -93,6 +100,21 @@ func New(ctx context.Context, cfg config.Config, env sys.Env) (*Server, error) {
 	// key that cannot be read, or that others can read, stops the server:
 	// starting without the repository list it was configured for would be
 	// a quieter failure than refusing to start.
+	// The secrets master key, likewise read once from its file (§10.2,
+	// §13.5) and refused if others can read it. A configured key that cannot
+	// be loaded stops the server rather than serving with secrets silently
+	// off: every workspace's prelude would then fail closed, which is the
+	// loud version of the same outage, but at a distance from its cause.
+	var secretRoutes api.SecretStore
+	if cfg.SecretsKey != "" {
+		key, err := secrets.LoadKey(cfg.SecretsKey)
+		if err != nil {
+			db.Close()
+			return nil, err
+		}
+		s.Secrets = &secrets.Store{DB: db.DB, Key: key, Events: s.Events, Env: env}
+		secretRoutes = s.Secrets
+	}
 	var repoCatalog api.RepoCatalog
 	if cfg.GitHubAppID != 0 {
 		key, err := github.LoadKey(cfg.GitHubAppKey)
@@ -105,6 +127,9 @@ func New(ctx context.Context, cfg config.Config, env sys.Env) (*Server, error) {
 			HTTP: &http.Client{Timeout: 30 * time.Second}}
 		s.Catalog = &catalog.Catalog{DB: db.DB, Events: s.Events, Clock: env.Clock, GitHub: gh}
 		s.Broker = &broker.Broker{Dir: cfg.BrokerDir, GitHub: gh, DB: db.DB, Events: s.Events, Env: env}
+		if s.Secrets != nil {
+			s.Broker.Secrets = s.Secrets
+		}
 		repoCatalog = s.Catalog
 	}
 	handlers := api.SessionRoutes{Auth: svc}.Handlers()
@@ -112,6 +137,9 @@ func New(ctx context.Context, cfg config.Config, env sys.Env) (*Server, error) {
 		handlers[name] = h
 	}
 	for name, h := range (api.EventRoutes{Log: s.Events, Clock: env.Clock, Alive: svc.Sessions.Alive}).Handlers() {
+		handlers[name] = h
+	}
+	for name, h := range (api.SecretRoutes{Store: secretRoutes}).Handlers() {
 		handlers[name] = h
 	}
 	s.api = &http.Server{
@@ -181,7 +209,7 @@ func (s *Server) Serve(ctx context.Context) error {
 	// (reconcile refuses to act on a list it could not read), is written to
 	// the journal in full, and reaches the event log as Drydock's sentence
 	// only — docker's stderr is not ours to publish.
-	reconciled := make(chan struct{})
+	reconciled := s.reconciled
 	go func() {
 		defer close(reconciled)
 		if _, err := s.Reconciler.Run(ctx); err != nil && ctx.Err() == nil {

@@ -232,8 +232,18 @@ func (c *Catalog) refresh(ctx context.Context) (Result, error) {
 				`UPDATE repository SET removed_at = coalesce(removed_at, ?) WHERE id = ?`, now, id); err != nil {
 				return Result{}, err
 			}
-		} else if _, err := tx.ExecContext(ctx, `DELETE FROM repository WHERE id = ?`, id); err != nil {
-			return Result{}, err
+		} else {
+			// Its secret grants go with it — secret_grant references the
+			// row, so without this the delete fails and every later
+			// refresh with it. A repository that comes back is granted
+			// nothing: default deny (§10.1) is the right state for a
+			// repository the operator last saw leave.
+			if _, err := tx.ExecContext(ctx, `DELETE FROM secret_grant WHERE repository_id = ?`, id); err != nil {
+				return Result{}, err
+			}
+			if _, err := tx.ExecContext(ctx, `DELETE FROM repository WHERE id = ?`, id); err != nil {
+				return Result{}, err
+			}
 		}
 		res.Removed++
 	}

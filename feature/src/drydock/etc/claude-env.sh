@@ -1,0 +1,1 @@
+eval "$(drydock-secrets export)"

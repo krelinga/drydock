@@ -18,6 +18,7 @@ import (
 	"github.com/krelinga/drydock/internal/events"
 	"github.com/krelinga/drydock/internal/github"
 	"github.com/krelinga/drydock/internal/github/githubtest"
+	"github.com/krelinga/drydock/internal/secrets"
 	"github.com/krelinga/drydock/internal/store"
 	"github.com/krelinga/drydock/internal/sys"
 )
@@ -32,6 +33,8 @@ type env struct {
 	fake   *githubtest.Fake
 	db     *store.DB
 	dbPath string
+	// sec is the secrets store GET-SECRETS reads, empty until a test puts one.
+	sec *secrets.Store
 }
 
 func newEnv(t *testing.T) *env {
@@ -67,6 +70,7 @@ func newEnv(t *testing.T) *env {
 		Dir:    shortDir(t),
 		GitHub: &github.Client{AppID: 4242, Key: key, BaseURL: f.URL, Clock: clock},
 		DB:     db.DB, Events: events.New(db.DB, clock), Env: sys.Env{Clock: clock, Random: sys.CryptoRandom{}},
+		Secrets: &secrets.Store{DB: db.DB, Key: secretsKey(t), Env: sys.Env{Clock: clock, Random: sys.CryptoRandom{}}},
 	}
 	t.Cleanup(b.CloseAll)
 	for _, ws := range []string{wsA, wsB} {
@@ -74,7 +78,7 @@ func newEnv(t *testing.T) *env {
 			t.Fatal(err)
 		}
 	}
-	return &env{b: b, fake: f, db: db, dbPath: dbPath}
+	return &env{b: b, fake: f, db: db, dbPath: dbPath, sec: b.Secrets.(*secrets.Store)}
 }
 
 func shortDir(t *testing.T) string {
@@ -110,7 +114,7 @@ func tokenOf(t *testing.T, answer string) string {
 }
 
 func TestParse(t *testing.T) {
-	for _, ok := range []string{"PING", "GET-TOKEN scope=git", "GET-TOKEN scope=gh"} {
+	for _, ok := range []string{"PING", "GET-TOKEN scope=git", "GET-TOKEN scope=gh", "GET-SECRETS"} {
 		if _, err := Parse(ok); err != nil {
 			t.Errorf("%q refused: %v", ok, err)
 		}
@@ -129,7 +133,14 @@ func TestParse(t *testing.T) {
 		"get-token scope=git",
 		"GET-TOKEN",
 		"GET-TOKEN scope=git\r",
-		"GET-SECRETS", // Phase 4's verb, not this broker's yet
+		// GET-SECRETS takes no arguments at all (§10.3): not a name, not a
+		// repository, not a trailing space.
+		"GET-SECRETS ",
+		"GET-SECRETS TEST_DATABASE_URL",
+		"GET-SECRETS repo=krelinga/beta",
+		"GET-SECRETS scope=gh",
+		"get-secrets",
+		"GET-SECRETS\r",
 		"PING extra",
 		"",
 		"GET-TOKEN scope=" + strings.Repeat("g", 200),
