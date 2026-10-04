@@ -1,0 +1,89 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1040 392" width="1040" height="392" role="img" aria-labelledby="t">
+  <title id="t">How far each test tier reaches along the request path, and what stands in at the edge</title>
+  <g font-family="ui-sans-serif, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif">
+
+    <text x="16" y="22" font-size="11" fill="#656d76">request path →</text>
+
+    <!-- nodes -->
+    <g>
+      <rect x="16"  y="34" width="108" height="54" rx="6" fill="#f6f8fa" stroke="#d0d7de"/>
+      <text x="70"  y="66" font-size="12.5" fill="#1f2328" text-anchor="middle">LAN browser</text>
+
+      <rect x="136" y="34" width="92"  height="54" rx="6" fill="#f6f8fa" stroke="#d0d7de"/>
+      <text x="182" y="66" font-size="12.5" fill="#1f2328" text-anchor="middle">Caddy</text>
+
+      <rect x="240" y="34" width="150" height="54" rx="6" fill="#f6f8fa" stroke="#d0d7de"/>
+      <text x="315" y="57" font-size="12.5" fill="#1f2328" text-anchor="middle">API mux</text>
+      <text x="315" y="73" font-size="12.5" fill="#1f2328" text-anchor="middle">preview mux</text>
+
+      <rect x="402" y="34" width="168" height="54" rx="6" fill="#f6f8fa" stroke="#d0d7de"/>
+      <text x="486" y="57" font-size="12.5" fill="#1f2328" text-anchor="middle">managers · broker</text>
+      <text x="486" y="73" font-size="12.5" fill="#1f2328" text-anchor="middle">SQLite</text>
+
+      <rect x="582" y="34" width="160" height="54" rx="6" fill="#f6f8fa" stroke="#d0d7de"/>
+      <text x="662" y="57" font-size="12.5" fill="#1f2328" text-anchor="middle">devcontainer CLI</text>
+      <text x="662" y="73" font-size="12.5" fill="#1f2328" text-anchor="middle">Docker</text>
+
+      <rect x="754" y="34" width="136" height="54" rx="6" fill="#f6f8fa" stroke="#d0d7de"/>
+      <text x="822" y="57" font-size="12.5" fill="#1f2328" text-anchor="middle">workspace</text>
+      <text x="822" y="73" font-size="12.5" fill="#1f2328" text-anchor="middle">container</text>
+
+      <rect x="902" y="34" width="122" height="54" rx="6" fill="#f6f8fa" stroke="#d0d7de"/>
+      <text x="963" y="57" font-size="12.5" fill="#1f2328" text-anchor="middle">GitHub</text>
+      <text x="963" y="73" font-size="12.5" fill="#1f2328" text-anchor="middle">Anthropic</text>
+    </g>
+
+    <g font-size="13" fill="#8c959f" text-anchor="middle">
+      <text x="130" y="66">→</text>
+      <text x="234" y="66">→</text>
+      <text x="396" y="66">→</text>
+      <text x="576" y="66">→</text>
+      <text x="748" y="66">→</text>
+      <text x="896" y="66">→</text>
+    </g>
+
+    <!-- unit -->
+    <rect x="16"  y="112" width="108" height="34" rx="6" fill="none" stroke="#afb8c1" stroke-dasharray="4 3"/>
+    <rect x="240" y="112" width="330" height="34" rx="6" fill="#ddf4ff" stroke="#0969da"/>
+    <text x="252" y="134" font-size="12.5" font-weight="600" fill="#0a3069">unit</text>
+    <text x="558" y="134" font-size="12.5" fill="#0a3069" text-anchor="end">&lt; 10 s</text>
+    <rect x="582" y="112" width="442" height="34" rx="6" fill="none" stroke="#afb8c1" stroke-dasharray="4 3"/>
+    <text x="803" y="134" font-size="10.5" fill="#656d76" text-anchor="middle">not reached</text>
+
+    <!-- component -->
+    <rect x="16"  y="160" width="108" height="34" rx="6" fill="none" stroke="#afb8c1" stroke-dasharray="4 3"/>
+    <rect x="136" y="160" width="434" height="34" rx="6" fill="#fbefff" stroke="#8250df"/>
+    <text x="148" y="182" font-size="12.5" font-weight="600" fill="#512a97">component</text>
+    <text x="558" y="182" font-size="12.5" fill="#512a97" text-anchor="end">&lt; 60 s</text>
+    <rect x="582" y="160" width="442" height="34" rx="6" fill="none" stroke="#afb8c1" stroke-dasharray="4 3"/>
+    <text x="803" y="182" font-size="10.5" fill="#656d76" text-anchor="middle">fakedevcontainer · fakegithub · fakeclaude</text>
+
+    <!-- container -->
+    <rect x="16"  y="208" width="212" height="34" rx="6" fill="none" stroke="#afb8c1" stroke-dasharray="4 3"/>
+    <rect x="240" y="208" width="650" height="34" rx="6" fill="#dafbe1" stroke="#1a7f37"/>
+    <text x="252" y="230" font-size="12.5" font-weight="600" fill="#0f5323">container · real DinD</text>
+    <text x="878" y="230" font-size="12.5" fill="#0f5323" text-anchor="end">&lt; 10 min, warm cache</text>
+    <rect x="902" y="208" width="122" height="34" rx="6" fill="none" stroke="#afb8c1" stroke-dasharray="4 3"/>
+    <text x="963" y="221" font-size="9.5" fill="#656d76" text-anchor="middle">fakegithub</text>
+    <text x="963" y="233" font-size="9.5" fill="#656d76" text-anchor="middle">fakeclaude</text>
+
+    <!-- browser -->
+    <rect x="16"  y="256" width="874" height="34" rx="6" fill="#fff1e5" stroke="#bc4c00"/>
+    <text x="28"  y="278" font-size="12.5" font-weight="600" fill="#7a2e00">browser · real Caddy, real Chromium</text>
+    <text x="878" y="278" font-size="12.5" fill="#7a2e00" text-anchor="end">&lt; 5 min</text>
+    <rect x="902" y="256" width="122" height="34" rx="6" fill="none" stroke="#afb8c1" stroke-dasharray="4 3"/>
+    <text x="963" y="269" font-size="9.5" fill="#656d76" text-anchor="middle">fakegithub</text>
+    <text x="963" y="281" font-size="9.5" fill="#656d76" text-anchor="middle">fakeclaude</text>
+
+    <!-- rituals -->
+    <rect x="16" y="304" width="1008" height="34" rx="6" fill="#fff8c5" stroke="#9a6700"/>
+    <text x="28"   y="326" font-size="12.5" font-weight="600" fill="#6c4a00">rituals · everything real, including a human</text>
+    <text x="1012" y="326" font-size="12.5" fill="#6c4a00" text-anchor="end">by event, never by commit</text>
+
+    <!-- legend -->
+    <rect x="16" y="358" width="18" height="12" rx="3" fill="#f6f8fa" stroke="#57606a"/>
+    <text x="42" y="368" font-size="11" fill="#656d76">exercised for real</text>
+    <rect x="166" y="358" width="18" height="12" rx="3" fill="none" stroke="#afb8c1" stroke-dasharray="4 3"/>
+    <text x="192" y="368" font-size="11" fill="#656d76">substituted, or outside the tier's reach</text>
+  </g>
+</svg>

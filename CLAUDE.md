@@ -5,10 +5,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Repository state
 
 **Design-only. There is no application source code yet.** The repository contains the overall design
-document (`docs/design/overall/drydock-design.md`, draft v6), a supplemental one on port forwarding
-(`docs/design/port-forwarding/`, draft v3), their SVG diagrams, a devcontainer definition, and the
-**four completed Phase 0 spikes** with their harnesses under `docs/design/spikes/`. There are no
-build, lint, or test commands because nothing is built yet.
+document (`docs/design/overall/drydock-design.md`, draft v6), supplemental ones on port forwarding
+(`docs/design/port-forwarding/`, draft v3) and testing (`docs/design/testing/`, draft v1), an
+adversarial security review (`docs/design/security-review.md`), their SVG diagrams, a devcontainer
+definition, and the **four completed Phase 0 spikes** with their harnesses under
+`docs/design/spikes/`. There are no build, lint, or test commands because nothing is built yet —
+the testing document specifies what they will be.
 
 The devcontainer (`.devcontainer/devcontainer.json`) carries the full toolchain: Go (with
 golangci-lint), Node, **docker-in-docker**, the `devcontainer` CLI, Caddy, `gh`, and
@@ -185,6 +187,47 @@ These come from §2 (Claude Code constraints) and §13.5 (non-negotiables). Most
 
 Phases 2–4 are independently useful; if Phase 5 is blocked by something in §2, what remains is still
 most of the value.
+
+## Testing
+
+`docs/design/testing/testing-design.md` is the plan. Four tiers — unit, component (fake subprocesses,
+real sockets and SQLite), container (real DinD), browser (real Chromium and Caddy) — plus rituals
+triggered by an event rather than a commit. A test lives in the cheapest tier whose reach includes the
+boundary its assertion is about. Five things from it change how code gets written here:
+
+- **Every negative test carries a positive control in the same function.** Nearly every invariant
+  above is a prohibition, and a prohibition is satisfied by a binary that does nothing. A test that
+  would still pass with the feature deleted is not a test of the invariant.
+- **The canary sweep.** Component tests keep all mutable state under one temp root, seed
+  high-entropy canaries, and grep the whole tree plus the SQLite file's raw bytes afterwards. This is
+  how "redact by default" and §4's four deliberate schema absences are covered without a sink list
+  anyone has to remember to extend. Two sinks are not files and are swept explicitly:
+  `/proc/<pid>/cmdline`, because the prelude's text is `argv` on every command, and the HTTP path
+  that carries the login code.
+- **The route table is data**, not `mux.HandleFunc` calls — `{method, pattern, handler, mutating}` —
+  so the auth, `Origin`, CORS, and two-mux-separation meta-tests enumerate it and a route added later
+  is covered without editing a test.
+- **Time, disk, and randomness are injected**, and subprocesses resolve by `PATH` so a fake binary
+  can stand in. A Go mock of the `devcontainer` CLI tests our belief about it; a fake binary tests
+  the argv we actually build, which is a security surface.
+- **The `drydock.workspace` label key is configuration, not a constant.** Reconciliation adopts and
+  deletes by label, so a second Drydock on the same daemon — which is what a test is — will adopt and
+  destroy real workspaces. The SQLite advisory lock does not prevent this.
+
+Two testing consequences of the Phase 0 findings are worth having here, because both are failures a
+correct-looking test passes. **Exit status is not a discriminator** — all four `remote-control`
+startup refusals exit `1`, so the classifier must read the message, and its test feeds four fixtures
+with the same exit code and demands four verdicts. And **a missing `remoteDialogSeen` hangs rather
+than failing**, so that scenario asserts a *timeout*; a suite with no hang fixture passes against the
+exact bug Spike 02 found.
+
+§15 of that document holds five findings that are changes to the *design* docs, not to it, all
+re-validated against draft v6: the line-oriented `GET-SECRETS` protocol and
+`eval "$(drydock-secrets export)"` are both injectable via a secret value — and the second got worse,
+since v6 runs that prelude before *every* Bash command; three states the prose now requires have no
+column (`claude_identity.state`, `workspace.environment_id`, and a `supervisor.state` value for the
+`409` wait); a retired preview slug can be reissued; and the label key above. They are unapplied on
+purpose.
 
 ## Docs
 
