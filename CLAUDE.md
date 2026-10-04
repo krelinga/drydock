@@ -5,7 +5,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Repository state
 
 **Mostly design, with the first code in.** The repository contains the overall design
-document (`docs/design/overall/drydock-design.md`, draft v12), supplemental ones on port forwarding
+document (`docs/design/overall/drydock-design.md`, draft v13), supplemental ones on port forwarding
 (`docs/design/port-forwarding/`, draft v5), testing (`docs/design/testing/`, draft v9) and the Vue
 frontend (`docs/design/frontend/`, draft v5), a settled brand mark (`docs/design/brand/`, v1.0,
 with the shipping icon assets), an adversarial security review
