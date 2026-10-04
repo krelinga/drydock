@@ -35,6 +35,21 @@ cd /releases && python3 -m http.server 8000 --bind 127.0.0.1 >/dev/null 2>&1 &
 sleep 0.5
 check "the stock Caddyfile is in place" grep -q "easy way to configure" /etc/caddy/Caddyfile
 
+section "a host without Docker or the devcontainer CLI is refused"
+mv /usr/local/bin/devcontainer /root/devcontainer.hidden
+install v0.0.1 --ui-host "$UI" --cert /etc/ssl/drydock/ui.pem --key /etc/ssl/drydock/ui.key
+check "without the devcontainer CLI it fails" [ "$rc" != 0 ]
+check "it says how to install the CLI" grep -q "npm install -g @devcontainers/cli" <<<"$out"
+check "it installed nothing" [ ! -e /usr/local/bin/drydock ]
+mv /root/devcontainer.hidden /usr/local/bin/devcontainer
+mv /usr/bin/docker /root/docker.hidden
+install v0.0.1 --ui-host "$UI" --cert /etc/ssl/drydock/ui.pem --key /etc/ssl/drydock/ui.key
+check "without Docker it fails" [ "$rc" != 0 ]
+check "it says to install Docker" grep -q "Docker is not installed" <<<"$out"
+check "it installed nothing" [ ! -e /usr/local/bin/drydock ]
+mv /root/docker.hidden /usr/bin/docker
+check "control: the daemon this test installs against is up" docker info
+
 section "a first install without its settings is refused"
 install v0.0.1
 check "it fails" [ "$rc" != 0 ]
@@ -54,6 +69,34 @@ check "the database is drydock's alone" [ "$(stat -c '%U %a' /var/lib/drydock)" 
 check "caddy's admin endpoint is not on loopback" [ "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:2019/config/)" = 000 ]
 check "an unauthenticated API call is 401" [ "$(status "https://$UI/api/repos")" = 401 ]
 check "a foreign Host gets nothing" [ "$(curl -sk -o /dev/null -w '%{http_code}' --resolve other.test:443:127.0.0.1 https://other.test/)" != 200 ]
+
+section "the service can build a workspace container"
+# Checked inside the running service's own mount namespace, so ProtectSystem,
+# PrivateTmp and ReadWritePaths are the unit's, not a copy of them — then as
+# drydock, with the groups and PATH the service has.
+SP=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+in_service() { nsenter -t "$(mainpid drydock)" -m -- runuser -u drydock -- env PATH="$SP" HOME=/var/lib/drydock "$@"; }
+check "drydock is in the docker group" bash -c "id -nG drydock | tr ' ' '\n' | grep -qx docker"
+check "the workspace root is drydock's alone, 0700" [ "$(stat -c '%U %a' /srv/drydock/ws)" = "drydock 700" ]
+check "the service can write the workspace root" in_service touch /srv/drydock/ws/.probe
+mkdir -p /opt/drydock-probe && chown drydock:drydock /opt/drydock-probe # not install(1): install() is the scenario's own
+check "control: drydock can write its own directory outside the service" runuser -u drydock -- touch /opt/drydock-probe/x
+check "but the service cannot: ProtectSystem=strict is in force" bash -c "! nsenter -t $(mainpid drydock) -m -- runuser -u drydock -- touch /opt/drydock-probe/y 2>/dev/null"
+rm -rf /opt/drydock-probe
+check "the service reaches the Docker daemon" in_service docker info
+mkdir -p /srv/drydock/ws/probe/repo /srv/drydock/ws/probe/.drydock
+echo '{"image":"debian:bookworm-slim"}' >/srv/drydock/ws/probe/.drydock/devcontainer.json
+chown -R drydock:drydock /srv/drydock/ws/probe
+upout=$(in_service devcontainer up --workspace-folder /srv/drydock/ws/probe/repo --no-lockfile \
+	--id-label drydock.installtest.workspace=probe --override-config /srv/drydock/ws/probe/.drydock/devcontainer.json 2>/dev/null)
+check "devcontainer up works as the service, a repository with no config and all" grep -q '"outcome":"success"' <<<"$upout" ||
+	printf '%s\n' "$upout"
+check "and devcontainer exec into it" in_service devcontainer exec --workspace-folder /srv/drydock/ws/probe/repo \
+	--id-label drydock.installtest.workspace=probe --override-config /srv/drydock/ws/probe/.drydock/devcontainer.json -- true
+docker ps -aq --filter label=drydock.installtest.workspace | xargs -r docker rm -f >/dev/null
+rm -rf /srv/drydock/ws/probe /srv/drydock/ws/.probe
+check "the boot reconciliation reached Docker too" bash -c "! journalctl -u drydock -o cat | grep -q 'drydock: reconcile'"
+check "control: that is the service's journal" bash -c "journalctl -u drydock -o cat | grep -q 'serving on'"
 
 printf '%s\n' "$PW" | runuser -u drydock -- drydock passwd --db /var/lib/drydock/drydock.db >/dev/null
 jar=$(mktemp)

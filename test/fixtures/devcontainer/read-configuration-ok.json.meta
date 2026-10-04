@@ -1,0 +1,6 @@
+devcontainer_version: 0.89.0
+recorded_at:          2026-10-04T22:11:33Z
+command:              devcontainer read-configuration --workspace-folder <dir>/repo    (stdout only; exit 0)
+config:               {"image":"mcr.microsoft.com/devcontainers/base:debian","runArgs":["--network=host"]}
+provenance:           recorded; the temp directory is rewritten to /srv/drydock/ws/FIXTURE
+must_yield:           a Configuration with workspaceFolder /workspaces/repo

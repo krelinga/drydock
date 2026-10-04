@@ -35,6 +35,12 @@ What the installer needs, and what it will not do:
   pass `--take-over-caddy`.
 - **No TCP port of its own.** Drydock listens only on Unix sockets under `/run/drydock`, readable by
   the `drydock` group, of which Caddy is the only other member.
+- **Docker and the devcontainer CLI, installed by you.** [Docker Engine](https://docs.docker.com/engine/install/)
+  (or your distribution's `docker.io`), and `npm install -g @devcontainers/cli` with Node.js 20 or
+  later, landing in `/usr/local/bin` or `/usr/bin` — the service's `PATH` has nothing else. The
+  installer refuses to run without them, and adds the `drydock` user to the `docker` group, which is
+  root-equivalent on the host: Drydock builds whatever a repository's `devcontainer.json` asks for.
+  Clones live in `/srv/drydock/ws`, readable by Drydock alone.
 
 Previews of web apps running in a workspace are served from a **separate registrable domain** with a
 wildcard certificate, and are optional. Add them on any run with `--preview-domain`,

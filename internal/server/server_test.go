@@ -57,6 +57,7 @@ func testConfig(t *testing.T, dir string) config.Config {
 	c.SocketGroup = g.Name
 	c.BrokerDir = filepath.Join(dir, "run", "sock")
 	c.LabelPrefix = "drydock.test.server"
+	c.WorkspaceRoot = filepath.Join(dir, "ws") // never the real /srv/drydock
 	return c
 }
 

@@ -38,9 +38,13 @@ type Store struct {
 
 var (
 	// ErrInProgress refuses a second workspace for a repository that already
-	// has one holding or building a container (frontend §4.5 #3): a
-	// double-tap on a phone is a real input, and two clones of one repo is a
-	// wasted build and a confusing list.
+	// has one — in any state (frontend §4.5 #3): a double-tap on a phone is a
+	// real input, and two clones of one repo is a wasted build and a
+	// confusing list. Any state, not only the occupying ones, because a
+	// stopped or failed workspace still holds the clone, and its way back is
+	// start, not a second clone; a deleting one is removing its clone, and
+	// a create waits for that to finish rather than racing it. One
+	// repository, one workspace, until delete.
 	ErrInProgress = errors.New("workspace: this repository already has a workspace")
 	// ErrAtCap refuses a create past the concurrent-container cap (§6 step 1).
 	ErrAtCap = errors.New("workspace: the concurrent-container cap is reached")
@@ -84,7 +88,7 @@ func (s *Store) Create(ctx context.Context, repositoryID int64, branch string) (
 	occupying := `'pending','cloning','building','running'` // Occupying, as SQL
 	var same, total int
 	if err := tx.QueryRowContext(ctx,
-		`SELECT count(*) FROM workspace WHERE repository_id = ? AND state IN (`+occupying+`)`,
+		`SELECT count(*) FROM workspace WHERE repository_id = ?`, // any state: see ErrInProgress
 		repositoryID).Scan(&same); err != nil {
 		return Workspace{}, err
 	}
@@ -110,6 +114,15 @@ func (s *Store) Create(ctx context.Context, repositoryID int64, branch string) (
 	_, err = s.Events.Emit(ctx, w.ID, events.Info, KindState, "Workspace created.",
 		map[string]any{"state": Pending, "repository_id": repositoryID, "branch": branch})
 	return w, err
+}
+
+// Occupied counts the workspaces holding or building a container: what the
+// concurrent-container cap is measured against (Occupying).
+func (s *Store) Occupied(ctx context.Context) (int, error) {
+	var n int
+	err := s.DB.QueryRowContext(ctx,
+		`SELECT count(*) FROM workspace WHERE state IN ('pending','cloning','building','running')`).Scan(&n)
+	return n, err
 }
 
 // Move takes a workspace from its current state to `to`, refusing an illegal
@@ -139,6 +152,12 @@ func (s *Store) Move(ctx context.Context, id string, to State, detail string) (W
 			level = events.Error
 		}
 		data := map[string]any{"state": to, "from": w.State}
+		// Reaching running is when the container id matters to a reader,
+		// and no other event carries it; the reducer applies it from here
+		// rather than refetching the workspace.
+		if to == Running && w.ContainerID != "" {
+			data["container_id"] = w.ContainerID
+		}
 		if detail != "" {
 			data["detail"] = detail
 		}

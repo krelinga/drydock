@@ -82,6 +82,11 @@ func serve(args []string) int {
 	fs.Int64Var(&cfg.GitHubAppID, "github-app-id", 0, "the GitHub App's numeric App ID (not its Client ID)")
 	fs.StringVar(&cfg.GitHubAppKey, "github-app-key", "", "path of the GitHub App's private key, mode 0400 (never the key itself)")
 	fs.StringVar(&cfg.SecretsKey, "secrets-key", "", "path of the secrets master key, 32 raw bytes, mode 0400 (never the key itself)")
+	fs.IntVar(&cfg.ContainerCap, "container-cap", cfg.ContainerCap, "how many workspaces may hold or build a container at once")
+	fs.StringVar(&cfg.Feature, "feature", cfg.Feature, "the devcontainer Feature every workspace gets")
+	fs.StringVar(&cfg.BotName, "bot-name", cfg.BotName, "git user.name in workspaces: the GitHub App's bot")
+	fs.StringVar(&cfg.BotEmail, "bot-email", cfg.BotEmail, "git user.email in workspaces: <bot-user-id>+<app-slug>[bot]@users.noreply.github.com")
+	fs.DurationVar(&cfg.ProvisionTimeout, "provision-timeout", cfg.ProvisionTimeout, "how long one clone-to-running run may take")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}

@@ -1,0 +1,147 @@
+package workspace
+
+import (
+	"context"
+	"database/sql"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"time"
+)
+
+// View is a workspace as the API serves it (GET /api/workspaces and
+// GET /api/workspaces/{id}): the row, its repository's name, and the latest
+// workspace.step event for each step it has reached.
+//
+// Every field is read from the row or the event log, and nothing here is
+// inferred: steps are exactly what the steps wrote, so the UI can render the
+// pipeline from this on a cold load and then keep it current with the same
+// workspace.step events off the stream (frontend §2.1 — one writer).
+type View struct {
+	ID           string `json:"id"`
+	RepositoryID int64  `json:"repository_id"`
+	FullName     string `json:"full_name"`
+	Branch       string `json:"branch"`
+	State        State  `json:"state"`
+	// StateDetail and ContainerID are null, not "", when unset: an empty
+	// string would be a value the UI could mistake for one.
+	StateDetail *string              `json:"state_detail"`
+	ContainerID *string              `json:"container_id"`
+	CreatedAt   time.Time            `json:"created_at"`
+	Steps       map[Step]StepOutcome `json:"steps"`
+}
+
+// StepOutcome is the latest workspace.step event for one step.
+type StepOutcome struct {
+	Status string    `json:"status"` // started | done | failed
+	Detail string    `json:"detail,omitempty"`
+	At     time.Time `json:"at"`
+}
+
+const viewColumns = `w.id, w.repository_id, coalesce(r.full_name, ''), w.branch, w.state,
+	w.state_detail, w.container_id, coalesce(w.created_at, '')`
+
+// Views reads every workspace with a row, deleting ones included, newest
+// first (ids are ULIDs, so id order is creation order).
+func (s *Store) Views(ctx context.Context) ([]View, error) {
+	return s.views(ctx, `SELECT `+viewColumns+` FROM workspace w LEFT JOIN repository r ON r.id = w.repository_id
+		ORDER BY w.id DESC`)
+}
+
+// View reads one workspace, or ErrNotFound.
+func (s *Store) View(ctx context.Context, id string) (View, error) {
+	vs, err := s.views(ctx, `SELECT `+viewColumns+` FROM workspace w LEFT JOIN repository r ON r.id = w.repository_id
+		WHERE w.id = ?`, id)
+	if err != nil {
+		return View{}, err
+	}
+	if len(vs) == 0 {
+		return View{}, ErrNotFound
+	}
+	return vs[0], nil
+}
+
+func (s *Store) views(ctx context.Context, q string, args ...any) ([]View, error) {
+	rows, err := s.DB.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, err
+	}
+	out := []View{}
+	index := map[string]int{}
+	for rows.Next() {
+		var v View
+		var detail, container sql.NullString
+		var created string
+		if err := rows.Scan(&v.ID, &v.RepositoryID, &v.FullName, &v.Branch, &v.State,
+			&detail, &container, &created); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		if detail.Valid && detail.String != "" {
+			v.StateDetail = &detail.String
+		}
+		if container.Valid && container.String != "" {
+			v.ContainerID = &container.String
+		}
+		if created != "" {
+			if v.CreatedAt, err = time.Parse(time.RFC3339Nano, created); err != nil {
+				rows.Close()
+				return nil, fmt.Errorf("workspace %s created_at: %w", v.ID, err)
+			}
+		}
+		v.Steps = map[Step]StepOutcome{}
+		index[v.ID] = len(out)
+		out = append(out, v)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if len(out) == 0 {
+		return out, nil
+	}
+	return out, s.fillSteps(ctx, out, index, args...)
+}
+
+// fillSteps reads the step events oldest first and keeps the last per step,
+// which is the latest. Read in Go rather than with a GROUP BY over
+// json_extract: data is the reducer's contract, and the API parses it the
+// same way the reducer does rather than through a second dialect.
+func (s *Store) fillSteps(ctx context.Context, out []View, index map[string]int, args ...any) error {
+	q := `SELECT workspace_id, data, at FROM event WHERE kind = ? AND workspace_id IS NOT NULL ORDER BY id`
+	qargs := []any{KindStep}
+	if len(args) == 1 { // one workspace
+		q = `SELECT workspace_id, data, at FROM event WHERE kind = ? AND workspace_id = ? ORDER BY id`
+		qargs = append(qargs, args[0])
+	}
+	rows, err := s.DB.QueryContext(ctx, q, qargs...)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var ws, at string
+		var data sql.NullString
+		if err := rows.Scan(&ws, &data, &at); err != nil {
+			return err
+		}
+		i, ok := index[ws]
+		if !ok || !data.Valid {
+			continue
+		}
+		var d struct {
+			Step   Step   `json:"step"`
+			Status string `json:"status"`
+			Detail string `json:"detail"`
+		}
+		if err := json.Unmarshal([]byte(data.String), &d); err != nil || d.Step == "" {
+			return errors.Join(fmt.Errorf("workspace %s: a %s event has unreadable data", ws, KindStep), err)
+		}
+		t, err := time.Parse(time.RFC3339Nano, at)
+		if err != nil {
+			return fmt.Errorf("workspace %s: step event time: %w", ws, err)
+		}
+		out[i].Steps[d.Step] = StepOutcome{Status: d.Status, Detail: d.Detail, At: t}
+	}
+	return rows.Err()
+}

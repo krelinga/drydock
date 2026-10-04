@@ -168,6 +168,16 @@ var Table = []Route{
 
 	// ---- workspaces ------------------------------------------------------
 	{
+		Method: "GET", Pattern: "/api/workspaces", Mux: MuxAPI,
+		// Every workspace with a row, newest first. Not in §5's first
+		// table: the home list was to come from GET /api/repos' join, but
+		// a workspace whose repository the installation dropped (§12), or
+		// a second workspace for one repository, has nowhere to appear in
+		// that join.
+		Auth: AuthRequired,
+		Name: "workspaces.list", Doc: "GET /api/workspaces",
+	},
+	{
 		Method: "POST", Pattern: "/api/workspaces", Mux: MuxAPI,
 		Auth: AuthRequired, Mutating: true,
 		Name: "workspaces.create", Doc: "POST /api/workspaces",

@@ -1,0 +1,6 @@
+devcontainer_version: 0.89.0
+recorded_at:          2026-10-04T22:11:33Z
+command:              devcontainer read-configuration --workspace-folder <dir>/plain2 --override-config /srv/drydock/ws/FIXTURE/override.json   (stdout only; exit 0)
+config:               (none -- no devcontainer.json in the folder)
+provenance:           recorded; the temp directory is rewritten to /srv/drydock/ws/FIXTURE
+must_yield:           a Configuration -- the override is used, and configFilePath still names the folder's default path

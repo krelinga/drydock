@@ -66,6 +66,11 @@ type UpSpec struct {
 	Features map[string]map[string]any
 	// RemoteEnv is --remote-env: set for the remote user's processes.
 	RemoteEnv map[string]string
+	// OverrideConfig is --override-config: a devcontainer.json outside the
+	// clone, used in place of the repository's. Drydock writes one only for
+	// a repository that has none (§6 step 3), so the repository is never
+	// modified. Empty uses the repository's own.
+	OverrideConfig string
 }
 
 // BrokerMountPoint is where a workspace's broker socket appears inside its
@@ -94,6 +99,15 @@ func (m Manager) Args(s UpSpec) ([]string, error) {
 	}
 	args := []string{"up",
 		"--workspace-folder", s.Folder,
+		// Measured on CLI 0.89.0: with features in play, `up` writes
+		// devcontainer-lock.json beside the config it believes it read — in
+		// the repository's .devcontainer/, an untracked file in the agent's
+		// working tree, adding Drydock's own Feature to it. With
+		// --override-config and no .devcontainer/ in the repository it
+		// fails outright (ENOENT opening that path). Drydock never writes
+		// into the clone, so no lockfile, ever. The cost: a repository's
+		// own committed lockfile is not verified either.
+		"--no-lockfile",
 		"--id-label", m.key(LabelWorkspace) + "=" + s.WorkspaceID,
 		"--id-label", m.key(LabelRepositoryID) + "=" + strconv.FormatInt(s.RepositoryID, 10),
 		"--id-label", m.key(LabelRepo) + "=" + s.FullName,
@@ -113,6 +127,12 @@ func (m Manager) Args(s UpSpec) ([]string, error) {
 			return nil, fmt.Errorf("container: features: %w", err)
 		}
 		args = append(args, "--additional-features", string(b))
+	}
+	if s.OverrideConfig != "" {
+		if !strings.HasPrefix(s.OverrideConfig, "/") {
+			return nil, fmt.Errorf("container: override config %q must be absolute", s.OverrideConfig)
+		}
+		args = append(args, "--override-config", s.OverrideConfig)
 	}
 	env, err := remoteEnvArgs(s.RemoteEnv)
 	if err != nil {
@@ -135,16 +155,42 @@ func (m Manager) Args(s UpSpec) ([]string, error) {
 // later `exec`. Only devcontainer.json's own remoteEnv, and the Feature's
 // containerEnv, carry over by themselves.
 func (m Manager) Exec(ctx context.Context, workspaceID, folder string, remoteEnv map[string]string, argv []string, stdout, stderr io.Writer) (subproc.Result, error) {
-	if !workspaceIDPattern.MatchString(workspaceID) || !strings.HasPrefix(folder, "/") || len(argv) == 0 {
+	return m.ExecIn(ctx, ExecSpec{WorkspaceID: workspaceID, Folder: folder, RemoteEnv: remoteEnv,
+		Argv: argv, Stdout: stdout, Stderr: stderr})
+}
+
+// ExecSpec is one `devcontainer exec`.
+type ExecSpec struct {
+	WorkspaceID string
+	Folder      string // the clone on the host
+	// OverrideConfig is the same --override-config `up` was given. exec
+	// reads the configuration too (for the remote user and remoteEnv), and
+	// measured on CLI 0.89.0 it needs the override as much as `up` does
+	// when the repository has no devcontainer.json of its own.
+	OverrideConfig string
+	RemoteEnv      map[string]string
+	Argv           []string
+	Stdout, Stderr io.Writer
+}
+
+// ExecIn is Exec with every option.
+func (m Manager) ExecIn(ctx context.Context, s ExecSpec) (subproc.Result, error) {
+	if !workspaceIDPattern.MatchString(s.WorkspaceID) || !strings.HasPrefix(s.Folder, "/") || len(s.Argv) == 0 {
 		return subproc.Result{}, errors.New("container: exec needs a workspace id, an absolute folder and a command")
 	}
-	args := []string{"exec", "--workspace-folder", folder, "--id-label", m.key(LabelWorkspace) + "=" + workspaceID}
-	env, err := remoteEnvArgs(remoteEnv)
+	args := []string{"exec", "--workspace-folder", s.Folder, "--id-label", m.key(LabelWorkspace) + "=" + s.WorkspaceID}
+	if s.OverrideConfig != "" {
+		if !strings.HasPrefix(s.OverrideConfig, "/") {
+			return subproc.Result{}, fmt.Errorf("container: override config %q must be absolute", s.OverrideConfig)
+		}
+		args = append(args, "--override-config", s.OverrideConfig)
+	}
+	env, err := remoteEnvArgs(s.RemoteEnv)
 	if err != nil {
 		return subproc.Result{}, err
 	}
-	args = append(append(append(args, env...), "--"), argv...)
-	return m.Run.Run(ctx, subproc.Cmd{Name: "devcontainer", Args: args, Stdout: stdout, Stderr: stderr}), nil
+	args = append(append(append(args, env...), "--"), s.Argv...)
+	return m.Run.Run(ctx, subproc.Cmd{Name: "devcontainer", Args: args, Stdout: s.Stdout, Stderr: s.Stderr}), nil
 }
 
 // Up brings a workspace's container up and returns the CLI's verdict. A

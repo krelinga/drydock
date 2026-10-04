@@ -40,6 +40,10 @@ type Repo struct {
 	// Files are the paths that exist in the repository, e.g.
 	// ".devcontainer/devcontainer.json". Directories are implied.
 	Files []string
+	// Contents gives a file in Files its bytes in the git remote. A file
+	// without an entry holds its own path and a newline, which is enough for
+	// everything but a devcontainer.json that has to build.
+	Contents map[string]string
 }
 
 // Installation is one account the fake App is installed on.

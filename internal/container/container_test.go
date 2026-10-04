@@ -69,7 +69,7 @@ func TestUpBuildsTheArgvAndParsesTheResult(t *testing.T) {
 	if string(stderr) != "log line\n" {
 		t.Errorf("stderr %q", stderr)
 	}
-	want := []string{"up", "--workspace-folder", "/srv/drydock/ws/" + wsID + "/repo",
+	want := []string{"up", "--workspace-folder", "/srv/drydock/ws/" + wsID + "/repo", "--no-lockfile",
 		"--id-label", "drydock.test.workspace=" + wsID,
 		"--id-label", "drydock.test.repository-id=42",
 		"--id-label", "drydock.test.repo=krelinga/foo",
