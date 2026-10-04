@@ -281,8 +281,12 @@ record_hangs() {
 # ---------------------------------------------------------------------------
 record_identity() {
 	say "== auth status --json (Spike 01) =="
-	local acct
-	acct="$(jq -c '.oauthAccount // {}' "$HOME/.claude/.claude.json")"
+	# A SYNTHETIC account, never the operator's. `auth status` validates
+	# nothing against the server, so plausible fake values produce the same
+	# output shape -- and whatever goes in here comes back out in the fixture
+	# as email/orgId/orgName, in a repository that may be public. An earlier
+	# version of this script copied the real record and published it.
+	local acct='{"accountUuid":"00000000-0000-0000-0000-000000000000","emailAddress":"fixture@example.invalid","organizationUuid":"11111111-1111-1111-1111-111111111111","organizationName":"fixture-org","subscriptionType":"max"}'
 	local future past
 	future=$(( ($(date +%s) + 86400 * 30) * 1000 ))
 	past=$(( ($(date +%s) - 3600) * 1000 ))
@@ -368,6 +372,37 @@ record_credentials() {
 }
 
 # ---------------------------------------------------------------------------
+# Leak guard. The PTY recordings need a REAL login (remote-control checks
+# eligibility server-side), so real credential and account values sit in this
+# run's work directory -- and anything Claude Code echoes could carry one into a
+# fixture. This repository is public. So before declaring success, scan the
+# whole corpus for every identifying value in the operator's own config and
+# refuse to finish if one is found. An earlier run published an email and org
+# id this way; the guard is what makes that a build failure instead of a commit.
+leak_guard() {
+	local cfg="$HOME/.claude" v found=0
+	local -a values=()
+	while IFS= read -r v; do [ ${#v} -ge 8 ] && values+=("$v"); done < <(
+		jq -r '.claudeAiOauth | .accessToken, .refreshToken' "$cfg/.credentials.json" 2>/dev/null
+		jq -r '.oauthAccount | .emailAddress, .organizationUuid, .accountUuid, .organizationName' \
+			"$cfg/.claude.json" 2>/dev/null
+		jq -r '.userID // empty' "$cfg/.claude.json" 2>/dev/null
+	)
+	for v in "${values[@]}"; do
+		if grep -rlF --exclude=record.sh -- "$v" "$HERE" >/dev/null 2>&1; then
+			say "LEAK: an identifying value from $cfg appears in:"
+			grep -rlF --exclude=record.sh -- "$v" "$HERE" | sed 's/^/  /'
+			found=1
+		fi
+	done
+	if [ "$found" = 1 ]; then
+		say "refusing to finish: scrub or re-record the files above before committing"
+		exit 3
+	fi
+	say "leak guard: no identifying value from $cfg in the corpus (${#values[@]} checked)"
+}
+
+# ---------------------------------------------------------------------------
 say "claude under test: $VERSION"
 say "corpus: $TDIR"
 say "work:   $WORK"
@@ -398,3 +433,5 @@ say ""
 say "recorded $(find "$TDIR" "$HERE/authstatus" "$HERE/credentials" -type f ! -name '*.meta' ! -name '*.exit' 2>/dev/null | wc -l) fixtures"
 say "still owed a real recording: login-success-{plain,period,press} (needs a human in a browser),"
 say "login-timeout (needs the 5-minute deadline to elapse), devcontainer/ (needs a real build)"
+
+leak_guard
