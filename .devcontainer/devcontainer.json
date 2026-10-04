@@ -35,9 +35,15 @@
     // socat, nc -- probe the broker's Unix sockets; `nc` is also the fallback the
     //              in-container broker client is specified to use (§5)
     // jq        -- parse `devcontainer ... --json` output (§2.5)
+    // libnss3-tools -- certutil, to trust the browser tier's throwaway CA in
+    //              Chromium's NSS store. Spike 04: it is the only trust route
+    //              that keeps certificate validation on, so the tier can still
+    //              notice a misissued cert. Playwright's browsers are NOT here;
+    //              `--with-deps` pulls ~40 transitive libs, so it stays a
+    //              lifecycle install (see below).
     // build-essential -- cgo, for the SQLite driver
     "ghcr.io/devcontainers-extra/features/apt-get-packages:1": {
-      "packages": "sqlite3,socat,netcat-openbsd,jq,build-essential,ca-certificates,tmux"
+      "packages": "sqlite3,socat,netcat-openbsd,jq,build-essential,ca-certificates,tmux,libnss3-tools"
     },
 
     "ghcr.io/anthropics/devcontainer-features/claude-code:1.0": {}
@@ -46,7 +52,16 @@
   // Keep images and build cache across rebuilds of this container. Without it the
   // inner daemon starts empty every time and each spike re-pulls its base images.
   // One container at a time only -- two dockerds on one volume corrupts it.
+  //
+  // ms-playwright is the same idea for the browser tier: `playwright install`
+  // fetches ~114 MB of Chromium, and without this it is re-fetched on every
+  // rebuild. The browsers are deliberately not installed here -- that is a
+  // lifecycle command, run once `web/package.json` exists in Phase 1:
+  //   npx playwright install --with-deps chromium
+  // Enumerating its ~40 transitive apt packages in the feature above instead
+  // would be a list that goes stale silently.
   "mounts": [
-    "source=drydock-dind-lib,target=/var/lib/docker,type=volume"
+    "source=drydock-dind-lib,target=/var/lib/docker,type=volume",
+    "source=drydock-playwright-cache,target=/home/vscode/.cache/ms-playwright,type=volume"
   ]
 }

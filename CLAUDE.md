@@ -6,11 +6,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **Design-only. There is no application source code yet.** The repository contains the overall design
 document (`docs/design/overall/drydock-design.md`, draft v7), supplemental ones on port forwarding
-(`docs/design/port-forwarding/`, draft v4), testing (`docs/design/testing/`, draft v4) and the Vue
+(`docs/design/port-forwarding/`, draft v4), testing (`docs/design/testing/`, draft v5) and the Vue
 frontend (`docs/design/frontend/`, draft v4), a settled brand mark (`docs/design/brand/`, v1.0,
 with the shipping icon assets), an adversarial security review
-(`docs/design/security-review.md`), their SVG diagrams, a devcontainer definition, and the **four
-completed Phase 0 spikes** with their harnesses under `docs/design/spikes/`. There are no build,
+(`docs/design/security-review.md`), their SVG diagrams, a devcontainer definition, and **five
+completed spikes** with their harnesses under `docs/design/spikes/` — the four Phase 0 ones plus
+`04`, the browser-tier local CA, which the testing plan asked for later. There are no build,
 lint, or test commands because nothing is built yet — the testing document specifies what they will
 be.
 
@@ -29,9 +30,17 @@ golangci-lint), Node, **docker-in-docker**, the `devcontainer` CLI, Caddy, `gh`,
 design settles on Vue 3 + TypeScript + Vite, so `npm`, a `node_modules`, and a TypeScript toolchain
 are here whether any other part wants them or not — which is what withdrew the testing plan's
 `chromedp` fallback in favour of Playwright, since the cost it was being charged for was already
-paid. Node is present for the `devcontainer` CLI, so Vitest needs nothing new. **Playwright's
-browser binaries are not installed** (`npx playwright install --with-deps`), and the browser tier
-also wants a local CA — see the open spike in the build order below.
+paid. Node is present for the `devcontainer` CLI, so Vitest needs nothing new.
+
+Two things the browser tier needs, settled by Spike 04. **`libnss3-tools` is now in the apt feature**
+— `certutil` is how a test CA gets into Chromium's trust store, and that is the only route that
+keeps certificate validation on. **Playwright's browsers are deliberately not installed by the
+devcontainer**: `--with-deps` pulls in some forty transitive system libraries, and enumerating those
+in a package list is how the list goes stale silently. It stays a lifecycle command —
+`npx playwright install --with-deps chromium` — to be added to `postCreate` once `web/package.json`
+exists in Phase 1. A `drydock-playwright-cache` volume on `~/.cache/ms-playwright` is already
+mounted so that ~114 MB download survives rebuilds, the same reasoning as the DinD volume beside it.
+**Both changes need a container rebuild to take effect.**
 
 `devcontainer-lock.json` is a **generated artifact — never hand-edit it.** The CLI regenerates it
 from the resolved feature set on every build, so an added feature needs no lock entry: leave it out
@@ -167,8 +176,8 @@ These come from §2 (Claude Code constraints) and §13.5 (non-negotiables). Most
   would change them without warning. Every one of the four spikes added a harder reason: all of them
   measure undocumented internals of **Claude Code `2.1.246`** — the refresh lock, the login flow and
   `auth status` schema, the reconnect behaviour and the three config gates, and the per-command
-  prelude. **Re-run all four harnesses in `docs/design/spikes/` on every bump** and update that
-  version here.
+  prelude. **Re-run all four Claude Code harnesses (`00`-`03`) on every bump** and update that version
+  here. Spike `04` is about browser behaviour, not Claude Code, and has its own trigger.
 - **The shared credential volume must be a local Docker volume — never NFS or CIFS.** Claude Code's
   cross-container refresh lock is a `mkdir(2)`-based lockfile at
   `$CLAUDE_CONFIG_DIR/.oauth_refresh.lock`; network filesystems do not give `mkdir` the atomicity the
@@ -224,14 +233,18 @@ These come from §2 (Claude Code constraints) and §13.5 (non-negotiables). Most
    5: the `Login successful` match (needs a human in a browser — run `harness-01-login/run.sh login`)
    and whether a `--spawn worktree` path needs its own trust record.
 
-   **One spike is still open, and it is new.** The testing plan wants a fifth, Phase-0-shaped
-   question answered before the browser tier is built: *can a headless Chromium under Playwright be
-   made to trust a locally-generated CA, such that a `__Host-` cookie set over the local HTTPS
-   listener is accepted and replayed?* It is an afternoon's work, and the tier's value collapses if
-   the answer is `ignoreHTTPSErrors` — that flag disables the very semantics the three cookie
-   assertions are about, which are the ones port forwarding §14.1 actually asked for. If it cannot
-   be made to work, those assertions move to the release checklist, which is a loss worth naming
-   rather than absorbing quietly.
+   **A fifth spike, `04`, is also done** — the browser tier's local CA. A headless Chromium trusts a
+   throwaway CA via `certutil -A` into `~/.pki/nssdb`, and all fourteen assertions pass with no
+   `ignoreHTTPSErrors`: `__Host-` accepted and replayed, its three illegal variants refused, a
+   cross-site `POST` and `GET` cookieless, and a cross-site *top-level navigation* carrying the
+   cookie — which is the measured justification for `SameSite=Lax` over `Strict`. The browser tier
+   is built as specified and keeps all nine of its assertions.
+
+   Keep `ignoreHTTPSErrors` banned, but for the right reason: it does **not** break cookie semantics
+   (it passes the same fourteen). What it breaks is the tier's ability to notice a *misissued*
+   certificate — and so does `--ignore-certificate-errors-spki-list`, which is otherwise a fine
+   no-system-state fallback. Only real NSS trust still refuses a cert served for the wrong host.
+
 1. **Front door** — socket listener, `drydock passwd`, session middleware, `Origin`/`Host` checks,
    Caddy block. *Nothing else gets built until every route without a cookie returns 401.*
 2. **Walking skeleton** — repo list, clone, `devcontainer up`, states, SSE, boot reconciliation.

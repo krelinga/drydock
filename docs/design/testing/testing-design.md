@@ -2,7 +2,7 @@
 
 *How a system whose load-bearing properties are mostly things that must **never** happen gets a test suite that actually notices when one of them does.*
 
-**Status** design document, draft v4 · **Date** 4 October 2026 · a **frontend** tier added to §3 and §10.3, and §10.1's `chromedp` fallback withdrawn — the [frontend design](../frontend/frontend-design.md) puts TypeScript in the repository regardless, so the second language is no longer a cost this tier has to justify · §15's five findings are **applied** in overall v7 and port-forwarding v4; §8.2, §8.5 and §15 updated to match
+**Status** design document, draft v5 · **Date** 4 October 2026 · §16.1's last open question is **answered** by [Spike 04](../spikes/04-browser-ca.md) — the browser tier's local CA works via NSS trust, so §10.1 is built as specified and its `ignoreHTTPSErrors` prohibition is re-grounded on what the spike actually measured · a **frontend** tier added to §3 and §10.3, and §10.1's `chromedp` fallback withdrawn — the [frontend design](../frontend/frontend-design.md) puts TypeScript in the repository regardless, so the second language is no longer a cost this tier has to justify · §15's five findings are **applied** in overall v7 and port-forwarding v4; §8.2, §8.5 and §15 updated to match
 
 **Supplements** [`../overall/drydock-design.md`](../overall/drydock-design.md) draft v7 · [`../port-forwarding/port-forwarding-design.md`](../port-forwarding/port-forwarding-design.md) draft v4 · [`../frontend/frontend-design.md`](../frontend/frontend-design.md) draft v4 · reads [`../security-review.md`](../security-review.md) draft v1 and Spikes [00](../spikes/00-shared-credential-volume.md), [01](../spikes/01-login-handshake.md), [02](../spikes/02-rc-restart.md), [03](../spikes/03-claude-env-file.md)
 
@@ -75,7 +75,7 @@ A `devcontainer up` against a cold cache is minutes. A container tier that build
 | A real Docker daemon that is not the host's | docker-in-docker in the devcontainer | Already a deliberate choice for path identity (CLAUDE.md); it doubles as test isolation. Containers a test creates are invisible to the host's `docker ps`. |
 | Two genuinely separate registrable domains | `drydock.test` / `drydock-preview.test` | `.test` is reserved and absent from the Public Suffix List, so these are distinct eTLD+1 — which is the whole property PF §10.2 rests on. Without this the browser tier would need two real domains. |
 | Official Feature test harness | `devcontainer features test`, `scenarios.json` | Purpose-built for "this feature must fail loudly under that configuration", which is exactly §11's `postCreate` assertions. |
-| Four re-runnable spike harnesses | `docs/design/spikes/harness*/` | Not just a precedent any more — an asset. Each Phase 0 result has a script that re-measures it, which is what turns a Claude Code bump from a guess into the half-hour check in §11.1. The fixture corpus in §7 is the same idea applied continuously. |
+| **Five** re-runnable spike harnesses | `docs/design/spikes/harness*/` | Not just a precedent any more — an asset. Each spike result has a script that re-measures it, which is what turns a Claude Code bump from a guess into the half-hour check in §11.1, and a Chromium bump into §11.6. The fixture corpus in §7 is the same idea applied continuously. |
 | A machine-readable auth surface | `claude auth status --json` | Spike 01's find. The identity classifier becomes a JSON parser testable against four crafted documents with no PTY, no container, and no account — the cheapest tier reaching the most brittle dependency. |
 | Caddy, `sqlite3`, `socat`, `nc`, `jq`, Node | devcontainer toolchain | The Caddyfile conformance test and the browser tier need no new system dependencies. |
 
@@ -493,13 +493,21 @@ Ten or so tests, and they exist because they are the only way to answer PF §14.
 |---|---|---|
 | Domains | `drydock.test` and `*.drydock-preview.test` | distinct eTLD+1 under a reserved TLD, so the browser's own PSL treats them as cross-site — the exact property PF §4 buys with a second real domain |
 | Resolution | Chromium `--host-resolver-rules="MAP *.drydock-preview.test 127.0.0.1, MAP drydock.test 127.0.0.1"` | wildcard resolution, which `/etc/hosts` cannot express |
-| Certificates | a throwaway local CA, one leaf for the UI host and one wildcard for the preview domain, the CA trusted in the browser profile | **`ignoreHTTPSErrors` is not acceptable here.** The tests are about `Secure` and `__Host-` semantics, and disabling certificate validation changes the thing under test |
+| Certificates | a throwaway local CA, one leaf for the UI host and one wildcard for the preview domain, trusted via `certutil -A -t "C,,"` into `~/.pki/nssdb` — measured in [Spike 04](../spikes/04-browser-ca.md) | **`ignoreHTTPSErrors` is not acceptable here** — but not for the reason this row gave until v5. It does *not* break `Secure`/`__Host-` semantics; it passes all fourteen assertions. What it does is make the tier blind to a **misissued or wrong-host certificate**, which is a plausible Caddyfile regression (§3.2) this tier is otherwise well placed to catch. Real NSS trust is the only route that keeps validation on |
 | Driver | Playwright | `context.cookies()`, request interception, and a trace on failure are exactly what the three assertions need. ~~`chromedp` keeps it all in Go and is the fallback if the second language proves unwelcome~~ — **withdrawn in v4**, see below |
 
 > [!NOTE]
-> **Spike this before building it**
+> **Spiked — the cert-trust step works, and the tier is built as specified**
 >
-> The cert-trust step is the one piece whose cost is unknown, and the tier's value collapses if it needs `ignoreHTTPSErrors`. The question is narrow and answerable in an afternoon — *can a headless Chromium under Playwright be made to trust a locally-generated CA, such that a `__Host-` cookie set over the local HTTPS listener is accepted and replayed?* — and it belongs with the other Phase 0 spikes, next to the ones already there.
+> ~~The cert-trust step is the one piece whose cost is unknown, and the tier's value collapses if it needs `ignoreHTTPSErrors`.~~ Answered by [Spike 04](../spikes/04-browser-ca.md): one `certutil -A` into `~/.pki/nssdb` and a headless Chromium does full certificate validation against a throwaway CA. **All fourteen assertions pass**, including the three cross-site cookie questions [PF §14.1](../port-forwarding/port-forwarding-design.md) asked — so the tier keeps its nine assertions and §16.1's fallback (a real domain, or a shrunken tier) is not needed.
+>
+> Three mechanics from it that the harness depends on, each a quiet failure otherwise:
+>
+> - **`--host-resolver-rules` takes a port on its right-hand side**, so the listener is unprivileged while the page's origin stays port-less. The origin must be `https://drydock.test`, not `…:8443`, or the `__Host-` rules and site comparisons are not the ones under test.
+> - **A leaf needs a `subjectAltName`.** Chromium has ignored `commonName` since M58, and a CN-only cert fails with `ERR_CERT_COMMON_NAME_INVALID` — which reads as a broken CA and sends you debugging the wrong thing.
+> - **The cross-site navigation assertion must click a real link.** `page.goto` is browser-initiated and `sec-fetch-site: none`, so it carries the cookie under `Strict`, `Lax`, and `None` alike; a `goto`-based version of that test passes whatever the policy is.
+>
+> The harness also establishes a rule for any future one that touches a trust store: **it removes the CA it trusted, on exit and on `SIGINT`.** A throwaway CA left trusted in the operator's own browser store is a standing impersonation hole.
 
 > [!NOTE]
 > **The `chromedp` fallback is withdrawn, and it was withdrawn by a decision made elsewhere**
@@ -591,6 +599,12 @@ This is the only place the human halves of §7.2 and §8 are exercised, and the 
 
 Quarterly: on the real server, stop Drydock, move the SQLite file aside, start it, and confirm every workspace is adopted and usable. Then reboot the host and confirm the same. The container tier automates this against fixtures (§8.6); the drill is what proves it against workspaces that have been running for weeks.
 
+### 11.6  Chromium or Playwright bump
+
+Run [Spike 04](../spikes/04-browser-ca.md)'s harness: `./run.sh all` and `./run.sh wrongcert`. It is a minute, and it re-measures the whole set of browser behaviours the tier assumes — cookie prefix enforcement, the `SameSite=Lax` split between a cross-site `POST` and a cross-site top-level navigation, and whether the NSS trust route still validates certificates.
+
+This is a lighter ritual than §11.1 but the same reasoning: those are **browser** behaviours, not application code, and §2.3 lists them as the second dependency with no stable contract. The difference is that a browser bump is likelier to tighten cookie rules than to loosen them, so the expected failure mode is a test going red on a behaviour the design wanted anyway. The `wrongcert` run matters most if the trust route ever has to change — it is what would catch a Chromium release that stopped validating names under a locally-trusted CA, which would silently turn the tier into the `spki` row.
+
 ## 12. CI topology
 
 | Lane | Contents | Trigger | Runner |
@@ -619,14 +633,14 @@ The fast lane is the gate. Deep and browser are allowed to be slower than a huma
 
 | Phase | "Done when" becomes | Also must exist |
 |---|---|---|
-| **0 — Spikes** | **Done** — four harnesses and four reports exist. What this plan still owes it: the transcript corpus recorded from them, the scrape parsers passing against it, and an answer to the browser-harness spike (§10.1) | `fakeclaude` shaped by what 01–03 measured, and the §5 seams decided on paper |
+| **0 — Spikes** | **Done** — five harnesses and five reports exist; the browser-harness question (§10.1) is answered by [Spike 04](../spikes/04-browser-ca.md). What this plan still owes it: the transcript corpus recorded from them, and the scrape parsers passing against it | `fakeclaude` shaped by what 01–03 measured, and the §5 seams decided on paper |
 | **1 — Front door** | **the whole of §8.1**, driven off the route table | the route table as data (§5.1), the injected clock (§5.2), the canary sweep (§4.2), the Caddyfile conformance test (§3.2), and the `rebind` / `csrf-*` / `brute-force` scenarios |
 | **2 — Walking skeleton** | §8.6 in full, including the amnesia test and the three kill -9 cases | `fakedevcontainer` and its contract test; the fixture repos; the test label namespace (§5.4) |
 | **3 — Credentials** | §8.3 in full — and the negative half is the phase's actual deliverable: a container that **fails** to touch any other repo | `fakegithub` with the git remote; the shim tests (§6.6); `cross-broker` |
 | **4 — Secrets** | §8.2 in full, plus the stated pair: granted repo's suite passes, ungranted repo's fails | the §15.1/§15.2 findings answered, with `secret-injection` as their regression test |
 | **5 — Claude** | §8.4 in full against `fakeclaude` — including the three config gates, the hang, and the `409` wait; the real half is ritual §11.4 | the bump ritual written down before the first bump, not after; the two unverified Phase 0 assertions closed (`Login successful` recorded live, worktree trust tested) |
 | **6 — Livability** | the §12 failure-mode messages, each asserted by the test that provokes its failure | the cap-refusal and disk pre-flight rows of §8.6 |
-| **Previews** (after Phase 2) | §8.5 and the browser tier; PF §14.1's first open question answered and struck | the local CA harness, `fakeupstream` |
+| **Previews** (after Phase 2) | §8.5 and the browser tier; PF §14.1's first open question answered and struck | `fakeupstream` — the local CA harness already exists as [Spike 04](../spikes/04-browser-ca.md)'s `mkcerts.sh` plus its NSS trust step |
 
 Two notes on ordering. Phase 1 carries a disproportionate share of the infrastructure — four of the five seams and both rules — and that is deliberate for the same reason §14 puts the front door first: retrofitting the route-table meta-test onto routes written without it is how an unauthenticated endpoint survives. And Phase 3's done-when is the first place the suite's negative half is the *product* rather than a guardrail, which makes it the best early test of whether §4.1 is being honoured.
 
@@ -730,7 +744,7 @@ Covered as a seam in §5.4, repeated here because it is a change to the parent d
 
 ### 16.1  Still open
 
-1. **Can a headless Chromium be made to trust a local CA cleanly enough for `__Host-` semantics?** §10.1. If not, the browser tier either grows a real domain and a real certificate or shrinks to the handshake and HMR tests, losing the three cookie assertions — which are the ones PF §14.1 actually asked for. It is the one spike this plan still wants, now that Phase 0 is otherwise closed.
+1. ~~**Can a headless Chromium be made to trust a local CA cleanly enough for `__Host-` semantics?**~~ **Answered — yes.** [Spike 04](../spikes/04-browser-ca.md): NSS-store trust, fourteen assertions, no `ignoreHTTPSErrors`. The browser tier is built as §10.1 specifies and keeps all nine of its assertions. Two things the answer changed rather than merely confirmed: the `ignoreHTTPSErrors` prohibition stands on a different reason than this plan gave (it is blind to a *misissued* certificate, not to cookie semantics), and `--ignore-certificate-errors-spki-list` is a documented fallback for a CI that cannot write an NSS store, at the cost of that same blindness. The devcontainer needs `libnss3-tools`.
 2. **Does a `--spawn worktree` session need its own trust record?** Inherited from v6 §11, which measured trust as keyed on the absolute path and left this untested. It is a test-design problem as much as a design one: it fails only for the *second and later* sessions in a workspace, so a container test that opens one session passes and the suite never sees it. The fixture has to open two, which means `fakeclaude` needs a spawn mode that reports a worktree path — cheap, but only if it is built before Phase 5 rather than discovered during it.
 3. **Is `devcontainer features test` enough for the hostile scenarios, or does the Feature need a bespoke harness?** The official harness is scenario-per-config, which fits §11's assertions well; whether it can assert on a *build failure's message* — and on a **hang**, now that `remoteDialogSeen` makes a timeout one of the expected verdicts — is the thing to check. If it cannot, those scenarios move into the container tier as direct `up` invocations.
 4. **How warm can the container tier's cache be kept in CI?** The budget in §3 assumes a shared base image survives between runs. On a self-hosted runner it does, trivially; the question is whether the deep lane stays under ten minutes on a cold runner after a dependency bump, or whether it needs an explicit image-cache step.
