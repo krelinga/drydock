@@ -215,8 +215,10 @@ These come from §2 (Claude Code constraints) and §13.5 (non-negotiables). Most
   trust-fails-fast. It is pinned now; keep it that way, and bump it through the §11.1 ritual rather
   than by rebuilding. Two places scrape Claude Code's terminal output (the login URL, the session
   URLs); a background update changes them without warning, and every spike measures undocumented
-  internals of one version. **Current state: `01`, `02` and `03` are re-measured on `2.1.289`;
-  `00` has only ever been measured on `2.1.246` and is the one with the most weight on it.**
+  internals of one version. **Current state: all four Claude Code spikes are re-measured on
+  `2.1.289`.** `00`
+  reproduced in full — the lock is still a directory in the shared volume, 16,335 reads across a
+  live write with zero torn, and the tombstone is byte-identical to the recorded fixture.
   **Re-run all four Claude Code harnesses (`00`–`03`) on every bump** and update the version here,
   in the Feature, in `internal/classify`, and in each spike report. Spike `04` is about browser
   behaviour and has its own trigger (testing §11.6).

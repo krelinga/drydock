@@ -11,7 +11,7 @@ Claude Code already solves this problem internally, and it solves it with a lock
 **inside `CLAUDE_CONFIG_DIR`** — which is exactly the directory Drydock shares. Cross-container
 mutual exclusion therefore comes for free, as a side effect of the sharing that created the worry.
 
-- **Verified against:** Claude Code `2.1.246`, devcontainer CLI `0.88.0`, Docker `29.7.2`, DinD.
+- **Verified against:** Claude Code `2.1.246` and **re-verified on `2.1.289`** (see the section at the end), devcontainer CLI `0.88.0`, Docker `29.7.2`, DinD.
 - **Date:** 2026-08-26.
 - **Harness:** [`harness/`](harness/) — re-runnable; see *Reproducing* below.
 
@@ -168,21 +168,36 @@ which works because the DinD daemon lives in this container (see CLAUDE.md).
 
 ---
 
-## Not yet re-measured on Claude Code `2.1.289`
+## Re-measured on Claude Code `2.1.289` (2026-10-04)
 
-The 4 October rebuild moved Claude Code from `2.1.246` to `2.1.289`. Spikes 01,
-02 and 03 were re-run under the §11.1 ritual; **this one was not**, and it is the
-one whose findings carry the most weight — the entire safety of the shared
-credential volume rests on undocumented locking behaviour.
+Re-run under the §11.1 ritual after an unpinned rebuild moved the version. **All
+four tests reproduce, and every consequence stands.** This was the spike with the
+most weight on it — the shared volume's safety rests entirely on undocumented
+locking — so it is the one whose re-run mattered most.
 
-Until `harness/` is re-run, treat the refresh-lock results above as measured
-against `2.1.246` only. Nothing observed in the other three spikes suggests the
-lock changed, but that is an absence of evidence rather than evidence.
+| Test | `2.1.246` | `2.1.289` |
+|---|---|---|
+| 1 — cross-container mutual exclusion | lock acquired 1310 ms, held ~30 s, then a *different inode* acquires | acquired 1233 ms, held ~30 s, then inode `11974466` after `14176375` — **a different container**, never two at once |
+| 2 — atomic writes | inode changes on write; 16,185 reads, 0 torn | inode `11319421` → `11319411`; **16,335 reads, 0 torn or empty** |
+| 3a — abandoned lock, 10 s (below threshold) | never acquired, credential intact, 26.2 s | never acquired, lock left in place, **credential byte-for-byte intact**, 7.9 s |
+| 3b — abandoned lock, 90 s (above threshold) | stole it, proceeded, cleaned up, 1.1 s | stole it, proceeded, **lock gone afterwards**, 575 ms |
 
-```sh
-cd docs/design/spikes/harness
-./run-n.sh 4 contention --blackhole
-./run-atomic.sh
-./stale.sh 10
-./stale.sh 90
-```
+The lock is still a **directory** inside the shared volume, so cross-container
+exclusion still falls out of the sharing for free, and writes are still
+`rename()` rather than truncate-in-place.
+
+The tombstone from result 4 is unchanged and now has a fixture: after a refresh
+the server rejects, the credential is blanked **in place** to
+`{"accessToken":"","refreshToken":"","expiresAt":0}` — byte-identical to
+`test/fixtures/credentials/blanked.json`, which is what the identity classifier
+is tested against.
+
+One timing difference, and it moves the right way. The below-threshold case gave
+up in **7.9 s** rather than 26.2 s. That fits consequence D's stated budget
+("5 retries at 1–2 s ≈ 5–10 s") better than the original measurement did, and the
+behaviour is identical: blocked, then falls back to the existing access token
+with the credential untouched. Nothing in the design depends on the number.
+
+**Consequences A through F all stand as written**, including the two that are
+hard constraints: the credential volume must be a local Docker volume, and
+Drydock must never reap `.oauth_refresh.lock`.
