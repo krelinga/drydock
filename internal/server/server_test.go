@@ -22,6 +22,7 @@ import (
 	"github.com/krelinga/drydock/internal/config"
 	"github.com/krelinga/drydock/internal/store"
 	"github.com/krelinga/drydock/internal/sys"
+	"github.com/krelinga/drydock/internal/web"
 )
 
 const (
@@ -409,5 +410,222 @@ func TestRefusesToReplaceANonSocketFile(t *testing.T) {
 	}
 	if b, _ := os.ReadFile(cfg.APISocket); string(b) != "not a socket" {
 		t.Error("the regular file was modified or removed")
+	}
+}
+
+// ---- The UI on the API socket (frontend §3, §8) -------------------------------
+
+func readBody(t *testing.T, resp *http.Response) string {
+	t.Helper()
+	b, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(b)
+}
+
+// indexAndAsset fetches index.html and pulls out the entry script it names.
+func indexAndAsset(t *testing.T, r *running) (index, asset string) {
+	t.Helper()
+	resp := r.do(t, req{method: "GET", path: "/"})
+	index = readBody(t, resp)
+	m := regexp.MustCompile(`<script[^>]+src="(/assets/[^"]+\.js)"`).FindStringSubmatch(index)
+	if resp.StatusCode != 200 || m == nil {
+		t.Fatalf("GET / = %d with no entry script; the embedded bundle is not being served:\n%s", resp.StatusCode, index)
+	}
+	return index, m[1]
+}
+
+// isEnvelope returns "" when resp is the JSON error envelope with this status
+// and code, and otherwise says what it was instead.
+func isEnvelope(t *testing.T, resp *http.Response, status int, wantCode string) string {
+	t.Helper()
+	b := readBody(t, resp)
+	var e struct {
+		Error struct{ Code string } `json:"error"`
+	}
+	switch {
+	case resp.StatusCode != status:
+		return fmt.Sprintf("status %d; want %d (body %q)", resp.StatusCode, status, b)
+	case !strings.HasPrefix(resp.Header.Get("Content-Type"), "application/json"):
+		return fmt.Sprintf("Content-Type %q; want JSON (body %q)", resp.Header.Get("Content-Type"), b)
+	case strings.Contains(b, "<"):
+		return fmt.Sprintf("body looks like HTML: %q", b)
+	case json.Unmarshal([]byte(b), &e) != nil || e.Error.Code != wantCode:
+		return fmt.Sprintf("code %q; want %q (body %q)", e.Error.Code, wantCode, b)
+	}
+	return ""
+}
+
+func TestUIIsServedFromTheEmbeddedBundle(t *testing.T) {
+	r := start(t)
+	index, asset := indexAndAsset(t, r)
+
+	idx := r.do(t, req{method: "GET", path: "/"})
+	if cc := idx.Header.Get("Cache-Control"); cc != "no-store" {
+		t.Errorf("index.html Cache-Control = %q; want no-store", cc)
+	}
+	if ct := idx.Header.Get("Content-Type"); !strings.HasPrefix(ct, "text/html") {
+		t.Errorf("index.html Content-Type = %q", ct)
+	}
+	if !strings.Contains(index, `<div id="app">`) {
+		t.Error("index.html is not the app's")
+	}
+
+	a := r.do(t, req{method: "GET", path: asset})
+	if a.StatusCode != 200 || a.Header.Get("Cache-Control") != "public, max-age=31536000, immutable" {
+		t.Errorf("%s = %d, Cache-Control %q; want 200 immutable", asset, a.StatusCode, a.Header.Get("Cache-Control"))
+	}
+	// Negative beside the positive: the hashed asset is not index.html, and
+	// index.html is not immutable.
+	if strings.Contains(readBody(t, a), `<div id="app">`) {
+		t.Errorf("%s was answered with index.html", asset)
+	}
+	if strings.Contains(idx.Header.Get("Cache-Control"), "immutable") {
+		t.Error("index.html is cached as immutable")
+	}
+}
+
+func TestUnknownUIPathFallsBackToIndex(t *testing.T) {
+	r := start(t)
+	index, _ := indexAndAsset(t, r)
+	for _, p := range []string{"/settings", "/ws/01JABCDEFGHJKMNPQRSTVWXYZ/logs", "/signin?return=%2Fsettings", "/apiary"} {
+		resp := r.do(t, req{method: "GET", path: p})
+		if b := readBody(t, resp); resp.StatusCode != 200 || b != index || resp.Header.Get("Cache-Control") != "no-store" {
+			t.Errorf("%s = %d (no-store=%v, index=%v); want index.html", p, resp.StatusCode,
+				resp.Header.Get("Cache-Control") == "no-store", b == index)
+		}
+	}
+	// Control: a hashed asset that does not exist is a 404, not index.html —
+	// an old index.html asking for a previous build must not get HTML as JS.
+	resp := r.do(t, req{method: "GET", path: "/assets/index-NOTABUILD.js"})
+	if b := readBody(t, resp); resp.StatusCode != 404 || b == index {
+		t.Errorf("missing asset = %d; want a 404 that is not index.html", resp.StatusCode)
+	}
+}
+
+// TestUnknownAPIPathIsGatedAndJSON is frontend §3's rule 3 and the route-oracle
+// property together: an /api path nobody declared is refused by the session
+// gate first, exactly like a real route, and is never the SPA.
+func TestUnknownAPIPathIsGatedAndJSON(t *testing.T) {
+	r := start(t)
+	cookie := r.signIn(t)
+	for _, p := range []string{"/api", "/api/", "/api/typo", "/api/auth/sessions", "/api/workspaces/x/y/z"} {
+		for _, m := range []string{"GET", "POST"} {
+			anon := r.do(t, req{method: m, path: p, origin: uiOrigin})
+			if msg := isEnvelope(t, anon, http.StatusUnauthorized, api.CodeUnauthenticated); msg != "" {
+				t.Errorf("%s %s without a cookie: %s", m, p, msg)
+			}
+			authed := r.do(t, req{method: m, path: p, origin: uiOrigin, cookie: cookie})
+			if msg := isEnvelope(t, authed, http.StatusNotFound, api.CodeNotFound); msg != "" {
+				t.Errorf("%s %s with a cookie: %s", m, p, msg)
+			}
+		}
+	}
+
+	// A declared path under an undeclared method: gated too, then a JSON 405.
+	anon := r.do(t, req{method: "PUT", path: "/api/auth/session", origin: uiOrigin})
+	if msg := isEnvelope(t, anon, http.StatusUnauthorized, api.CodeUnauthenticated); msg != "" {
+		t.Errorf("PUT /api/auth/session without a cookie: %s", msg)
+	}
+	authed := r.do(t, req{method: "PUT", path: "/api/auth/session", origin: uiOrigin, cookie: cookie})
+	allow := authed.Header.Get("Allow")
+	if msg := isEnvelope(t, authed, http.StatusMethodNotAllowed, api.CodeBadRequest); msg != "" || !strings.Contains(allow, "GET") {
+		t.Errorf("PUT /api/auth/session with a cookie: %s, Allow %q", msg, allow)
+	}
+
+	// Control: the declared route, same cookie, answers 200 — the 404s above
+	// are about the path, not a cookie that stopped working.
+	if resp := r.do(t, req{method: "GET", path: "/api/auth/session", cookie: cookie}); resp.StatusCode != 200 {
+		t.Errorf("control: GET /api/auth/session = %d", resp.StatusCode)
+	}
+}
+
+func TestPreviewAuthorizeNeverReachesTheSPA(t *testing.T) {
+	r := start(t)
+	resp := r.do(t, req{method: "GET", path: "/preview/authorize?t=x"})
+	if resp.StatusCode != http.StatusFound || !strings.HasPrefix(resp.Header.Get("Location"), "/signin?return=") {
+		t.Errorf("/preview/authorize without a session = %d to %q; want 302 to /signin", resp.StatusCode, resp.Header.Get("Location"))
+	}
+	if strings.Contains(readBody(t, resp), `<div id="app">`) {
+		t.Error("/preview/authorize was answered with index.html")
+	}
+	// Control: a sibling path that is not the handler is an ordinary client route.
+	if resp := r.do(t, req{method: "GET", path: "/preview/other"}); resp.StatusCode != 200 {
+		t.Errorf("control: /preview/other = %d; want the SPA fallback", resp.StatusCode)
+	}
+}
+
+func TestSecurityHeadersOnAPIAndStaticAlike(t *testing.T) {
+	r := start(t)
+	_, asset := indexAndAsset(t, r)
+	cookie := r.signIn(t)
+	for _, c := range []struct {
+		name string
+		q    req
+	}{
+		{"index", req{method: "GET", path: "/"}},
+		{"fallback", req{method: "GET", path: "/settings"}},
+		{"asset", req{method: "GET", path: asset}},
+		{"favicon", req{method: "GET", path: "/favicon.svg"}},
+		{"api 200", req{method: "GET", path: "/api/auth/session", cookie: cookie}},
+		{"api 401", req{method: "GET", path: "/api/auth/session"}},
+		{"api 501", req{method: "GET", path: "/api/repos", cookie: cookie}},
+		{"api 400", req{method: "POST", path: "/api/auth/session", origin: uiOrigin, body: `{}`}},
+		{"api unknown 401", req{method: "GET", path: "/api/typo"}},
+		{"api unknown 404", req{method: "GET", path: "/api/typo", cookie: cookie}},
+		{"api 403 origin", req{method: "POST", path: "/api/auth/session", origin: "https://evil.example", body: `{}`}},
+		{"static 403 host", req{method: "GET", path: "/", host: "evil.example"}},
+		{"redirect", req{method: "GET", path: "/preview/authorize"}},
+	} {
+		resp := r.do(t, c.q)
+		h := resp.Header
+		if h.Get("Content-Security-Policy") != web.CSP || h.Get("Referrer-Policy") != "no-referrer" ||
+			h.Get("X-Content-Type-Options") != "nosniff" {
+			t.Errorf("%s (%d): CSP %q, Referrer-Policy %q, nosniff %q", c.name, resp.StatusCode,
+				h.Get("Content-Security-Policy"), h.Get("Referrer-Policy"), h.Get("X-Content-Type-Options"))
+		}
+		if !strings.Contains(h.Get("Content-Security-Policy"), "frame-ancestors 'none'") ||
+			!strings.Contains(h.Get("Content-Security-Policy"), "frame-src 'none'") {
+			t.Errorf("%s: the CSP does not forbid framing in both directions", c.name)
+		}
+	}
+	// Control: the preview socket is a different origin serving repo code; the
+	// UI's CSP is deliberately not imposed there — so the headers above come
+	// from the UI socket's wrapper, not from something every response gets.
+	prev := unixClient(r.cfg.PreviewSocket)
+	hr, _ := http.NewRequest("GET", "http://socket/.drydock/denied", nil)
+	hr.Host = "x.drydock-preview.test"
+	resp, err := prev.Do(hr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.Header.Get("Content-Security-Policy") != "" {
+		t.Errorf("the preview socket carries the UI's CSP: %q", resp.Header.Get("Content-Security-Policy"))
+	}
+}
+
+// TestForeignHostIsRefusedForStaticPaths: the app needs no session, but it
+// still answers only to its own name — the gate's exact-Host rule (§13.3),
+// applied to the bundle too, so a rebound hostname gets nothing.
+func TestForeignHostIsRefusedForStaticPaths(t *testing.T) {
+	r := start(t)
+	_, asset := indexAndAsset(t, r)
+	for _, p := range []string{"/", "/signin", "/settings", asset, "/favicon.svg", "/api/typo"} {
+		for _, host := range []string{"evil.example", "evil.drydock.test", "drydock.test.evil.example"} {
+			resp := r.do(t, req{method: "GET", path: p, host: host})
+			if msg := isEnvelope(t, resp, http.StatusForbidden, api.CodeForbiddenHost); msg != "" {
+				t.Errorf("GET %s on Host %s: %s", p, host, msg)
+			}
+		}
+		// Control: the same path on the right Host (with a port, which Caddy
+		// may pass through, and in another case) is not refused.
+		for _, host := range []string{uiHost, uiHost + ":443", "DRYDOCK.TEST"} {
+			resp := r.do(t, req{method: "GET", path: p, host: host})
+			if resp.StatusCode == http.StatusForbidden {
+				t.Errorf("control: GET %s on Host %s = 403", p, host)
+			}
+		}
 	}
 }
