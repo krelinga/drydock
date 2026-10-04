@@ -1,0 +1,65 @@
+/* The design system, such as it is (frontend §3.1).
+ *
+ * Taken from prototype/prototype.html's app tokens: the diagrams' slate, teal
+ * and amber extended into a UI set, plus the desaturated brick for failure.
+ * Light and dark by prefers-color-scheme and nothing else — no toggle (§3.1).
+ */
+
+:root {
+  --ground:    #F6F7F6;
+  --surface:   #FFFFFF;
+  --surface-2: #EFF1F0;
+  --line:      #DBDFDD;
+  --line-soft: #E8EBE9;
+  --ink:       #1C2327;
+  --ink-2:     #58626A;
+  --ink-3:     #8A9299;
+  --ok:        #11604F;
+  --ok-bg:     #E3EFEA;
+  --warn:      #875210;
+  --warn-bg:   #F7EDDC;
+  --bad:       #9C3729;
+  --bad-bg:    #F7E5E1;
+  --accent:    #11604F;
+
+  /* The brand mark's own palette (brand/icons/drydock-mark.svg), kept apart
+   * from the UI tokens: #1d4ed8 is the mark's accent, not a UI colour. */
+  --mark-ink:    #0f172a;
+  --mark-accent: #1d4ed8;
+  --mark-bg:     #ffffff;
+
+  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+  --sans: system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+
+  --r: 5px;
+  --tap: 44px;
+  --rail: 220px;
+
+  color-scheme: light;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --ground:    #12161A;
+    --surface:   #192025;
+    --surface-2: #212A2F;
+    --line:      #2D373D;
+    --line-soft: #232C32;
+    --ink:       #E5EAE8;
+    --ink-2:     #A3AEB6;
+    --ink-3:     #6E7980;
+    --ok:        #5DC4A6;
+    --ok-bg:     #15302A;
+    --warn:      #D9A15D;
+    --warn-bg:   #33271A;
+    --bad:       #E08C7C;
+    --bad-bg:    #351F1D;
+    --accent:    #5DC4A6;
+
+    --mark-ink:    #e2e8f0;
+    --mark-accent: #60a5fa;
+    --mark-bg:     #0b1220;
+
+    color-scheme: dark;
+  }
+}
