@@ -367,8 +367,6 @@ func TestClassifyIdentityRefusesWhatItCannotRead(t *testing.T) {
 		{"auth status truncated", []byte(`{"loggedIn":`), okCreds},
 		{"auth status without loggedIn", []byte(`{"authMethod":"none"}`), okCreds},
 		{"auth status loggedIn not a boolean", []byte(`{"loggedIn":"true"}`), okCreds},
-		{"auth status garbage beside a blanked file", []byte("Not logged in"), synthCreds("", "", time.UnixMilli(0))},
-		{"auth status garbage beside no file", []byte("Not logged in"), nil},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -437,5 +435,45 @@ func TestClassifyIdentityFields(t *testing.T) {
 	got, err = ClassifyIdentity(validAuth, synthCreds("", "", now.Add(time.Hour)), now)
 	if err != nil || got.State != IdentityBlanked {
 		t.Errorf("empty tokens with future expiresAt = %s, %v; want blanked", got.State.testString(), err)
+	}
+}
+
+// TestClassifyIdentityFileVerdictsSurviveBrokenAuthStatus: Blanked and Absent
+// are decided by the file alone, so an `auth status` that fails or changes
+// shape — it is the less stable input — cannot hide the tombstone. The live
+// verdicts genuinely need it, and still refuse without it.
+func TestClassifyIdentityFileVerdictsSurviveBrokenAuthStatus(t *testing.T) {
+	blanked, now := loadIdentityFixture(t, "credentials", "blanked")
+	okCreds, _ := loadIdentityFixture(t, "credentials", "ok")
+	validAuth, _ := loadIdentityFixture(t, "authstatus", "valid")
+	broken := map[string][]byte{
+		"nil":                 nil,
+		"empty":               {},
+		"garbage":             []byte("Not logged in"),
+		"truncated":           []byte(`{"loggedIn":`),
+		"no loggedIn":         []byte(`{"authMethod":"none"}`),
+		"loggedIn not a bool": []byte(`{"loggedIn":"false"}`),
+	}
+	for name, auth := range broken {
+		t.Run(name, func(t *testing.T) {
+			got, err := ClassifyIdentity(auth, blanked, now)
+			if err != nil || got.State != IdentityBlanked {
+				t.Errorf("blanked file + %s auth status = %s, %v; want blanked — the tombstone must not be masked", name, got.State.testString(), err)
+			}
+			got, err = ClassifyIdentity(auth, nil, now)
+			if err != nil || got.State != IdentityAbsent {
+				t.Errorf("no file + %s auth status = %s, %v; want absent", name, got.State.testString(), err)
+			}
+			// Positive control: where auth status is genuinely needed, the
+			// same broken input is still refused...
+			got, err = ClassifyIdentity(auth, okCreds, now)
+			if err == nil {
+				t.Errorf("ok file + %s auth status = %s; want an error", name, got.State.testString())
+			}
+			// ...and the same file with a good auth status is classified.
+			if got, err := ClassifyIdentity(validAuth, okCreds, now); err != nil || got.State != IdentityOK {
+				t.Errorf("control: ok file + valid auth status = %s, %v; want ok", got.State.testString(), err)
+			}
+		})
 	}
 }
