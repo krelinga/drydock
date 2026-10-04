@@ -58,7 +58,7 @@ test/install/run.sh                               # the installer, against real 
 Releases are cut by [release-please](https://github.com/googleapis/release-please) from
 [conventional commit](https://www.conventionalcommits.org/) subjects: `feat:` and `fix:` cut a
 release, everything else (`docs:`, `test:`, `chore:` …) does not. Merging its release PR tags
-`vX.Y.Z` and publishes `drydock_linux_{amd64,arm64}.tar.gz`, `SHA256SUMS`, and the standalone
+`vX.Y.Z` and publishes `drydock_linux_amd64.tar.gz`, `SHA256SUMS`, and the standalone
 `install.sh` — built by `deploy/package.sh`.
 
 `CLAUDE.md` and [`docs/design/`](docs/design/) explain why things are the way they are.

@@ -82,8 +82,9 @@ EOF
 arch() {
 	case "$(uname -m)" in
 	x86_64 | amd64) echo amd64 ;;
-	aarch64 | arm64) echo arm64 ;;
-	*) die "unsupported architecture $(uname -m); releases are built for amd64 and arm64" ;;
+	# Only amd64 is released. Anything else fails here, before downloading,
+	# rather than on a 404 for a tarball that was never built.
+	*) die "unsupported architecture $(uname -m); releases are built for amd64 (x86_64) only" ;;
 	esac
 }
 

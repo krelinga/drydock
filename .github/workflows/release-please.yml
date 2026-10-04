@@ -48,7 +48,7 @@ jobs:
       # The tarballs carry the binary, install.sh and the Caddy files;
       # install.sh is also uploaded on its own, stamped with this tag, for the
       # one-liner.
-      - run: deploy/package.sh "$TAG" dist amd64 arm64
+      - run: deploy/package.sh "$TAG" dist amd64
         env:
           TAG: ${{ needs.release-please.outputs.tag }}
 

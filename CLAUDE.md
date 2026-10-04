@@ -120,7 +120,7 @@ off `main` (PRs are squash-merged, so it is the PR title, which `pr-title.yml` c
 
 Merging release-please's PR tags `vX.Y.Z` (no component prefix: one root package) and, in the same
 workflow, runs the suite and uploads the assets under **fixed names** so
-`releases/latest/download/<name>` always resolves: `drydock_linux_{amd64,arm64}.tar.gz` (binary,
+`releases/latest/download/<name>` always resolves: `drydock_linux_amd64.tar.gz` (binary,
 `install.sh`, both Caddy files, `VERSION`), `SHA256SUMS`, and `install.sh` stamped with its tag. It
 is one workflow, not a tag-triggered second one, because tags pushed with `GITHUB_TOKEN` trigger
 nothing. The repo setting *Allow GitHub Actions to create and approve pull requests* must be on.

@@ -3,7 +3,7 @@
 # installer test installs. No Node needed — the UI is committed, built, under
 # internal/web/dist.
 #
-#   deploy/package.sh VERSION OUTDIR [ARCH...]     (default arches: amd64 arm64)
+#   deploy/package.sh VERSION OUTDIR [ARCH...]     (default: amd64, the only arch released)
 #
 # OUTDIR gets, for each ARCH, drydock_linux_ARCH.tar.gz holding
 #   drydock/{drydock,install.sh,Caddyfile,preview.caddy,VERSION}
@@ -15,7 +15,7 @@ set -euo pipefail
 version="$1" out="$2"
 shift 2
 arches=("$@")
-[ ${#arches[@]} -gt 0 ] || arches=(amd64 arm64)
+[ ${#arches[@]} -gt 0 ] || arches=(amd64)
 [[ "$version" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]] || { echo "version must look like v1.2.3, not $version" >&2; exit 2; }
 
 root=$(cd "$(dirname "$0")/.." && pwd)
