@@ -37,6 +37,11 @@ func needDocker(t *testing.T) {
 		}
 		t.Skip("docker is unavailable")
 	}
+	// Pull up front, so no test's timing or output depends on whether the
+	// image happened to be cached.
+	if out, err := exec.Command("docker", "pull", "--quiet", image).CombinedOutput(); err != nil {
+		t.Fatalf("docker pull %s: %v: %s", image, err, out)
+	}
 }
 
 // prefix is unique per test, as testing §5.4 requires: a test Drydock on the
@@ -54,11 +59,17 @@ func prefix(t *testing.T) string {
 	return p
 }
 
+// docker runs a docker command and returns its stdout. Stdout only: on a
+// cold cache `docker run` reports the image pull on stderr, and mixing the two
+// glued "Unable to find image…" onto a container id in CI.
 func docker(t *testing.T, args ...string) string {
 	t.Helper()
-	out, err := exec.Command("docker", args...).CombinedOutput()
+	var stderr strings.Builder
+	cmd := exec.Command("docker", args...)
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
 	if err != nil {
-		t.Fatalf("docker %v: %v: %s", args, err, out)
+		t.Fatalf("docker %v: %v: %s", args, err, stderr.String())
 	}
 	return strings.TrimSpace(string(out))
 }
