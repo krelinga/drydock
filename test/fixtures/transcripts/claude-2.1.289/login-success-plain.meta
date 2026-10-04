@@ -1,0 +1,6 @@
+claude_version: 2.1.289
+recorded_at:    2026-10-04T05:46:30Z
+command:        HAND-WRITTEN — run harness-01-login/run.sh login to record for real
+pty_width:      -
+provenance:     handwritten
+must_yield:     a prefix match on 'Login successful' — never a whole-line match

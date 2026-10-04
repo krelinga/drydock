@@ -2,7 +2,7 @@
 
 *How a system whose load-bearing properties are mostly things that must **never** happen gets a test suite that actually notices when one of them does.*
 
-**Status** design document, draft v6 · **Date** 4 October 2026 · §5.1 and §8.1 corrected against the implemented route table: the gate has three shapes, so the assertion is "no handler ran" rather than "returns `401`", and the auth gate must precede the `501` for an unimplemented route · §16.1's last open question is **answered** by [Spike 04](../spikes/04-browser-ca.md) — the browser tier's local CA works via NSS trust, so §10.1 is built as specified and its `ignoreHTTPSErrors` prohibition is re-grounded on what the spike actually measured · a **frontend** tier added to §3 and §10.3, and §10.1's `chromedp` fallback withdrawn — the [frontend design](../frontend/frontend-design.md) puts TypeScript in the repository regardless, so the second language is no longer a cost this tier has to justify · §15's five findings are **applied** in overall v7 and port-forwarding v4; §8.2, §8.5 and §15 updated to match
+**Status** design document, draft v7 · **Date** 4 October 2026 · §2.3 and §7 updated for the `2.1.289` re-measurement — the URL-wrapping hazard is retracted, the `409` token is gone from the refusal signature, and the corpus now exists with a `record.sh` beside it · §5.1 and §8.1 corrected against the implemented route table: the gate has three shapes, so the assertion is "no handler ran" rather than "returns `401`", and the auth gate must precede the `501` for an unimplemented route · §16.1's last open question is **answered** by [Spike 04](../spikes/04-browser-ca.md) — the browser tier's local CA works via NSS trust, so §10.1 is built as specified and its `ignoreHTTPSErrors` prohibition is re-grounded on what the spike actually measured · a **frontend** tier added to §3 and §10.3, and §10.1's `chromedp` fallback withdrawn — the [frontend design](../frontend/frontend-design.md) puts TypeScript in the repository regardless, so the second language is no longer a cost this tier has to justify · §15's five findings are **applied** in overall v7 and port-forwarding v4; §8.2, §8.5 and §15 updated to match
 
 **Supplements** [`../overall/drydock-design.md`](../overall/drydock-design.md) draft v7 · [`../port-forwarding/port-forwarding-design.md`](../port-forwarding/port-forwarding-design.md) draft v4 · [`../frontend/frontend-design.md`](../frontend/frontend-design.md) draft v4 · reads [`../security-review.md`](../security-review.md) draft v1 and Spikes [00](../spikes/00-shared-credential-volume.md), [01](../spikes/01-login-handshake.md), [02](../spikes/02-rc-restart.md), [03](../spikes/03-claude-env-file.md)
 
@@ -58,7 +58,7 @@ The answer for the first is a recorded fixture corpus plus a re-record ritual (�
 >
 > Phase 0 moved two things off the terminal entirely. [Spike 01](../spikes/01-login-handshake.md) found `claude auth status --json`, so the expiry watch is a JSON read rather than a `/status` scrape; [Spike 02](../spikes/02-rc-restart.md) found that the durable handle is one **environment id** per workspace plus a `Capacity: N/4` line, not a list of session URLs to keep accurate. What remains is the login handshake's two matches and the discovery tail — and both are *harder* than the design assumed, in ways a naive parser passes:
 >
-> - the authorize URL **wraps mid-token** at ordinary terminal widths, so a line-based regex captures a fragment that looks like a working scrape until someone clicks it;
+> - the authorize URL is ~465 characters and arrives **unbroken** at every PTY width measured, so a per-line match suffices — the mid-token wrapping this plan previously warned about was a `capture-pane` rendering artifact and is retracted ([Spike 01](../spikes/01-login-handshake.md), re-measured section). What still needs asserting is that the capture *parses*, not that a regex matched;
 > - per-session URLs arrive wrapped in **OSC 8 hyperlink escapes**, so URL and label run together in the byte stream and only an *id* match is unambiguous;
 > - ANSI cursor movement **reprints the status block in place**, so the same line recurs constantly and the tail must be idempotent.
 >
@@ -292,7 +292,7 @@ Phase 0 changed what belongs in here. The expiry watch left the corpus for JSON 
 | Fixture | Must yield |
 |---|---|
 | `login-url-1000col` | the complete authorize URL |
-| `login-url-200col` | **the same URL** — it wraps mid-token at this width, and a line-based regex captures a fragment |
+| `login-url-80col` | **the same complete URL**, matched per-line. The assertion is inverted from draft v5: this fixture now guards against a regression *into* wrapping rather than demonstrating one |
 | `login-url-ansi` | the same again after escape stripping |
 | `login-code-prompt` | the at-paste-prompt state, so the UI knows to accept input |
 | `login-invalid-code` | `Invalid code`, *and* still at the prompt — a wrong code needs no teardown and the same URL stays valid |
@@ -318,7 +318,7 @@ That last fixture matters more than it did in draft v1. Matching bare ids rather
 
 #### Startup refusals (Spike 02)
 
-Four fixtures, one per signature — `409` / `already served by a terminal`, `Workspace not trusted`, `Unable to determine your organization`, `cannot be used with --spawn` — each paired with its verdict from §5.5. **All four exit `1`**, and the test asserts that: feed the classifier each fixture with exit status `1` and require four distinct verdicts, which is a test the natural exit-code implementation fails.
+Four fixtures, one per signature — `already served by a terminal`, `Workspace not trusted`, `Unable to determine your organization`, `cannot be used with --spawn` — each paired with its verdict from §5.5. **All four exit `1`**, and the test asserts that: feed the classifier each fixture with exit status `1` and require four distinct verdicts, which is a test the natural exit-code implementation fails.
 
 #### Identity (Spike 01)
 

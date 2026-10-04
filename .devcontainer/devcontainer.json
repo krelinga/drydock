@@ -46,7 +46,13 @@
       "packages": "sqlite3,socat,netcat-openbsd,jq,build-essential,ca-certificates,tmux,libnss3-tools"
     },
 
-    "ghcr.io/anthropics/devcontainer-features/claude-code:1.0": {}
+    // PINNED. CLAUDE.md requires an exact version because five spikes measure
+    // undocumented internals of one. This feature had no pin, so the 4 Oct
+    // rebuild silently moved 2.1.246 -> 2.1.289 and falsified three recorded
+    // findings (see spike reports). Bump deliberately, via the §11.1 ritual.
+    "ghcr.io/anthropics/devcontainer-features/claude-code:1.0": {
+      "version": "2.1.289"
+    }
   },
 
   // Keep images and build cache across rebuilds of this container. Without it the

@@ -1,0 +1,6 @@
+claude_version: 2.1.289
+recorded_at:    2026-10-04T05:48:41Z
+command:        SYNTHETIC — model prose containing an id
+pty_width:      -
+provenance:     synthetic
+must_yield:     NO session row: an id the model printed is not a server announcement

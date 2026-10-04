@@ -19,6 +19,8 @@ MODE="${1:-both}"
 DIR="${2:-$(git -C "$(dirname "${BASH_SOURCE[0]}")" rev-parse --show-toplevel)}"
 CLAUDE="${CLAUDE_BIN:-$(command -v claude)}"
 RUN="${DRYDOCK_SPIKE_RUN:-$(mktemp -d -t drydock-spike-02-XXXXXX)}"
+# mktemp creates the directory; an overriding DRYDOCK_SPIKE_RUN may not exist yet.
+mkdir -p "$RUN"
 SESSION=dd-spike-02
 MAX_WAIT="${MAX_WAIT:-300}"
 # Seconds to wait before a round, so a registration left by the previous round

@@ -1,0 +1,12 @@
+{
+  "loggedIn": true,
+  "authMethod": "claude.ai",
+  "apiProvider": "firstParty",
+  "analyticsDisabled": false,
+  "projectsDirectory": "/cfg/projects",
+  "configDirectory": "/cfg",
+  "email": "fixture@example.invalid",
+  "orgId": "11111111-1111-1111-1111-111111111111",
+  "orgName": "fixture-org",
+  "subscriptionType": "max"
+}

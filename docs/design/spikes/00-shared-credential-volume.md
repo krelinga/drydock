@@ -165,3 +165,24 @@ cd docs/design/spikes/harness
 
 `watch.sh` and `atomic.sh` are the observers; they read the volume's backing directory directly,
 which works because the DinD daemon lives in this container (see CLAUDE.md).
+
+---
+
+## Not yet re-measured on Claude Code `2.1.289`
+
+The 4 October rebuild moved Claude Code from `2.1.246` to `2.1.289`. Spikes 01,
+02 and 03 were re-run under the §11.1 ritual; **this one was not**, and it is the
+one whose findings carry the most weight — the entire safety of the shared
+credential volume rests on undocumented locking behaviour.
+
+Until `harness/` is re-run, treat the refresh-lock results above as measured
+against `2.1.246` only. Nothing observed in the other three spikes suggests the
+lock changed, but that is an absence of evidence rather than evidence.
+
+```sh
+cd docs/design/spikes/harness
+./run-n.sh 4 contention --blackhole
+./run-atomic.sh
+./stale.sh 10
+./stale.sh 90
+```

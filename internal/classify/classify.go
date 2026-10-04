@@ -37,7 +37,7 @@ const FixtureRoot = "test/fixtures"
 // against. A bump re-runs all four Claude Code harnesses and re-records the
 // corpus (testing §11.1), and a consistency test asserts this constant agrees
 // with CLAUDE.md, the Feature, and all four spike reports.
-const ClaudeCodeVersion = "2.1.246"
+const ClaudeCodeVersion = "2.1.289"
 
 // ---------------------------------------------------------------------------
 // 1. The login handshake (design §7.2, Spike 01)
@@ -74,8 +74,12 @@ type Login struct {
 // ClassifyLogin reads a raw PTY byte stream from `claude auth login`.
 //
 // Three hazards it must survive, all measured:
-//   - the authorize URL wraps mid-token at ordinary PTY widths, so matching
-//     must happen against the stream with newlines removed;
+//   - the authorize URL is ~465 characters and arrives UNBROKEN in the byte
+//     stream at every PTY width tested (80, 200, 1000). The wrapping Spike 01
+//     reported was a rendering artifact of `tmux capture-pane`, not something
+//     the process writes -- see the corpus note. De-wrapping before matching is
+//     harmless insurance against a future version that does wrap, but a
+//     per-line match is sufficient today and the fixtures assert that;
 //   - `Login successful` has several forms (`.`, `. Press …`), so it is matched
 //     as a prefix and never as a whole line;
 //   - the paste prompt is not re-printed after a rejection, so nothing may
@@ -156,11 +160,15 @@ type Refusal uint8
 const (
 	// RefusalNone: the stream is not a refusal.
 	RefusalNone Refusal = iota
-	// RefusalWaitRegistration: `409 … already served by a terminal`. The
+	// RefusalWaitRegistration: `already served by a terminal`. The
 	// previous server's folder registration has not lapsed. **Retry,
-	// patiently** — measured at 60–200s, not a fixed value, so nothing may
-	// be coded against a constant. It is a wait, not a crash, and it must
-	// not spend the restart budget.
+	// patiently.** Do not match on "409": that token was in the 2.1.246
+	// message and is GONE from 2.1.289, which now says only "This folder is
+	// already served by a terminal ... Stop it first." plus "Exiting in about
+	// 50 seconds." Matching the status number would silently reclassify the
+	// one retryable refusal as a non-retryable one. The wait is announced now
+	// but is still not a constant to code against. It is a wait, not a crash,
+	// and it must not spend the restart budget.
 	RefusalWaitRegistration
 	// RefusalWorkspaceNotTrusted: the Feature or postCreate is broken. Do
 	// not retry; the fix is a rebuild.

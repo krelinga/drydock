@@ -252,3 +252,50 @@ export CLAUDE_CONFIG_DIR=/tmp/cfg
 Each round settles for `SETTLE` seconds (default 120) before starting, so a registration left by the
 previous round cannot be mistaken for this one's. Runs start real Remote Control servers on the
 signed-in account; they are short-lived and every round reaps what it started.
+
+---
+
+## Re-measured on Claude Code `2.1.289` (2026-10-04)
+
+Re-run under the §11.1 ritual after the rebuild moved the version. The headline
+holds — a plain restart reconnected the **same** environment and the **same**
+session across `SIGTERM` in 2 seconds, with `Capacity: 1/4` preserved and the
+`Environment preserved` notice unchanged. OSC 8 still wraps per-session URLs
+(`ESC]8;;https://claude.ai/code/session_…?from=cli BEL`), and the status block
+still reprints in place — 12 times in a 6.7 KB capture.
+
+Two changes, and the first one breaks a parser.
+
+**The `409` token is gone from the refusal message.** Result 6 recorded the
+retryable signature as `` `409` / `already served by a terminal` ``. On `2.1.289`
+the message is:
+
+```
+Error: This folder is already served by a terminal `claude remote-control` on this device. Stop it first.
+Exiting in about 50 seconds.
+```
+
+The string `409` does not appear anywhere in it. **A classifier matching on the
+status number would reclassify the one retryable refusal as unrecognised**, and
+the supervisor would stop waiting for a registration that was about to lapse.
+Match `already served by a terminal`. The new second line is a bonus: the wait
+is now *announced*, where this spike had to measure it at 60–200 s — still not a
+constant to code against, but something the UI can show.
+
+**An untrusted workspace hangs on a TTY, and only errors when redirected.**
+Result 3 recorded `Workspace not trusted` as a fast exit. That is true with
+output redirected, and false on a terminal:
+
+| stdout | behaviour |
+|---|---|
+| redirected (no TTY) | `exit 1`, `Error: Workspace not trusted. Please run …` |
+| a real PTY | **hangs** on `Trust <dir>? [y/N]` |
+
+Drydock's supervisor owns a PTY, so **the supervisor gets the hang.** That makes
+two config gates that hang rather than fail — this one and the missing
+`remoteDialogSeen` — and a hang has no error string to assert on, only an
+absence. Both now have fixtures that assert a *timeout*.
+
+The other three refusals reproduced verbatim, all still exiting `1`, so result 6's
+central point — exit status is not a discriminator — is unchanged and now rests
+on four recorded fixtures.

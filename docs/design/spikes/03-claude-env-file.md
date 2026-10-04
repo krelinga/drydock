@@ -182,3 +182,16 @@ cache in result 2 is keyed on an `owner` the binary derives per client, and a mu
 That difference does not affect values, which are live either way; it only changes how long a text
 edit stays stale. **Confirm it in Phase 5** when a real `remote-control` server is running, by
 rotating a secret and watching a session pick it up.
+
+---
+
+## Re-measured on Claude Code `2.1.289` (2026-10-04)
+
+Re-run under the §11.1 ritual. **Everything reproduced exactly**: three Bash
+calls produced three prelude executions with three distinct values (`v1`, `v2`,
+`v3`), the script text was still read once per session (`mutated=unset` on every
+call, one `Session environment loaded from CLAUDE_ENV_FILE` line), the whole
+script text still arrives as `argv` on every command shell, and stdout/stderr
+from the prelude are still prepended to the agent's view of each result.
+
+No consequence in this report changes.

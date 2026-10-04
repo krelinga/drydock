@@ -1,0 +1,6 @@
+claude_version: 2.1.289
+recorded_at:    2026-10-04T05:46:20Z
+command:        claude auth status --json
+pty_width:      -
+provenance:     recorded
+must_yield:     loggedIn:false — indistinguishable from blanked; the FILE separates them

@@ -1,0 +1,6 @@
+claude_version: 2.1.289
+recorded_at:    2026-10-04T05:46:28Z
+command:        claude auth login --claudeai, then a malformed code
+pty_width:      1000
+provenance:     recorded
+must_yield:     Invalid code, AND still at the prompt — a wrong code needs no teardown

@@ -5,8 +5,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Repository state
 
 **Mostly design, with the first code in.** The repository contains the overall design
-document (`docs/design/overall/drydock-design.md`, draft v8), supplemental ones on port forwarding
-(`docs/design/port-forwarding/`, draft v4), testing (`docs/design/testing/`, draft v6) and the Vue
+document (`docs/design/overall/drydock-design.md`, draft v9), supplemental ones on port forwarding
+(`docs/design/port-forwarding/`, draft v4), testing (`docs/design/testing/`, draft v7) and the Vue
 frontend (`docs/design/frontend/`, draft v4), a settled brand mark (`docs/design/brand/`, v1.0,
 with the shipping icon assets), an adversarial security review
 (`docs/design/security-review.md`), their SVG diagrams, a devcontainer definition, and **five
@@ -14,7 +14,8 @@ completed spikes** with their harnesses under `docs/design/spikes/` — the four
 `04`, the browser-tier local CA, which the testing plan asked for later.
 
 The Go module is `github.com/krelinga/drydock`. What exists so far is the **five testability seams**
-from testing §5 and nothing else — interfaces, the declared HTTP surface, and the fixture layout:
+from testing §5, plus the recorded fixture corpus — interfaces, the declared HTTP surface, and the
+bytes the classifiers will be tested against:
 
 ```sh
 go build ./... && go vet ./... && go test ./...   # the whole suite today
@@ -28,7 +29,7 @@ gofmt -l .                                        # must print nothing
 | `internal/subproc` | An invocation described as data, resolved by `PATH` or an injected `Resolver`. No shell anywhere, deliberately. |
 | `internal/config` | Settings that must not be constants, `LabelPrefix` chief among them, plus a `Validate` that refuses configurations which silently undo a design property. |
 | `internal/classify` | The five classifier **signatures**. They `panic` rather than return a plausible zero — see below. |
-| `test/fixtures/` | The corpus layout and its recording rules. **Empty**; recording it is what the testing plan still owes Phase 0. |
+| `test/fixtures/` | The corpus: 26 fixtures recorded from `2.1.289`, plus `record.sh`, which is testing §11.1 step 3. Three are hand-written or synthetic and their `.meta` says so. |
 
 Three things about that code worth knowing before extending it:
 
@@ -199,15 +200,26 @@ These come from §2 (Claude Code constraints) and §13.5 (non-negotiables). Most
   from the prelude, which is the only reason values stay out of `ps`.
 - **Stop a `remote-control` server with `SIGTERM`, escalating to `SIGKILL` only on timeout.** A clean
   stop deregisters the folder and lets the next start in immediately; a `SIGKILL` of a server with
-  no live session blocks the next start with a `409` for one to three minutes (Spike 02). That `409`
-  is a wait, not a crash, and must not consume the restart budget.
-- **Pin the Claude Code version and set `DISABLE_AUTOUPDATER=1`** in the devcontainer feature. Two
-  places scrape Claude Code's terminal output (the login URL, the session URLs); a background update
-  would change them without warning. Every one of the four spikes added a harder reason: all of them
-  measure undocumented internals of **Claude Code `2.1.246`** — the refresh lock, the login flow and
-  `auth status` schema, the reconnect behaviour and the three config gates, and the per-command
-  prelude. **Re-run all four Claude Code harnesses (`00`-`03`) on every bump** and update that version
-  here. Spike `04` is about browser behaviour, not Claude Code, and has its own trigger.
+  no live session blocks the next start for one to three minutes (Spike 02). That block is a wait,
+  not a crash, and must not consume the restart budget. **Match it on `already served by a
+  terminal`, never on `409`** — `2.1.246` prefixed the message with the status code and `2.1.289`
+  dropped it, so a classifier keyed on the number silently reclassifies the one retryable refusal.
+- **Two of the three config gates *hang* rather than fail.** A missing `remoteDialogSeen` waits on
+  `Enable Remote Control? (y/n)`, and a missing trust record waits on `Trust <dir>? [y/N]` — the
+  latter only on a PTY, which is exactly what the supervisor gives it; redirected, the same case
+  exits `1` with a message. A hang has no error string to assert on, only an absence, so those
+  scenarios assert a **timeout** and a suite with no hang fixture passes against the real bug.
+- **Pin the Claude Code version and set `DISABLE_AUTOUPDATER=1`** in the devcontainer feature. The
+  feature carried *no* pin until 4 Oct 2026, and the rebuild that day silently moved `2.1.246` →
+  `2.1.289` and falsified three recorded findings — the URL-wrapping claim, the `409` signature, and
+  trust-fails-fast. It is pinned now; keep it that way, and bump it through the §11.1 ritual rather
+  than by rebuilding. Two places scrape Claude Code's terminal output (the login URL, the session
+  URLs); a background update changes them without warning, and every spike measures undocumented
+  internals of one version. **Current state: `01`, `02` and `03` are re-measured on `2.1.289`;
+  `00` has only ever been measured on `2.1.246` and is the one with the most weight on it.**
+  **Re-run all four Claude Code harnesses (`00`–`03`) on every bump** and update the version here,
+  in the Feature, in `internal/classify`, and in each spike report. Spike `04` is about browser
+  behaviour and has its own trigger (testing §11.6).
 - **The shared credential volume must be a local Docker volume — never NFS or CIFS.** Claude Code's
   cross-container refresh lock is a `mkdir(2)`-based lockfile at
   `$CLAUDE_CONFIG_DIR/.oauth_refresh.lock`; network filesystems do not give `mkdir` the atomicity the

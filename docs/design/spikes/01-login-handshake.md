@@ -248,3 +248,41 @@ COLS=200 ./run.sh probe   # reproduces the mid-token URL wrapping
 `auth-status.sh` builds four config dirs with **fake** tokens; none can authenticate, which is fine
 because the question is what the command reports. Never run `claude auth logout` against the shared
 volume while investigating this — per Spike 00 it blanks the credential for every container at once.
+
+---
+
+## Re-measured on Claude Code `2.1.289` (2026-10-04)
+
+The 4 October devcontainer rebuild moved Claude Code from `2.1.246` to `2.1.289`,
+because the Feature carried no version pin. Re-running this harness under the
+§11.1 ritual confirmed most of the above and **falsified result 2**.
+
+**Result 2 is retracted. The authorize URL does not wrap.** Forced PTY widths of
+80, 200 and 1000 columns all produce a byte stream whose longest line is 987
+characters, and a **per-line** match yields the complete 465-character URL at
+every width:
+
+| pane width | longest raw line | URL matched per-line | rows holding it when *rendered* |
+|---|---|---|---|
+| 80 | 987 | **465 (complete)** | 4 |
+| 200 | 987 | **465 (complete)** | 3 |
+| 1000 | 987 | **465 (complete)** | 1 |
+
+Claude Code writes the URL unbroken; the terminal soft-wraps it for display. The
+original evidence for "wraps mid-token" was a `tmux capture-pane` observation —
+which renders the wrapped pane by construction — attributed to the stream.
+`capture-pane` was the wrong instrument, and the harness's own output always
+said `URL appears intact on a single line`, which should have caught it.
+
+What survives: de-wrapping before matching is cheap insurance against a future
+version that *does* wrap, so **consequence A stands as a recommendation and
+falls as a hazard**. The `login-url-80col` fixture is kept with its assertion
+inverted — it now guards against a regression *into* wrapping rather than
+demonstrating one.
+
+Also changed, and both are real: the URL grew from 450 to **465 characters**
+because the scope list gained `user:plugins`, so any length-range assertion
+needs widening. Everything else reproduced exactly — the prompt string, the
+`Invalid code` retry-in-place, the non-echoing prompt (the submitted code
+appears 0 times in the transcript), the clean cancel, and all four rows of the
+`auth status --json` matrix including `expired` still reporting `loggedIn:true`.

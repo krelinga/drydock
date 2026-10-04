@@ -1,0 +1,1 @@
+Error: --session-id and --continue cannot be used with --spawn, --capacity, or --create-session-in-dir.

@@ -2,7 +2,7 @@
 
 *A single-host server that turns any GitHub repository into a running dev container with a supervised, remote-controllable Claude Code session inside it — one click from a repo list, with push credentials scoped to that repo alone.*
 
-**Status** design document, draft v8 · **Date** 4 October 2026 · §5 corrected: the sign-in POST is the **only** unauthenticated route, not the three `/api/auth/session` verbs — `GET` there returns the device list, and the error was found by implementing the route table (see the callout in §5, and the [testing plan](../testing/testing-design.md) §5.1) · five findings from the [testing plan](../testing/testing-design.md) §15 applied — §4, §6, §10.1, §10.3 and §13.5; Phase 0 spikes complete — §7.2, §7.3, §8, §10.3, and §11 revised against measurement (see [spikes](../spikes/)); §13 auth revised for cross-site previews (see the [security review](../security-review.md) and [port forwarding](../port-forwarding/port-forwarding-design.md)) · the UI this document describes in passing is specified in the [frontend design](../frontend/frontend-design.md)
+**Status** design document, draft v9 · **Date** 4 October 2026 · re-measured on Claude Code `2.1.289` after an unpinned rebuild moved the version: the authorize-URL wrapping claim in §7.2 is **retracted**, the retryable refusal signature in §8 no longer contains `409`, and an untrusted workspace **hangs** on a PTY rather than failing fast (§11) · §5 corrected: the sign-in POST is the **only** unauthenticated route, not the three `/api/auth/session` verbs — `GET` there returns the device list, and the error was found by implementing the route table (see the callout in §5, and the [testing plan](../testing/testing-design.md) §5.1) · five findings from the [testing plan](../testing/testing-design.md) §15 applied — §4, §6, §10.1, §10.3 and §13.5; Phase 0 spikes complete — §7.2, §7.3, §8, §10.3, and §11 revised against measurement (see [spikes](../spikes/)); §13 auth revised for cross-site previews (see the [security review](../security-review.md) and [port forwarding](../port-forwarding/port-forwarding-design.md)) · the UI this document describes in passing is specified in the [frontend design](../frontend/frontend-design.md)
 
 **Runtime** single dev server, local Docker socket · **Reach** LAN, behind Caddy
 
@@ -449,7 +449,7 @@ That shared fate has a second, sharper form. On a definitive `invalid_grant` —
 >
 > The flow in a container is exactly the one above: `claude auth login --claudeai` prints an authorize URL whose `redirect_uri` is remote (`platform.claude.com`), then waits at `Paste code here if prompted >`. Writing a code into the PTY reaches that prompt and yields one of two verdicts. Three details are not what §7.2 assumed:
 >
-> 1. **The URL wraps mid-token at terminal width.** It is ~450 characters; at 200 columns a line-based regex captures a fragment, which looks like a working scrape until someone clicks the link. Allocate the PTY at **≥ 1000 columns** *and* strip newlines before matching: `https://claude\.com/cai/oauth/authorize\?[A-Za-z0-9&=_%.~+-]+`.
+> 1. **The URL is ~465 characters and arrives unbroken.** ~~It wraps mid-token at terminal width~~ — retracted on re-measurement: at forced PTY widths of 80, 200 and 1000 the byte stream is identical and a *per-line* match yields the complete URL every time. The wrapping is the terminal soft-wrapping for display, visible through `tmux capture-pane` and absent from what the process writes. The pattern is `https://claude\.com/cai/oauth/authorize\?[A-Za-z0-9&=_%.~+-]+`; stripping newlines first is cheap insurance against a future version that *does* wrap, not a present requirement. Assert the capture **parses and carries the expected query-parameter set**, never merely that the regex matched — a fragment passes a non-empty check and fails when a human clicks it.
 > 2. **The pasted code is `<code>#<state>`**, and Claude Code rejects a missing half locally. So validate `^[^#\s]+#[^#\s]+$` in Drydock *before* writing to the PTY — a truncated copy is the likeliest user error, and this turns it into an instant, precise failure instead of a terminal round-trip.
 > 3. **Match `Login successful` as a prefix, never as a whole line** — the binary carries several variants (`Login successful.`, `Login successful. Press …`). `Invalid code` is the other terminal verdict; those two plus the timeout are the whole state machine.
 
@@ -520,7 +520,9 @@ Three details in that invocation are load-bearing, and two of them exist because
 >
 > | Signature | State | Retry? |
 > |---|---|---|
-> | `409` / `already served by a terminal` | the previous server's folder registration has not lapsed | **yes**, patiently |
+> | `already served by a terminal` | the previous server's folder registration has not lapsed | **yes**, patiently |
+>
+> **Do not match on the number.** `2.1.246` prefixed this with `Registration: Failed with status 409:`; `2.1.289` dropped it, so the token `409` no longer appears anywhere in the message and a classifier keyed on it would reclassify the one retryable refusal as unrecognised. `2.1.289` also appends `Exiting in about 50 seconds.`, so the wait is announced — useful for the UI, still not a constant to code against.
 > | `Workspace not trusted` | the feature or `postCreate` is broken | no — config error (§11) |
 > | `Unable to determine your organization` | credential present, account record missing | no — `awaiting_login` (§7.3) |
 > | `cannot be used with --spawn` | Drydock built a bad command line | no — bug |
@@ -818,8 +820,8 @@ One published Feature, `drydock-claude`, carries everything Drydock needs inside
 >
 > | Key | Without it |
 > |---|---|
-> | `projects["/workspace"].hasTrustDialogAccepted` | ``Error: Workspace not trusted. Please run `claude` in <dir> first…`` |
-> | `remoteDialogSeen` | an interactive `Enable Remote Control? (y/n)` prompt — the start hangs, looking like a wedge rather than a missing key |
+> | `projects["/workspace"].hasTrustDialogAccepted` | On a PTY, **a hang** on `Trust <dir>? [y/N]`. Only with output redirected does it exit `1` with ``Error: Workspace not trusted. Please run `claude` in <dir> first…``. The supervisor owns a PTY, so the supervisor gets the hang (re-measured on `2.1.289`). |
+> | `remoteDialogSeen` | an interactive `Enable Remote Control? (y/n)` prompt — the start hangs, looking like a wedge rather than a missing key. **Two** of these three gates hang rather than fail, which is why §12 and the testing plan treat a timeout as an expected verdict. |
 > | `oauthAccount` (carried by the shared volume, §7.1) | `Error: Unable to determine your organization for Remote Control eligibility` |
 >
 > Two consequences worth holding onto. Trust is keyed on the **absolute path**, and every workspace mounts its clone at the same in-container path, so on the shared volume **one `/workspace` trust record satisfies every container** — an unlooked-for benefit of §7.1. And answering the consent prompt also writes `remoteControlMachineId`, so every container on the shared volume presents the **same machine id**; nothing observed breaks, but it is worth knowing before debugging why fifteen workspaces look like one device.
