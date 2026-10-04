@@ -1,0 +1,3 @@
+# Claude Code scratch worktrees. Checked-in project config under .claude/
+# (settings, agents, skills) is still tracked; only the worktrees are noise.
+.claude/worktrees/
