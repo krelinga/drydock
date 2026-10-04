@@ -25,21 +25,29 @@ import (
 	"github.com/krelinga/drydock/internal/api"
 	"github.com/krelinga/drydock/internal/auth"
 	"github.com/krelinga/drydock/internal/config"
+	"github.com/krelinga/drydock/internal/container"
 	"github.com/krelinga/drydock/internal/events"
+	"github.com/krelinga/drydock/internal/reconcile"
 	"github.com/krelinga/drydock/internal/store"
+	"github.com/krelinga/drydock/internal/subproc"
 	"github.com/krelinga/drydock/internal/sys"
 	"github.com/krelinga/drydock/internal/web"
+	"github.com/krelinga/drydock/internal/workspace"
 )
 
 // Server is a running front door.
 type Server struct {
-	DB      *store.DB
-	Auth    *auth.Service
-	Events  *events.Log
-	api     *http.Server
-	preview *http.Server
-	apiLn   net.Listener
-	prevLn  net.Listener
+	DB     *store.DB
+	Auth   *auth.Service
+	Events *events.Log
+	// Workspaces and Reconciler are Phase 2's skeleton: the state machine
+	// and boot reconciliation (§6). No route drives them yet.
+	Workspaces *workspace.Store
+	Reconciler *reconcile.Reconciler
+	api        *http.Server
+	preview    *http.Server
+	apiLn      net.Listener
+	prevLn     net.Listener
 }
 
 // New opens the store (taking the single-instance lock), builds both muxes,
@@ -56,6 +64,12 @@ func New(ctx context.Context, cfg config.Config, env sys.Env) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
+	// Before anything can touch a container: whose containers these are is
+	// decided by the prefix the database was created with (§6).
+	if err := db.ClaimLabelPrefix(ctx, cfg.LabelPrefix, env.Clock.Now()); err != nil {
+		db.Close()
+		return nil, err
+	}
 	svc := auth.New(db.DB, env)
 	gate := api.SessionGate{Sessions: svc.Sessions, UIOrigin: cfg.UIOrigin, UIHost: cfg.UIHost}
 
@@ -66,6 +80,9 @@ func New(ctx context.Context, cfg config.Config, env sys.Env) (*Server, error) {
 	}
 
 	s := &Server{DB: db, Auth: svc, Events: events.New(db.DB, env.Clock)}
+	s.Workspaces = &workspace.Store{DB: db.DB, Events: s.Events, Env: env, Root: cfg.WorkspaceRoot, Cap: cfg.ContainerCap}
+	s.Reconciler = &reconcile.Reconciler{Workspaces: s.Workspaces, Events: s.Events,
+		Containers: container.Manager{Run: subproc.Exec{}, LabelPrefix: cfg.LabelPrefix}}
 	handlers := api.SessionRoutes{Auth: svc}.Handlers()
 	for name, h := range (api.EventRoutes{Log: s.Events, Clock: env.Clock, Alive: svc.Sessions.Alive}).Handlers() {
 		handlers[name] = h
@@ -132,6 +149,20 @@ func apiSocketHandler(gate api.Gate, apiMux *http.ServeMux, ui http.Handler) htt
 
 // Serve runs both muxes until ctx is cancelled, then shuts down gracefully.
 func (s *Server) Serve(ctx context.Context) error {
+	// Reconcile once at boot, beside serving rather than before it: a slow
+	// daemon must not keep the sign-in page down. A failure changes nothing
+	// (reconcile refuses to act on a list it could not read), is written to
+	// the journal in full, and reaches the event log as Drydock's sentence
+	// only — docker's stderr is not ours to publish.
+	reconciled := make(chan struct{})
+	go func() {
+		defer close(reconciled)
+		if _, err := s.Reconciler.Run(ctx); err != nil && ctx.Err() == nil {
+			fmt.Fprintf(os.Stderr, "drydock: reconcile: %v\n", err)
+			s.Events.Emit(ctx, "", events.Warn, "system.reconcile",
+				"Could not reconcile workspaces with Docker at startup; nothing was changed. See the service log.", nil)
+		}
+	}()
 	errc := make(chan error, 2)
 	go func() { errc <- s.api.Serve(s.apiLn) }()
 	go func() { errc <- s.preview.Serve(s.prevLn) }()
@@ -148,6 +179,7 @@ func (s *Server) Serve(ctx context.Context) error {
 	defer cancel()
 	_ = s.api.Shutdown(shutCtx)
 	_ = s.preview.Shutdown(shutCtx)
+	<-reconciled // it may still be writing; the database closes after it
 	s.DB.Close()
 	if errors.Is(serveErr, http.ErrServerClosed) {
 		serveErr = nil

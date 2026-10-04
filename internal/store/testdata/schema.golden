@@ -46,6 +46,13 @@ CREATE TABLE event (
   at           TEXT
 , data TEXT);
 
+-- table instance
+CREATE TABLE instance (
+  id           INTEGER PRIMARY KEY CHECK (id = 1),
+  label_prefix TEXT NOT NULL,
+  created_at   TEXT NOT NULL
+);
+
 -- table operator
 CREATE TABLE operator (
   id            INTEGER PRIMARY KEY CHECK (id = 1),

@@ -38,6 +38,8 @@ jobs:
       - run: go test ./...
         env:
           DRYDOCK_REQUIRE_CADDY: "1"
+          # And the container tier (test/container) needs the runner's Docker.
+          DRYDOCK_REQUIRE_DOCKER: "1"
 
   web:
     runs-on: ubuntu-latest

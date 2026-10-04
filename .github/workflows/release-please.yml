@@ -56,6 +56,8 @@ jobs:
       - run: go vet ./... && go test ./...
         env:
           DRYDOCK_REQUIRE_CADDY: "1"
+          # And the container tier (test/container) needs the runner's Docker.
+          DRYDOCK_REQUIRE_DOCKER: "1"
 
       # Fixed asset names, so releases/latest/download/<name> always resolves.
       # The tarballs carry the binary, install.sh and the Caddy files;

@@ -16,6 +16,7 @@ import (
 	"net/url"
 	"os"
 	"syscall"
+	"time"
 
 	_ "modernc.org/sqlite" // pure Go: no cgo, so the binary stays static
 )
@@ -168,4 +169,26 @@ func pragmas() url.Values {
 	// cap — so each one must hold the lock across its check.
 	q.Set("_txlock", "immediate")
 	return q
+}
+
+// ClaimLabelPrefix records prefix as this database's label prefix on first
+// run, and on every later run refuses a different one. Adoption and deletion
+// are label-driven (§6), so the prefix decides whose containers this instance
+// may touch; a changed prefix would orphan every container the database
+// knows and could adopt another instance's. Changing it is a migration, not a
+// flag.
+func (s *DB) ClaimLabelPrefix(ctx context.Context, prefix string, now time.Time) error {
+	if _, err := s.ExecContext(ctx,
+		`INSERT INTO instance (id, label_prefix, created_at) VALUES (1, ?, ?) ON CONFLICT(id) DO NOTHING`,
+		prefix, now.UTC().Format(time.RFC3339Nano)); err != nil {
+		return err
+	}
+	var recorded string
+	if err := s.QueryRowContext(ctx, `SELECT label_prefix FROM instance WHERE id = 1`).Scan(&recorded); err != nil {
+		return err
+	}
+	if recorded != prefix {
+		return fmt.Errorf("this database belongs to label prefix %q, not %q: its workspaces' containers carry %q labels, and starting under another prefix would orphan them and could adopt another instance's", recorded, prefix, recorded)
+	}
+	return nil
 }

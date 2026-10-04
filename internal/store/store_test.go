@@ -331,3 +331,30 @@ func TestTransactionsTakeTheWriteLockAtBegin(t *testing.T) {
 		t.Fatal("control: the second transaction never began")
 	}
 }
+
+func TestLabelPrefixIsClaimedOnce(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "drydock.db")
+	db, err := Open(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 10, 4, 0, 0, 0, 0, time.UTC)
+	if err := db.ClaimLabelPrefix(ctx, "drydock", now); err != nil {
+		t.Fatalf("first claim: %v", err)
+	}
+	if err := db.ClaimLabelPrefix(ctx, "drydock", now); err != nil {
+		t.Errorf("the same prefix again: %v", err)
+	}
+	db.Close()
+
+	// Across a restart, which is when a changed flag would bite.
+	db, err = Open(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if err := db.ClaimLabelPrefix(ctx, "drydock.other", now); err == nil {
+		t.Error("a different prefix was accepted for a database that already has one")
+	}
+}

@@ -161,4 +161,16 @@ CREATE TABLE event (
 ALTER TABLE event ADD COLUMN data TEXT;
 CREATE INDEX event_workspace ON event (workspace_id, id);
 `,
+
+	// 3 — the label prefix, recorded at first run (§6, §13.5). Reconciliation
+	// adopts and deletes by label, so the prefix a database was created with
+	// is the one whose containers it owns; starting it later under another
+	// prefix would orphan all of them and adopt someone else's.
+	`
+CREATE TABLE instance (
+  id           INTEGER PRIMARY KEY CHECK (id = 1),
+  label_prefix TEXT NOT NULL,
+  created_at   TEXT NOT NULL
+);
+`,
 }

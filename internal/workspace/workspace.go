@@ -253,3 +253,45 @@ func nullable(s string) any {
 }
 
 func ts(t time.Time) string { return t.UTC().Format(time.RFC3339Nano) }
+
+// Adopt recreates the row for a container found with no row — an orphan from
+// a lost database (§6). It bypasses Create's duplicate and cap checks on
+// purpose: the container already exists, and refusing to record it would
+// not make it go away, only make it invisible. The repository row is a cache
+// (§4), so a stub is written if the repository is not known yet, for the
+// next catalog refresh to fill in.
+func (s *Store) Adopt(ctx context.Context, w Workspace, fullName string) error {
+	if w.State != Running && w.State != Stopped {
+		return fmt.Errorf("workspace: an orphan is adopted as running or stopped, not %s", w.State)
+	}
+	if w.HostPath == "" {
+		w.HostPath = filepath.Join(s.Root, w.ID, "repo")
+	}
+	now := s.Env.Clock.Now().UTC()
+	tx, err := s.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO repository (id, installation_id, full_name, default_branch) VALUES (?, 0, ?, ?)
+		 ON CONFLICT(id) DO NOTHING`, w.RepositoryID, fullName, w.Branch); err != nil {
+		return fmt.Errorf("workspace: stub repository: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO workspace (id, repository_id, host_path, branch, state, state_detail, container_id, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		w.ID, w.RepositoryID, w.HostPath, w.Branch, string(w.State), nullable(w.StateDetail),
+		nullable(w.ContainerID), ts(now)); err != nil {
+		return fmt.Errorf("workspace: adopt %s: %w", w.ID, err)
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	data := map[string]any{"state": w.State, "adopted": true, "repository_id": w.RepositoryID, "branch": w.Branch}
+	if w.StateDetail != "" {
+		data["detail"] = w.StateDetail
+	}
+	_, err = s.Events.Emit(ctx, w.ID, events.Warn, KindState, message(w.State, w.StateDetail), data)
+	return err
+}

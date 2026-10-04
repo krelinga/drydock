@@ -700,3 +700,31 @@ func TestEventStreamEndToEnd(t *testing.T) {
 		t.Errorf("shutdown took %v with a stream open", d)
 	}
 }
+
+// A database belongs to the label prefix it was created under: starting it
+// under another would orphan its containers and could adopt someone else's.
+func TestRefusesAChangedLabelPrefix(t *testing.T) {
+	dir := t.TempDir()
+	cfg := testConfig(t, dir)
+	srv, err := New(context.Background(), cfg, sys.Production())
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv.apiLn.Close()
+	srv.prevLn.Close()
+	srv.DB.Close()
+
+	cfg.LabelPrefix = "drydock.test.other"
+	if _, err := New(context.Background(), cfg, sys.Production()); err == nil || !strings.Contains(err.Error(), "label prefix") {
+		t.Errorf("New under a changed prefix: %v; want a refusal naming the prefix", err)
+	}
+	// Control: the original prefix still starts.
+	cfg.LabelPrefix = testConfig(t, dir).LabelPrefix
+	again, err := New(context.Background(), cfg, sys.Production())
+	if err != nil {
+		t.Fatalf("control: the original prefix was refused: %v", err)
+	}
+	again.apiLn.Close()
+	again.prevLn.Close()
+	again.DB.Close()
+}
