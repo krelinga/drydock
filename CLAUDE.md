@@ -4,16 +4,46 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Repository state
 
-**Design-only. There is no application source code yet.** The repository contains the overall design
-document (`docs/design/overall/drydock-design.md`, draft v7), supplemental ones on port forwarding
-(`docs/design/port-forwarding/`, draft v4), testing (`docs/design/testing/`, draft v5) and the Vue
+**Mostly design, with the first code in.** The repository contains the overall design
+document (`docs/design/overall/drydock-design.md`, draft v8), supplemental ones on port forwarding
+(`docs/design/port-forwarding/`, draft v4), testing (`docs/design/testing/`, draft v6) and the Vue
 frontend (`docs/design/frontend/`, draft v4), a settled brand mark (`docs/design/brand/`, v1.0,
 with the shipping icon assets), an adversarial security review
 (`docs/design/security-review.md`), their SVG diagrams, a devcontainer definition, and **five
 completed spikes** with their harnesses under `docs/design/spikes/` — the four Phase 0 ones plus
-`04`, the browser-tier local CA, which the testing plan asked for later. There are no build,
-lint, or test commands because nothing is built yet — the testing document specifies what they will
-be.
+`04`, the browser-tier local CA, which the testing plan asked for later.
+
+The Go module is `github.com/krelinga/drydock`. What exists so far is the **five testability seams**
+from testing §5 and nothing else — interfaces, the declared HTTP surface, and the fixture layout:
+
+```sh
+go build ./... && go vet ./... && go test ./...   # the whole suite today
+gofmt -l .                                        # must print nothing
+```
+
+| Package | Is |
+|---|---|
+| `internal/api` | The route table as **data**, both muxes, the gate interface, the error envelope — and ten meta-tests that walk the table. The only package with real logic yet. |
+| `internal/sys` | `Clock`, `DiskUsage`, `Random`. Never call `time.Now()` directly. |
+| `internal/subproc` | An invocation described as data, resolved by `PATH` or an injected `Resolver`. No shell anywhere, deliberately. |
+| `internal/config` | Settings that must not be constants, `LabelPrefix` chief among them, plus a `Validate` that refuses configurations which silently undo a design property. |
+| `internal/classify` | The five classifier **signatures**. They `panic` rather than return a plausible zero — see below. |
+| `test/fixtures/` | The corpus layout and its recording rules. **Empty**; recording it is what the testing plan still owes Phase 0. |
+
+Three things about that code worth knowing before extending it:
+
+- **Handlers are `nil` for routes a later phase owns**, and `Build` mounts a `501`. That is deliberate:
+  the table is the complete contract from the first commit, reviewable against §5 as a list, and the
+  gate is provably applied to routes nobody has written yet. **The auth gate runs before that `501`**
+  — otherwise an unauthenticated caller could tell a declared route from a nonexistent one and read
+  the API surface off a server it cannot use. There is a test for the ordering; do not reorder it.
+- **The classifiers panic on purpose.** A classifier that quietly returns `IdentityOK` for bytes it
+  cannot parse is exactly the failure the fixture corpus exists to prevent, so an unimplemented one
+  fails loudly rather than plausibly.
+- **The meta-tests were mutation-checked**, not just observed passing: moving the `501` ahead of the
+  auth gate fails 20 subtests, marking a route unauthenticated fails the count assertion by name, and
+  deleting the `Origin` check fails 14. Keep that property — a negative test nobody has watched fail
+  is a negative test that might be vacuous (testing §4.1).
 
 Two of those docs ship something runnable, and both are the thing to open before arguing about the
 subject in prose. `docs/design/frontend/prototype/prototype.html` is a clickable harness for every

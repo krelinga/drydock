@@ -2,7 +2,7 @@
 
 *A single-host server that turns any GitHub repository into a running dev container with a supervised, remote-controllable Claude Code session inside it — one click from a repo list, with push credentials scoped to that repo alone.*
 
-**Status** design document, draft v7 · **Date** 4 October 2026 · five findings from the [testing plan](../testing/testing-design.md) §15 applied — §4, §6, §10.1, §10.3 and §13.5; Phase 0 spikes complete — §7.2, §7.3, §8, §10.3, and §11 revised against measurement (see [spikes](../spikes/)); §13 auth revised for cross-site previews (see the [security review](../security-review.md) and [port forwarding](../port-forwarding/port-forwarding-design.md)) · the UI this document describes in passing is specified in the [frontend design](../frontend/frontend-design.md)
+**Status** design document, draft v8 · **Date** 4 October 2026 · §5 corrected: the sign-in POST is the **only** unauthenticated route, not the three `/api/auth/session` verbs — `GET` there returns the device list, and the error was found by implementing the route table (see the callout in §5, and the [testing plan](../testing/testing-design.md) §5.1) · five findings from the [testing plan](../testing/testing-design.md) §15 applied — §4, §6, §10.1, §10.3 and §13.5; Phase 0 spikes complete — §7.2, §7.3, §8, §10.3, and §11 revised against measurement (see [spikes](../spikes/)); §13 auth revised for cross-site previews (see the [security review](../security-review.md) and [port forwarding](../port-forwarding/port-forwarding-design.md)) · the UI this document describes in passing is specified in the [frontend design](../frontend/frontend-design.md)
 
 **Runtime** single dev server, local Docker socket · **Reach** LAN, behind Caddy
 
@@ -285,7 +285,26 @@ Four notes on what is deliberately absent. There is no plaintext secret value �
 
 REST over a Unix socket, plus one SSE stream. Every mutating call is asynchronous: it validates, writes a state transition, returns `202` with the workspace, and lets the client follow along on the stream. Nothing blocks on a container build.
 
-**Every route below except the three auth routes requires a valid session cookie** — enforced by middleware that wraps the whole mux, so a new handler is protected by default rather than by remembering to protect it. Every state-changing route additionally checks `Origin` (§13.3).
+**Every route below except `POST /api/auth/session` requires a valid session cookie** — enforced by middleware that wraps the whole mux, so a new handler is protected by default rather than by remembering to protect it. Every state-changing route additionally checks `Origin` (§13.3).
+
+> [!WARNING]
+> **One route is open, not three — and "gated" has three shapes**
+>
+> Draft v7 and earlier said *"except the three auth routes"*, meaning the three `/api/auth/session` verbs. That was wrong, and wrong in a way that mattered: `GET /api/auth/session` returns **the list of signed-in devices**, so an unauthenticated `200` there hands an attacker the operator's device inventory — and the frontend depends on that route answering `401` when signed out, since a `401` from anywhere is its authoritative "you are signed out now" ([frontend](../frontend/frontend-design.md) §2.2, §4.4). §13.5's non-negotiable is the correct statement: **the sign-in POST is the only unauthenticated route**, and it is the rate-limited one.
+>
+> What the correction exposed is that the gate is not one-shaped. Implementing the route table found three:
+>
+> | Gate | No credential ⇒ | Used by |
+> |---|---|---|
+> | **required** | `401` + the error envelope | every API route but one |
+> | **redirect** | `302` to sign-in carrying `?return=` | `GET /preview/authorize` only |
+> | **none** | the handler runs | `POST /api/auth/session` only |
+>
+> `GET /preview/authorize` needs the middle one because it is a *cross-site top-level navigation* ([port forwarding](../port-forwarding/port-forwarding-design.md) §7 step 3), not a `fetch`: a browser following that redirect with no session must land on a sign-in form that returns it afterwards, and a `401` there is a dead end the operator cannot act on. The preview mux's `/.drydock/session` is a fourth case that is not a session gate at all — it is gated by the single-use token, because the session cookie is host-only and cannot reach a preview origin.
+>
+> So the invariant to hold is **"every route but one is gated before its handler runs"**, which is what the meta-tests assert, rather than "every route but one returns `401`".
+>
+> One ordering detail from the same work, because it is a leak rather than a style question. Routes a later phase owns are declared in the table with no handler and answer `501`. **The auth gate must run before that `501`** — otherwise an unauthenticated caller can tell a declared route from a nonexistent one and read the API surface off a server it cannot use.
 
 | Method & path | Does | Returns |
 |---|---|---|
@@ -296,6 +315,7 @@ REST over a Unix socket, plus one SSE stream. Every mutating call is asynchronou
 | `POST /api/repos/refresh` | Re-read the installation listing from GitHub. | `202` |
 | `POST /api/workspaces` | **The clone button.** Body: `repository_id`, optional `branch`. | `202` + workspace |
 | `GET /api/workspaces/:id` | Full state: the supervisor, how many sessions it is serving and the primary session link, last events, disk usage. | Workspace |
+| `GET /api/workspaces/:id/logs?tail=n` | The supervisor's ring buffer (§8), redacted, never persisted. Listed here rather than only in the note below because the route table in code declares it, and the two are meant to be diffable by eye. | Log lines |
 | `POST /api/workspaces/:id/start` | `devcontainer up` on an existing clone. | `202` |
 | `POST /api/workspaces/:id/stop` | Stop the supervisor, then the container. Ends every live session; the clone and its worktrees survive, so starting again is cheap. | `202` |
 | `POST /api/workspaces/:id/rebuild` | `up --remove-existing-container`. Clone survives. | `202` |

@@ -2,7 +2,7 @@
 
 *How a system whose load-bearing properties are mostly things that must **never** happen gets a test suite that actually notices when one of them does.*
 
-**Status** design document, draft v5 · **Date** 4 October 2026 · §16.1's last open question is **answered** by [Spike 04](../spikes/04-browser-ca.md) — the browser tier's local CA works via NSS trust, so §10.1 is built as specified and its `ignoreHTTPSErrors` prohibition is re-grounded on what the spike actually measured · a **frontend** tier added to §3 and §10.3, and §10.1's `chromedp` fallback withdrawn — the [frontend design](../frontend/frontend-design.md) puts TypeScript in the repository regardless, so the second language is no longer a cost this tier has to justify · §15's five findings are **applied** in overall v7 and port-forwarding v4; §8.2, §8.5 and §15 updated to match
+**Status** design document, draft v6 · **Date** 4 October 2026 · §5.1 and §8.1 corrected against the implemented route table: the gate has three shapes, so the assertion is "no handler ran" rather than "returns `401`", and the auth gate must precede the `501` for an unimplemented route · §16.1's last open question is **answered** by [Spike 04](../spikes/04-browser-ca.md) — the browser tier's local CA works via NSS trust, so §10.1 is built as specified and its `ignoreHTTPSErrors` prohibition is re-grounded on what the spike actually measured · a **frontend** tier added to §3 and §10.3, and §10.1's `chromedp` fallback withdrawn — the [frontend design](../frontend/frontend-design.md) puts TypeScript in the repository regardless, so the second language is no longer a cost this tier has to justify · §15's five findings are **applied** in overall v7 and port-forwarding v4; §8.2, §8.5 and §15 updated to match
 
 **Supplements** [`../overall/drydock-design.md`](../overall/drydock-design.md) draft v7 · [`../port-forwarding/port-forwarding-design.md`](../port-forwarding/port-forwarding-design.md) draft v4 · [`../frontend/frontend-design.md`](../frontend/frontend-design.md) draft v4 · reads [`../security-review.md`](../security-review.md) draft v1 and Spikes [00](../spikes/00-shared-credential-volume.md), [01](../spikes/01-login-handshake.md), [02](../spikes/02-rc-restart.md), [03](../spikes/03-claude-env-file.md)
 
@@ -162,16 +162,28 @@ These are design requirements, not test code. Each exists because a tier is impo
 
 ### 5.1  The route table is data
 
-`http.ServeMux` cannot be enumerated, so the mux is built from a declarative slice — `{method, pattern, handler, mutating bool}` — and the auth middleware wraps the whole thing as §13.5 requires. The meta-tests then drive the slice rather than a hand-maintained list of paths:
+`http.ServeMux` cannot be enumerated, so the mux is built from a declarative slice — `{method, pattern, mux, auth, mutating, name, handler}` — and the auth middleware wraps the whole thing as §13.5 requires. The meta-tests then drive the slice rather than a hand-maintained list of paths:
 
-- every entry except `POST /api/auth/session` returns `401` with no cookie;
-- the set of entries answering without a cookie is *exactly* that one;
+- **no entry's handler runs with every gate refused** — asserted on *whether the handler ran*, not on the status code, because a `403` with the side effect already committed is the bug a status assertion misses;
+- the set of entries reachable with no credential at all is **exactly** `{POST /api/auth/session}`, scoped to the API mux;
 - every `mutating` entry refuses a wrong, lookalike, and absent `Origin`;
-- no entry emits `Access-Control-Allow-Origin`;
-- every entry, requested on `preview.sock`, returns `404` and never reaches a handler;
-- the preview mux's entry set is exactly `{GET /.drydock/session, GET /.drydock/denied}`.
+- no entry emits `Access-Control-Allow-Origin` — on success *or* on any refusal path, which is where a reflexive CORS header gets added by someone debugging a `fetch`;
+- a foreign `Host` is refused on every API entry, independently of Caddy;
+- every API entry, requested on `preview.sock`, returns `404` and never reaches a handler, and every preview entry on the API socket likewise;
+- the preview mux's entry set is exactly `{GET /.drydock/session, GET /.drydock/denied}`;
+- an **unauthenticated caller cannot tell a declared-but-unimplemented route from a nonexistent one** — see the ordering note below.
 
-A route added in Phase 6 is covered by all six without anyone editing a test. That is the testing form of "protected by forgetting to think about it."
+A route added in Phase 6 is covered by all eight without anyone editing a test. That is the testing form of "protected by forgetting to think about it."
+
+> [!NOTE]
+> **Two corrections from implementing this, both of which change an assertion**
+>
+> Draft v5 and earlier said *"every entry except `POST /api/auth/session` returns `401` with no cookie"*. Written as code, that assertion fails on a route the design requires:
+>
+> - **`GET /preview/authorize` answers `302`, not `401`.** It is a cross-site top-level navigation ([PF §7](../port-forwarding/port-forwarding-design.md) step 3), so a browser arriving with no session must land on the sign-in page carrying `?return=`. The gate has **three** shapes — `401`, `302`-to-sign-in, and open — and the invariant is *"gated before its handler runs"* rather than *"returns `401`"*. The overall design's §5 now carries the table. An assertion written the old way would have been "fixed" by making that route return `401`, which breaks the handshake.
+> - **The auth gate must precede the not-implemented reply.** The route table declares the complete surface from the first commit, with `handler == nil` for routes later phases own, and those answer `501`. If that `501` came first, an unauthenticated caller could enumerate which routes exist. So there is a meta-test asserting `401` — and a body that does not name the route — for an unimplemented, authenticated route.
+>
+> Both are the §4.1 failure in a new costume: an assertion that looks right, passes, and is checking the wrong thing. The second one is also why `handler` stays in the slice even while most are nil — the table is reviewable against §5 as data, and the gate is provably applied to routes nobody has written yet.
 
 ### 5.2  Time, disk, and randomness are injected
 
@@ -332,8 +344,9 @@ The table CLAUDE.md's invariant list and §13.5 / PF §10.7 imply. Columns: the 
 |---|---|---|---|
 | No TCP listener, ever | component | enumerate the process's own listening sockets after startup; assert empty | signed-in `GET /api/repos` → `200` over the Unix socket |
 | Socket is group-owned, mode `0660` | component | `stat` the socket | a request through it succeeds |
-| Every route needs a cookie | component | drive the route table (§5.1), no cookie → `401` | each route with a cookie → not `401`; table asserted non-empty |
-| Only the sign-in POST is unauthenticated | component | the set answering without a cookie equals that one entry | sign-in with the right password → `204` + cookie |
+| Every route is gated before its handler | component | drive the route table (§5.1) with every gate refused; assert **no handler ran** — `401`, or `302` to sign-in for the one navigation route (§5.1 note) | each route with every gate satisfied → its handler *does* run; table asserted non-empty |
+| Only the sign-in POST is unauthenticated | component | the set of API-mux entries reachable with no credential equals that one entry | sign-in with the right password → `204` + cookie |
+| An unimplemented route is not a route oracle | component | an authenticated-but-unimplemented entry answers `401` with no cookie, and the body does not name it — the gate precedes the `501` | with a cookie the same entry answers `501`, so the `501` path is live |
 | `Origin` is exact-match | component | per mutating route: wrong, suffix-lookalike `https://evil.drydock.test`, and absent `Origin` → `403` | correct `Origin` → `202` |
 | No permissive or reflected CORS | component | no response from any route carries `Access-Control-Allow-Origin` | at least one route was hit *with* an `Origin` header |
 | `Host` is validated in Drydock too | component | foreign `Host` on the API socket, bypassing Caddy → `403` | correct `Host` → `200` |
