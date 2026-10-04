@@ -43,7 +43,7 @@ printf "%s\n" "$PW" | ./drydock passwd --db x.db  # set the operator password (n
 | `deploy/Caddyfile`, `deploy/preview.caddy` | The entire LAN-facing surface, every value an env placeholder so the shipped files are the tested files. The preview site is a separate, optional file imported by glob, so a first deployment needs no wildcard certificate. |
 | `deploy/install.sh` | The installer and upgrader, one file in two modes: standalone (`curl … \| sudo bash`) it downloads and verifies the release tarball and runs the copy inside; from the tarball it installs. Settings persist in `/etc/drydock/drydock.env`, parsed, never `source`d. Idempotent: files are written only when they change, and only what changed is restarted. |
 | `deploy/package.sh` | Builds the release assets — the same script in CI and in the installer test. |
-| `test/install/` | `run.sh` runs the installer against real systemd and the official Caddy package in a privileged DinD container: fresh install, no-op re-run, upgrade, rollback, previews on and off, an unreadable key, a foreign Caddyfile. Not part of `go test`. |
+| `test/install/` | `run.sh` runs the installer against real systemd and the official Caddy package in a privileged container: fresh install, no-op re-run, upgrade, rollback, previews on and off, an unreadable key, a foreign Caddyfile. `live.sh vX.Y.Z` runs the README one-liner against a *published* release from GitHub. Neither is part of `go test`; CI runs the first, the release workflow the second. |
 | `test/component/` | Real binaries, nothing mocked. Today: the Caddyfile conformance test (testing §3.2), mutation-checked against the Caddyfile itself. |
 | `test/fixtures/` | The corpus: 35 fixtures from `2.1.289` and devcontainer CLI `0.89.0`, plus `record.sh`, which is testing §11.1 step 3. Some are hand-written or synthetic, and their `.meta` says which. |
 
@@ -124,6 +124,15 @@ workflow, runs the suite and uploads the assets under **fixed names** so
 `install.sh`, both Caddy files, `VERSION`), `SHA256SUMS`, and `install.sh` stamped with its tag. It
 is one workflow, not a tag-triggered second one, because tags pushed with `GITHUB_TOKEN` trigger
 nothing. The repo setting *Allow GitHub Actions to create and approve pull requests* must be on.
+
+After the upload, a `verify` job runs `test/install/live.sh <tag>` — the README line against what was
+just published. A red `verify` means a broken release is already public: fix forward with a `fix:`.
+
+**CI** (`.github/workflows/ci.yml`) runs on every PR and push to `main`: `gofmt`, `go vet`, `go test`
+with Caddy installed and `DRYDOCK_REQUIRE_CADDY=1` — without it a missing `caddy` is a *skip*, which
+in CI is a silent pass of the Caddyfile test — then `npm run check`, then `test/install/run.sh`. Its
+`CADDY_VERSION` is pinned; the devcontainer's Caddy feature is not, so bump the pin when a rebuild
+moves it. Releases are amd64 only, by choice.
 
 The README's one-liner is the contract: change an asset name, a flag, or `/etc/drydock/drydock.env`
 and an existing install's re-run is what breaks. `test/install/run.sh` installs from a local copy of

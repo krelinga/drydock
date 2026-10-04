@@ -40,9 +40,22 @@ jobs:
         with:
           go-version-file: go.mod
 
+      - name: Install Caddy
+        env:
+          CADDY_VERSION: 2.11.7 # keep in step with ci.yml
+        run: |
+          base=https://github.com/caddyserver/caddy/releases/download/v$CADDY_VERSION
+          tarball=caddy_${CADDY_VERSION}_linux_amd64.tar.gz
+          curl -fsSLO "$base/$tarball" -fsSLO "$base/caddy_${CADDY_VERSION}_checksums.txt"
+          grep " $tarball\$" "caddy_${CADDY_VERSION}_checksums.txt" | sha512sum -c -
+          sudo tar -xzf "$tarball" -C /usr/local/bin caddy
+          rm -f "$tarball" "caddy_${CADDY_VERSION}_checksums.txt"
+
       # The release is what the README's one-liner installs; a failing suite
       # must not reach it. No Node: the UI ships prebuilt in internal/web/dist.
       - run: go vet ./... && go test ./...
+        env:
+          DRYDOCK_REQUIRE_CADDY: "1"
 
       # Fixed asset names, so releases/latest/download/<name> always resolves.
       # The tarballs carry the binary, install.sh and the Caddy files;
@@ -56,3 +69,19 @@ jobs:
         env:
           TAG: ${{ needs.release-please.outputs.tag }}
           GH_TOKEN: ${{ github.token }}
+
+  # The README's one-liner against what was just uploaded, downloaded from
+  # GitHub as an operator would. A red run here means a published release is
+  # broken: fix forward with a `fix:` commit.
+  verify:
+    needs: [release-please, assets]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.release-please.outputs.tag }}
+      - run: test/install/live.sh "$TAG"
+        env:
+          TAG: ${{ needs.release-please.outputs.tag }}

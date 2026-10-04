@@ -50,10 +50,14 @@ The devcontainer carries the whole toolchain. The Go build needs no Node: the UI
 built, in `internal/web/dist`.
 
 ```sh
-go build ./... && go vet ./... && go test ./...   # the Go suite
+go build ./... && go vet ./... && go test ./...   # the Go suite (the Caddy test needs `caddy`)
 cd web && npm ci && npm run check                 # the UI, including that dist is current
 test/install/run.sh                               # the installer, against real systemd and Caddy
+test/install/live.sh latest                       # the one-liner, against the published release
 ```
+
+CI runs all but the last on every pull request; the release workflow runs the last against each
+release it publishes.
 
 Releases are cut by [release-please](https://github.com/googleapis/release-please) from
 [conventional commit](https://www.conventionalcommits.org/) subjects: `feat:` and `fix:` cut a

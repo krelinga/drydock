@@ -96,6 +96,12 @@ var env struct {
 func TestMain(m *testing.M) {
 	code := func() int {
 		if _, err := exec.LookPath("caddy"); err != nil {
+			// CI sets this: there, a skip would be a silent pass of the one
+			// test of the LAN-facing surface.
+			if os.Getenv("DRYDOCK_REQUIRE_CADDY") != "" {
+				fmt.Fprintln(os.Stderr, "caddy is not installed, and DRYDOCK_REQUIRE_CADDY is set")
+				return 1
+			}
 			env.skip = "caddy is not installed"
 			return m.Run()
 		}

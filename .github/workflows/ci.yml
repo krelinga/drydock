@@ -1,0 +1,68 @@
+# Every test that can run on a GitHub-hosted runner, on every PR and every push
+# to main. Make the three jobs required checks so nothing merges red.
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+env:
+  # The Caddy the conformance test runs. The devcontainer's feature takes the
+  # latest; bump this when a rebuild moves it.
+  CADDY_VERSION: 2.11.7
+
+jobs:
+  go:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - name: Install Caddy
+        run: |
+          base=https://github.com/caddyserver/caddy/releases/download/v$CADDY_VERSION
+          tarball=caddy_${CADDY_VERSION}_linux_amd64.tar.gz
+          curl -fsSLO "$base/$tarball" -fsSLO "$base/caddy_${CADDY_VERSION}_checksums.txt"
+          grep " $tarball\$" "caddy_${CADDY_VERSION}_checksums.txt" | sha512sum -c -
+          sudo tar -xzf "$tarball" -C /usr/local/bin caddy
+      - name: gofmt
+        run: test -z "$(gofmt -l . | tee /dev/stderr)"
+      - run: go vet ./...
+      # Without DRYDOCK_REQUIRE_CADDY a missing caddy is a skip, which here
+      # would be a silent pass of the one test of the LAN-facing surface.
+      - run: go test ./...
+        env:
+          DRYDOCK_REQUIRE_CADDY: "1"
+
+  web:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci
+      # Types, unit tests, the size budget, and that the committed
+      # internal/web/dist is exactly what these sources build.
+      - run: npm run check
+
+  installer:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      # Real systemd, the official Caddy package, real TLS, in a privileged
+      # container: install, re-run, upgrade, rollback, previews, refusals.
+      - run: test/install/run.sh
