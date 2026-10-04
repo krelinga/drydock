@@ -39,6 +39,21 @@
   .s-dtab  { background:#16203a; color:#e2e8f0; --g-rule:#273450;
              --m-ink:#e2e8f0; --m-acc:#60a5fa; --m-bg:#16203a;
              --badge:#64748b; --knock:#f8fafc; }
+  /* GitHub's own canvases, where the App logos live. */
+  .s-ghl   { background:#ffffff; color:#1f2328; }
+  .s-ghd   { background:#0d1117; color:#e6edf3; }
+
+  /* The GitHub App logos are the committed PNGs themselves, not a redrawing,
+     downscaled by the browser the way GitHub serves ?s=40 and ?s=20. Primer's
+     avatar radius is applied; its 1px avatar border is deliberately not, so the
+     edge you see is the edge the image holds on its own. */
+  .gh { display: block; background-size: 100% 100%; border-radius: 6px; flex: none; }
+  .gh.sm { border-radius: 4px; }
+  .gh-prod { background-image: url(data:image/png;base64,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); }
+  .gh-dev  { background-image: url(data:image/png;base64,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); }
+  .ghline { display: flex; align-items: center; gap: 8px; font-size: 0.78rem; flex-wrap: wrap; }
+  .ghline b { font-weight: 600; }
+  .ghline span { opacity: 0.6; }
 
   * { box-sizing: border-box; }
 
@@ -226,10 +241,10 @@
     </h1>
     <div class="meta">
       <span>sheet</span><b>BRAND-01</b>
-      <span>revision</span><b>v1.0 &middot; settled</b>
+      <span>revision</span><b>v1.1 &middot; settled</b>
       <span>grid</span><b>32 &times; 32, 2u clear</b>
       <span>badge</span><b>steel &middot; rx 7.5</b>
-      <span>forms</span><b>3 SVG, 3 PNG</b>
+      <span>forms</span><b>3 SVG, 5 PNG</b>
     </div>
   </div>
 
@@ -265,7 +280,7 @@
   <section>
     <div class="zone"><span>B</span> &middot; the forms</div>
     <div class="body">
-      <h2>Three files, three jobs</h2>
+      <h2>Four forms, four jobs</h2>
 
       <div class="cards">
 
@@ -384,6 +399,63 @@
             24&nbsp;px, which is the size this form exists to serve.</p>
         </div>
 
+        <div class="card">
+          <div class="card-head">
+            <h3>The GitHub App logo</h3>
+            <span class="file">github-app-200.png &middot; github-app-dev-200.png</span>
+            <span class="tag">png &middot; full bleed</span>
+          </div>
+          <div class="stage">
+            <div class="pane s-ghl">
+              <div class="pane-label">GitHub light &middot; #ffffff</div>
+              <div class="hero-row">
+                <span class="gh gh-prod" style="width:200px;height:200px" role="img" aria-label="The Drydock GitHub App logo"></span>
+                <div class="ramp">
+                  <figure><span class="gh gh-prod" style="width:40px;height:40px"></span><figcaption>40</figcaption></figure>
+                  <figure><span class="gh sm gh-prod" style="width:20px;height:20px"></span><figcaption>20</figcaption></figure>
+                </div>
+              </div>
+              <div class="hero-row">
+                <span class="gh gh-dev" style="width:200px;height:200px" role="img" aria-label="The Drydock dev GitHub App logo, inverted"></span>
+                <div class="ramp">
+                  <figure><span class="gh gh-dev" style="width:40px;height:40px"></span><figcaption>40</figcaption></figure>
+                  <figure><span class="gh sm gh-dev" style="width:20px;height:20px"></span><figcaption>20</figcaption></figure>
+                </div>
+              </div>
+              <div class="ghline"><span class="gh sm gh-prod" style="width:20px;height:20px"></span><b>krelinga-drydock</b>[bot] <span>committed 3 minutes ago</span></div>
+              <div class="ghline"><span class="gh sm gh-dev" style="width:20px;height:20px"></span><b>krelinga-drydock-dev</b>[bot] <span>committed 3 minutes ago</span></div>
+            </div>
+            <div class="pane s-ghd">
+              <div class="pane-label">GitHub dark &middot; #0d1117</div>
+              <div class="hero-row">
+                <span class="gh gh-prod" style="width:200px;height:200px" aria-hidden="true"></span>
+                <div class="ramp">
+                  <figure><span class="gh gh-prod" style="width:40px;height:40px"></span><figcaption>40</figcaption></figure>
+                  <figure><span class="gh sm gh-prod" style="width:20px;height:20px"></span><figcaption>20</figcaption></figure>
+                </div>
+              </div>
+              <div class="hero-row">
+                <span class="gh gh-dev" style="width:200px;height:200px" aria-hidden="true"></span>
+                <div class="ramp">
+                  <figure><span class="gh gh-dev" style="width:40px;height:40px"></span><figcaption>40</figcaption></figure>
+                  <figure><span class="gh sm gh-dev" style="width:20px;height:20px"></span><figcaption>20</figcaption></figure>
+                </div>
+              </div>
+              <div class="ghline"><span class="gh sm gh-prod" style="width:20px;height:20px"></span><b>krelinga-drydock</b>[bot] <span>committed 3 minutes ago</span></div>
+              <div class="ghline"><span class="gh sm gh-dev" style="width:20px;height:20px"></span><b>krelinga-drydock-dev</b>[bot] <span>committed 3 minutes ago</span></div>
+            </div>
+          </div>
+          <p class="verdict">The badge, full bleed, because GitHub rounds the corners itself &mdash; the
+            apple-touch reasoning. Opaque, because one image is shown on both themes and a transparent
+            mark would depend on a page Drydock does not control. <b>The ground is the lifted steel
+            <code>#64748b</code>, not <code>#475569</code>:</b> a PNG cannot follow the theme, and the
+            lifted value is the one that holds an edge on both canvases (worst 3.98 against 2.50; see
+            zone&nbsp;D). <b>The dev App is the same image inverted</b> &mdash; a value swap rather than
+            a new hue, so it adds no colour, and at 20&nbsp;px a dark tile and a light one are still two
+            different things where two hues of the same value are not. On the light canvas the dev
+            tile's edge is gone by design and it reads as the bare mark.</p>
+        </div>
+
       </div>
     </div>
   </section>
@@ -476,6 +548,25 @@
         even with a lifted blue. So the container is the near-white and the letters are the ground. The
         consequence is that basin, blocks and container merge into one mass, and the air gap survives as
         three holes of ground colour under the vessel.</p>
+
+      <div class="tablewrap">
+        <table>
+          <caption>GitHub App logo: one PNG on both of GitHub's canvases. Edge is the tile against the
+            page; the 20&nbsp;px column is the brightest (or darkest) pixel of the mark against the tile
+            after a 10&times; box downscale of the committed 200&nbsp;px file.</caption>
+          <thead><tr><th>Logo</th><th>Light #ffffff</th><th>Dark #0d1117</th><th>Worst edge</th><th>Mark at 20&nbsp;px</th></tr></thead>
+          <tbody>
+            <tr><td><strong>Prod</strong>, lifted steel <code>#64748b</code></td><td>4.76</td><td>3.98</td><td><strong>3.98</strong></td><td>4.46</td></tr>
+            <tr class="bad"><td>Prod, steel <code>#475569</code></td><td>7.58</td><td>2.50</td><td>2.50</td><td>7.06</td></tr>
+            <tr><td><strong>Dev</strong>, inverse <code>#f8fafc</code> / <code>#475569</code></td><td>1.05</td><td>18.09</td><td>1.05, by design</td><td>6.92</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <p class="muted">The favicon's steel switches value with the theme; a PNG uploaded to GitHub cannot,
+        so it takes the one palette value that clears 3:1 on both canvases. The dev logo gives up its
+        light-canvas edge on purpose: there, it is the mark that identifies it, at 7.58 against the
+        page, and a tile that is <em>not</em> there is exactly what tells it apart from production.</p>
     </div>
   </section>
 
@@ -491,6 +582,7 @@
         <dt>air gap</dt><dd>2.1 units, constant. The metaphor lives here; nothing may spend it.</dd>
         <dt>letters</dt><dd>Stem, flat run, then a bowl whose radius is exactly half the letter height &mdash; a true half-circle, so the letter cannot go lopsided when resized.</dd>
         <dt>badge</dt><dd><code>rect 1 1 30 30 rx 7.5</code>; mark scaled <code>0.78</code> about the centre, leaving 4.16u of padding (about 14%).</dd>
+        <dt>github app</dt><dd>The badge geometry at 200&nbsp;px, <code>bleed</code> (no corners of its own), opaque. Prod <code>steel-lift</code>, dev <code>steel-inverse</code> &mdash; palette names in <code>render-icons.mjs</code>.</dd>
         <dt>stroke comp</dt><dd>Every stroke inside the badge is divided by the scale &mdash; basin 2 &rarr; <code>2.56</code>, stencil 0.8 &rarr; <code>1.03</code>. Skipping this is the usual way a scaled-down mark comes out visibly thinner than its standalone version.</dd>
         <dt>lip x</dt><dd>Set by the round cap, not the path: a cap reaches a full unit past its endpoint in every direction. That is why the lips sit at x&nbsp;3.1 rather than 3.5.</dd>
         <dt>pngs</dt><dd>Rasterised by <code>render-icons.mjs</code> from the same numbers, via signed distance fields &mdash; no rasteriser needed. The two are <em>not</em> generated from one source: change a path, change both.</dd>
@@ -521,8 +613,8 @@
 
   <footer>
     <span>docs/design/brand/</span>
-    <span>brand-design.md &middot; v1.0 settled</span>
-    <span>8 files &middot; icons/</span>
+    <span>brand-design.md &middot; v1.1 settled</span>
+    <span>10 files &middot; icons/</span>
     <span>re-render after any geometry change</span>
   </footer>
 </div>
