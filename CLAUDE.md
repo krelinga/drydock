@@ -5,8 +5,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Repository state
 
 **Design-only. There is no application source code yet.** The repository contains the overall design
-document (`docs/design/overall/drydock-design.md`, draft v6), supplemental ones on port forwarding
-(`docs/design/port-forwarding/`, draft v3) and testing (`docs/design/testing/`, draft v1), an
+document (`docs/design/overall/drydock-design.md`, draft v7), supplemental ones on port forwarding
+(`docs/design/port-forwarding/`, draft v4) and testing (`docs/design/testing/`, draft v3), an
 adversarial security review (`docs/design/security-review.md`), their SVG diagrams, a devcontainer
 definition, and the **four completed Phase 0 spikes** with their harnesses under
 `docs/design/spikes/`. There are no build, lint, or test commands because nothing is built yet —
@@ -102,6 +102,15 @@ These come from §2 (Claude Code constraints) and §13.5 (non-negotiables). Most
   the sign-in POST is unauthenticated, and it is rate-limited and lockout-guarded.
 - **No route returns a secret value** — no reveal button, no edit form, no re-auth escape hatch. The
   schema has no `value` column, and it should stay that way.
+- **A secret value is single-line on write and single-quoted on delivery.** Control characters are
+  refused by the API (§10.1); `drydock-secrets export` quotes every value, escaping `'` as `'\''`
+  (§10.3). A newline forges a line in the `GET-SECRETS` response and bypasses the reserved-name list
+  above; an unquoted value is shell code that runs before *every* Bash command, because the prelude
+  runs per command. The client also fails the fetch when `count=` disagrees with the lines received.
+- **The workspace label prefix is configuration, recorded at first run, and reconciliation refuses a
+  foreign one.** Adoption and deletion are label-driven, so a second instance sharing the prefix
+  inherits the first's containers *including its delete path*. The SQLite advisory lock does not
+  cover this — the second instance has its own database. This is what a test run is.
 - **Store no credential but the App private key.** GitHub tokens live in a bounded in-memory cache;
   `token_grant` records that a token was issued, never the token. `auth_session.id` is the SHA-256
   of the cookie value, so a stolen DB file yields no usable cookie. Secret values are XChaCha20-
@@ -221,13 +230,13 @@ with the same exit code and demands four verdicts. And **a missing `remoteDialog
 than failing**, so that scenario asserts a *timeout*; a suite with no hang fixture passes against the
 exact bug Spike 02 found.
 
-§15 of that document holds five findings that are changes to the *design* docs, not to it, all
-re-validated against draft v6: the line-oriented `GET-SECRETS` protocol and
-`eval "$(drydock-secrets export)"` are both injectable via a secret value — and the second got worse,
-since v6 runs that prelude before *every* Bash command; three states the prose now requires have no
-column (`claude_identity.state`, `workspace.environment_id`, and a `supervisor.state` value for the
-`409` wait); a retired preview slug can be reissued; and the label key above. They are unapplied on
-purpose.
+§15 of that document recorded five findings that were changes to the *design* docs rather than to it.
+**All five are now applied** (overall v7, port-forwarding v4) and §15 is a dated record rather than an
+open list: secret values are validated and quoted (the two invariants above), the three missing
+columns exist (`claude_identity.state`, `workspace.environment_id`, and `waiting_registration` in
+`supervisor.state`), preview ports are retired rather than deleted so a slug is never reissued, and
+the label prefix is configuration. Each has test rows in §8.2, §8.5 and §8.6 — a finding closed in
+prose with no test is one that reopens quietly.
 
 ## Docs
 

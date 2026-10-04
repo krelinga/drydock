@@ -2,7 +2,7 @@
 
 *Reaching a dev server running inside a workspace container from a phone or tablet on the LAN — without giving repository code a foothold on Drydock's own origin.*
 
-**Status** design document, draft v3 · **Date** 28 August 2026 · previews moved to a separate registrable domain (cross-site) per the [security review](../security-review.md)
+**Status** design document, draft v4 · **Date** 4 October 2026 · slugs are retired rather than deleted, so a stale bookmark cannot be reissued to another workspace ([testing plan](../testing/testing-design.md) §15.4); previews moved to a separate registrable domain (cross-site) per the [security review](../security-review.md)
 
 **Supplements** [`../overall/drydock-design.md`](../overall/drydock-design.md) · **Depends on** §3, §6, §13 of that document
 
@@ -88,6 +88,8 @@ https://<slug>.drydock-preview.net
 
 The random suffix is not a security control. Previews are authenticated; it is there so that deleting and re-adding a port produces a *different* URL, which means a stale bookmark fails closed rather than silently landing on whatever now occupies port 3000.
 
+**That only holds if a retired slug is never minted again**, and four random characters do not guarantee it on their own — a slug freed by a delete could later be drawn for a different workspace, at which point the stale bookmark stops failing closed and starts resolving to somebody else's preview. It is unlikely and the consequence is the cross-workspace exposure this design otherwise works to prevent, which is the wrong side of that trade. So `DELETE` **retires** the row rather than removing it (§5): the slug stays spent, the global `UNIQUE` on it does the enforcing, and "a stale bookmark fails closed" becomes a property of the schema instead of a property of the odds.
+
 The wildcard is on a **separate registrable domain** from the UI — `drydock-preview.net`, distinct from `drydock.example.com`. That is the crux of the whole security model, not a naming preference: because the two do not share a registrable domain, a previewed app is *cross-site* with the control plane, so `SameSite=Lax` stops it issuing authenticated requests to `/api/*` without an application check having to catch every one (§10.2). It costs one more domain to own and renew — the deliberate price for making the browser enforce the boundary rather than an `Origin` check on every route.
 
 | Alternative | Why not |
@@ -125,8 +127,16 @@ forwarded_port(
   first_seen_at TEXT, last_seen_at TEXT,
 
   created_at TEXT, last_used_at TEXT,
-  UNIQUE(workspace_id, container_port)
+  retired_at TEXT                    -- soft delete. The row stays so its slug stays
+                                     -- spent: `slug UNIQUE` is then what makes
+                                     -- non-reuse structural rather than probabilistic
 )
+
+-- One *live* row per (workspace, port). Retiring rather than deleting would otherwise
+-- block re-adding a port, so the uniqueness that matters is partial; the global
+-- UNIQUE on `slug` keeps applying to retired rows, which is the entire point.
+CREATE UNIQUE INDEX forwarded_port_live
+  ON forwarded_port(workspace_id, container_port) WHERE retired_at IS NULL;
 
 -- A device's proof that it may view previews. Dies with the session that minted it.
 preview_session(
@@ -147,7 +157,7 @@ There is **no upstream host column** — only a port. The upstream address is al
 
 The row is **per preview host, not per device**. A single cookie covering `.drydock-preview.net` would let a previewed app fetch every other preview on the same device. Host-only cookies cost one extra redirect per preview, and §7 explains why that redirect is invisible.
 
-Two lifetimes, both made explicit rather than left implicit. The preview cookie gets its **own** idle TTL keyed on `last_seen_at`, shorter than the auth session's — a captured preview cookie should not stay live for the auth session's full 30-day ceiling. And a `preview_session` is deleted when its port is disabled or removed, not only when the auth session is: without that, disabling a port dial-blocks new requests (§8.1) but leaves the minted rows lying around to reactivate silently on re-enable. The cascade on `auth_session` is the backstop for the lost-device case; per-port cleanup is the routine one.
+Two lifetimes, both made explicit rather than left implicit. The preview cookie gets its **own** idle TTL keyed on `last_seen_at`, shorter than the auth session's — a captured preview cookie should not stay live for the auth session's full 30-day ceiling. And a `preview_session` is deleted when its port is disabled or retired, not only when the auth session is: without that, disabling a port dial-blocks new requests (§8.1) but leaves the minted rows lying around to reactivate silently on re-enable. The cascade on `auth_session` is the backstop for the lost-device case; per-port cleanup is the routine one.
 
 ## 6. API surface
 
@@ -158,7 +168,7 @@ Additions to §5 of the overall document. All on the API mux, all behind the ses
 | `GET /api/workspaces/:id/ports` | Every known port — declared, observed, manual — with its provenance flags, `bind_addr`, `observed_state`, `last_seen_at`, and URL if enabled. Hidden rows only with `?hidden=true`. | Port list |
 | `POST /api/workspaces/:id/ports` | Add a port by hand. Body: `container_port`, optional `label`, `upstream_scheme`, `host_header`. Mints the slug. | `201` + port |
 | `PATCH /api/workspaces/:id/ports/:port` | Enable, disable, hide, unhide, or relabel. Enabling is the click that makes a URL live. | `200` + port |
-| `DELETE /api/workspaces/:id/ports/:port` | Remove it. The slug is not reused. A still-listening port reappears on the next scan as a fresh, disabled row. | `204` |
+| `DELETE /api/workspaces/:id/ports/:port` | **Retire** it — a soft delete that keeps the slug spent forever (§4, §5). Its `preview_session` rows go immediately. A still-listening port reappears on the next scan as a fresh, disabled row with a *new* slug. | `204` |
 | `POST /api/workspaces/:id/ports/rescan` | Force a discovery scan now instead of waiting for the interval. | `200` + port list |
 | `GET /api/workspaces/:id/ports/:port/probe` | Dial it now and report what happened, with the §11 diagnosis attached. Rarely needed once §8.2 is running — discovery usually knows the answer already. | Probe result |
 | `GET /preview/authorize` | The main-origin half of the handshake in §7. Query: `return`. Requires a session. | `302` |
@@ -411,6 +421,7 @@ Extending §13.4 of the overall document:
 - **The container is re-resolved by label at every dial and every scan, never trusted from cache.** A `running` row is not permission to dial a remembered IP: the container may have died unobserved and Docker may have handed that IP, or that PID, to someone else (§8.1, §8.2). Trust the `drydock.workspace=<id>` label resolved *now*, or treat the workspace as stopped — never a stale address.
 - **The preview cookie never reaches the container**, and an upstream `Set-Cookie` may not claim its name. This is the preview proxy's job on the hop to the container, *not* Caddy's on the hop to `preview.sock` — where the cookie still has to arrive for the request to authenticate at all (§7, §9).
 - **Previews are default-deny.** No `forwarded_port` row with `enabled = 1`, no preview — the same rule, for the same reason, as `secret_grant` in §10.1.
+- **A retired slug is never reissued.** `DELETE` retires the row and the global `UNIQUE` on `slug` keeps covering it, so a hostname is spent for good and a stale bookmark always fails closed. Reusing one would point an old link at a different workspace's preview, which is the cross-workspace exposure §8.1 exists to prevent, arrived at by coincidence instead of by a stale cache.
 - **Discovery never enables anything.** The scanner writes `observed`, `bind_addr`, and timestamps. It has no path to `enabled`, and it is worth keeping that as a property of the code rather than of the current implementation: the container decides what it listens on, so a scanner that could enable would hand that decision to the container.
 - **Previews are served from a separate registrable domain from the UI.** This is what keeps them cross-site, so `SameSite` — not one application check — is the primary CSRF boundary (§4, §10.2). Collapsing them onto one registrable domain is a security regression, not a naming change.
 - **The API's `Origin` allowlist is exact-match and fail-closed.** Defense in depth behind `SameSite=Lax`, which does the primary CSRF work now that previews are cross-site (§10.2) — but kept exact (never a suffix), fail-closed on an absent `Origin`, and free of reflected CORS, because the cost is nil and it is the safety net if the domains are ever collapsed.
@@ -433,7 +444,7 @@ Extending §12. The first row is the one that will actually happen, repeatedly.
 | App rejects the `Host` header | Upstream returns 400/403 with a recognizable body (`Blocked request`, `Invalid HTTP_HOST`) | Detect the signature and suggest the fix for that framework, or switching the port to `host_header: localhost`. A raw 403 here reads as a Drydock bug. |
 | Websocket upgrade fails | `Upgrade` request returns non-101 | Usually `flush_interval` or a buffering layer. Surface it as "live reload unavailable" rather than breaking the page. |
 | Wildcard certificate missing or expired | TLS failure at Caddy, before Drydock | Previews fail; the UI is unaffected because it is a different block with a different cert. Health check warns on preview-cert expiry separately from the UI cert. |
-| Slug collision | `UNIQUE` violation on insert | Regenerate the random suffix and retry. Four characters over a per-repo-per-port namespace makes this rare and harmless. |
+| Slug collision, live or retired | `UNIQUE` violation on insert | Regenerate the random suffix and retry. The constraint covers retired rows too, which is what makes the retry mandatory rather than cosmetic: without it the collision would be resolved by handing a spent hostname to a new port. |
 | Preview left open on a lost device | You notice, as in §13.2 | *Revoke all sessions* cascades to `preview_session`, so every preview on every device dies with the same click. This is the reason for the foreign key. |
 | Too many concurrent previews or held-open HMR sockets | Live connection count against the cap (§10.7) | Connections beyond the cap are refused with a plain 503; upgrades idle past the timeout are closed. A buggy client, or an unauthenticated redirect flood from a LAN device, cannot pin the process — the preview mux is bounded like the rest of the system (§1). |
 
@@ -489,6 +500,7 @@ Step 1 before anything else, for the same reason §14 puts the front door before
 | Publish container ports on the host? | **No.** Drydock dials the container's Docker-network address from the host. Publishing would put listeners on the dev server's interfaces, which is the thing §13.5 exists to prevent. |
 | Discover ports with an in-container agent, like VS Code does? | **No — read the netns from the host.** VS Code can afford an agent because it already runs a server inside the container. Drydock does not, and `/proc/<pid>/net/tcp` gives the same answer as an unprivileged file read: no exec, no image dependency, no cost per poll, and the container stays unaware it is being previewed (§8.2). |
 | Should a newly discovered port notify the operator? | **No.** Ambient count on the card, decisions in the panel. A prompt that fires whenever a test run opens a socket trains a click-through reflex — the same argument §13.5 of the overall document uses to refuse a re-auth prompt on delete (§8.2). |
+| Delete a `forwarded_port` row, or retire it? | **Retire it.** A deleted row frees its slug, and a reissued slug makes a stale bookmark resolve to a different workspace rather than failing closed (§4). Soft-deleting costs one column and a partial index, and it moves that guarantee from the odds into the schema. |
 
 ---
 

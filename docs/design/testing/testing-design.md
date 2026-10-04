@@ -2,9 +2,9 @@
 
 *How a system whose load-bearing properties are mostly things that must **never** happen gets a test suite that actually notices when one of them does.*
 
-**Status** design document, draft v2 · **Date** 4 October 2026 · revised against overall draft v6 and the completed Phase 0 spikes — §2, §5.5, §7, §8.2, §8.4, §11.1, §13 and §15 changed
+**Status** design document, draft v3 · **Date** 4 October 2026 · §15's five findings are **applied** in overall v7 and port-forwarding v4; §8.2, §8.5 and §15 updated to match
 
-**Supplements** [`../overall/drydock-design.md`](../overall/drydock-design.md) draft v6 · [`../port-forwarding/port-forwarding-design.md`](../port-forwarding/port-forwarding-design.md) draft v3 · reads [`../security-review.md`](../security-review.md) draft v1 and Spikes [00](../spikes/00-shared-credential-volume.md), [01](../spikes/01-login-handshake.md), [02](../spikes/02-rc-restart.md), [03](../spikes/03-claude-env-file.md)
+**Supplements** [`../overall/drydock-design.md`](../overall/drydock-design.md) draft v7 · [`../port-forwarding/port-forwarding-design.md`](../port-forwarding/port-forwarding-design.md) draft v4 · reads [`../security-review.md`](../security-review.md) draft v1 and Spikes [00](../spikes/00-shared-credential-volume.md), [01](../spikes/01-login-handshake.md), [02](../spikes/02-rc-restart.md), [03](../spikes/03-claude-env-file.md)
 
 **Out of scope** CI vendor specifics beyond topology · packaging and release mechanics · testing Caddy's or Docker's own correctness
 
@@ -354,6 +354,10 @@ The table CLAUDE.md's invariant list and §13.5 / PF §10.7 imply. Columns: the 
 | Default deny | component | ungranted repo's workspace → `GET-SECRETS` count 0 | granted repo's workspace receives it |
 | `reach` is required | component | `PUT` without `reach` → `400` | with it → `200` |
 | Reserved names refused | unit | table over the full §10.1 list | a legal name is accepted |
+| Control characters refused in a value | component | `PUT` a value containing `\n`, `\r`, or NUL → `400` naming the character | a value with spaces, quotes, and non-ASCII is accepted and round-trips |
+| A forged `GET-SECRETS` line cannot be delivered | component | with validation bypassed at the storage layer, the client's `count=` check fails the fetch and the prelude `exit`s non-zero | the unforged response delivers all three secrets |
+| `export` quotes every value | unit (property) | for arbitrary byte strings, `eval "$(drydock-secrets export)"` leaves the variable byte-identical | the shell-metacharacter corpus — `'`, `$(…)`, `;`, backtick — round-trips without executing |
+| No value executes as code | container | a secret whose value is `'; touch /tmp/pwned; '` leaves no `/tmp/pwned` after a Bash command runs | the variable holds that string verbatim |
 | AAD is the secret id | unit | swap two rows' ciphertext+nonce; both decrypts fail | unswapped rows decrypt |
 | Master key and App key never in any environment | component | the process's own `environ`, every child's `environ`, and the container's `containerEnv` contain neither; a key file not mode `0400` fails startup | both keys are in use — a secret round-trips and a token is minted |
 | Values stay out of `argv`, `ps`, `docker inspect` | container | after supervisor start, none contain the canary | the session process's own `environ` does |
@@ -420,7 +424,8 @@ The table CLAUDE.md's invariant list and §13.5 / PF §10.7 imply. Columns: the 
 | The one-time token is single-use and atomic | component | 100 concurrent consumes → exactly one success | that one completes the handshake |
 | The token never lands in a log | component | *sweep* including Caddy's log dir; `Referrer-Policy: no-referrer` on `/.drydock/session` | the handshake succeeded |
 | `preview_session` dies with its port and its session | component | disable the port → rows gone; revoke-all → rows gone | the rows existed and worked beforehand |
-| A retired slug is never reissued | component | property test over slug minting against the retired set | see §15.4 |
+| A retired slug is never reissued | component | delete a port, then re-add the same port many times; no mint ever equals the retired slug, and the old URL stays a `/.drydock/denied` | the re-added port gets a *working* preview on its new slug |
+| Retiring does not block a re-add | component | the partial unique index permits a new live row for the same `(workspace, port)` | a *second live* row for that pair is still refused |
 | The preview mux is resource-bounded | component | past the cap → `503`; an idle upgrade is closed | under the cap, upgrades stay open |
 | Sign-in appears only on the bare UI origin | component | no preview-mux response contains a password input | the UI's sign-in page does |
 
@@ -438,6 +443,7 @@ The table CLAUDE.md's invariant list and §13.5 / PF §10.7 imply. Columns: the 
 | The cap refuses and names a candidate | component | at the cap, the refusal body lists running workspaces with session counts | under the cap, create succeeds |
 | Disk pre-flight refuses | component | injected reporter over threshold → refusal before any clone | under threshold → proceeds |
 | Clone survives rebuild and stop | container | write an uncommitted file, `rebuild`, then `stop`/`start`; assert it survives both | the container id changed on rebuild |
+| A foreign label prefix is never adopted | container | start a second Drydock with a different prefix beside the first's running workspaces; it adopts none of them, and a delete there removes none of them | it does adopt and manage the containers carrying *its own* prefix |
 
 ### 8.7  Invariants the suite cannot cover
 
@@ -604,7 +610,22 @@ Two notes on ordering. Phase 1 carries a disproportionate share of the infrastru
 
 Writing down how each invariant would be *proved* turned up five places where the design as written admits a wrong implementation. Three are security findings. They are recorded here rather than silently patched into the parent documents, because the fix is a design decision, not a test.
 
-All five were **re-validated against draft v6** on 4 October 2026 and all five still stand. Two changed in the process: §15.2 got worse, because v6 adopted the per-command prelude as *the* secrets mechanism, and §15.3 grew from one missing column to three states the schema cannot hold.
+> [!NOTE]
+> **Resolved — all five are applied as of overall v7 and port-forwarding v4 (4 October 2026)**
+>
+> The finding text below is kept as written, because the reasoning is the part worth preserving; what changed is that each now has an answer in the document that owns it. This section is a dated record, not an open list.
+>
+> | Finding | Landed as |
+> |---|---|
+> | 15.1 — line protocol vs arbitrary bytes | Control characters refused on write (overall §10.1, *Value validation*); the client fails the fetch when `count=` disagrees with the lines received (§10.3); two rows in §12; a §13.5 non-negotiable |
+> | 15.2 — `eval` injection | `export` single-quotes every value, escaping as `'\''` (overall §10.3, in the same callout); the §13.5 non-negotiable covers both halves |
+> | 15.3 — three unstorable states | `claude_identity.state`, `workspace.environment_id`, and `waiting_registration` in `supervisor.state` (overall §4); the stale `-- parsed from /status` comment fixed; a `409` row in §12 |
+> | 15.4 — retired slug reissuable | `DELETE` retires rather than deletes, with a partial unique index on live rows (PF §5, §6); a §10.7 non-negotiable |
+> | 15.5 — label key a constant | A configured prefix recorded at first run, with reconciliation refusing a foreign one (overall §6 callout); a §13.5 non-negotiable |
+>
+> Two of them changed shape before being fixed, which is worth keeping on the record: §15.2 got *worse* when v6 adopted the per-command prelude as **the** secrets mechanism, moving the sink from once per supervisor start to once per Bash command; and §15.3 grew from one missing column to three, because the v6 pass revised the prose in §7.3 and §8 without touching §4.
+>
+> The tests that hold each one down are in §8.2 and §8.5. A finding closed in prose with no test is a finding that reopens quietly.
 
 ### 15.1  `GET-SECRETS` is a line protocol and secret values are arbitrary bytes
 
