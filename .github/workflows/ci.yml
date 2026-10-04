@@ -32,6 +32,10 @@ jobs:
           sudo tar -xzf "$tarball" -C /usr/local/bin caddy
       # The broker's in-container clients are tested over both transports
       # they support: socat, and OpenBSD netcat's -U (preinstalled).
+      # The container tier runs real `devcontainer up` (test/container), so
+      # DRYDOCK_REQUIRE_DOCKER needs the CLI too, pinned to the corpus's version.
+      - name: Install the devcontainer CLI
+        run: npm install -g @devcontainers/cli@0.89.0
       - name: Install socat
         run: sudo apt-get update -q && sudo apt-get install -y -q --no-install-recommends socat
       - name: gofmt

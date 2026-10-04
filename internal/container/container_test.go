@@ -193,3 +193,48 @@ func TestListReportsDockerFailure(t *testing.T) {
 		t.Errorf("err %v; want docker's message", err)
 	}
 }
+
+func TestArgsMountTheBrokerAndPassFeatures(t *testing.T) {
+	m := Manager{LabelPrefix: "drydock"}
+	s := spec()
+	s.BrokerSocket = "/run/drydock/sock/" + wsID + ".sock"
+	s.Features = map[string]map[string]any{"ghcr.io/krelinga/drydock/drydock:0": {"botName": "x[bot]"}}
+	s.RemoteEnv = map[string]string{"B": "2", "A": "1"}
+	args, err := m.Args(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := strings.Join(args, " ")
+	for _, want := range []string{
+		"--mount type=bind,source=/run/drydock/sock/" + wsID + ".sock,target=/run/drydock/broker.sock",
+		`--additional-features {"ghcr.io/krelinga/drydock/drydock:0":{"botName":"x[bot]"}}`,
+		"--remote-env A=1 --remote-env B=2", // sorted, so the argv is stable
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("argv lacks %q:\n%s", want, got)
+		}
+	}
+}
+
+// The socket path is spliced into --mount's comma-separated options, so a
+// comma or '=' in it would let it add options of its own — a second source,
+// say, mounting the host's root.
+func TestArgsRefuseAnInjectableMount(t *testing.T) {
+	m := Manager{LabelPrefix: "drydock"}
+	for _, bad := range []string{
+		"/tmp/x.sock,target=/host,source=/",
+		"/tmp/a=b.sock",
+		"relative.sock",
+	} {
+		s := spec()
+		s.BrokerSocket = bad
+		if _, err := m.Args(s); err == nil {
+			t.Errorf("socket path %q accepted", bad)
+		}
+	}
+	s := spec()
+	s.RemoteEnv = map[string]string{"BAD-NAME": "x"}
+	if _, err := m.Args(s); err == nil {
+		t.Error("a malformed --remote-env name accepted")
+	}
+}

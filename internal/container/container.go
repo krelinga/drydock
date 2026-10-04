@@ -15,7 +15,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -55,7 +57,22 @@ type UpSpec struct {
 	// existing id-label reattaches and reports success even when the config
 	// has changed (§6), so a rebuild that forgot it would silently not be one.
 	Rebuild bool
+	// BrokerSocket is the workspace's token-broker socket on the host,
+	// bind-mounted at BrokerMountPoint in this container and no other
+	// (§6 step 5, §9.1). Empty mounts nothing.
+	BrokerSocket string
+	// Features is --additional-features: feature reference → options. It
+	// composes with what the repository declares rather than replacing it.
+	Features map[string]map[string]any
+	// RemoteEnv is --remote-env: set for the remote user's processes.
+	RemoteEnv map[string]string
 }
+
+// BrokerMountPoint is where a workspace's broker socket appears inside its
+// container; the Feature's DRYDOCK_BROKER_SOCK points here.
+const BrokerMountPoint = "/run/drydock/broker.sock"
+
+var envName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
 var (
 	workspaceIDPattern = regexp.MustCompile(`^[0-9A-HJKMNP-TV-Z]{26}$`) // a ULID
@@ -82,10 +99,52 @@ func (m Manager) Args(s UpSpec) ([]string, error) {
 		"--id-label", m.key(LabelRepo) + "=" + s.FullName,
 		"--id-label", m.key(LabelBranch) + "=" + s.Branch,
 	}
+	if s.BrokerSocket != "" {
+		// --mount is comma-separated key=value pairs, so a comma or an equals
+		// sign in the path would let it add mount options of its own.
+		if !strings.HasPrefix(s.BrokerSocket, "/") || strings.ContainsAny(s.BrokerSocket, ",=\n") {
+			return nil, fmt.Errorf("container: broker socket path %q must be absolute and free of ',' and '='", s.BrokerSocket)
+		}
+		args = append(args, "--mount", "type=bind,source="+s.BrokerSocket+",target="+BrokerMountPoint)
+	}
+	if len(s.Features) > 0 {
+		b, err := json.Marshal(s.Features)
+		if err != nil {
+			return nil, fmt.Errorf("container: features: %w", err)
+		}
+		args = append(args, "--additional-features", string(b))
+	}
+	env, err := remoteEnvArgs(s.RemoteEnv)
+	if err != nil {
+		return nil, err
+	}
+	args = append(args, env...)
 	if s.Rebuild {
 		args = append(args, "--remove-existing-container")
 	}
 	return args, nil
+}
+
+// Exec runs a command in a workspace's container as its remote user, found
+// by the workspace's id-label (§6 step 7's probe, and the supervisor's
+// start). argv is passed through; there is no shell here unless the caller
+// names one.
+//
+// remoteEnv is passed again here because `up`'s --remote-env does not
+// persist: measured on CLI 0.89.0, a variable given to `up` is absent from a
+// later `exec`. Only devcontainer.json's own remoteEnv, and the Feature's
+// containerEnv, carry over by themselves.
+func (m Manager) Exec(ctx context.Context, workspaceID, folder string, remoteEnv map[string]string, argv []string, stdout, stderr io.Writer) (subproc.Result, error) {
+	if !workspaceIDPattern.MatchString(workspaceID) || !strings.HasPrefix(folder, "/") || len(argv) == 0 {
+		return subproc.Result{}, errors.New("container: exec needs a workspace id, an absolute folder and a command")
+	}
+	args := []string{"exec", "--workspace-folder", folder, "--id-label", m.key(LabelWorkspace) + "=" + workspaceID}
+	env, err := remoteEnvArgs(remoteEnv)
+	if err != nil {
+		return subproc.Result{}, err
+	}
+	args = append(append(append(args, env...), "--"), argv...)
+	return m.Run.Run(ctx, subproc.Cmd{Name: "devcontainer", Args: args, Stdout: stdout, Stderr: stderr}), nil
 }
 
 // Up brings a workspace's container up and returns the CLI's verdict. A
@@ -215,4 +274,22 @@ func (c *capped) Write(p []byte) (int, error) {
 		}
 	}
 	return len(p), nil // never short: the child must not see a write error
+}
+
+// remoteEnvArgs renders --remote-env flags in name order, so the argv is
+// stable and a test can compare it.
+func remoteEnvArgs(env map[string]string) ([]string, error) {
+	keys := make([]string, 0, len(env))
+	for k := range env {
+		if !envName.MatchString(k) {
+			return nil, fmt.Errorf("container: %q is not an environment variable name", k)
+		}
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	var args []string
+	for _, k := range keys {
+		args = append(args, "--remote-env", k+"="+env[k])
+	}
+	return args, nil
 }
