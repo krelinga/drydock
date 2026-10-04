@@ -9,10 +9,22 @@ import AppNav from './components/AppNav.vue'
 import FleetBanner from './components/FleetBanner.vue'
 import BootFailure from './components/BootFailure.vue'
 import { useSessionStore } from './stores/session'
+import { useStreamStore } from './stores/stream'
 
 const route = useRoute()
 const session = useSessionStore()
+const stream = useStreamStore()
 const bare = computed(() => route.meta.public === true)
+
+// One stream for the whole signed-in app (frontend §4.1). Signing out closes
+// it through clearEntityState; this opens it again on the next sign-in.
+watch(
+  () => session.status,
+  (s) => {
+    if (s === 'signed-in') stream.connect()
+  },
+  { immediate: true },
+)
 
 // §7: on route change, focus moves to the view's <h1>, and one polite live
 // region says where you are. Not on first load, where the sign-in field's

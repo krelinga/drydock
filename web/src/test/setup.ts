@@ -9,15 +9,20 @@ import App from '../App.vue'
 import { createDrydock } from '../app'
 import { onUnauthorized } from '../api/client'
 import { handlersFor, newBackend, type MockBackend } from '../mocks/backend'
+import { FakeEventSource, installFakeEventSource } from './fakeEventSource'
 
 export let backend: MockBackend = newBackend()
 export const server = setupServer()
+
+installFakeEventSource()
 
 export function useMockApi(): void {
   beforeAll(() => server.listen({ onUnhandledFrame: 'error' }))
   afterEach(() => {
     server.resetHandlers()
     onUnauthorized(null)
+    for (const es of FakeEventSource.instances) es.close()
+    FakeEventSource.instances = []
     document.body.innerHTML = ''
   })
   afterAll(() => server.close())

@@ -1,8 +1,72 @@
 import { describe, expect, it } from 'vitest'
-import { freshBackend, mountApp, settle, useMockApi } from '../test/setup'
+import { http, HttpResponse } from 'msw'
+import { freshBackend, mountApp, server, settle, useMockApi } from '../test/setup'
 import { useSessionStore } from '../stores/session'
+import { useStreamStore } from '../stores/stream'
+import { completeRefresh } from '../mocks/backend'
+import { FakeEventSource } from '../test/fakeEventSource'
 
 useMockApi()
+
+describe('SettingsView catalog refresh', () => {
+  it('shows only in-flight until the event arrives, and applies nothing from the 202', async () => {
+    const b = freshBackend({ signedIn: true, refreshMode: 'manual' })
+    // A 202 that carries a body the UI must not apply (§4.2 step 3).
+    server.use(http.post('/api/repos/refresh', ({ request }) => {
+      b.log.push({ method: request.method, url: request.url, credentials: request.credentials, mode: request.mode, contentType: null })
+      b.pendingRefreshes = 1
+      return HttpResponse.json({ count: 999, ok: true }, { status: 202 })
+    }))
+    const { wrapper, pinia } = await mountApp('/settings')
+    FakeEventSource.latest().open().pipe(b)
+    const stream = useStreamStore(pinia)
+    const button = () => wrapper.find('[data-test="refresh-catalog"]')
+    const status = () => wrapper.find('[data-test="refresh-status"]').text()
+
+    await button().trigger('click')
+    await settle()
+    expect(b.log.filter((r) => r.method === 'POST' && r.url.endsWith('/api/repos/refresh')).length).toBe(1)
+    // Accepted, and still only "in flight": the response landed, nothing settled.
+    expect(button().attributes('disabled')).toBeDefined()
+    expect(status()).toBe('Asking GitHub…')
+    expect(stream.entities.lastRefresh).toBeNull()
+    expect(wrapper.text()).not.toContain('999')
+
+    completeRefresh(b, true)
+    await settle()
+    expect(button().attributes('disabled')).toBeUndefined()
+    expect(status()).toMatch(/^Refreshed just now: 5 repositories\.$/)
+  })
+
+  it('a failed refresh reports the event, and a refused request clears in-flight', async () => {
+    const b = freshBackend({ signedIn: true, refreshMode: 'manual' })
+    const { wrapper } = await mountApp('/settings')
+    FakeEventSource.latest().open().pipe(b)
+    await wrapper.find('[data-test="refresh-catalog"]').trigger('click')
+    await settle()
+    completeRefresh(b, false)
+    await settle()
+    expect(wrapper.find('[data-test="refresh-status"]').text()).toContain('Bad credentials')
+
+    // The request itself refused: no event will ever come, so in-flight ends
+    // and the error says why.
+    b.appConfigured = false
+    await wrapper.find('[data-test="refresh-catalog"]').trigger('click')
+    await settle()
+    expect(wrapper.find('[data-test="refresh-error"]').text()).toContain('No GitHub App is set up yet')
+    expect(wrapper.find('[data-test="refresh-catalog"]').attributes('disabled')).toBeUndefined()
+  })
+
+  it('a refresh started on another device settles here too', async () => {
+    const b = freshBackend({ signedIn: true })
+    const { wrapper } = await mountApp('/settings')
+    FakeEventSource.latest().open().pipe(b)
+    expect(wrapper.find('[data-test="refresh-status"]').text()).toContain('every 15 minutes')
+    completeRefresh(b, true)
+    await settle()
+    expect(wrapper.find('[data-test="refresh-status"]').text()).toContain('5 repositories')
+  })
+})
 
 describe('SettingsView device list', () => {
   it('lists every device and marks exactly the current one', async () => {

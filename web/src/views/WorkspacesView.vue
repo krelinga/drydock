@@ -1,27 +1,194 @@
 <script setup lang="ts">
-// Home (frontend §5). Phase 2 fills it — the `Running` cards above the
-// repository catalog — from the event stream. Until then it says, honestly,
-// that there is nothing to show and why.
+// Home (frontend §5): `Running` above `All repositories`, because the home
+// screen's job is "what is wrong" and a catalog of fifty repos answers a
+// different question.
+//
+// Everything rendered here is read from the stream store's entities through
+// the catalog read model. This view fetches (GET /api/repos, handed to the
+// reducer as a snapshot) and registers that fetch as its backstop: refetched
+// when the stream reopens, on `resync`, and on any repo.* event.
+import { computed, onMounted } from 'vue'
+import { RouterLink } from 'vue-router'
+import { describeError } from '../api/messages'
+import { catalogEvent, useCatalogStore, type CatalogRow } from '../stores/catalog'
+import type { Workspace } from '../stores/reducer'
+import { useStreamRefetch } from '../lib/refetch'
+import { relativeTime } from '../lib/time'
+
+const catalog = useCatalogStore()
+
+onMounted(() => void catalog.load())
+useStreamRefetch({ refetch: () => catalog.load(), when: catalogEvent })
+
+const STATE_LABEL: Record<string, string> = {
+  pending: 'Waiting to start',
+  cloning: 'Cloning',
+  building: 'Building',
+  running: 'Running',
+  stopped: 'Stopped',
+  failed: 'Failed',
+  deleting: 'Deleting',
+}
+
+const STEP_LABEL: Record<string, string> = {
+  allocate: 'allocating', clone: 'cloning', resolve_config: 'resolving config',
+  credential_volume: 'preparing credentials', broker_socket: 'opening the broker socket',
+  up: 'starting the container', verify: 'verifying', session_server: 'starting the session server',
+}
+
+/** One status line, from the state and — while it moves — the current step (§6.1). */
+function statusLine(w: Workspace): string {
+  const label = STATE_LABEL[w.state ?? ''] ?? 'Unknown'
+  if (w.state === 'failed') {
+    // §6.1: `failed` names the step, never "failed" alone.
+    const failed = w.step?.status === 'failed' ? STEP_LABEL[w.step.name] ?? w.step.name : null
+    return failed !== null ? `Failed while ${failed}` : label
+  }
+  if ((w.state === 'pending' || w.state === 'cloning' || w.state === 'building') && w.step?.status === 'started') {
+    const s = STEP_LABEL[w.step.name] ?? w.step.name
+    return `${label} · ${s}…`
+  }
+  return label
+}
+
+function tone(w: Workspace | null): string {
+  if (w === null) return ''
+  if (w.state === 'failed') return 'bad'
+  if (w.state === 'running') return 'ok'
+  if (w.state === 'stopped' || w.state === 'deleting') return 'idle'
+  return 'busy'
+}
+
+const searching = computed(() => catalog.query.trim() !== '')
+const firstLoad = computed(() => catalog.status === 'loading' || catalog.status === 'idle')
+const awaitingFirstRefresh = computed(() => catalog.status === 'ready' && catalog.refreshedAt === null)
+
+function rowNote(r: CatalogRow): string | null {
+  if (r.repo.removed) return 'Removed from the GitHub App. Unpushed work in the working tree survives.'
+  return null
+}
 </script>
 
 <template>
   <section class="view" aria-labelledby="ws-h">
     <h1 id="ws-h" tabindex="-1">Workspaces</h1>
 
-    <div class="block">
-      <div class="sec-label"><span>Running</span><span>0</span></div>
-      <div class="empty">
+    <div class="block" data-test="running">
+      <div class="sec-label"><span>Running</span><span>{{ catalog.running.length }}</span></div>
+      <ul v-if="catalog.running.length > 0" class="list">
+        <li v-for="r in catalog.running" :key="r.workspace.id" class="row" data-test="running-row">
+          <div class="head">
+            <span class="name">{{ r.repo?.fullName ?? r.workspace.id }}</span>
+            <span class="state" :class="tone(r.workspace)">{{ statusLine(r.workspace) }}</span>
+          </div>
+          <p v-if="r.workspace.detail" class="detail">{{ r.workspace.detail }}</p>
+        </li>
+      </ul>
+      <div v-else class="empty">
         <span>Nothing is running.</span>
         <span class="sub">Workspaces appear here once a repository has been cloned.</span>
       </div>
     </div>
 
-    <div class="block">
-      <div class="sec-label"><span>All repositories</span></div>
-      <div class="empty">
-        <span>The repository catalog is not built yet.</span>
-        <span class="sub">Repositories appear here when the GitHub App is installed on them.</span>
+    <div class="block" data-test="catalog">
+      <div class="sec-label">
+        <span>All repositories</span>
+        <span v-if="catalog.status === 'ready'">{{ catalog.rows.length }}</span>
       </div>
+
+      <!-- No App: say so, and say what makes it non-empty (§9). -->
+      <div v-if="catalog.status === 'not_configured'" class="empty" data-test="app-not-configured">
+        <span>No GitHub App is set up yet, so there are no repositories to show.</span>
+        <span class="sub">
+          Start <code>drydock serve</code> with <code>--github-app-id</code> and <code>--github-app-key</code>,
+          then install the App on the repositories Drydock should see.
+        </span>
+      </div>
+
+      <div v-else-if="catalog.status === 'error'" class="msg bad" role="alert" data-test="catalog-error">
+        <span class="glyph" aria-hidden="true">×</span>
+        <span>{{ describeError(catalog.error) }}</span>
+      </div>
+
+      <div v-else-if="firstLoad" class="empty" data-test="catalog-loading">
+        <span>Loading repositories…</span>
+      </div>
+
+      <template v-else>
+        <div v-if="catalog.error" class="msg warn" role="status" data-test="catalog-stale">
+          <span class="glyph" aria-hidden="true">!</span>
+          <span>Could not update the list: {{ describeError(catalog.error) }} Showing what was last loaded.</span>
+        </div>
+
+        <div class="field search">
+          <label for="repo-search" class="vis-sr">Search repositories</label>
+          <input
+            id="repo-search" v-model="catalog.query" type="search" placeholder="Search repositories"
+            autocomplete="off" autocapitalize="off" spellcheck="false" data-test="search"
+          >
+        </div>
+
+        <div v-if="awaitingFirstRefresh" class="empty" data-test="catalog-first-refresh">
+          <span>Reading the repository list from GitHub…</span>
+          <span class="sub">It appears here as soon as the first refresh finishes.</span>
+        </div>
+
+        <ul v-else-if="catalog.filtered.length > 0" class="list" data-test="repos">
+          <li
+            v-for="r in catalog.filtered" :key="r.repo.id" class="row"
+            :class="{ removed: r.repo.removed }" data-test="repo"
+          >
+            <div class="head">
+              <span class="name">{{ r.repo.fullName }}</span>
+              <span v-if="r.workspace" class="state" :class="tone(r.workspace)" data-test="repo-state">
+                {{ statusLine(r.workspace) }}
+              </span>
+            </div>
+            <div class="badges">
+              <span v-if="r.repo.removed" class="badge warn" data-test="badge-removed">read-only</span>
+              <!-- null is unknown: no badge at all, never "no dev container". -->
+              <span v-if="r.repo.hasDevcontainer === true" class="badge ok" data-test="badge-devcontainer">dev container</span>
+              <span v-else-if="r.repo.hasDevcontainer === false" class="badge" data-test="badge-no-devcontainer">no dev container</span>
+              <span v-if="r.repo.archived" class="badge" data-test="badge-archived">archived</span>
+              <span v-if="r.repo.private" class="badge">private</span>
+              <span v-if="r.repo.pushedAt" class="pushed">pushed {{ relativeTime(r.repo.pushedAt) }}</span>
+            </div>
+            <p v-if="rowNote(r)" class="detail" data-test="removed-note">
+              {{ rowNote(r) }}
+              <a
+                v-if="r.installation" :href="r.installation.settings_url"
+                target="_blank" rel="noopener noreferrer"
+              >Installation settings</a>
+            </p>
+          </li>
+        </ul>
+
+        <p v-if="searching && catalog.filtered.length === 0 && !awaitingFirstRefresh" class="none" data-test="no-match">
+          No repository matches “{{ catalog.query.trim() }}”.
+        </p>
+
+        <!-- §9: the line under the search that answers "where is my repo?". -->
+        <div
+          v-if="!awaitingFirstRefresh && (catalog.filtered.length === 0 || catalog.rows.length === 0)"
+          class="empty" data-test="catalog-empty"
+        >
+          <span>Repos appear here when the GitHub App is installed on them.</span>
+          <span v-if="catalog.installations.length > 0" class="sub">
+            <template v-for="(i, n) in catalog.installations" :key="i.id">
+              <template v-if="n > 0"> · </template>
+              <a :href="i.settings_url" target="_blank" rel="noopener noreferrer" data-test="settings-link">
+                Installation settings for {{ i.account }}
+              </a>
+            </template>
+          </span>
+          <span v-else class="sub" data-test="no-installations">The App is not installed on any account yet.</span>
+        </div>
+
+        <p class="foot">
+          <template v-if="catalog.refreshedAt">Refreshed {{ relativeTime(catalog.refreshedAt) }}. </template>
+          <RouterLink to="/settings">Refresh in Settings</RouterLink>
+        </p>
+      </template>
     </div>
   </section>
 </template>
@@ -29,4 +196,31 @@
 <style scoped>
 .view { display: flex; flex-direction: column; gap: 18px; }
 .block { display: flex; flex-direction: column; gap: 8px; }
+
+.list {
+  list-style: none; margin: 0; padding: 0;
+  background: var(--surface); border: 1px solid var(--line); border-radius: var(--r);
+}
+.row { padding: 11px 12px; border-bottom: 1px solid var(--line-soft); display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.row:last-child { border-bottom: 0; }
+.row.removed { border-left: 3px solid var(--warn); padding-left: 9px; }
+.head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; min-width: 0; }
+.name { font-family: var(--mono); font-size: 13.5px; overflow-wrap: anywhere; }
+.state { font-size: 12.5px; color: var(--ink-2); flex: none; text-align: right; }
+.state.ok { color: var(--ok); }
+.state.bad { color: var(--bad); }
+.state.busy { color: var(--warn); }
+.state.idle { color: var(--ink-3); }
+.detail { font-size: 12.5px; color: var(--ink-3); }
+.badges { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; }
+.badge {
+  font-family: var(--mono); font-size: 10px; letter-spacing: .05em; text-transform: uppercase;
+  padding: 2px 6px; border-radius: 3px; background: var(--surface-2); color: var(--ink-2);
+}
+.badge.ok { background: var(--ok-bg); color: var(--ok); }
+.badge.warn { background: var(--warn-bg); color: var(--warn); }
+.pushed { font-family: var(--mono); font-size: 11px; color: var(--ink-3); }
+.none { font-size: 13px; color: var(--ink-2); }
+.foot { font-size: 12.5px; color: var(--ink-3); }
+.search input { font-size: 16px; }
 </style>
