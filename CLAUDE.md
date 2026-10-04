@@ -5,9 +5,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Repository state
 
 **Mostly design, with the first code in.** The repository contains the overall design
-document (`docs/design/overall/drydock-design.md`, draft v17), supplemental ones on port forwarding
+document (`docs/design/overall/drydock-design.md`, draft v18), supplemental ones on port forwarding
 (`docs/design/port-forwarding/`, draft v5), testing (`docs/design/testing/`, draft v9) and the Vue
-frontend (`docs/design/frontend/`, draft v5), a settled brand mark (`docs/design/brand/`, v1.0,
+frontend (`docs/design/frontend/`, draft v5), a settled brand mark (`docs/design/brand/`, v1.1,
 with the shipping icon assets), an adversarial security review
 (`docs/design/security-review.md`), their SVG diagrams, a devcontainer definition, and **five
 completed spikes** with their harnesses under `docs/design/spikes/` — the four Phase 0 ones plus
@@ -38,7 +38,8 @@ printf "%s\n" "$PW" | ./drydock passwd --db x.db  # set the operator password (n
 | `internal/classify` | The five classifiers, implemented and tested against the corpus: login, identity, refusal, discovery, container. Built in parallel by four agents, one file each. |
 | `internal/auth` | argon2id with a floor and rehash-on-sign-in, sessions stored only as SHA-256, and a lockout that is per-IP backoff plus a global cap, kept in `auth_attempt` so a restart does not reset it. |
 | `internal/events` | The append-only event log and its live fan-out. Append writes and publishes under one lock so subscribers see id order; a subscriber that lags 256 events is cut off rather than allowed to block writers, and recovers by replay. `data` is a JSON object for the reducer; `message` is prose nothing may parse. |
-| `internal/workspace` | The workspace state machine — a transition table where `deleting` is a sink and nothing reaches `running` except from a build — and design §6's eight steps, each writing `workspace.step` started/done/failed so a failure names its step. A step's raw error never reaches an event (the clone URL carries a token); only a `workspace.Public` sentence does. Creates check the duplicate and the cap inside one transaction, which is why the store opens every transaction `IMMEDIATE`. |
+| `internal/workspace` | The workspace state machine — a transition table where `deleting` is a sink and nothing reaches `running` except from a build — and design §6's eight steps, each writing `workspace.step` started/done/failed so a failure names its step. A step's raw error never reaches an event (a subprocess's stderr can carry anything, git's quoting the URL); only a `workspace.Public` sentence does. Creates check the duplicate and the cap inside one transaction, which is why the store opens every transaction `IMMEDIATE`. |
+| `internal/clone` | Design §6 step 2, the host clone. A `contents:read` token for the one repository reaches git only through its environment: a `GIT_CONFIG_COUNT` credential helper that prints it from an environment variable. It is never in argv, a URL or `.git/config`. git runs with global and system config at `/dev/null` and `GIT_CEILING_DIRECTORIES` above the workspace, so an enclosing repo's `http.extraheader` cannot win. It never deletes a directory already at the clone path. Tested with a `GIT_TRACE` wrapper that records every child process's argv, plus a canary sweep of the tree and the database. |
 | `internal/container` | `devcontainer up` (argv built and validated from workspace data, result read by `classify.ClassifyContainer`) and finding containers by label: `docker ps -q --filter label=…` for ids, `docker inspect` for structured labels and state. Never a table parse. The id-labels carry workspace id, repository id, repo and branch, so a row can be rebuilt from them. |
 | `internal/reconcile` | Boot reconciliation (§6) as a pure `Plan(rows, found)` plus `Run`. Adopt rather than kill, never auto-start, and a failed `docker` listing changes nothing. Wired into `Serve` beside serving; without Docker access it writes one warning and carries on. |
 | `internal/github` | The App client: the key loaded from a file (refused if its group or others can read it), an RS256 JWT built on the standard library, installation tokens cached in memory for 55 minutes by what they grant, and paginated listing. A `Token` formats as `[redacted]` and refuses to marshal, and a token request must name its permissions. `githubtest` is the fake GitHub: it verifies the JWT and enforces each token's permissions and repositories, and `EnableGit` adds a git smart-HTTP remote (git's own `http-backend` behind GitHub's token authorization) that records every token it is shown. |
@@ -48,6 +49,7 @@ printf "%s\n" "$PW" | ./drydock passwd --db x.db  # set the operator password (n
 | `feature/src/drydock/bin/` | The in-container clients, POSIX `sh`: `drydock-broker` (the transport, over `socat` or `nc -U`), `drydock-credential` (git's helper, for GitHub's host only) and the `gh` shim (fetches a token per call and execs the real `gh` with it in the environment, not argv). They are tested from Go against a real broker socket over both transports, and with real git against the fake's git remote. |
 | `internal/server` | Assembles the front door: store, auth, both muxes, two `0660` group-owned sockets, and no TCP listener — asserted on the running process. |
 | `cmd/drydock` | `serve`, `passwd` and `version`, and nothing that binds TCP or sets a password over HTTP. `passwd` deliberately skips the instance lock so it works while the server runs; `--if-unset` makes it a no-op that never reads stdin once a password exists, which is what keeps an installer re-run from signing everyone out. `version` is stamped by `-ldflags -X main.version=`. |
+| `web/src/stores` | `reducer.ts` is the one pure writer of entity state. It applies events, `resync`, and `GET /api/repos` snapshots tagged with the stream position they were requested at. Each field carries the id of the event that last wrote it, so a replay changes nothing and a late event is a no-op. `stream.ts` owns the `EventSource`, the in-flight set and the refetch hooks, and handles reconnects: a quiet marker after 5 s, and on `CLOSED` a session probe, then sign-out or a hard retry that resumes with `?last_event_id=`. Specs drive `test/fakeEventSource.ts`, because jsdom has no `EventSource`. |
 | `internal/web`, `web/` | The Vue 3 app in `web/`, embedded from `internal/web/dist`, which is **committed build output** — the Go build needs no Node, and `npm run check:dist` fails when it is stale. Never hand-edit `dist`; rebuild it. |
 | `deploy/Caddyfile`, `deploy/preview.caddy` | The entire LAN-facing surface, every value an env placeholder so the shipped files are the tested files. The preview site is a separate, optional file imported by glob, so a first deployment needs no wildcard certificate. |
 | `deploy/install.sh` | The installer and upgrader, one file in two modes: standalone (`curl … \| sudo bash`) it downloads and verifies the release tarball and runs the copy inside; from the tarball it installs. Settings persist in `/etc/drydock/drydock.env`, parsed, never `source`d. Idempotent: files are written only when they change, and only what changed is restarted. |
@@ -388,7 +390,7 @@ most of the value.
 `docs/design/testing/testing-design.md` is the plan. Four tiers — unit, component (fake subprocesses,
 real sockets and SQLite), container (real DinD), browser (real Chromium and Caddy) — plus rituals
 triggered by an event rather than a commit. A test lives in the cheapest tier whose reach includes the
-boundary its assertion is about. Five things from it change how code gets written here:
+boundary its assertion is about. Six things from it change how code gets written here:
 
 - **Every negative test carries a positive control in the same function.** Nearly every invariant
   above is a prohibition, and a prohibition is satisfied by a binary that does nothing. A test that
@@ -405,6 +407,9 @@ boundary its assertion is about. Five things from it change how code gets writte
 - **Time, disk, and randomness are injected**, and subprocesses resolve by `PATH` so a fake binary
   can stand in. A Go mock of the `devcontainer` CLI tests our belief about it; a fake binary tests
   the argv we actually build, which is a security surface.
+- **To prove a value is in no process's argv, trace it.** A wrapper around `git` sees only git's
+  own argv; `GIT_TRACE` from that wrapper also records the processes git starts, such as a
+  credential helper, which is where a token put in the wrong place shows up (`internal/clone`).
 - **The `drydock.workspace` label key is configuration, not a constant.** Reconciliation adopts and
   deletes by label, so a second Drydock on the same daemon — which is what a test is — will adopt and
   destroy real workspaces. The SQLite advisory lock does not prevent this.
@@ -433,7 +438,7 @@ drawing water in it (every "harbour" variant) was rejected, along with anything 
 since the design treats Docker as an implementation detail it never scrapes. Phase 1 needs a favicon
 and a header mark, so these ship with the front door.
 
-Four things about the assets that are easy to get wrong:
+Five things about the assets that are easy to get wrong:
 
 - **Two forms, different jobs.** `drydock-mark.svg` for in-page use where the ground is known;
   `drydock-badge.svg` (the mark knocked out of a steel rounded square) wherever the surface belongs
@@ -445,7 +450,9 @@ Four things about the assets that are easy to get wrong:
   ```sh
   node docs/design/brand/render-icons.mjs '[["docs/design/brand/icons/favicon-16.png",16,"badge","steel"],
     ["docs/design/brand/icons/favicon-32.png",32,"badge","steel"],
-    ["docs/design/brand/icons/apple-touch-icon-180.png",180,"bleed","steel"]]'
+    ["docs/design/brand/icons/apple-touch-icon-180.png",180,"bleed","steel"],
+    ["docs/design/brand/icons/github-app-200.png",200,"bleed","steel-lift"],
+    ["docs/design/brand/icons/github-app-dev-200.png",200,"bleed","steel-inverse"]]'
   ```
   As of this writing the committed PNGs match the renderer byte-for-byte.
 - **Re-render `icon-preview.html` after any geometry change.** It is what caught every measured
@@ -455,6 +462,13 @@ Four things about the assets that are easy to get wrong:
 - **The badge ground is deliberately not a brand colour.** Steel leaves `#1d4ed8` meaning *API
   traffic* and `#6d28d9` meaning *preview origin* in the diagrams, rather than making a brand colour
   and a semantic colour the same colour.
+- **The GitHub App logos are opaque, full-bleed PNGs, and the two Apps differ by inversion.**
+  `github-app-200.png` (prod) uses the lighter steel `#64748b`, not the badge's `#475569`. An
+  uploaded PNG cannot follow GitHub's theme, and `#475569` scores 2.50 against GitHub's dark page.
+  `github-app-dev-200.png` is the same image inverted: a swap of light and dark rather than a new
+  hue, because every hue is already semantic in the diagrams. Both come from `render-icons.mjs`
+  (mode `bleed`, palettes `steel-lift` and `steel-inverse`). They are uploaded to each App's
+  settings by hand.
 
 Still open: a wordmark. The stencilled `DD` is gone by 20 px, so the name is only unambiguous in a
 lockup, and the UI header needs one regardless.

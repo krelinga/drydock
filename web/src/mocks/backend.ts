@@ -33,6 +33,8 @@ export interface MockBackend {
   /** False: GET /api/repos and the refresh answer 503 app_not_configured. */
   appConfigured: boolean
   refreshedAt: string | null
+  /** internal/catalog's in-memory failure: set by a failed refresh, cleared by a good one. */
+  refreshError: { at: string; message: string } | null
   installations: InstallationView[]
   /** The repository cache, without the workspace join (computed from `workspaces`). */
   repos: Array<Omit<RepoView, 'workspace'>>
@@ -125,6 +127,7 @@ export function newBackend(overrides: Partial<MockBackend> = {}): MockBackend {
     log: [],
     appConfigured: true,
     refreshedAt: new Date(now - 600e3).toISOString(),
+    refreshError: null,
     installations: SAMPLE_INSTALLATIONS,
     repos: sampleRepos(now),
     workspaces: sampleWorkspaces(),
@@ -143,6 +146,7 @@ export function newBackend(overrides: Partial<MockBackend> = {}): MockBackend {
 export function catalogView(b: MockBackend): CatalogView {
   return {
     refreshed_at: b.refreshedAt,
+    last_refresh_error: b.refreshError,
     installations: b.installations,
     repos: b.repos.map((r) => {
       const ws = Object.values(b.workspaces)
@@ -192,11 +196,11 @@ export function emit(
 export function completeRefresh(b: MockBackend, ok = true): StreamEvent {
   b.pendingRefreshes = Math.max(0, b.pendingRefreshes - 1)
   if (!ok) {
-    return emit(b, 'repo.refresh_failed', {
-      level: 'warn', data: {},
-      message: 'Could not refresh the repository list from GitHub: Bad credentials',
-    })
+    const message = 'Could not refresh the repository list from GitHub: GitHub answered 401 (Bad credentials).'
+    b.refreshError = { at: new Date().toISOString(), message }
+    return emit(b, 'repo.refresh_failed', { level: 'warn', data: {}, message })
   }
+  b.refreshError = null
   b.refreshedAt = new Date().toISOString()
   return emit(b, 'repo.refreshed', {
     message: `Repository list refreshed: ${b.repos.length} repositories.`,
@@ -336,7 +340,9 @@ export function handlersFor(b: MockBackend): HttpHandler[] {
     sse<{ message: string; resync: string }>('/api/events', ({ request, client }) => {
       // Replay after Last-Event-ID, or a named resync when the gap is wider
       // than the window — events_routes.go's rules.
-      const h = request.headers.get('Last-Event-ID')
+      // The header, or the query a hard retry carries; the header wins, as
+      // on the server (internal/api/events_routes.go).
+      const h = request.headers.get('Last-Event-ID') ?? new URL(request.url).searchParams.get('last_event_id')
       if (h !== null) {
         const last = Number(h)
         const first = b.events[0]?.id ?? 1

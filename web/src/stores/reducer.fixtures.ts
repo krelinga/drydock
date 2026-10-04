@@ -82,6 +82,7 @@ export const stateEvent = (id: number, ws: string, state: string, extra: Record<
 export function catalogBody(over: Partial<CatalogView> = {}): CatalogView {
   return {
     refreshed_at: at(0),
+    last_refresh_error: null,
     installations: [{ id: 101, account: 'krelinga', settings_url: 'https://github.com/settings/installations/101' }],
     repos: [
       {

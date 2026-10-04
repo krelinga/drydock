@@ -44,6 +44,10 @@ type Catalog struct {
 	mu      sync.Mutex
 	running bool
 	done    chan struct{}
+	// failure is the last refresh's failure, nil once one succeeds. In
+	// memory only: it is what a reloaded page reads instead of the event it
+	// missed, and a restarted server refreshes at once anyway.
+	failure *RefreshError
 }
 
 // Result summarises one refresh.
@@ -79,10 +83,16 @@ func (c *Catalog) Refresh(ctx context.Context) (Result, error) {
 		// GitHub's message names the problem ("Bad credentials", "Not
 		// Found") and carries no credential; the token is a header and
 		// github.Token prints as [redacted] besides.
-		c.Events.Emit(ctx, "", events.Warn, KindRefreshFailed,
-			"Could not refresh the repository list from GitHub: "+publicReason(err), map[string]any{})
+		msg := "Could not refresh the repository list from GitHub: " + publicReason(err)
+		c.mu.Lock()
+		c.failure = &RefreshError{At: c.Clock.Now().UTC(), Message: msg}
+		c.mu.Unlock()
+		c.Events.Emit(ctx, "", events.Warn, KindRefreshFailed, msg, map[string]any{})
 		return Result{}, err
 	}
+	c.mu.Lock()
+	c.failure = nil
+	c.mu.Unlock()
 	_, err = c.Events.Emit(ctx, "", events.Info, KindRefreshed,
 		fmt.Sprintf("Repository list refreshed: %d repositories.", res.Count),
 		map[string]any{"count": res.Count, "added": res.Added, "removed": res.Removed})

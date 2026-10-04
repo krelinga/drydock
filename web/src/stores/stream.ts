@@ -147,7 +147,11 @@ export const useStreamStore = defineStore('stream', {
 
     /** @internal */
     open(r: Runtime): void {
-      const es = new EventSource(EVENTS_URL)
+      // A new EventSource cannot set Last-Event-ID; the query says where this
+      // client got to, so a hard retry is replayed like a blip is. The
+      // browser's own reconnects send the header, which the server prefers.
+      const last = this.entities.lastEventId
+      const es = new EventSource(last > 0 ? `${EVENTS_URL}?last_event_id=${last}` : EVENTS_URL)
       r.es = es
       if (this.phase === 'idle') this.phase = 'connecting'
       es.addEventListener('open', () => {
@@ -156,9 +160,9 @@ export const useStreamStore = defineStore('stream', {
         r.backoff = 0
         this.phase = 'live'
         this.clearMarker(r)
-        // Replay closed the gap through the reducer already (the browser sent
-        // Last-Event-ID). Refetch anyway: replay is bounded, and a hard retry
-        // is a new EventSource that sends no Last-Event-ID at all.
+        // Replay closed the gap through the reducer already — the browser's
+        // Last-Event-ID, or the query on a hard retry. Refetch anyway: replay
+        // is bounded, and a resync is not always noticed in time.
         if (r.opens > 1) this.runRefetchers()
       })
       es.addEventListener('message', (m) => {

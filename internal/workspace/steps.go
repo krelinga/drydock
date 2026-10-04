@@ -50,9 +50,10 @@ type StepFunc func(ctx context.Context, w Workspace) error
 
 // PublicError is an error whose Public text is safe to show the operator and
 // to write into the event log. A step's other errors are not: their text can
-// carry anything a subprocess printed, including the clone URL with its
-// token in it (§6 step 2), so only the step's name reaches the event. The
-// full error is returned to the caller, which logs it where redaction applies.
+// carry anything a subprocess printed — git's stderr, a repository's own
+// devcontainer.json commands — so only the step's name reaches the event.
+// The full error is returned to the caller, which logs it where redaction
+// applies.
 type PublicError interface {
 	error
 	Public() string

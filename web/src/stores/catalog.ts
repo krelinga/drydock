@@ -81,6 +81,10 @@ export const useCatalogStore = defineStore('catalog', {
     installations(): InstallationView[] {
       return Object.values(useStreamStore().entities.installations)
     },
+    /** The last refresh's failure, or null: the list is then the last good one. */
+    refreshError(): { at: string; message: string } | null {
+      return useStreamStore().entities.catalogRefreshError
+    },
     refreshedAt(): string | null {
       return useStreamStore().entities.catalogRefreshedAt
     },

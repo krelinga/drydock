@@ -126,6 +126,7 @@ describe('a stream that fails for good (readyState CLOSED)', () => {
     stream.addRefetcher({ refetch })
     stream.connect()
     const first = FakeEventSource.latest().open()
+    for (const ev of CLONE_OK) first.send(ev)
     first.refuse()
     expect(first.closed).toBe(true)
     await settle()
@@ -134,7 +135,9 @@ describe('a stream that fails for good (readyState CLOSED)', () => {
     expect(FakeEventSource.instances.length).toBe(1)
     await new Promise((r) => setTimeout(r, 1100))
     expect(FakeEventSource.instances.length).toBe(2)
-    // A new EventSource sends no Last-Event-ID, so the open must refetch.
+    // A new EventSource cannot send Last-Event-ID, so it asks for the
+    // replay in its URL instead — from the last event the first one saw.
+    expect(FakeEventSource.latest().url).toBe('/api/events?last_event_id=13')
     FakeEventSource.latest().open()
     expect(refetch).toHaveBeenCalledTimes(1)
     expect(stream.phase).toBe('live')
