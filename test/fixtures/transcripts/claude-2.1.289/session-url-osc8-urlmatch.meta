@@ -1,0 +1,6 @@
+claude_version: 2.1.289
+recorded_at:    2026-10-04T06:28:14Z
+command:        SYNTHETIC — Spike 02's quoted 2.1.246 status line (ST-terminated OSC 8), with ?from=cli removed so nothing separates the id from its label
+pty_width:      -
+provenance:     synthetic
+must_yield:     exactly session_011cWgUx9pZMgZdibn47d68s — never the id run into its label (session_011cWgUx9pZMgZdibn47d68s72c05ced6a2d), which any match over escape-stripped text captures once the URL has no query string to stop it
