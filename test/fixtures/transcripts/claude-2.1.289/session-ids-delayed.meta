@@ -1,0 +1,6 @@
+claude_version: 2.1.289
+recorded_at:    2026-10-04T06:28:14Z
+command:        SYNTHETIC — the first 4480 bytes of env-status-block (the pre-shutdown capture, identical to session-url-osc8), then a second session announced 43 minutes later in two hand-built repaints mimicking the recorded ones
+pty_width:      200
+provenance:     synthetic
+must_yield:     both sessions once each in first-seen order (session_01AZLp4a8noWuZ5eRHrecDgz, then session_01SYNTHETICDELAYED00002) and Capacity 2/4 — ids arriving late in the stream still upsert
