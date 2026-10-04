@@ -30,6 +30,10 @@ jobs:
           curl -fsSLO "$base/$tarball" -fsSLO "$base/caddy_${CADDY_VERSION}_checksums.txt"
           grep " $tarball\$" "caddy_${CADDY_VERSION}_checksums.txt" | sha512sum -c -
           sudo tar -xzf "$tarball" -C /usr/local/bin caddy
+      # The broker's in-container clients are tested over both transports
+      # they support: socat, and OpenBSD netcat's -U (preinstalled).
+      - name: Install socat
+        run: sudo apt-get update -q && sudo apt-get install -y -q --no-install-recommends socat
       - name: gofmt
         run: test -z "$(gofmt -l . | tee /dev/stderr)"
       - run: go vet ./...

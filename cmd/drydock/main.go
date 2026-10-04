@@ -77,6 +77,7 @@ func serve(args []string) int {
 	fs.StringVar(&cfg.SocketGroup, "socket-group", cfg.SocketGroup, "group owning both sockets; Caddy must be its only other member")
 	fs.StringVar(&cfg.DatabasePath, "db", cfg.DatabasePath, "SQLite database path")
 	fs.StringVar(&cfg.WorkspaceRoot, "workspace-root", cfg.WorkspaceRoot, "where clones live")
+	fs.StringVar(&cfg.BrokerDir, "broker-dir", cfg.BrokerDir, "directory for the per-workspace token broker sockets (made 0700)")
 	fs.StringVar(&cfg.LabelPrefix, "label-prefix", cfg.LabelPrefix, "workspace container label prefix (never shared with another Drydock)")
 	fs.Int64Var(&cfg.GitHubAppID, "github-app-id", 0, "the GitHub App's numeric App ID (not its Client ID)")
 	fs.StringVar(&cfg.GitHubAppKey, "github-app-key", "", "path of the GitHub App's private key, mode 0400 (never the key itself)")

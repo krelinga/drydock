@@ -1,0 +1,48 @@
+#!/bin/sh
+# drydock-broker REQUEST — send one request line to this workspace's broker
+# and print its one-line answer (design §9). The other clients go through
+# this; nothing else in the container speaks to the socket.
+#
+# The socket is the identity: there is no argument naming a repository, and
+# the broker refuses a line that tries to carry one.
+#
+# Exit 0 with the answer on stdout when the broker answered OK; otherwise one
+# line on stderr naming the reason, and exit 69 (EX_UNAVAILABLE). Callers
+# print "GitHub access unavailable" rather than letting git or gh report a
+# confusing authentication error (design §12).
+set -u
+
+sock=${DRYDOCK_BROKER_SOCK:-/run/drydock/broker.sock}
+if [ ! -S "$sock" ]; then
+	echo "drydock: GitHub access unavailable: no broker socket at $sock" >&2
+	exit 69
+fi
+
+# socat if present, else OpenBSD netcat's -U. DRYDOCK_BROKER_TRANSPORT forces
+# one, so both are tested.
+transport=${DRYDOCK_BROKER_TRANSPORT:-}
+if [ -z "$transport" ]; then
+	if command -v socat >/dev/null 2>&1; then transport=socat; else transport=nc; fi
+fi
+case $transport in
+socat) answer=$(printf '%s\n' "$*" | socat -t 10 -T 10 - "UNIX-CONNECT:$sock" 2>/dev/null) ;;
+nc) answer=$(printf '%s\n' "$*" | nc -N -U -w 10 "$sock" 2>/dev/null) ;;
+*)
+	echo "drydock: unknown DRYDOCK_BROKER_TRANSPORT $transport" >&2
+	exit 69
+	;;
+esac
+
+case $answer in
+OK | "OK "*)
+	printf '%s\n' "$answer"
+	;;
+"ERR reason="*)
+	echo "drydock: GitHub access unavailable (${answer#ERR reason=})" >&2
+	exit 69
+	;;
+*)
+	echo "drydock: GitHub access unavailable: the broker did not answer" >&2
+	exit 69
+	;;
+esac

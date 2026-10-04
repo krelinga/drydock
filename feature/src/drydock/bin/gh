@@ -1,0 +1,31 @@
+#!/bin/sh
+# gh — a shim ahead of the real gh on PATH (design §9.2). gh reads GH_TOKEN
+# from its environment, and an environment cannot refresh itself, so every
+# invocation fetches a token from the broker — cached there for 55 minutes,
+# so twenty calls are one GitHub request — and execs the real gh with it.
+#
+# The token reaches the child's environment, never its argv.
+set -u
+
+self=$(cd "$(dirname "$0")" && pwd -P)
+real=
+IFS=:
+for d in $PATH; do
+	[ -n "$d" ] || continue
+	[ "$(cd "$d" 2>/dev/null && pwd -P)" = "$self" ] && continue
+	if [ -x "$d/gh" ]; then
+		real=$d/gh
+		break
+	fi
+done
+unset IFS
+if [ -z "$real" ]; then
+	echo "drydock: gh is not installed" >&2
+	exit 127
+fi
+
+answer=$(drydock-broker GET-TOKEN scope=gh) || exit 1
+token=${answer#*token=}
+GH_TOKEN=${token%% *}
+export GH_TOKEN
+exec "$real" "$@"

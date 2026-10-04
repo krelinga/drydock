@@ -47,7 +47,9 @@ jobs:
           chmod 0400 "$RUNNER_TEMP/dev-app.pem"
 
       # -count=1: a cached pass is a statement about yesterday's GitHub.
-      - run: go test -count=1 -v -run Contract ./internal/github/... ./internal/catalog/
+      # The broker's contract pushes a drydock/contract-* branch to testbed-a
+      # through the credential helper, and deletes it again.
+      - run: go test -count=1 -v -run Contract ./internal/github/... ./internal/catalog/ ./internal/broker/
         env:
           DRYDOCK_GITHUB_LIVE_APP_ID: ${{ vars.DRYDOCK_DEV_APP_ID }}
           DRYDOCK_GITHUB_LIVE_APP_KEY: ${{ runner.temp }}/dev-app.pem

@@ -83,6 +83,10 @@ type Fake struct {
 	Requests      []string // "METHOD /path" per request, without the query
 	tokens        map[string]token
 	URL           string
+
+	gitDir     string
+	gitBackend string
+	gitAuths   []GitAuth
 }
 
 var (
@@ -151,6 +155,9 @@ func (f *Fake) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	f.Mu.Lock()
 	defer f.Mu.Unlock()
 	f.Requests = append(f.Requests, r.Method+" "+r.URL.Path)
+	if f.serveGit(w, r) {
+		return
+	}
 	if f.Fail != nil {
 		if status, msg := f.Fail(r); status != 0 {
 			fail(w, status, msg)

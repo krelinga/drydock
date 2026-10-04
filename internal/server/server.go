@@ -24,6 +24,7 @@ import (
 
 	"github.com/krelinga/drydock/internal/api"
 	"github.com/krelinga/drydock/internal/auth"
+	"github.com/krelinga/drydock/internal/broker"
 	"github.com/krelinga/drydock/internal/catalog"
 	"github.com/krelinga/drydock/internal/config"
 	"github.com/krelinga/drydock/internal/container"
@@ -46,8 +47,9 @@ type Server struct {
 	// and boot reconciliation (§6). No route drives them yet.
 	Workspaces *workspace.Store
 	Reconciler *reconcile.Reconciler
-	// Catalog is nil when no GitHub App is configured.
+	// Catalog and Broker are nil when no GitHub App is configured.
 	Catalog *catalog.Catalog
+	Broker  *broker.Broker
 	api     *http.Server
 	preview *http.Server
 	apiLn   net.Listener
@@ -98,9 +100,11 @@ func New(ctx context.Context, cfg config.Config, env sys.Env) (*Server, error) {
 			db.Close()
 			return nil, err
 		}
-		s.Catalog = &catalog.Catalog{DB: db.DB, Events: s.Events, Clock: env.Clock,
-			GitHub: &github.Client{AppID: cfg.GitHubAppID, Key: key, BaseURL: cfg.GitHubAPI, Clock: env.Clock,
-				HTTP: &http.Client{Timeout: 30 * time.Second}}}
+		// One client, so the catalog and the broker share its token cache.
+		gh := &github.Client{AppID: cfg.GitHubAppID, Key: key, BaseURL: cfg.GitHubAPI, Clock: env.Clock,
+			HTTP: &http.Client{Timeout: 30 * time.Second}}
+		s.Catalog = &catalog.Catalog{DB: db.DB, Events: s.Events, Clock: env.Clock, GitHub: gh}
+		s.Broker = &broker.Broker{Dir: cfg.BrokerDir, GitHub: gh, DB: db.DB, Events: s.Events, Env: env}
 		repoCatalog = s.Catalog
 	}
 	handlers := api.SessionRoutes{Auth: svc}.Handlers()
@@ -186,6 +190,14 @@ func (s *Server) Serve(ctx context.Context) error {
 				"Could not reconcile workspaces with Docker at startup; nothing was changed. See the service log.", nil)
 		}
 	}()
+	// Every workspace that may hold a container gets its broker socket back
+	// after a restart; a container whose socket is missing has no GitHub
+	// access, which is safe but not what anyone wants.
+	if s.Broker != nil {
+		if err := s.openBrokerSockets(ctx); err != nil {
+			fmt.Fprintf(os.Stderr, "drydock: broker: %v\n", err)
+		}
+	}
 	refreshing := make(chan struct{})
 	go func() {
 		defer close(refreshing)
@@ -201,6 +213,9 @@ func (s *Server) Serve(ctx context.Context) error {
 	select {
 	case <-ctx.Done():
 	case serveErr = <-errc:
+	}
+	if s.Broker != nil {
+		s.Broker.CloseAll()
 	}
 	// Streams never go idle, so Shutdown would wait out its whole timeout on
 	// every open browser; ending the subscriptions ends the streams first.
@@ -269,4 +284,22 @@ func lookupGroup(name string) (int, error) {
 		return 0, fmt.Errorf("socket group %q: %w", name, err)
 	}
 	return strconv.Atoi(g.Gid)
+}
+
+// openBrokerSockets opens a socket for every workspace not being deleted.
+func (s *Server) openBrokerSockets(ctx context.Context) error {
+	all, err := s.Workspaces.List(ctx)
+	if err != nil {
+		return err
+	}
+	var errs []error
+	for _, w := range all {
+		if w.State == workspace.Deleting {
+			continue
+		}
+		if err := s.Broker.Open(ctx, w.ID); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
 }

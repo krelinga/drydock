@@ -55,6 +55,7 @@ func testConfig(t *testing.T, dir string) config.Config {
 	c.APISocket = filepath.Join(dir, "run", "http.sock")
 	c.PreviewSocket = filepath.Join(dir, "run", "preview.sock")
 	c.SocketGroup = g.Name
+	c.BrokerDir = filepath.Join(dir, "run", "sock")
 	c.LabelPrefix = "drydock.test.server"
 	return c
 }
