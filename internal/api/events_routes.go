@@ -67,8 +67,17 @@ func (e EventRoutes) stream(w http.ResponseWriter, r *http.Request) {
 
 	var backlog []events.Event
 	resync := false
-	if h := r.Header.Get("Last-Event-ID"); h != "" {
-		last, err := strconv.ParseInt(strings.TrimSpace(h), 10, 64)
+	// Where to resume: the Last-Event-ID header, which the browser sends on
+	// its own reconnects, or else ?last_event_id=, which is the only way a
+	// *new* EventSource — the client's hard retry after a CLOSED stream — can
+	// say it. The header wins when both are present: an EventSource keeps its
+	// URL across its own reconnects, so the query names an older position.
+	resume := r.Header.Get("Last-Event-ID")
+	if resume == "" {
+		resume = r.URL.Query().Get("last_event_id")
+	}
+	if resume != "" {
+		last, err := strconv.ParseInt(strings.TrimSpace(resume), 10, 64)
 		if err != nil || last < 0 {
 			resync = true // not an id this server issued
 		} else if backlog, err = e.Log.Since(r.Context(), last); errors.Is(err, events.ErrResync) {

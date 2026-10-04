@@ -12,9 +12,13 @@ import (
 type View struct {
 	// RefreshedAt is when the list last came from GitHub; nil before the
 	// first refresh, which the UI shows as "loading" rather than "empty".
-	RefreshedAt   *time.Time         `json:"refreshed_at"`
-	Installations []InstallationView `json:"installations"`
-	Repos         []RepoView         `json:"repos"`
+	RefreshedAt *time.Time `json:"refreshed_at"`
+	// LastRefreshError is the most recent refresh's failure, null when the
+	// most recent refresh succeeded. The list above is then the last good
+	// one, shown as such rather than as current.
+	LastRefreshError *RefreshError      `json:"last_refresh_error"`
+	Installations    []InstallationView `json:"installations"`
+	Repos            []RepoView         `json:"repos"`
 }
 
 // InstallationView carries the settings link the UI gives when a repository
@@ -55,6 +59,12 @@ type WorkspaceView struct {
 // holds them, which is the only reason they are kept.
 func (c *Catalog) List(ctx context.Context) (View, error) {
 	v := View{Installations: []InstallationView{}, Repos: []RepoView{}}
+	c.mu.Lock()
+	if c.failure != nil {
+		f := *c.failure
+		v.LastRefreshError = &f
+	}
+	c.mu.Unlock()
 
 	irows, err := c.DB.QueryContext(ctx, `SELECT id, account, account_type, refreshed_at FROM installation ORDER BY id`)
 	if err != nil {
@@ -113,4 +123,11 @@ func (c *Catalog) List(ctx context.Context) (View, error) {
 		v.Repos = append(v.Repos, r)
 	}
 	return v, rows.Err()
+}
+
+// RefreshError is a failed refresh: when, and Drydock's sentence for why —
+// GitHub's status and message, never a credential (publicReason).
+type RefreshError struct {
+	At      time.Time `json:"at"`
+	Message string    `json:"message"`
 }

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { FakeEventSource } from '../test/fakeEventSource'
 import { freshBackend, mountApp, settle, useMockApi } from '../test/setup'
-import { cloneScript, emit, WS_FAILED } from '../mocks/backend'
+import { cloneScript, completeRefresh, emit, WS_FAILED } from '../mocks/backend'
 import { get } from '../api/client'
 
 useMockApi()
@@ -136,6 +136,25 @@ describe('the catalog lives off the stream', () => {
     emit(b, 'repo.refreshed', { data: { count: 6, added: 1, removed: 0 } })
     await settle()
     expect(names(wrapper)).toContain('krelinga/new-one')
+  })
+
+  it('a failed refresh is shown — even to a page loaded after it — and a good one clears it', async () => {
+    const b = freshBackend({ signedIn: true })
+    b.pendingRefreshes = 1
+    completeRefresh(b, false) // before this page ever loaded: it missed the event
+    const { wrapper } = await mountApp('/')
+    const banner = wrapper.find('[data-test="refresh-error"]')
+    expect(banner.exists()).toBe(true)
+    expect(banner.text()).toContain('GitHub answered 401 (Bad credentials).')
+    expect(banner.text()).toContain('from the last one that worked')
+    // The list is still the last good one, not emptied by the failure.
+    expect(names(wrapper).length).toBeGreaterThan(0)
+
+    FakeEventSource.latest().open().pipe(b)
+    b.pendingRefreshes = 1
+    completeRefresh(b, true)
+    await settle()
+    expect(wrapper.find('[data-test="refresh-error"]').exists()).toBe(false)
   })
 
   it('a workspace deleted elsewhere leaves both sections', async () => {

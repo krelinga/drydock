@@ -184,6 +184,10 @@ function rowNote(r: CatalogRow): string | null {
           <span v-else class="sub" data-test="no-installations">The App is not installed on any account yet.</span>
         </div>
 
+        <p v-if="catalog.refreshError" class="foot refresh-error" role="status" data-test="refresh-error">
+          The last refresh failed {{ relativeTime(catalog.refreshError.at) }}: {{ catalog.refreshError.message }}
+          The list above is from the last one that worked.
+        </p>
         <p class="foot">
           <template v-if="catalog.refreshedAt">Refreshed {{ relativeTime(catalog.refreshedAt) }}. </template>
           <RouterLink to="/settings">Refresh in Settings</RouterLink>

@@ -101,7 +101,7 @@ func TestRefreshListsAndProbes(t *testing.T) {
 
 	v, _ := e.cat.List(context.Background())
 	if len(v.Installations) != 1 || v.Installations[0].SettingsURL != "https://github.com/settings/installations/77" ||
-		v.RefreshedAt == nil || !v.RefreshedAt.Equal(t0) {
+		v.RefreshedAt == nil || !v.RefreshedAt.Equal(t0) || v.LastRefreshError != nil {
 		t.Errorf("view %+v", v)
 	}
 	// Newest push first: the order the home list reads in.
@@ -227,6 +227,19 @@ func TestFailedRefreshKeepsTheCache(t *testing.T) {
 	last := evs[len(evs)-1]
 	if last.Kind != KindRefreshFailed || !strings.Contains(last.Message, "401 (Bad credentials)") {
 		t.Errorf("last event %+v", last)
+	}
+	// A page loaded after the event still learns of it: the list carries the
+	// failure, and a successful refresh clears it again.
+	v, _ := e.cat.List(context.Background())
+	if v.LastRefreshError == nil || v.LastRefreshError.Message != last.Message || !v.LastRefreshError.At.Equal(e.clock.Now()) {
+		t.Errorf("after a failed refresh, last_refresh_error = %+v", v.LastRefreshError)
+	}
+	e.fake.Mu.Lock()
+	e.fake.Fail = nil
+	e.fake.Mu.Unlock()
+	e.refresh(t)
+	if v, _ := e.cat.List(context.Background()); v.LastRefreshError != nil {
+		t.Errorf("a successful refresh left last_refresh_error = %+v", v.LastRefreshError)
 	}
 }
 

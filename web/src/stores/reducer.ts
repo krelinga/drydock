@@ -104,6 +104,7 @@ export interface Entities {
   installations: Record<number, InstallationView>
   /** Null until a snapshot has been applied: "not loaded", distinct from "empty". */
   catalogRefreshedAt: string | null
+  catalogRefreshError: { at: string; message: string } | null
   catalogLoaded: boolean
   lastRefresh: RefreshOutcome | null
 }
@@ -123,6 +124,7 @@ export function emptyEntities(): Entities {
     repoOrder: [],
     installations: {},
     catalogRefreshedAt: null,
+    catalogRefreshError: null,
     catalogLoaded: false,
     lastRefresh: null,
   }
@@ -320,6 +322,7 @@ function applySnapshot(prev: Entities, at: number, view: CatalogView): Entities 
     repoOrder,
     installations,
     catalogRefreshedAt: view.refreshed_at,
+    catalogRefreshError: view.last_refresh_error,
     catalogLoaded: true,
   }
 }

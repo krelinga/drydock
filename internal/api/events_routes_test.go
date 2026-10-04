@@ -70,7 +70,12 @@ type sseReader struct {
 
 func (env *streamEnv) connect(t *testing.T, lastEventID string) *sseReader {
 	t.Helper()
-	req, _ := http.NewRequest("GET", env.url, nil)
+	return env.connectURL(t, env.url, lastEventID)
+}
+
+func (env *streamEnv) connectURL(t *testing.T, url, lastEventID string) *sseReader {
+	t.Helper()
+	req, _ := http.NewRequest("GET", url, nil)
 	if lastEventID != "" {
 		req.Header.Set("Last-Event-ID", lastEventID)
 	}
@@ -255,5 +260,31 @@ func TestStreamEndsOnClose(t *testing.T) {
 	env.log.Close()
 	if f, ok := s.next(); ok {
 		t.Fatalf("the stream went on after Close: %+v", f)
+	}
+}
+
+// A new EventSource cannot set Last-Event-ID, so the client's hard retry says
+// where it was with ?last_event_id= — and gets the same replay. When both are
+// present the header wins: an EventSource keeps its URL across its own
+// reconnects, so the query is the older position.
+func TestStreamResumesFromTheQuery(t *testing.T) {
+	env := newStreamEnv(t)
+	seen := env.emit(t, "one")
+	missed := env.emit(t, "two")
+	later := env.emit(t, "three")
+
+	s := env.connectURL(t, env.url+"?last_event_id="+itoa(seen.ID), "")
+	s.expectEvent(missed)
+	s.expectEvent(later)
+	s.expectComment("connected")
+
+	both := env.connectURL(t, env.url+"?last_event_id="+itoa(seen.ID), itoa(missed.ID))
+	both.expectEvent(later) // from the header's position, not the query's
+	both.expectComment("connected")
+
+	// The query is held to the header's rules: a bad one is a resync.
+	bad := env.connectURL(t, env.url+"?last_event_id=abc", "")
+	if f, ok := bad.next(); !ok || f.name != "resync" {
+		t.Errorf("a malformed last_event_id: %+v; want resync", f)
 	}
 }

@@ -94,6 +94,12 @@ export interface RepoView {
 export interface CatalogView {
   /** Null before the first refresh: "loading", not "empty". */
   refreshed_at: string | null
+  /**
+   * The most recent refresh's failure, null when it succeeded — how a page
+   * loaded after the `repo.refresh_failed` event still learns of it. Its
+   * message is the server's sentence, shown as text and never parsed.
+   */
+  last_refresh_error: { at: string; message: string } | null
   installations: InstallationView[]
   repos: RepoView[]
 }
