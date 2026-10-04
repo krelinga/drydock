@@ -2,7 +2,7 @@
 
 *A Vue single-page app, built once and embedded in the Go binary, whose central design rule is that it owns no state machine of its own: every mutation is a `202` and a wait, and the server's event stream is the only thing that ever changes what you see.*
 
-**Status** design document, draft v2 · **Date** 4 October 2026 · reconciled against overall draft v6 — the card now carries one environment id and a capacity fraction, the supervisor's `waiting` state is not a failure, a bad login code retries in place (§6.1, §6.2, §6.6, §9) · supplements the [overall design](../overall/drydock-design.md) (§5 API, §8 sessions, §10 secrets, §13 auth) and [port forwarding](../port-forwarding/port-forwarding-design.md) (§6 ports API, §10.5 phishing)
+**Status** design document, draft v3 · **Date** 4 October 2026 · reconciled against overall draft v6 — the card carries one environment id and a capacity fraction, the supervisor's `waiting` state is not a failure, a bad login code retries in place (§6.1, §6.2, §6.6, §9) · wireframes for §6 added as Figs 3–6, distilled from `prototype/prototype.html` · supplements the [overall design](../overall/drydock-design.md) (§5 API, §8 sessions, §10 secrets, §13 auth) and [port forwarding](../port-forwarding/port-forwarding-design.md) (§6 ports API, §10.5 phishing)
 
 **Runtime** no runtime. A `dist/` directory in `go:embed`, served from the same Unix socket as the API
 
@@ -274,9 +274,25 @@ Navigation is three destinations, which is what makes a bottom tab bar the right
 
 Most of the app is a card, a badge, a button, and a list row. Six things are not, and they are where the design doc's reasoning either survives into the product or is quietly lost.
 
+> [!NOTE]
+> **Four of the six are drawn; all six are clickable**
+>
+> `prototype/prototype.html` is a working harness for every surface in this section at 360 px, with a switch for the fleet-wide login state so §6.6's override can be watched rather than argued. It is the thing to open first; the figures below are distilled from it.
+>
+> Two surfaces are deliberately *not* diagrammed. The **secret form** (§6.4) and the **destructive confirm** (§6.5) are ordinary forms whose entire design is which words appear and whether a field is required — a wireframe of either would show a labelled textarea and teach nothing the prose does not. Drawing them would be decoration, which the repo's diagram convention is meant to exclude.
+>
+> One palette note: these figures add a desaturated brick (`#9C3729` light / `#E08C7C` dark) to the three colors the existing diagrams use. The card is the first diagram in this repository that has to separate *degraded* from *failed*, and amber cannot carry both.
+
 ### 6.1  The workspace card: two state machines, one badge
 
 §4 of the overall design gives a workspace seven states, and its supervisor five plus the `waiting` state §8 added, and they are independent. A card that renders them as two badges pushes the join onto the reader at exactly the moment they are least able to do it, which is while something is broken. So the card renders **one** line of status and **one** primary action, derived from the pair.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="diagrams/03-card-states-dark.svg">
+  <img alt="The workspace card anatomy and five of its states. One enlarged card shows its parts: the repo name in mono, one status line derived from the workspace and supervisor state pair, a detail line carrying the step or error or capacity, and one primary action. Below, five miniature cards show running-serving with a capacity fraction and an Open in Claude action, running-waiting saying it is waiting for the previous server with no action, running-awaiting-login asking for a Claude sign-in, failed naming the build step with a Rebuild action, and stopped noting the clone is intact with a Start action." src="diagrams/03-card-states-light.svg" width="100%">
+</picture>
+
+**Fig 3** — *The card has room for one status line and one action, and that scarcity is the design. Reading left to right along the bottom: the capacity fraction is actionable where a bare count is not; `waiting` offers nothing to press because pressing is the mistake; `awaiting_login` points at a fleet-wide fix rather than a local one; `failed` names the step; and `stopped` says what survived. The grey pair above each card is the state it came from — it would not ship.*
 
 | `workspace.state` | `supervisor.state` | The card says | Primary action |
 |---|---|---|---|
@@ -308,6 +324,13 @@ The card also carries, when known: disk usage, the §7.3 expiry warning dot, and
 
 The most intricate screen, for the reason §2.4 gives. It is a linear flow with a visible deadline, and its state lives on the server.
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="diagrams/04-handshake-loop-dark.svg">
+  <img alt="The login handshake as a state machine. Absent leads to starting when the operator signs in, then to awaiting code once the authorize URL is scraped off the PTY. A valid code of the form code-hash-state reaches signed in. An invalid code leads to an invalid-code state which loops straight back to awaiting code, because the process stays at the paste prompt with the same URL still valid and the countdown still running, so no teardown is needed. Only the five-minute deadline exits to timed out." src="diagrams/04-handshake-loop-light.svg" width="100%">
+</picture>
+
+**Fig 4** — *The arc back from `invalid_code` is the whole point of the diagram. Only two things leave `awaiting_code` for good — a valid code and the deadline — so a bad paste is a loop rather than an exit, and the form, the PTY, and the URL all survive it. The state machine a UI reaches for by instinct has a terminal failure node here, and that instinct would discard a live login for a half-copied code.*
+
 | Phase | Shows | Recovery |
 |---|---|---|
 | `absent` | *"Claude is not signed in"* and a Sign in button | — |
@@ -330,6 +353,13 @@ Six rules on this screen specifically, three of them from Spike 01's measurement
 ### 6.3  The ports panel
 
 Port forwarding §8.2 is unusually prescriptive about the UI, and all of it is adopted:
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="diagrams/05-ports-panel-dark.svg">
+  <img alt="The ports panel, three rows. Port 5173, the vite dev server, is enabled: it shows its full preview hostname and carries both declared and observed provenance flags with an on switch. Port 9090 is bound to loopback, so it is greyed, carries the diagnosis to start it with host 0.0.0.0, and has no enable control at all. Port 8080 is declared but not listening, greyed but present with an off switch. A footer notes that discovery never interrupts: no toast and no badge, because a prompt seen whenever a test opens a socket trains the wrong reflex." src="diagrams/05-ports-panel-light.svg" width="100%">
+</picture>
+
+**Fig 5** — *Three rows, three different relationships between "something is listening" and "something is reachable" — which port forwarding §5 keeps as independent columns for exactly this reason. The middle row is the one that earns the panel: a loopback bind is a diagnosis the scan already has, so the fix is printed in the row and the preview is never offered, which means the refused connection never happens.*
 
 - **No prompt, no toast, no badge that demands attention.** A port appearing changes the panel next time it is read. The reason given there is the one that matters: a prompt you see often enough buys habituation rather than safety.
 - **Loopback rows are listed, greyed, and have no enable control** — not a disabled one, which reads as "try again". They carry the diagnosis verbatim: *"listening on loopback — start it with `--host 0.0.0.0` to preview it."* The bind address turns the most common failure into something known before anyone clicks.
@@ -364,6 +394,13 @@ Port forwarding §8.2 is unusually prescriptive about the UI, and all of it is a
 This is the frontend's answer to the thing §15.1 names as most likely to look like a Drydock bug at 2am: a blanked shared credential takes every workspace down at once, and none of them is at fault.
 
 A naive UI shows ten degraded cards with ten *Restart session server* buttons, every one of which is the wrong action and all ten of which will be pressed. So the Claude identity state is **fleet-wide state that overrides per-card presentation**:
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="diagrams/06-fleet-override-dark.svg">
+  <img alt="Two panels compared. On the left, a UI that renders each card independently shows five cards all reading session degraded, each with its own Restart session server button, none of which can work. On the right, the same fault produces one banner reading signed out, sign in again with a single Sign in to Claude button; the four session-dependent cards below it say waiting on Claude sign-in and carry no action, while a fifth card whose image build failed keeps its own status and its own Rebuild action, because that fault has a different cause." src="diagrams/06-fleet-override-light.svg" width="100%">
+</picture>
+
+**Fig 6** — *The left panel is not a strawman; it is what you get by rendering each card from its own row, which is the obvious implementation. Two things go wrong at once: five buttons appear that cannot work, and the one card with a genuinely different fault is buried among them. The right panel keeps the override narrow — only what the credential actually broke is replaced, so the build failure keeps its own status and its own action.*
 
 | `GET /api/auth/claude` | The app does |
 |---|---|

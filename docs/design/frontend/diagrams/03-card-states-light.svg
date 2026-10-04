@@ -1,0 +1,85 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 320" role="img" aria-label="The workspace card anatomy and five of its states. One enlarged card shows its parts: the repo name in mono, one status line derived from the workspace and supervisor state pair, a detail line carrying the step or error or capacity, and one primary action. Below, five miniature cards show running-serving with a capacity fraction and an Open in Claude action, running-waiting saying it is waiting for the previous server with no action, running-awaiting-login asking for a Claude sign-in, failed naming the build step with a Rebuild action, and stopped noting the clone is intact with a Start action.">
+        <defs>
+          <marker id="03-card-states-light-ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+            <path d="M0 0 L10 5 L0 10 z" fill="#48525E"/>
+          </marker>
+        </defs>
+
+        <!-- ===== anatomy ===== -->
+        <rect x="30" y="32" width="300" height="116" rx="4" fill="none" stroke="#48525E" stroke-width="1.2"/>
+        <line x1="31.6" y1="33" x2="31.6" y2="147" stroke="#1B6B58" stroke-width="3.2"/>
+
+        <text x="46" y="53" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="12" fill="#48525E">krelinga/drydock</text>
+        <text x="314" y="53" text-anchor="end" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="9.5" fill="#48525E" opacity=".55">2.1 GB</text>
+
+        <text x="46" y="79" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="10" fill="#1B6B58">●</text>
+        <text x="62" y="79" font-family="system-ui, -apple-system, Segoe UI, Roboto, Helvetica, sans-serif" font-size="12.5" fill="#1B6B58">Capacity 1 / 4</text>
+
+        <text x="46" y="98" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="9.5" fill="#48525E" opacity=".6">4 listening · 1 previewed</text>
+
+        <rect x="46" y="110" width="106" height="26" rx="3" fill="none" stroke="#1B6B58" stroke-width="1.3"/>
+        <text x="99" y="127" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="9.5" fill="#1B6B58">Open in Claude</text>
+
+        <line x1="334" y1="49" x2="356" y2="49" stroke="#48525E" stroke-width="1" opacity=".4" marker-end="url(#03-card-states-light-ar)"/>
+        <text x="362" y="52" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="9.5" fill="#48525E" opacity=".75">the repo, in mono — it is an identifier, not a title</text>
+
+        <line x1="334" y1="75" x2="356" y2="75" stroke="#48525E" stroke-width="1" opacity=".4" marker-end="url(#03-card-states-light-ar)"/>
+        <text x="362" y="78" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="9.5" fill="#48525E" opacity=".75">ONE status line, derived from the state pair</text>
+
+        <line x1="334" y1="94" x2="356" y2="94" stroke="#48525E" stroke-width="1" opacity=".4" marker-end="url(#03-card-states-light-ar)"/>
+        <text x="362" y="97" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="9.5" fill="#48525E" opacity=".75">detail — the step, the error, or the capacity</text>
+
+        <line x1="334" y1="121" x2="356" y2="121" stroke="#48525E" stroke-width="1" opacity=".4" marker-end="url(#03-card-states-light-ar)"/>
+        <text x="362" y="124" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="9.5" fill="#48525E" opacity=".75">ONE primary action — never a row of maybes</text>
+
+        <text x="362" y="152" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="9.5" fill="#95590F">seven workspace states and six supervisor states collapse</text>
+        <text x="362" y="166" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="9.5" fill="#95590F">here — not in the reader's head, while something is broken</text>
+
+        <!-- ===== five states ===== -->
+
+        <text x="15" y="197" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="8" fill="#48525E" opacity=".55">running · serving</text>
+        <rect x="15" y="204" width="162" height="104" rx="4" fill="none" stroke="#48525E" stroke-width="1.1"/>
+        <line x1="16.6" y1="205" x2="16.6" y2="307" stroke="#1B6B58" stroke-width="3.2"/>
+        <text x="30" y="228" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="9" fill="#1B6B58">●</text>
+        <text x="44" y="228" font-family="system-ui, -apple-system, Segoe UI, Roboto, Helvetica, sans-serif" font-size="11" fill="#1B6B58">Capacity 1 / 4</text>
+        <text x="30" y="252" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="8.5" fill="#48525E" opacity=".6">4 listening · 1 previewed</text>
+        <rect x="30" y="266" width="100" height="24" rx="3" fill="none" stroke="#1B6B58" stroke-width="1.2"/>
+        <text x="80" y="282" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="8.5" fill="#1B6B58">Open in Claude</text>
+
+        <text x="192" y="197" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="8" fill="#48525E" opacity=".55">running · waiting</text>
+        <rect x="192" y="204" width="162" height="104" rx="4" fill="none" stroke="#48525E" stroke-width="1.1"/>
+        <line x1="193.6" y1="205" x2="193.6" y2="307" stroke="#95590F" stroke-width="3.2"/>
+        <text x="207" y="228" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="9" fill="#95590F">◌</text>
+        <text x="221" y="228" font-family="system-ui, -apple-system, Segoe UI, Roboto, Helvetica, sans-serif" font-size="11" fill="#95590F">Waiting for the</text>
+        <text x="221" y="241" font-family="system-ui, -apple-system, Segoe UI, Roboto, Helvetica, sans-serif" font-size="11" fill="#95590F">previous server</text>
+        <text x="207" y="262" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="8.5" fill="#48525E" opacity=".6">elapsed 1:48</text>
+        <text x="207" y="282" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="8.5" fill="#95590F">no action — not failed</text>
+
+        <text x="369" y="197" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="8" fill="#48525E" opacity=".55">running · awaiting_login</text>
+        <rect x="369" y="204" width="162" height="104" rx="4" fill="none" stroke="#48525E" stroke-width="1.1"/>
+        <line x1="370.6" y1="205" x2="370.6" y2="307" stroke="#9C3729" stroke-width="3.2"/>
+        <text x="384" y="228" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="9" fill="#9C3729">▲</text>
+        <text x="398" y="228" font-family="system-ui, -apple-system, Segoe UI, Roboto, Helvetica, sans-serif" font-size="11" fill="#9C3729">Claude is not</text>
+        <text x="398" y="241" font-family="system-ui, -apple-system, Segoe UI, Roboto, Helvetica, sans-serif" font-size="11" fill="#9C3729">signed in</text>
+        <rect x="384" y="266" width="118" height="24" rx="3" fill="none" stroke="#9C3729" stroke-width="1.2"/>
+        <text x="443" y="282" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="8.5" fill="#9C3729">Sign in to Claude</text>
+
+        <text x="546" y="197" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="8" fill="#48525E" opacity=".55">failed · any</text>
+        <rect x="546" y="204" width="162" height="104" rx="4" fill="none" stroke="#48525E" stroke-width="1.1"/>
+        <line x1="547.6" y1="205" x2="547.6" y2="307" stroke="#9C3729" stroke-width="3.2"/>
+        <text x="561" y="228" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="9" fill="#9C3729">✕</text>
+        <text x="575" y="228" font-family="system-ui, -apple-system, Segoe UI, Roboto, Helvetica, sans-serif" font-size="11" fill="#9C3729">Failed while</text>
+        <text x="575" y="241" font-family="system-ui, -apple-system, Segoe UI, Roboto, Helvetica, sans-serif" font-size="11" fill="#9C3729">building</text>
+        <text x="561" y="262" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="8.5" fill="#48525E" opacity=".6">step 9/12 · apt-get 100</text>
+        <rect x="561" y="266" width="62" height="24" rx="3" fill="none" stroke="#9C3729" stroke-width="1.2"/>
+        <text x="592" y="282" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="8.5" fill="#9C3729">Rebuild</text>
+
+        <text x="723" y="197" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="8" fill="#48525E" opacity=".55">stopped · any</text>
+        <rect x="723" y="204" width="162" height="104" rx="4" fill="none" stroke="#48525E" stroke-width="1.1"/>
+        <line x1="724.6" y1="205" x2="724.6" y2="307" stroke="#48525E" stroke-width="3.2" opacity=".35"/>
+        <text x="738" y="228" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="9" fill="#48525E">○</text>
+        <text x="752" y="228" font-family="system-ui, -apple-system, Segoe UI, Roboto, Helvetica, sans-serif" font-size="11" fill="#48525E">Stopped</text>
+        <text x="738" y="252" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="8.5" fill="#48525E" opacity=".6">clone and worktrees intact</text>
+        <rect x="738" y="266" width="52" height="24" rx="3" fill="none" stroke="#48525E" stroke-width="1.2"/>
+        <text x="764" y="282" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="8.5" fill="#48525E">Start</text>
+      </svg>
