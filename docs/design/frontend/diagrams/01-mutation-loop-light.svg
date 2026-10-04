@@ -1,0 +1,54 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 200" role="img" aria-label="A tap on Clone issues a POST which returns 202 Accepted carrying no UI state; the only local state is that a request is in flight. The server writes a state transition, which appears on the SSE stream as an identified event, which a store reducer applies, which renders the card as cloning. The same path renders a click from any other device.">
+        <defs>
+          <marker id="01-mutation-loop-light-ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M0 0 L10 5 L0 10 z" fill="#48525E"/>
+          </marker>
+        </defs>
+
+        <rect x="15" y="44" width="150" height="76" rx="4" fill="none" stroke="#48525E" stroke-width="1.3"/>
+        <text x="90" y="76" text-anchor="middle" font-family="system-ui, -apple-system, Segoe UI, Roboto, Helvetica, sans-serif" font-size="12" fill="#48525E">tap Clone</text>
+        <text x="90" y="95" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="9.5" fill="#48525E" opacity=".65">the home list, on a phone</text>
+
+        <rect x="195" y="44" width="150" height="76" rx="4" fill="none" stroke="#1B6B58" stroke-width="1.5"/>
+        <text x="270" y="70" text-anchor="middle" font-family="system-ui, -apple-system, Segoe UI, Roboto, Helvetica, sans-serif" font-size="12.5" fill="#1B6B58">API server</text>
+        <text x="270" y="88" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="9.5" fill="#1B6B58" opacity=".85">POST /api/workspaces</text>
+        <text x="270" y="103" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="9.5" fill="#1B6B58" opacity=".85">write state transition</text>
+
+        <rect x="375" y="44" width="150" height="76" rx="4" fill="none" stroke="#48525E" stroke-width="1.3"/>
+        <text x="450" y="70" text-anchor="middle" font-family="system-ui, -apple-system, Segoe UI, Roboto, Helvetica, sans-serif" font-size="12" fill="#48525E">202 Accepted</text>
+        <text x="450" y="88" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="9.5" fill="#48525E" opacity=".7">carries no UI state</text>
+        <text x="450" y="103" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="9.5" fill="#48525E" opacity=".7">button: in flight</text>
+
+        <rect x="555" y="44" width="150" height="76" rx="4" fill="none" stroke="#1B6B58" stroke-width="1.5"/>
+        <text x="630" y="70" text-anchor="middle" font-family="system-ui, -apple-system, Segoe UI, Roboto, Helvetica, sans-serif" font-size="12.5" fill="#1B6B58">/api/events</text>
+        <text x="630" y="88" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="9.5" fill="#1B6B58" opacity=".85">id: 1042</text>
+        <text x="630" y="103" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="9.5" fill="#1B6B58" opacity=".85">workspace.cloning</text>
+
+        <rect x="735" y="44" width="150" height="76" rx="4" fill="none" stroke="#48525E" stroke-width="1.3"/>
+        <text x="810" y="70" text-anchor="middle" font-family="system-ui, -apple-system, Segoe UI, Roboto, Helvetica, sans-serif" font-size="12" fill="#48525E">reducer, render</text>
+        <text x="810" y="88" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="9.5" fill="#48525E" opacity=".7">card reads "Cloning…"</text>
+        <text x="810" y="103" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="9.5" fill="#48525E" opacity=".7">in flight cleared</text>
+
+        <line x1="165" y1="82" x2="191" y2="82" stroke="#48525E" stroke-width="1.2" marker-end="url(#01-mutation-loop-light-ar)"/>
+        <line x1="345" y1="82" x2="371" y2="82" stroke="#48525E" stroke-width="1.2" marker-end="url(#01-mutation-loop-light-ar)"/>
+        <line x1="525" y1="82" x2="551" y2="82" stroke="#48525E" stroke-width="1.2" marker-end="url(#01-mutation-loop-light-ar)"/>
+        <line x1="705" y1="82" x2="731" y2="82" stroke="#48525E" stroke-width="1.2" marker-end="url(#01-mutation-loop-light-ar)"/>
+
+        <line x1="270" y1="120" x2="270" y2="140" stroke="#48525E" stroke-width="1" opacity=".35"/>
+        <line x1="450" y1="120" x2="450" y2="140" stroke="#48525E" stroke-width="1" opacity=".35"/>
+        <line x1="630" y1="120" x2="630" y2="140" stroke="#48525E" stroke-width="1" opacity=".35"/>
+        <line x1="810" y1="120" x2="810" y2="140" stroke="#48525E" stroke-width="1" opacity=".35"/>
+
+        <text x="270" y="154" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="9.5" fill="#95590F">the transition is</text>
+        <text x="270" y="168" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="9.5" fill="#95590F">the only write</text>
+
+        <text x="450" y="154" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="9.5" fill="#95590F">body discarded —</text>
+        <text x="450" y="168" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="9.5" fill="#95590F">applying it would be</text>
+        <text x="450" y="182" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="9.5" fill="#95590F" opacity=".8">a second write path</text>
+
+        <text x="630" y="154" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="9.5" fill="#95590F">the first time the UI</text>
+        <text x="630" y="168" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="9.5" fill="#95590F">learns anything</text>
+
+        <text x="810" y="154" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="9.5" fill="#95590F">identical for a click</text>
+        <text x="810" y="168" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="9.5" fill="#95590F">from any device</text>
+      </svg>

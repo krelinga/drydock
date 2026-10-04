@@ -1,0 +1,70 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 330" role="img" aria-label="The login handshake as a state machine. Absent leads to starting when the operator signs in, then to awaiting code once the authorize URL is scraped off the PTY. A valid code of the form code-hash-state reaches signed in. An invalid code leads to an invalid-code state which loops straight back to awaiting code, because the process stays at the paste prompt with the same URL still valid and the countdown still running, so no teardown is needed. Only the five-minute deadline exits to timed out.">
+        <defs>
+          <marker id="04-handshake-loop-light-ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M0 0 L10 5 L0 10 z" fill="#48525E"/>
+          </marker>
+          <marker id="04-handshake-loop-light-arg" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M0 0 L10 5 L0 10 z" fill="#1B6B58"/>
+          </marker>
+          <marker id="04-handshake-loop-light-arb" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M0 0 L10 5 L0 10 z" fill="#9C3729"/>
+          </marker>
+        </defs>
+
+        <!-- row 1 -->
+        <rect x="20" y="40" width="140" height="70" rx="4" fill="none" stroke="#48525E" stroke-width="1.2"/>
+        <text x="90" y="70" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="10.5" fill="#48525E">absent</text>
+        <text x="90" y="88" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="8.5" fill="#48525E" opacity=".6">"not signed in"</text>
+
+        <rect x="185" y="40" width="140" height="70" rx="4" fill="none" stroke="#48525E" stroke-width="1.2"/>
+        <text x="255" y="70" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="10.5" fill="#48525E">starting</text>
+        <text x="255" y="88" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="8.5" fill="#48525E" opacity=".6">scratch container</text>
+
+        <rect x="350" y="40" width="190" height="70" rx="4" fill="none" stroke="#95590F" stroke-width="1.5"/>
+        <text x="445" y="66" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="10.5" fill="#95590F">awaiting_code</text>
+        <text x="445" y="83" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="8.5" fill="#95590F" opacity=".85">URL shown · 5:00 running</text>
+        <text x="445" y="98" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="8.5" fill="#95590F" opacity=".85">PTY held open</text>
+
+        <rect x="610" y="40" width="150" height="70" rx="4" fill="none" stroke="#1B6B58" stroke-width="1.5"/>
+        <text x="685" y="70" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="10.5" fill="#1B6B58">ok</text>
+        <text x="685" y="88" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="8.5" fill="#1B6B58" opacity=".85">every workspace</text>
+
+        <!-- row 2 -->
+        <rect x="350" y="190" width="190" height="70" rx="4" fill="none" stroke="#9C3729" stroke-width="1.5"/>
+        <text x="445" y="216" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="10.5" fill="#9C3729">invalid_code</text>
+        <text x="445" y="233" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="8.5" fill="#9C3729" opacity=".85">error beside the field</text>
+        <text x="445" y="248" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="8.5" fill="#9C3729" opacity=".85">form never closes</text>
+
+        <rect x="610" y="190" width="150" height="70" rx="4" fill="none" stroke="#48525E" stroke-width="1.2"/>
+        <text x="685" y="220" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="10.5" fill="#48525E">timed_out</text>
+        <text x="685" y="238" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="8.5" fill="#48525E" opacity=".6">nothing to reap</text>
+
+        <!-- forward arrows -->
+        <line x1="160" y1="75" x2="181" y2="75" stroke="#48525E" stroke-width="1.2" marker-end="url(#04-handshake-loop-light-ar)"/>
+        <text x="170" y="66" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="8" fill="#48525E" opacity=".65">tap</text>
+
+        <line x1="325" y1="75" x2="346" y2="75" stroke="#48525E" stroke-width="1.2" marker-end="url(#04-handshake-loop-light-ar)"/>
+
+        <line x1="540" y1="75" x2="606" y2="75" stroke="#1B6B58" stroke-width="1.3" marker-end="url(#04-handshake-loop-light-arg)"/>
+        <text x="573" y="66" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="8.5" fill="#1B6B58">code#state</text>
+
+        <!-- down to invalid -->
+        <line x1="408" y1="110" x2="408" y2="186" stroke="#9C3729" stroke-width="1.3" marker-end="url(#04-handshake-loop-light-arb)"/>
+        <text x="400" y="152" text-anchor="end" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="8.5" fill="#9C3729">Invalid code</text>
+
+        <!-- the loop back -->
+        <path d="M 497 186 L 497 148 L 487 148" fill="none" stroke="#95590F" stroke-width="1.4"/>
+        <path d="M 487 148 L 497 148 L 497 114" fill="none" stroke="#95590F" stroke-width="1.4" marker-end="url(#04-handshake-loop-light-ar)"/>
+        <text x="508" y="146" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="8.5" fill="#95590F">paste again</text>
+        <text x="508" y="159" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="8.5" fill="#95590F" opacity=".8">no teardown</text>
+
+        <!-- deadline -->
+        <line x1="545" y1="105" x2="606" y2="196" stroke="#48525E" stroke-width="1.1" opacity=".55" marker-end="url(#04-handshake-loop-light-ar)"/>
+        <text x="600" y="140" text-anchor="end" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="8.5" fill="#48525E" opacity=".65">5:00 elapsed</text>
+
+        <!-- notes -->
+        <line x1="445" y1="260" x2="445" y2="282" stroke="#48525E" stroke-width="1" opacity=".3"/>
+        <text x="20" y="298" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="9.5" fill="#95590F">Spike 01: after `Invalid code` the process stays at the paste prompt and the same URL is still valid — so the only</text>
+        <text x="20" y="312" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="9.5" fill="#95590F">state that ends the handshake is the deadline. A UI that tore down on any non-success verdict would throw away a</text>
+        <text x="20" y="326" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="9.5" fill="#95590F">live PTY for the most common mistake there is: a half-copied code.</text>
+      </svg>

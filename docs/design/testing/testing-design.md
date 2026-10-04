@@ -2,9 +2,9 @@
 
 *How a system whose load-bearing properties are mostly things that must **never** happen gets a test suite that actually notices when one of them does.*
 
-**Status** design document, draft v3 · **Date** 4 October 2026 · §15's five findings are **applied** in overall v7 and port-forwarding v4; §8.2, §8.5 and §15 updated to match
+**Status** design document, draft v4 · **Date** 4 October 2026 · a **frontend** tier added to §3 and §10.3, and §10.1's `chromedp` fallback withdrawn — the [frontend design](../frontend/frontend-design.md) puts TypeScript in the repository regardless, so the second language is no longer a cost this tier has to justify · §15's five findings are **applied** in overall v7 and port-forwarding v4; §8.2, §8.5 and §15 updated to match
 
-**Supplements** [`../overall/drydock-design.md`](../overall/drydock-design.md) draft v7 · [`../port-forwarding/port-forwarding-design.md`](../port-forwarding/port-forwarding-design.md) draft v4 · reads [`../security-review.md`](../security-review.md) draft v1 and Spikes [00](../spikes/00-shared-credential-volume.md), [01](../spikes/01-login-handshake.md), [02](../spikes/02-rc-restart.md), [03](../spikes/03-claude-env-file.md)
+**Supplements** [`../overall/drydock-design.md`](../overall/drydock-design.md) draft v7 · [`../port-forwarding/port-forwarding-design.md`](../port-forwarding/port-forwarding-design.md) draft v4 · [`../frontend/frontend-design.md`](../frontend/frontend-design.md) draft v4 · reads [`../security-review.md`](../security-review.md) draft v1 and Spikes [00](../spikes/00-shared-credential-volume.md), [01](../spikes/01-login-handshake.md), [02](../spikes/02-rc-restart.md), [03](../spikes/03-claude-env-file.md)
 
 **Out of scope** CI vendor specifics beyond topology · packaging and release mechanics · testing Caddy's or Docker's own correctness
 
@@ -91,6 +91,7 @@ A `devcontainer up` against a cold cache is minutes. A container tier that build
 | Tier | Real | Substituted | Lives in | Budget |
 |---|---|---|---|---|
 | **unit** | Pure functions. No clock, no filesystem beyond `t.TempDir()`, no socket. | Everything, by not being reached. | `_test.go` beside the code | < 10 s |
+| **frontend** | The SSE reducer and the Vue components, in `jsdom`. Real event fixtures, real component rendering. | The server — there isn't one. The API is a service worker, and the event stream is a file. | `web/src/**/*.spec.ts` (Vitest) | < 15 s |
 | **component** | The real `http.Server` on real Unix sockets, real SQLite file, real Caddy process, real shell shims. | `devcontainer` CLI, Docker, GitHub, Claude Code — all four as fake *binaries on `PATH`* or fake *HTTP servers*, never as mocked Go interfaces where a real process will do. | `test/component/` | < 60 s |
 | **container** | Docker-in-Docker, real `devcontainer up`, real containers, real broker socket bind-mounts, real `/proc` scans. | GitHub (incl. the git remote), Claude Code. | `test/container/`, tag `docker` | < 10 min warm |
 | **browser** | Chromium, real Caddy with real certs on two registrable domains, the whole request path. | GitHub, Claude Code. | `test/browser/` (Playwright) | < 5 min |
@@ -493,12 +494,21 @@ Ten or so tests, and they exist because they are the only way to answer PF §14.
 | Domains | `drydock.test` and `*.drydock-preview.test` | distinct eTLD+1 under a reserved TLD, so the browser's own PSL treats them as cross-site — the exact property PF §4 buys with a second real domain |
 | Resolution | Chromium `--host-resolver-rules="MAP *.drydock-preview.test 127.0.0.1, MAP drydock.test 127.0.0.1"` | wildcard resolution, which `/etc/hosts` cannot express |
 | Certificates | a throwaway local CA, one leaf for the UI host and one wildcard for the preview domain, the CA trusted in the browser profile | **`ignoreHTTPSErrors` is not acceptable here.** The tests are about `Secure` and `__Host-` semantics, and disabling certificate validation changes the thing under test |
-| Driver | Playwright | `context.cookies()`, request interception, and a trace on failure are exactly what the three assertions need. `chromedp` keeps it all in Go and is the fallback if the second language proves unwelcome |
+| Driver | Playwright | `context.cookies()`, request interception, and a trace on failure are exactly what the three assertions need. ~~`chromedp` keeps it all in Go and is the fallback if the second language proves unwelcome~~ — **withdrawn in v4**, see below |
 
 > [!NOTE]
 > **Spike this before building it**
 >
 > The cert-trust step is the one piece whose cost is unknown, and the tier's value collapses if it needs `ignoreHTTPSErrors`. The question is narrow and answerable in an afternoon — *can a headless Chromium under Playwright be made to trust a locally-generated CA, such that a `__Host-` cookie set over the local HTTPS listener is accepted and replayed?* — and it belongs with the other Phase 0 spikes, next to the ones already there.
+
+> [!NOTE]
+> **The `chromedp` fallback is withdrawn, and it was withdrawn by a decision made elsewhere**
+>
+> Draft v3 held Playwright at arm's length because it introduces a second language, and offered `chromedp` as the way to keep everything in Go. That reasoning was sound when the repository was Go and nothing else. It no longer is: the [frontend design](../frontend/frontend-design.md) §3.1 settles on Vue with TypeScript and a Vite build, so **`npm`, a `node_modules`, and a TypeScript toolchain are in the repository whether this tier wants them or not.**
+>
+> The cost Playwright was being charged for is therefore already paid, and two things flip with it. Playwright now *shares* a toolchain with the frontend tier above rather than being a lone JavaScript dependency in a Go project — one `package.json`, one `npm ci` in CI, and the same test runner idiom a frontend contributor already knows. And `chromedp` becomes the more expensive option, because it would be the only thing in the repository driving a browser from Go while the frontend drives one from TypeScript a directory away.
+>
+> Recorded as a decision rather than a preference, because the thing that changed is not an opinion about Playwright. It is which languages the repository contains, and that was decided by §3.1 of another document.
 
 ### 10.2  What it tests, and nothing more
 
@@ -513,6 +523,30 @@ Everything in this tier is something no other tier can reach. The three from PF 
 7. the UI cannot be framed from a preview origin;
 8. HMR works: a websocket upgrade through two proxy hops, and a file change reaches the page;
 9. the SSE stream delivers an event to a real `EventSource` through Caddy without buffering.
+
+Four more arrive with the UI. Each is out of the frontend tier's reach for the reason §10.3 generalizes below:
+
+10. **sign-in honours `return`** — a deep link to `/ws/<id>` while signed out lands on sign-in and comes back to that workspace, which is the only part of the auth flow a reducer test cannot see;
+11. **a `401` mid-session routes to sign-in rather than rendering stale state** — provoked by deleting the `auth_session` row underneath a live page, which is also the cheapest way to assert the frontend design's §4.4 rule that entity state is *cleared* and not kept;
+12. **the login handshake survives a reload** between the URL appearing and the code being pasted — the app-switch case from frontend §2.4, and the reason that handshake's state lives on the server at all. A page reload is a real navigation, so no amount of component testing reaches it;
+13. **`EventSource` reconnect replays the gap** — kill the stream, write three events, let the browser reconnect on its own, and assert the page agrees with the database. The browser's automatic `Last-Event-ID` is the thing under test, and it is browser behaviour, not application code.
+
+### 10.3  Where a frontend test goes
+
+Two tiers can now hold a test about the UI, so the rule from §3.1 needs one sentence of application rather than a second convention: **if the assertion needs a server, a cookie jar, or a real navigation, it is a browser test; if it needs only a function and a DOM, it is a frontend test.**
+
+That line falls where it does because of the frontend design's central rule — the client owns no state machine, so almost everything interesting about it is a pure function from an event sequence to a rendered card ([frontend §2.1](../frontend/frontend-design.md), §4.1). Those are the cheapest tests in the repository and there should be many of them:
+
+| Assertion | Tier | Why there |
+|---|---|---|
+| Every `(workspace, supervisor)` pair renders one status and one action | frontend | A parameterized table over a pure mapping. Thirteen cases, no server, milliseconds. |
+| A blanked credential replaces session-dependent cards but not a build failure | frontend | The §6.6 override is a function of one fleet-wide value; the interesting part is what it leaves *alone*. |
+| A `202` response body is discarded rather than applied | frontend | The one rule whose violation looks like working code, so it wants a test that fails loudly in the fast lane. |
+| Out-of-order event ids, a replayed gap, an event for an unknown workspace | frontend | Reducer inputs. Constructing these against a real server would be elaborate; as fixtures they are three lines each. |
+| The four refused-start signatures each produce a different message | frontend | A mapping from a classified signature to a sentence — which is exactly why §9 of the frontend design asks the API to send the signature rather than prose. |
+| Items 10–13 above | browser | Server, cookie jar, or navigation. |
+
+The practical consequence for CI: the frontend tier joins **unit** and **component** in the fast lane (§12), because it is the same order of magnitude — a `jsdom` suite over pure functions finishes before a Docker daemon has started. Nothing about the UI should be waiting on the browser tier to tell a contributor they broke the card.
 
 ## 11. Rituals
 
@@ -561,7 +595,7 @@ Quarterly: on the real server, stop Drydock, move the SQLite file aside, start i
 
 | Lane | Contents | Trigger | Runner |
 |---|---|---|---|
-| **fast** | unit + component, `-race` | every push | hosted; no Docker needed |
+| **fast** | unit + component, `-race`, and the frontend tier (`vitest run`, plus the §1 bundle budget) | every push | hosted; no Docker needed — but it now needs Node, which the devcontainer already carries |
 | **deep** | container tier + Feature scenarios | push to `main`, and PRs by label | self-hosted in the devcontainer's DinD |
 | **browser** | the browser tier | same as deep | same |
 | **rituals** | §11 | by hand, by event | wherever the event is |
