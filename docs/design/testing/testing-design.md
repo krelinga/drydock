@@ -2,7 +2,7 @@
 
 *How a system whose load-bearing properties are mostly things that must **never** happen gets a test suite that actually notices when one of them does.*
 
-**Status** design document, draft v7 · **Date** 4 October 2026 · §2.3 and §7 updated for the `2.1.289` re-measurement — the URL-wrapping hazard is retracted, the `409` token is gone from the refusal signature, and the corpus now exists with a `record.sh` beside it · §5.1 and §8.1 corrected against the implemented route table: the gate has three shapes, so the assertion is "no handler ran" rather than "returns `401`", and the auth gate must precede the `501` for an unimplemented route · §16.1's last open question is **answered** by [Spike 04](../spikes/04-browser-ca.md) — the browser tier's local CA works via NSS trust, so §10.1 is built as specified and its `ignoreHTTPSErrors` prohibition is re-grounded on what the spike actually measured · a **frontend** tier added to §3 and §10.3, and §10.1's `chromedp` fallback withdrawn — the [frontend design](../frontend/frontend-design.md) puts TypeScript in the repository regardless, so the second language is no longer a cost this tier has to justify · §15's five findings are **applied** in overall v7 and port-forwarding v4; §8.2, §8.5 and §15 updated to match
+**Status** design document, draft v8 · **Date** 4 October 2026 · §2.3, §5.5, §6.1 and §7 corrected against the classifier fan-out — no `--json` flag, no step from the CLI, the retryable refusal renamed `wait-registration`, and lines must not be joined before matching the login URL · §2.3 and §7 updated for the `2.1.289` re-measurement — the URL-wrapping hazard is retracted, the `409` token is gone from the refusal signature, and the corpus now exists with a `record.sh` beside it · §5.1 and §8.1 corrected against the implemented route table: the gate has three shapes, so the assertion is "no handler ran" rather than "returns `401`", and the auth gate must precede the `501` for an unimplemented route · §16.1's last open question is **answered** by [Spike 04](../spikes/04-browser-ca.md) — the browser tier's local CA works via NSS trust, so §10.1 is built as specified and its `ignoreHTTPSErrors` prohibition is re-grounded on what the spike actually measured · a **frontend** tier added to §3 and §10.3, and §10.1's `chromedp` fallback withdrawn — the [frontend design](../frontend/frontend-design.md) puts TypeScript in the repository regardless, so the second language is no longer a cost this tier has to justify · §15's five findings are **applied** in overall v7 and port-forwarding v4; §8.2, §8.5 and §15 updated to match
 
 **Supplements** [`../overall/drydock-design.md`](../overall/drydock-design.md) draft v7 · [`../port-forwarding/port-forwarding-design.md`](../port-forwarding/port-forwarding-design.md) draft v4 · [`../frontend/frontend-design.md`](../frontend/frontend-design.md) draft v4 · reads [`../security-review.md`](../security-review.md) draft v1 and Spikes [00](../spikes/00-shared-credential-volume.md), [01](../spikes/01-login-handshake.md), [02](../spikes/02-rc-restart.md), [03](../spikes/03-claude-env-file.md)
 
@@ -58,7 +58,7 @@ The answer for the first is a recorded fixture corpus plus a re-record ritual (�
 >
 > Phase 0 moved two things off the terminal entirely. [Spike 01](../spikes/01-login-handshake.md) found `claude auth status --json`, so the expiry watch is a JSON read rather than a `/status` scrape; [Spike 02](../spikes/02-rc-restart.md) found that the durable handle is one **environment id** per workspace plus a `Capacity: N/4` line, not a list of session URLs to keep accurate. What remains is the login handshake's two matches and the discovery tail — and both are *harder* than the design assumed, in ways a naive parser passes:
 >
-> - the authorize URL is ~465 characters and arrives **unbroken** at every PTY width measured, so a per-line match suffices — the mid-token wrapping this plan previously warned about was a `capture-pane` rendering artifact and is retracted ([Spike 01](../spikes/01-login-handshake.md), re-measured section). What still needs asserting is that the capture *parses*, not that a regex matched;
+> - the authorize URL is ~465 characters and arrives **unbroken** at every PTY width measured, so a per-line match suffices — the mid-token wrapping this plan previously warned about was a `capture-pane` rendering artifact and is retracted ([Spike 01](../spikes/01-login-handshake.md), re-measured section). What still needs asserting is that the capture *parses*, not that a regex matched — and that lines are **not** joined before matching: the URL's line is followed by `Paste code here…`, and joining them silently appends `Paste` to `state`, producing a URL that passes every parameter check and is wrong;
 > - per-session URLs arrive wrapped in **OSC 8 hyperlink escapes**, so URL and label run together in the byte stream and only an *id* match is unambiguous;
 > - ANSI cursor movement **reprints the status block in place**, so the same line recurs constantly and the tail must be idempotent.
 >
@@ -210,9 +210,9 @@ Five places turn foreign bytes into a Drydock state, and every one must be calla
 |---|---|---|
 | Login handshake | PTY byte stream | authorize URL · at-paste-prompt · `Login successful` · `Invalid code` · timeout |
 | Identity | `auth status --json` **joined with** `.credentials.json` | `ok` · `expiring` · `expired` · `blanked` · `absent` |
-| Startup refusal | one line of `remote-control` stderr | `wait-409` · config error · `awaiting_login` · Drydock bug |
+| Startup refusal | the `remote-control` stderr stream — the `2.1.289` wait refusal is two lines | `wait-registration` (never keyed on `409`, which `2.1.289` dropped) · config error · `awaiting_login` · Drydock bug |
 | Discovery tail | ANSI + OSC 8 byte stream | environment id · session ids · capacity `N/4` |
-| Container result | `devcontainer up --json` | `running` · `failed` + the step that failed |
+| Container result | `devcontainer up` stdout — always one JSON object; there is no `--json` flag | `running` · `failed` + `containerId` when one was created + the CLI's message. **No step**: the CLI names none, so the failed step comes from Drydock's own tracking |
 
 Two of these are new since draft v1 and both are load-bearing. **Identity needs two sources, not one**: `auth status` reports `loggedIn:false` for a blanked credential *and* for an absent one, and reports `loggedIn:true` for a credential that expired an hour ago — so the verdict comes from the JSON and the countdown from the file, and neither alone is sufficient. **The startup-refusal classifier exists because exit status is not diagnostic**: Spike 02 measured all four refusals exiting `1`, one of which must be retried and three of which must not. A classifier that branches on the exit code is the natural wrong implementation, and it fails by crash-looping against a config error or by giving up on a wait.
 
@@ -224,7 +224,7 @@ A fake encodes a belief about a real system, and the belief rots. Every fake the
 
 | Fake | Stands in for | Contract test | Runs |
 |---|---|---|---|
-| `fakedevcontainer` | the `devcontainer` CLI | one container test runs the real CLI and asserts the `{outcome, containerId, remoteUser}` JSON shape, the `--id-label` lookup behaviour, and that `--additional-features` composes rather than replaces | container tier, every run |
+| `fakedevcontainer` | the `devcontainer` CLI | one container test runs the real CLI and asserts the result is exactly one JSON object on stdout in both its success and error shapes (no `--json` flag exists), the `--id-label` lookup behaviour, and that `--additional-features` composes rather than replaces | container tier, every run |
 | `fakegithub` | `api.github.com` **and** the git smart-HTTP remote | a manual test against a real test App on a throwaway repo, asserting the installation-token request/response shape and `repository_ids` + `permissions` enforcement | ritual, on GitHub API change or quarterly |
 | `fakeclaude` | the `claude` binary, on a PTY | the four Phase 0 harnesses, which drive the real binary, plus re-recording the corpus from it | ritual, on every Claude Code bump (§11.1) |
 | `fakeupstream` | a repo's dev server | none needed — it is a recording echo server, not a belief about anything | — |
@@ -292,11 +292,11 @@ Phase 0 changed what belongs in here. The expiry watch left the corpus for JSON 
 | Fixture | Must yield |
 |---|---|
 | `login-url-1000col` | the complete authorize URL |
-| `login-url-80col` | **the same complete URL**, matched per-line. The assertion is inverted from draft v5: this fixture now guards against a regression *into* wrapping rather than demonstrating one |
-| `login-url-ansi` | the same again after escape stripping |
+| `login-url-80col` | **a complete URL with the same parameter set**, matched per-line — `state` and `code_challenge` are per-run, so the two widths agree on everything else. The assertion is inverted from draft v5: this fixture now guards against a regression *into* wrapping rather than demonstrating one |
 | `login-code-prompt` | the at-paste-prompt state, so the UI knows to accept input |
 | `login-invalid-code` | `Invalid code`, *and* still at the prompt — a wrong code needs no teardown and the same URL stays valid |
 | `login-success-{plain,period,press}` | all three match — `Login successful` is matched as a **prefix**, never as a whole line |
+| `login-success-after-prompt` | success **on the paste prompt's own line**. The prompt does not echo, so a real verdict lands mid-line; a matcher that looks only at line starts passes all three hand-written fixtures above and misses the real thing. Synthetic |
 | `login-timeout` | the third terminal state |
 
 The URL assertion is the one worth stating precisely, because a fragment passes a naive test: assert the captured string is a **complete** URL — it parses, it carries the expected query-parameter set, and its length is in the ~450-character range — not merely that the regex matched something. "Looks like a working scrape until someone clicks the link" is a failure mode a `!= ""` assertion cannot see.
@@ -309,9 +309,9 @@ The code-shape check is a unit test with no fixture at all: `^[^#\s]+#[^#\s]+$` 
 |---|---|
 | `env-status-block` | the environment id, and `Capacity: 1/4` as the session count |
 | `session-url-osc8` | the session id — matched as `session_[A-Za-z0-9]+`, never from the URL |
-| `session-url-osc8-urlmatch` | **negative**: a URL-based match captures the label too. The fixture exists to keep the id-matching rule from being "simplified" later |
+| `session-url-osc8-urlmatch` | **negative**: a URL-based match captures the label too. The fixture exists to keep the id-matching rule from being "simplified" later — and it earns its place: a regex over escape-stripped text passes **every recorded fixture** and only this one catches it. Synthetic |
 | `status-block-repainted` | *one* row from N in-place reprints — the tail is idempotent, upsert by id |
-| `session-ids-delayed` | ids arriving minutes into the stream still upsert |
+| `session-ids-delayed` | ids arriving minutes into the stream still upsert. Synthetic, built on a recorded prefix |
 | `session-id-in-model-output` | **no** row — a `session_…` id the model printed is not a server announcement |
 
 That last fixture matters more than it did in draft v1. Matching bare ids rather than URLs is the correct rule, and it also widens the false-positive surface: an agent discussing its own session id now looks exactly like an announcement. The negative corpus is the half of the contract that catches a too-permissive pattern.

@@ -2,7 +2,7 @@
 
 *A single-host server that turns any GitHub repository into a running dev container with a supervised, remote-controllable Claude Code session inside it — one click from a repo list, with push credentials scoped to that repo alone.*
 
-**Status** design document, draft v9 · **Date** 4 October 2026 · re-measured on Claude Code `2.1.289` after an unpinned rebuild moved the version: the authorize-URL wrapping claim in §7.2 is **retracted**, the retryable refusal signature in §8 no longer contains `409`, and an untrusted workspace **hangs** on a PTY rather than failing fast (§11) · §5 corrected: the sign-in POST is the **only** unauthenticated route, not the three `/api/auth/session` verbs — `GET` there returns the device list, and the error was found by implementing the route table (see the callout in §5, and the [testing plan](../testing/testing-design.md) §5.1) · five findings from the [testing plan](../testing/testing-design.md) §15 applied — §4, §6, §10.1, §10.3 and §13.5; Phase 0 spikes complete — §7.2, §7.3, §8, §10.3, and §11 revised against measurement (see [spikes](../spikes/)); §13 auth revised for cross-site previews (see the [security review](../security-review.md) and [port forwarding](../port-forwarding/port-forwarding-design.md)) · the UI this document describes in passing is specified in the [frontend design](../frontend/frontend-design.md)
+**Status** design document, draft v10 · **Date** 4 October 2026 · corrected against the classifier fan-out: `devcontainer up` has no `--json` flag and names no failed step (§2.5, §6), joining lines before matching the login URL corrupts `state` (§7.2), session ids come only from OSC 8 targets (§8), and the identity classifier's rules are recorded (§7.3) · re-measured on Claude Code `2.1.289` after an unpinned rebuild moved the version: the authorize-URL wrapping claim in §7.2 is **retracted**, the retryable refusal signature in §8 no longer contains `409`, and an untrusted workspace **hangs** on a PTY rather than failing fast (§11) · §5 corrected: the sign-in POST is the **only** unauthenticated route, not the three `/api/auth/session` verbs — `GET` there returns the device list, and the error was found by implementing the route table (see the callout in §5, and the [testing plan](../testing/testing-design.md) §5.1) · five findings from the [testing plan](../testing/testing-design.md) §15 applied — §4, §6, §10.1, §10.3 and §13.5; Phase 0 spikes complete — §7.2, §7.3, §8, §10.3, and §11 revised against measurement (see [spikes](../spikes/)); §13 auth revised for cross-site previews (see the [security review](../security-review.md) and [port forwarding](../port-forwarding/port-forwarding-design.md)) · the UI this document describes in passing is specified in the [frontend design](../frontend/frontend-design.md)
 
 **Runtime** single dev server, local Docker socket · **Reach** LAN, behind Caddy
 
@@ -96,7 +96,7 @@ Claude Code warns three days out and `/status` reports an `Expired` state. The d
 | Find a container again after restart | `--id-label drydock.workspace=<id>` | Label is the durable handle; container IDs are not. |
 | Pass secrets without baking them in | `--secrets-file <json>` | Available for `up` and `run-user-commands`. |
 | Extra mounts / env | `--mount`, `--remote-env` | How the credential volume and the broker socket get in. |
-| Machine-readable result | JSON `{"outcome","containerId","remoteUser"}` | Parse it; never scrape `docker ps`. |
+| Machine-readable result | One JSON object on **stdout**, always — no `--json` flag exists. Success: `{"outcome":"success","containerId","remoteUser",…}`; failure: `{"outcome":"error","message","description"}`, plus `containerId` if one was created. | Parse it; never scrape `docker ps`. Logs go to stderr. |
 | Repo-scoped GitHub tokens | `POST /app/installations/:id/access_tokens` | 1-hour TTL, scopable by `repository_ids` *and* a `permissions` subset. |
 
 ## 3. Architecture
@@ -375,9 +375,16 @@ devcontainer up \
   --mount "type=volume,source=drydock-claude-config,target=/home/vscode/.claude" \
   --mount "type=bind,source=/run/drydock/sock/$WS.sock,target=/run/drydock/broker.sock" \
   --remote-env DRYDOCK_WORKSPACE=$WS \
-  --remote-env DRYDOCK_REPO=$FULL_NAME \
-  --json
+  --remote-env DRYDOCK_REPO=$FULL_NAME
 ```
+
+> [!NOTE]
+> **What `up` actually returns, measured on CLI 0.89.0**
+>
+> - **There is no `--json` flag** — earlier drafts passed one, and `up` rejects it with `Unknown argument: json`, empty stdout, exit 1. The result is **always** one JSON object on stdout, success or failure; every log line goes to stderr.
+> - **The result names no step.** Failure carries `message` and `description` prose — specific for a failed `postCreateCommand`, generic (`An error occurred setting up the container.`) for an image pull. So §6's "every step writes an event" comes from **Drydock tracking its own steps**; `up` is one of those steps, not a source of them.
+> - **A failed `up` can still own a running container.** A failing `postCreateCommand` leaves the container created and running, and the error result carries its `containerId`. Teardown and reconciliation must treat a failed `up` as possibly holding a container.
+> - **The id label decides which container you get, not the workspace folder.** `up` with an existing label value reattaches to that container and reports `success` even when the config has since changed — so a rebuild must pass `--remove-existing-container`, which §5's rebuild route already specifies.
 
 > [!WARNING]
 > **Sharp edge**
@@ -449,8 +456,8 @@ That shared fate has a second, sharper form. On a definitive `invalid_grant` —
 >
 > The flow in a container is exactly the one above: `claude auth login --claudeai` prints an authorize URL whose `redirect_uri` is remote (`platform.claude.com`), then waits at `Paste code here if prompted >`. Writing a code into the PTY reaches that prompt and yields one of two verdicts. Three details are not what §7.2 assumed:
 >
-> 1. **The URL is ~465 characters and arrives unbroken.** ~~It wraps mid-token at terminal width~~ — retracted on re-measurement: at forced PTY widths of 80, 200 and 1000 the byte stream is identical and a *per-line* match yields the complete URL every time. The wrapping is the terminal soft-wrapping for display, visible through `tmux capture-pane` and absent from what the process writes. The pattern is `https://claude\.com/cai/oauth/authorize\?[A-Za-z0-9&=_%.~+-]+`; stripping newlines first is cheap insurance against a future version that *does* wrap, not a present requirement. Assert the capture **parses and carries the expected query-parameter set**, never merely that the regex matched — a fragment passes a non-empty check and fails when a human clicks it.
-> 2. **The pasted code is `<code>#<state>`**, and Claude Code rejects a missing half locally. So validate `^[^#\s]+#[^#\s]+$` in Drydock *before* writing to the PTY — a truncated copy is the likeliest user error, and this turns it into an instant, precise failure instead of a terminal round-trip.
+> 1. **The URL is ~465 characters and arrives unbroken.** ~~It wraps mid-token at terminal width~~ — retracted on re-measurement: at forced PTY widths of 80, 200 and 1000 the byte stream is identical and a *per-line* match yields the complete URL every time. The wrapping is the terminal soft-wrapping for display, visible through `tmux capture-pane` and absent from what the process writes. The pattern is `https://claude\.com/cai/oauth/authorize\?[A-Za-z0-9&=_%.~+-]+`, applied **per line, after stripping escapes**. **Do not join lines before matching.** The URL's line is followed by `Paste code here if prompted >`, and joining them turns `state=…yRz4` into `state=…yRz4Paste` — a URL that parses, carries every required parameter, and is wrong, so no validation can catch it. Earlier text here called de-wrapping "cheap insurance"; measured, it is the opposite. Assert the capture **parses and carries the expected query-parameter set**, never merely that the regex matched — a fragment passes a non-empty check and fails when a human clicks it.
+> 2. **The pasted code is `<code>#<state>`**, and Claude Code rejects a missing half locally. So validate it in Drydock *before* writing to the PTY — a truncated copy is the likeliest user error, and this turns it into an instant, precise failure instead of a terminal round-trip. The rule is exactly one `#` with a non-empty half each side, **in printable ASCII only**: the looser `^[^#\s]+#[^#\s]+$` admits control bytes, and a `^C` written to that PTY kills the login. Surrounding whitespace is trimmed, and the trimmed value is what gets written. No validation error may echo the code.
 > 3. **Match `Login successful` as a prefix, never as a whole line** — the binary carries several variants (`Login successful.`, `Login successful. Press …`). `Invalid code` is the other terminal verdict; those two plus the timeout are the whole state machine.
 
 Implementation notes that matter:
@@ -474,6 +481,14 @@ A poller runs every six hours in the auth container and records `claude_identity
 A **blanked** credential (`accessToken: ""`, §7.1) is a different condition from an expiring one and needs its own message. Expiring is a countdown the user can ignore for three days; blanked means every workspace is already dead and the only fix is a new login handshake. Say "signed out, sign in again", not "expired".
 
 One wrinkle: `auth status` reports `loggedIn:false` for a blanked credential **and** for a missing one, so it cannot tell them apart on its own. Distinguish by the file — present with empty token strings means blanked and *everyone* just lost access; absent means no one has ever signed in. Those deserve different words, which is the entire point of this section.
+
+> [!NOTE]
+> **The classifier's rules, as implemented (`internal/classify/identity.go`)**
+>
+> - **The file decides blanked and absent, before `auth status` is consulted at all.** `auth status` is the less stable input — it gained two keys in `2.1.289` — and it must never be able to hide the tombstone, the one failure that takes every workspace down at once. A broken or reshaped `auth status` therefore still yields `blanked` or `absent` when the file says so.
+> - **Errors, never guesses:** an unreadable or empty credential file, exactly one token blanked (a shape Claude Code has never been seen to write), live tokens with no usable `expiresAt`, and live tokens beside `loggedIn:false`. None of these is ever reported as `absent` or `ok`.
+> - **Boundaries are inclusive:** `expiresAt == now` is `expired`; exactly three days out is still `expiring`.
+> - **On an error, the poller keeps the previously stored state**, updates `last_checked_at`, and emits an event naming the problem. It never writes `ok` on the strength of an input it could not read.
 
 ## 8. Session supervision
 
@@ -505,7 +520,7 @@ Three details in that invocation are load-bearing, and two of them exist because
 | Supervisor duty | Approach |
 |---|---|
 | Load secrets at start | Fetch the workspace's granted secrets from the broker and materialize them into the process environment before `exec` (§10.3). |
-| Notice sessions appearing | **A continuous tail, not a one-shot scrape.** Sessions are created on demand, possibly hours after startup, so the supervisor watches the `--verbose` stream for `claude.ai/code/<id>` URLs and upserts `rc_session` rows as they show up. More of the terminal-scraping brittleness §12 already flags — there is no machine-readable alternative. |
+| Notice sessions appearing | **A continuous tail, not a one-shot scrape.** Sessions are created on demand, possibly hours after startup, so the supervisor watches the `--verbose` stream and upserts `rc_session` rows as sessions are announced — taking ids **only from OSC 8 hyperlink targets** (`ESC ] 8 ; ; https://claude.ai/code/session_<id>…`, BEL-terminated on `2.1.289`, ST on `2.1.246`), **never from visible text**, because the model can print a `session_…` id in its own prose and a bare-id match would record it as a session. More of the terminal-scraping brittleness §12 already flags — there is no machine-readable alternative. |
 | Detect “not logged in” | `claude remote-control` exits with an error when the account is ineligible. Treat a fast exit with that signature as `awaiting_login`, not as a crash — and do not retry. **Exit status is not diagnostic**: every startup failure exits `1`, so match on message text (see the table below). Better still, pre-flight with `claude auth status --json` (§7.3) and never launch a process that cannot succeed. |
 | Restart policy | Exponential backoff 2s → 60s, cap 6 attempts in 10 min, then park in `degraded` with the last 200 lines retained. **A `409` is not a crash** — see below; it must not spend this budget. |
 | Stop it with `SIGTERM`, escalate only on timeout | A graceful stop deregisters the folder, prints `Environment preserved`, and lets the next start in immediately. A `SIGKILL` of a server that had no live session blocks the next start for one to three minutes (Spike 02). The ordinary expectation for supervising a process, with a measured reason behind it. |

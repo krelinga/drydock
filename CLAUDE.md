@@ -5,17 +5,17 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Repository state
 
 **Mostly design, with the first code in.** The repository contains the overall design
-document (`docs/design/overall/drydock-design.md`, draft v9), supplemental ones on port forwarding
-(`docs/design/port-forwarding/`, draft v4), testing (`docs/design/testing/`, draft v7) and the Vue
+document (`docs/design/overall/drydock-design.md`, draft v10), supplemental ones on port forwarding
+(`docs/design/port-forwarding/`, draft v4), testing (`docs/design/testing/`, draft v8) and the Vue
 frontend (`docs/design/frontend/`, draft v4), a settled brand mark (`docs/design/brand/`, v1.0,
 with the shipping icon assets), an adversarial security review
 (`docs/design/security-review.md`), their SVG diagrams, a devcontainer definition, and **five
 completed spikes** with their harnesses under `docs/design/spikes/` — the four Phase 0 ones plus
 `04`, the browser-tier local CA, which the testing plan asked for later.
 
-The Go module is `github.com/krelinga/drydock`. What exists so far is the **five testability seams**
-from testing §5, plus the recorded fixture corpus — interfaces, the declared HTTP surface, and the
-bytes the classifiers will be tested against:
+The Go module is `github.com/krelinga/drydock`. What exists so far: the **five testability seams**
+from testing §5, the recorded fixture corpus, the five classifiers built on it, and the start of
+Phase 1 (the store):
 
 ```sh
 go build ./... && go vet ./... && go test ./...   # the whole suite today
@@ -24,12 +24,13 @@ gofmt -l .                                        # must print nothing
 
 | Package | Is |
 |---|---|
-| `internal/api` | The route table as **data**, both muxes, the gate interface, the error envelope — and ten meta-tests that walk the table. The only package with real logic yet. |
+| `internal/api` | The route table as **data**, both muxes, the gate interface, the error envelope — and ten meta-tests that walk the table. |
 | `internal/sys` | `Clock`, `DiskUsage`, `Random`. Never call `time.Now()` directly. |
 | `internal/subproc` | An invocation described as data, resolved by `PATH` or an injected `Resolver`. No shell anywhere, deliberately. |
 | `internal/config` | Settings that must not be constants, `LabelPrefix` chief among them, plus a `Validate` that refuses configurations which silently undo a design property. |
-| `internal/classify` | The five classifier **signatures**. They `panic` rather than return a plausible zero — see below. |
-| `test/fixtures/` | The corpus: 26 fixtures recorded from `2.1.289`, plus `record.sh`, which is testing §11.1 step 3. Three are hand-written or synthetic and their `.meta` says so. |
+| `internal/store` | SQLite in WAL mode, the single-instance lock, and §4's schema with its enumerations as `CHECK` constraints. A golden snapshot pins the schema. |
+| `internal/classify` | The five classifiers, implemented and tested against the corpus: login, identity, refusal, discovery, container. Built in parallel by four agents, one file each. |
+| `test/fixtures/` | The corpus: 35 fixtures from `2.1.289` and devcontainer CLI `0.89.0`, plus `record.sh`, which is testing §11.1 step 3. Some are hand-written or synthetic, and their `.meta` says which. |
 
 Three things about that code worth knowing before extending it:
 
@@ -38,9 +39,11 @@ Three things about that code worth knowing before extending it:
   gate is provably applied to routes nobody has written yet. **The auth gate runs before that `501`**
   — otherwise an unauthenticated caller could tell a declared route from a nonexistent one and read
   the API surface off a server it cannot use. There is a test for the ordering; do not reorder it.
-- **The classifiers panic on purpose.** A classifier that quietly returns `IdentityOK` for bytes it
-  cannot parse is exactly the failure the fixture corpus exists to prevent, so an unimplemented one
-  fails loudly rather than plausibly.
+- **Classifiers refuse rather than guess.** A classifier that quietly returns `IdentityOK` for bytes it
+  cannot parse is exactly the failure the corpus exists to prevent, so each returns an error for input
+  it cannot read — an unreadable credential file is never `absent`, a URL fragment is never usable.
+  The identity classifier also decides `blanked` from the file *before* reading `auth status`, so the
+  less stable input can never hide the fleet-wide failure.
 - **The meta-tests were mutation-checked**, not just observed passing: moving the `501` ahead of the
   auth gate fails 20 subtests, marking a route unauthenticated fails the count assertion by name, and
   deleting the `Origin` check fails 14. Keep that property — a negative test nobody has watched fail
@@ -113,7 +116,8 @@ holds a GitHub credential).
   async: validate, write a state transition, return `202`, let the client follow `/api/events`.
 - **Container manager** shells out to the `devcontainer` CLI for every container operation and finds
   containers again by `--id-label drydock.workspace=<id>`. Never scrape `docker ps`; parse the
-  `--json` result.
+  single JSON object `devcontainer up` prints on stdout. There is **no `--json` flag** — passing one
+  fails — and the result names no step, so per-step events come from Drydock's own tracking.
 - **Workspace manager** owns the host bind-mounted clone at `/srv/drydock/ws/<id>/repo` (a real git
   repo, so `remote-control --spawn worktree` works). Clones survive container rebuild and delete.
 - **Session supervisor** runs one `claude remote-control` process per workspace serving *many*
@@ -242,8 +246,10 @@ These come from §2 (Claude Code constraints) and §13.5 (non-negotiables). Most
   drifts, the Claude app is right and Drydock is wrong. The UI links out with a count; it does not
   reimplement a session browser. The handle to store is the **environment id** (`env_…`, one per
   workspace, survives restart) and the link is `claude.ai/code?environment=<id>`; `Capacity: N/4`
-  gives the count for free. Scrape **ids**, not URLs — per-session URLs come wrapped in OSC 8
-  hyperlink escapes, so the URL and its label run together in the byte stream (Spike 02).
+  gives the count for free. Scrape **ids**, not URLs, and take them **only from OSC 8 hyperlink
+  targets** — the URL and its label run together in the byte stream (Spike 02), and a bare
+  `session_…` match would also accept an id the model printed in its own prose. The terminator is
+  BEL on `2.1.289`, ST on `2.1.246`.
 - **Agent branches go under a `drydock/` prefix**, configured in the feature rather than left to the
   model to remember. Commits use the App's bot identity.
 - **Nothing stops a workspace automatically.** No idle reaper — distinguishing "idle" from "an agent

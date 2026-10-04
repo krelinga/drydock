@@ -274,9 +274,15 @@ which renders the wrapped pane by construction — attributed to the stream.
 `capture-pane` was the wrong instrument, and the harness's own output always
 said `URL appears intact on a single line`, which should have caught it.
 
-What survives: de-wrapping before matching is cheap insurance against a future
-version that *does* wrap, so **consequence A stands as a recommendation and
-falls as a hazard**. The `login-url-80col` fixture is kept with its assertion
+**Consequence A falls entirely — and its recommendation is harmful, not merely
+unneeded.** An earlier version of this section said de-wrapping survived as
+"cheap insurance". It does not: the URL's line is followed by
+`Paste code here if prompted >`, so stripping escapes and then joining lines
+turns `state=…yRz4` into `state=…yRz4Paste` — a URL that parses, carries all
+eight required parameters, and is wrong. Match **per line, after stripping
+escapes**. (The width measurement above looked clean only because it joined
+lines *without* stripping escapes first, and an escape byte happened to stop
+the match.) The `login-url-80col` fixture is kept with its assertion
 inverted — it now guards against a regression *into* wrapping rather than
 demonstrating one.
 
@@ -286,3 +292,9 @@ needs widening. Everything else reproduced exactly — the prompt string, the
 `Invalid code` retry-in-place, the non-echoing prompt (the submitted code
 appears 0 times in the transcript), the clean cancel, and all four rows of the
 `auth status --json` matrix including `expired` still reporting `loggedIn:true`.
+
+One more `2.1.289` difference, in result 8's table. `auth status --json` now also
+carries `projectsDirectory` and `configDirectory`, and the logged-out shapes
+(absent, blanked) omit `subscriptionType` rather than reporting it as `null`. Both
+changes are additive or subtractive at the edges; the identity classifier ignores
+unknown keys and never reads `subscriptionType`, so neither affects a verdict.
