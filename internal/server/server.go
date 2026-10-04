@@ -25,6 +25,7 @@ import (
 	"github.com/krelinga/drydock/internal/api"
 	"github.com/krelinga/drydock/internal/auth"
 	"github.com/krelinga/drydock/internal/config"
+	"github.com/krelinga/drydock/internal/events"
 	"github.com/krelinga/drydock/internal/store"
 	"github.com/krelinga/drydock/internal/sys"
 	"github.com/krelinga/drydock/internal/web"
@@ -34,6 +35,7 @@ import (
 type Server struct {
 	DB      *store.DB
 	Auth    *auth.Service
+	Events  *events.Log
 	api     *http.Server
 	preview *http.Server
 	apiLn   net.Listener
@@ -63,9 +65,13 @@ func New(ctx context.Context, cfg config.Config, env sys.Env) (*Server, error) {
 		return nil, err
 	}
 
-	s := &Server{DB: db, Auth: svc}
+	s := &Server{DB: db, Auth: svc, Events: events.New(db.DB, env.Clock)}
+	handlers := api.SessionRoutes{Auth: svc}.Handlers()
+	for name, h := range (api.EventRoutes{Log: s.Events, Clock: env.Clock, Alive: svc.Sessions.Alive}).Handlers() {
+		handlers[name] = h
+	}
 	s.api = &http.Server{
-		Handler:           apiSocketHandler(gate, api.Build(api.MuxAPI, gate, api.SessionRoutes{Auth: svc}.Handlers()), ui),
+		Handler:           apiSocketHandler(gate, api.Build(api.MuxAPI, gate, handlers), ui),
 		ReadHeaderTimeout: 10 * time.Second,
 		IdleTimeout:       2 * time.Minute,
 		// No WriteTimeout: /api/events is a long-lived SSE stream.
@@ -135,6 +141,9 @@ func (s *Server) Serve(ctx context.Context) error {
 	case <-ctx.Done():
 	case serveErr = <-errc:
 	}
+	// Streams never go idle, so Shutdown would wait out its whole timeout on
+	// every open browser; ending the subscriptions ends the streams first.
+	s.Events.Close()
 	shutCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	_ = s.api.Shutdown(shutCtx)

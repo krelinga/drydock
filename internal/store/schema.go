@@ -150,4 +150,15 @@ CREATE TABLE event (
   at           TEXT
 );
 `,
+
+	// 2 — event.data, a JSON object: what changed, in a form the frontend's
+	// reducer can apply. §4 had only `message`, which is prose for a human,
+	// and a reducer that parsed prose to learn a workspace's new state is
+	// the string-matching the error envelope exists to avoid. The design doc
+	// records the column (§4). Never a credential, like every other column:
+	// the canary sweep reads this file's raw bytes.
+	`
+ALTER TABLE event ADD COLUMN data TEXT;
+CREATE INDEX event_workspace ON event (workspace_id, id);
+`,
 }

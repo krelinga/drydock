@@ -2,7 +2,7 @@
 
 *A single-host server that turns any GitHub repository into a running dev container with a supervised, remote-controllable Claude Code session inside it — one click from a repo list, with push credentials scoped to that repo alone.*
 
-**Status** design document, draft v11 · **Date** 4 October 2026 · §13.1: Caddy's admin API moved off `localhost:2019`, which undid this section's own argument for a socket over a loopback port; the Caddyfile now ships as `deploy/Caddyfile` and is tested · corrected against the classifier fan-out: `devcontainer up` has no `--json` flag and names no failed step (§2.5, §6), joining lines before matching the login URL corrupts `state` (§7.2), session ids come only from OSC 8 targets (§8), and the identity classifier's rules are recorded (§7.3) · re-measured on Claude Code `2.1.289` after an unpinned rebuild moved the version: the authorize-URL wrapping claim in §7.2 is **retracted**, the retryable refusal signature in §8 no longer contains `409`, and an untrusted workspace **hangs** on a PTY rather than failing fast (§11) · §5 corrected: the sign-in POST is the **only** unauthenticated route, not the three `/api/auth/session` verbs — `GET` there returns the device list, and the error was found by implementing the route table (see the callout in §5, and the [testing plan](../testing/testing-design.md) §5.1) · five findings from the [testing plan](../testing/testing-design.md) §15 applied — §4, §6, §10.1, §10.3 and §13.5; Phase 0 spikes complete — §7.2, §7.3, §8, §10.3, and §11 revised against measurement (see [spikes](../spikes/)); §13 auth revised for cross-site previews (see the [security review](../security-review.md) and [port forwarding](../port-forwarding/port-forwarding-design.md)) · the UI this document describes in passing is specified in the [frontend design](../frontend/frontend-design.md)
+**Status** design document, draft v12 · **Date** 4 October 2026 · §4: `event` gains a `data` column, because a reducer that learned a workspace's new state by parsing `message` would be matching prose · §5: `/api/events`' replay, `resync` and heartbeat are specified as built · §13.1: Caddy's admin API moved off `localhost:2019`, which undid this section's own argument for a socket over a loopback port; the Caddyfile now ships as `deploy/Caddyfile` and is tested · corrected against the classifier fan-out: `devcontainer up` has no `--json` flag and names no failed step (§2.5, §6), joining lines before matching the login URL corrupts `state` (§7.2), session ids come only from OSC 8 targets (§8), and the identity classifier's rules are recorded (§7.3) · re-measured on Claude Code `2.1.289` after an unpinned rebuild moved the version: the authorize-URL wrapping claim in §7.2 is **retracted**, the retryable refusal signature in §8 no longer contains `409`, and an untrusted workspace **hangs** on a PTY rather than failing fast (§11) · §5 corrected: the sign-in POST is the **only** unauthenticated route, not the three `/api/auth/session` verbs — `GET` there returns the device list, and the error was found by implementing the route table (see the callout in §5, and the [testing plan](../testing/testing-design.md) §5.1) · five findings from the [testing plan](../testing/testing-design.md) §15 applied — §4, §6, §10.1, §10.3 and §13.5; Phase 0 spikes complete — §7.2, §7.3, §8, §10.3, and §11 revised against measurement (see [spikes](../spikes/)); §13 auth revised for cross-site previews (see the [security review](../security-review.md) and [port forwarding](../port-forwarding/port-forwarding-design.md)) · the UI this document describes in passing is specified in the [frontend design](../frontend/frontend-design.md)
 
 **Runtime** single dev server, local Docker socket · **Reach** LAN, behind Caddy
 
@@ -273,7 +273,9 @@ secret_access(
 event(
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   workspace_id TEXT, level TEXT, kind TEXT,
-  message TEXT, at TEXT
+  message TEXT,                -- for a human; nothing parses it
+  data TEXT,                   -- a JSON object the frontend's reducer applies
+  at TEXT
 )
 ```
 
@@ -328,7 +330,7 @@ REST over a Unix socket, plus one SSE stream. Every mutating call is asynchronou
 | `GET /api/auth/claude` | Login state: `ok` / `expiring` / `expired` / `absent`, with account and expiry. | Identity |
 | `POST /api/auth/claude/login` | Begin the handshake. Runs `claude` on a PTY in a scratch container. | `202` + `login_id` |
 | `POST /api/auth/claude/login/:lid/code` | Submit the pasted code. Written to the PTY's stdin. | `200` / `409` |
-| `GET /api/events` | SSE. `workspace.*`, `session.*`, `auth.*`, `token.issued`. | `text/event-stream` |
+| `GET /api/events` | SSE. `workspace.*`, `session.*`, `auth.*`, `token.issued`. Every event carries `id:`; a reconnect's `Last-Event-ID` replays the gap from a 1,000-event window, and a gap outside it gets one named `resync` event instead of a partial replay. Domain events are unnamed with the kind in the JSON, because `EventSource` drops a named event nobody listens for. A `: ping` every 20 s re-checks the session, so a revoked device's stream ends within one beat. | `text/event-stream` |
 
 #### Broker socket protocol (not on the network)
 

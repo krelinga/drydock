@@ -5,7 +5,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Repository state
 
 **Mostly design, with the first code in.** The repository contains the overall design
-document (`docs/design/overall/drydock-design.md`, draft v11), supplemental ones on port forwarding
+document (`docs/design/overall/drydock-design.md`, draft v12), supplemental ones on port forwarding
 (`docs/design/port-forwarding/`, draft v5), testing (`docs/design/testing/`, draft v9) and the Vue
 frontend (`docs/design/frontend/`, draft v5), a settled brand mark (`docs/design/brand/`, v1.0,
 with the shipping icon assets), an adversarial security review
@@ -37,6 +37,7 @@ printf "%s\n" "$PW" | ./drydock passwd --db x.db  # set the operator password (n
 | `internal/store` | SQLite in WAL mode, the single-instance lock, and §4's schema with its enumerations as `CHECK` constraints. A golden snapshot pins the schema. |
 | `internal/classify` | The five classifiers, implemented and tested against the corpus: login, identity, refusal, discovery, container. Built in parallel by four agents, one file each. |
 | `internal/auth` | argon2id with a floor and rehash-on-sign-in, sessions stored only as SHA-256, and a lockout that is per-IP backoff plus a global cap, kept in `auth_attempt` so a restart does not reset it. |
+| `internal/events` | The append-only event log and its live fan-out. Append writes and publishes under one lock so subscribers see id order; a subscriber that lags 256 events is cut off rather than allowed to block writers, and recovers by replay. `data` is a JSON object for the reducer; `message` is prose nothing may parse. |
 | `internal/server` | Assembles the front door: store, auth, both muxes, two `0660` group-owned sockets, and no TCP listener — asserted on the running process. |
 | `cmd/drydock` | `serve`, `passwd` and `version`, and nothing that binds TCP or sets a password over HTTP. `passwd` deliberately skips the instance lock so it works while the server runs; `--if-unset` makes it a no-op that never reads stdin once a password exists, which is what keeps an installer re-run from signing everyone out. `version` is stamped by `-ldflags -X main.version=`. |
 | `internal/web`, `web/` | The Vue 3 app in `web/`, embedded from `internal/web/dist`, which is **committed build output** — the Go build needs no Node, and `npm run check:dist` fails when it is stale. Never hand-edit `dist`; rebuild it. |

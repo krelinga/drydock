@@ -100,6 +100,23 @@ func (s *Sessions) Lookup(ctx context.Context, cookie string) (Session, error) {
 	return sess, nil
 }
 
+// Alive reports whether a session ID still names a live session, without
+// sliding its idle window. The event stream asks this on every heartbeat so a
+// revoked device's open stream ends within one beat; it must not slide,
+// because a tab left open on a forgotten laptop would otherwise keep that
+// device signed in forever and the 14-day idle ceiling would never fire.
+func (s *Sessions) Alive(ctx context.Context, id string) (bool, error) {
+	sess, err := s.get(ctx, id)
+	if errors.Is(err, ErrNoSession) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	now := s.Clock.Now().UTC()
+	return now.Before(sess.ExpiresAt) && now.Before(sess.LastSeenAt.Add(IdleLifetime)), nil
+}
+
 // List returns every live session, newest first, for the device list.
 func (s *Sessions) List(ctx context.Context) ([]Session, error) {
 	now := s.Clock.Now().UTC()
