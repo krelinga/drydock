@@ -1,7 +1,8 @@
 # Drydock brand mark — design note
 
-**Status: settled, v1.0.** Battered basin, container, `DD` stencilled on its face, steel badge.
-Remaining work is a wordmark, which is a separate asset.
+**Status: settled, v1.1.** Battered basin, container, `DD` stencilled on its face, steel badge.
+v1.1 adds the GitHub App logos — the same geometry, no change to the mark. Remaining work is a
+wordmark, which is a separate asset.
 
 This note covers one asset: the Drydock icon. It exists because Phase 1 ships a LAN-facing web UI that
 needs a favicon and a header mark, and because `claude.ai/code?environment=<id>` sends people back and
@@ -58,6 +59,8 @@ Rejected, with reasons worth keeping:
 | `icons/01-mark-{light,dark}.svg` | Fig 1 above, as a light/dark pair | Markdown `<picture>` embedding |
 | `icons/apple-touch-icon-180.png` | Full-bleed badge, 180 px | `<link rel="apple-touch-icon">` |
 | `icons/favicon-{16,32}.png` | Badge with its corners, transparent outside | Fallback favicons |
+| `icons/github-app-200.png` | Full-bleed badge on lifted steel, opaque, 200 px | Logo of the App `krelinga-drydock` |
+| `icons/github-app-dev-200.png` | The same, inverted: steel mark on the knockout | Logo of the App `krelinga-drydock-dev` |
 | `render-icons.mjs` | Regenerates the PNGs from the geometry | Re-run after any path change |
 
 The three SVGs each carry their light palette as presentation attributes *and* a `<style>` block that
@@ -149,6 +152,58 @@ If that flattening ever matters, exactly one two-tone survives the numbers: drop
 to separate from the vessel. It must be a fixed value rather than a themed one, or the hierarchy
 inverts between themes.
 
+### The GitHub App logo: full bleed, opaque, lifted steel
+
+The two GitHub Apps — `krelinga-drydock` and the CI-only `krelinga-drydock-dev` — each carry a logo
+(PNG, under 1 MB, 200 × 200 recommended). GitHub shows it on the App's page, in installation lists,
+and as the bot's avatar beside commits and comments, down to about 20 px, on both its light canvas
+(`#ffffff`) and its dark one (`#0d1117`).
+
+**Badge, full bleed.** It is a surface that belongs to someone else, so it is the badge — and like iOS
+with the apple-touch icon, GitHub applies its own corner rounding to the square it is given. Corners
+of our own would be rounded a second time inside GitHub's, leaving a transparent sliver around a
+smaller tile. So `bleed`: the ground fills the square and GitHub supplies the shape.
+
+**Opaque.** One image is shown on both themes. A transparent logo would be the bare mark on a page
+Drydock does not control, which is the situation the badge exists to avoid — the ink navy that scores
+1.05 against a dark page is the same failure.
+
+**Lifted steel, `#64748b`, not `#475569`.** The favicon's steel switches value with the theme; an
+uploaded PNG cannot, so it has to hold an edge against both canvases at once. Measured:
+
+| Ground | Light `#ffffff` | Dark `#0d1117` | Worst edge | Mark at 20 px |
+| --- | --- | --- | --- | --- |
+| **Lifted steel `#64748b`** | 4.76 | 3.98 | **3.98** | 4.46 |
+| Steel `#475569` | 7.58 | 2.50 | 2.50 | 7.06 |
+
+The last column is the brightest pixel of the mark against the tile after a 10× box downscale of the
+committed 200 px file, which is roughly what GitHub's `?s=20` serves. The lifted value trades knockout
+contrast it can spare (7.06 → 4.46) for the edge it cannot (2.50 → 3.98, against the 3:1 a graphical
+object needs). It is already the palette's dark badge value, so nothing new is introduced.
+
+**The dev App gets a variant: the same image, inverted.** Ground `#f8fafc`, mark `#475569`, the
+stencil knocked out in the ground — the badge's single knockout, mirrored. Both Apps are listed side
+by side in the account's App and installation settings, and those are exactly the pages where acting
+on the wrong one is costly (permissions, a new private key). The names differ only by a suffix that
+is truncated first; a logo that differs at a glance is cheap insurance.
+
+The variant is a **value** swap rather than a new hue, because the colour rules above leave no hue
+to spend:
+
+- `#1d4ed8` and `#6d28d9` mean *API traffic* and *preview origin*; the diagrams' green, amber and
+  brick mean healthy, in-progress and failed. Dock teal measured well as a ground (worst 4.31 in the
+  badge table) but sits next to the diagrams' green and would make "the dev App" look like "running".
+  Amber is the usual staging colour and is already *degraded*.
+- A `DEV` label or corner flag fails at the size that matters: the stencilled letters are gone by
+  20 px, and a corner flag is the first thing GitHub's rounding crops.
+- At 20 px a dark tile and a light one are still two different objects. Two hues at similar value
+  are not.
+
+The cost, accepted: on GitHub's light canvas the dev tile's edge is 1.05 — it reads as the bare mark,
+which itself scores 7.58 against the page and 6.92 against its ground at 20 px. On the dark canvas the
+edge is 18.09. The absence of a tile on a light page *is* the distinguishing feature, so it is not
+mitigated; GitHub's own 1px avatar border recovers some edge, but nothing here relies on it.
+
 ### The one-colour form drops the letters
 
 At one colour there is nothing for a stencil to be knocked out *of*. An outlined container with
@@ -200,6 +255,8 @@ visibly the same product; the badge ground is the one addition, reasoned above.
 | Badge ground | `#475569` | `#64748b` |
 | Badge knockout | `#f8fafc` | `#f8fafc` |
 | Basin tint, if ever two-tone | `#93c5fd` | `#93c5fd` |
+| GitHub App ground (one PNG, both themes) | `#64748b` | `#64748b` |
+| Dev GitHub App ground / mark | `#f8fafc` / `#475569` | `#f8fafc` / `#475569` |
 
 The knockout is a hair off pure white so it does not vibrate against a saturated ground.
 

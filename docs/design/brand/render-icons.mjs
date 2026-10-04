@@ -3,7 +3,9 @@
 //   node docs/design/brand/render-icons.mjs '[
 //     ["docs/design/brand/icons/apple-touch-icon-180.png", 180, "bleed", "steel"],
 //     ["docs/design/brand/icons/favicon-32.png", 32, "badge", "steel"],
-//     ["docs/design/brand/icons/favicon-16.png", 16, "badge", "steel"]
+//     ["docs/design/brand/icons/favicon-16.png", 16, "badge", "steel"],
+//     ["docs/design/brand/icons/github-app-200.png", 200, "bleed", "steel-lift"],
+//     ["docs/design/brand/icons/github-app-dev-200.png", 200, "bleed", "steel-inverse"]
 //   ]'
 //
 // Rasterise the Drydock mark straight from its geometry, so the PNG deliverables
@@ -154,10 +156,23 @@ function render(size, mode, colors) {
   return out;
 }
 
-const STEEL = { ground: "#475569", knock: "#f8fafc" };
-const BARE = { page: "#ffffff", ground: "#ffffff", knock: "#0f172a", vessel: "#1d4ed8" };
+// "steel" is the badge's light value. A PNG cannot follow the page's theme, so
+// one that GitHub shows on both a light and a dark page takes the lifted dark
+// value instead, which holds an edge against both ("steel-lift"); the dev App's
+// logo swaps ground and mark ("steel-inverse"). brand-design.md, "The GitHub
+// App logo", has the numbers.
+const PALETTES = {
+  steel: { ground: "#475569", knock: "#f8fafc" },
+  "steel-lift": { ground: "#64748b", knock: "#f8fafc" },
+  "steel-inverse": { ground: "#f8fafc", knock: "#475569" },
+  bare: { page: "#ffffff", ground: "#ffffff", knock: "#0f172a", vessel: "#1d4ed8" },
+};
+const MODES = ["badge", "bleed", "bare"];
 
-for (const [path, size, mode, colors] of JSON.parse(process.argv[2]))
-  writePng(path, size, render(size, mode, colors === "steel" ? STEEL : BARE));
+for (const [path, size, mode, colors] of JSON.parse(process.argv[2])) {
+  if (!MODES.includes(mode)) throw new Error(`unknown mode: ${mode}`);
+  if (!PALETTES[colors]) throw new Error(`unknown colors: ${colors}`);
+  writePng(path, size, render(size, mode, PALETTES[colors]));
+}
 
 console.log("rendered", JSON.parse(process.argv[2]).map((j) => j[0]).join(" "));
