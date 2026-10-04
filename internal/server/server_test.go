@@ -17,6 +17,7 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+	"time"
 
 	"github.com/krelinga/drydock/internal/api"
 	"github.com/krelinga/drydock/internal/config"
@@ -628,4 +629,102 @@ func TestForeignHostIsRefusedForStaticPaths(t *testing.T) {
 			}
 		}
 	}
+}
+
+// TestEventStreamEndToEnd is the stream through the real gate and socket: a
+// signed-in browser receives an event as it is written, and an open stream
+// does not hold up shutdown.
+func TestEventStreamEndToEnd(t *testing.T) {
+	cfg := testConfig(t, t.TempDir())
+	srv, err := New(context.Background(), cfg, sys.Production())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- srv.Serve(ctx) }()
+	r := &running{cfg: cfg, srv: srv, client: unixClient(cfg.APISocket)}
+	cookie := r.signIn(t)
+
+	resp := r.do(t, req{method: "GET", path: "/api/events", cookie: cookie})
+	if resp.StatusCode != 200 || resp.Header.Get("Content-Type") != "text/event-stream" {
+		t.Fatalf("GET /api/events = %d %q", resp.StatusCode, resp.Header.Get("Content-Type"))
+	}
+	if !strings.Contains(resp.Header.Get("Content-Security-Policy"), "frame-ancestors 'none'") {
+		t.Error("the stream is missing the security headers every API response carries")
+	}
+	lines := make(chan string, 16)
+	go func() {
+		sc := bufio.NewScanner(resp.Body)
+		for sc.Scan() {
+			lines <- sc.Text()
+		}
+		close(lines)
+	}()
+	expect := func(prefix string) string {
+		t.Helper()
+		for {
+			select {
+			case l, ok := <-lines:
+				if !ok {
+					t.Fatalf("the stream ended before %q", prefix)
+				}
+				if strings.HasPrefix(l, prefix) {
+					return l
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatalf("no %q within 5s", prefix)
+			}
+		}
+	}
+	expect(": connected")
+	e, err := srv.Events.Emit(context.Background(), "ws1", "info", "workspace.state", "Cloning.", map[string]string{"state": "cloning"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	expect(fmt.Sprintf("id: %d", e.ID))
+	if data := expect("data: "); !strings.Contains(data, `"state":"cloning"`) {
+		t.Errorf("event data = %s", data)
+	}
+
+	// Shutdown with the stream still open: without closing the log first,
+	// this waits out Shutdown's ten-second timeout.
+	began := time.Now()
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Serve did not return within 5s of cancel with a stream open")
+	}
+	if d := time.Since(began); d > 3*time.Second {
+		t.Errorf("shutdown took %v with a stream open", d)
+	}
+}
+
+// A database belongs to the label prefix it was created under: starting it
+// under another would orphan its containers and could adopt someone else's.
+func TestRefusesAChangedLabelPrefix(t *testing.T) {
+	dir := t.TempDir()
+	cfg := testConfig(t, dir)
+	srv, err := New(context.Background(), cfg, sys.Production())
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv.apiLn.Close()
+	srv.prevLn.Close()
+	srv.DB.Close()
+
+	cfg.LabelPrefix = "drydock.test.other"
+	if _, err := New(context.Background(), cfg, sys.Production()); err == nil || !strings.Contains(err.Error(), "label prefix") {
+		t.Errorf("New under a changed prefix: %v; want a refusal naming the prefix", err)
+	}
+	// Control: the original prefix still starts.
+	cfg.LabelPrefix = testConfig(t, dir).LabelPrefix
+	again, err := New(context.Background(), cfg, sys.Production())
+	if err != nil {
+		t.Fatalf("control: the original prefix was refused: %v", err)
+	}
+	again.apiLn.Close()
+	again.prevLn.Close()
+	again.DB.Close()
 }

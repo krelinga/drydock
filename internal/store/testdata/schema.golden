@@ -4,6 +4,9 @@ CREATE INDEX auth_attempt_at    ON auth_attempt (at);
 -- index auth_attempt_ip_at
 CREATE INDEX auth_attempt_ip_at ON auth_attempt (source_ip, at);
 
+-- index event_workspace
+CREATE INDEX event_workspace ON event (workspace_id, id);
+
 -- table auth_attempt
 CREATE TABLE auth_attempt (
   id        INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -41,6 +44,13 @@ CREATE TABLE event (
   kind         TEXT,
   message      TEXT,
   at           TEXT
+, data TEXT);
+
+-- table instance
+CREATE TABLE instance (
+  id           INTEGER PRIMARY KEY CHECK (id = 1),
+  label_prefix TEXT NOT NULL,
+  created_at   TEXT NOT NULL
 );
 
 -- table operator

@@ -60,3 +60,12 @@ func (c *FakeClock) Advance(d time.Duration) {
 	}
 	c.waiters = kept
 }
+
+// Waiting reports how many After timers are pending. A test that advances
+// the clock past a timer must first know the code under test has set it, or
+// the advance lands before the wait and the timer never fires.
+func (c *FakeClock) Waiting() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return len(c.waiters)
+}

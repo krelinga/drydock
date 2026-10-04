@@ -150,4 +150,27 @@ CREATE TABLE event (
   at           TEXT
 );
 `,
+
+	// 2 — event.data, a JSON object: what changed, in a form the frontend's
+	// reducer can apply. §4 had only `message`, which is prose for a human,
+	// and a reducer that parsed prose to learn a workspace's new state is
+	// the string-matching the error envelope exists to avoid. The design doc
+	// records the column (§4). Never a credential, like every other column:
+	// the canary sweep reads this file's raw bytes.
+	`
+ALTER TABLE event ADD COLUMN data TEXT;
+CREATE INDEX event_workspace ON event (workspace_id, id);
+`,
+
+	// 3 — the label prefix, recorded at first run (§6, §13.5). Reconciliation
+	// adopts and deletes by label, so the prefix a database was created with
+	// is the one whose containers it owns; starting it later under another
+	// prefix would orphan all of them and adopt someone else's.
+	`
+CREATE TABLE instance (
+  id           INTEGER PRIMARY KEY CHECK (id = 1),
+  label_prefix TEXT NOT NULL,
+  created_at   TEXT NOT NULL
+);
+`,
 }
