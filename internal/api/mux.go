@@ -13,8 +13,11 @@ import (
 // refusal itself — because the refusal differs by policy (401 with an envelope
 // for a fetch, 302 to sign-in for a navigation) and only the gate knows which.
 type Gate interface {
-	// HasSession reports whether the request carries a valid session.
-	HasSession(r *http.Request) bool
+	// Authenticate reports whether the request carries a valid session and,
+	// if so, returns it with the session attached to its context, so a
+	// handler that needs the session (the device list, sign-out) does not
+	// look it up a second time.
+	Authenticate(r *http.Request) (*http.Request, bool)
 	// OriginAllowed reports whether a state-changing request's Origin is
 	// the literal UI origin. Must fail closed on an absent Origin and must
 	// never accept a suffix match (§13.3, §13.5).
@@ -44,9 +47,12 @@ type Gate interface {
 //     reach the socket.
 //  3. Origin, for mutating routes.
 //  4. The handler, or 501.
-func Build(m Mux, g Gate) *http.ServeMux {
+func Build(m Mux, g Gate, handlers map[string]http.HandlerFunc) *http.ServeMux {
 	mux := http.NewServeMux()
 	for _, rt := range routesFor(m) {
+		if h, ok := handlers[rt.Name]; ok {
+			rt.Handler = h
+		}
 		mux.Handle(rt.Method+" "+rt.Pattern, wrap(rt, g))
 	}
 	return mux
@@ -66,16 +72,20 @@ func wrap(rt Route, g Gate) http.Handler {
 		// 2. Auth, before the not-implemented reply.
 		switch rt.Auth {
 		case AuthRequired:
-			if !g.HasSession(r) {
+			authed, ok := g.Authenticate(r)
+			if !ok {
 				WriteError(w, http.StatusUnauthorized, CodeUnauthenticated,
 					"Sign in to continue.", "")
 				return
 			}
+			r = authed
 		case AuthRedirect:
-			if !g.HasSession(r) {
+			authed, ok := g.Authenticate(r)
+			if !ok {
 				http.Redirect(w, r, g.SignInRedirect(r), http.StatusFound)
 				return
 			}
+			r = authed
 		case AuthPreviewToken:
 			if !g.PreviewTokenValid(r) {
 				// A spent, expired, or forged token is indistinguishable

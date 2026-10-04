@@ -17,10 +17,10 @@ type stubGate struct {
 	token   bool
 }
 
-func (g stubGate) HasSession(*http.Request) bool        { return g.session }
-func (g stubGate) OriginAllowed(*http.Request) bool     { return g.origin }
-func (g stubGate) HostAllowed(*http.Request) bool       { return g.host }
-func (g stubGate) PreviewTokenValid(*http.Request) bool { return g.token }
+func (g stubGate) Authenticate(r *http.Request) (*http.Request, bool) { return r, g.session }
+func (g stubGate) OriginAllowed(*http.Request) bool                   { return g.origin }
+func (g stubGate) HostAllowed(*http.Request) bool                     { return g.host }
+func (g stubGate) PreviewTokenValid(*http.Request) bool               { return g.token }
 func (g stubGate) SignInRedirect(r *http.Request) string {
 	return "/signin?return=" + r.URL.Path
 }
@@ -236,7 +236,7 @@ func TestNoRouteEmitsCORS(t *testing.T) {
 // preview origin serves repository code, so an API pattern reaching a handler
 // there would put the control plane on an origin a repo's dev server controls.
 func TestPreviewMuxServesNoAPI(t *testing.T) {
-	previewMux := Build(MuxPreview, allOpen)
+	previewMux := Build(MuxPreview, allOpen, nil)
 	for _, rt := range APIRoutes() {
 		rec := httptest.NewRecorder()
 		previewMux.ServeHTTP(rec, requestFor(rt))
@@ -264,7 +264,7 @@ func TestPreviewMuxServesNoAPI(t *testing.T) {
 
 // TestAPIMuxServesNoPreviewRoute is the same separation from the other side.
 func TestAPIMuxServesNoPreviewRoute(t *testing.T) {
-	apiMux := Build(MuxAPI, allOpen)
+	apiMux := Build(MuxAPI, allOpen, nil)
 	for _, rt := range PreviewRoutes() {
 		rec := httptest.NewRecorder()
 		apiMux.ServeHTTP(rec, requestFor(rt))

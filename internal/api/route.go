@@ -118,7 +118,8 @@ type Route struct {
 	// Doc is the §5 spelling of the path, kept so the table can be diffed
 	// against the design document by eye.
 	Doc string
-	// Handler is nil until the phase that implements this route.
+	// Handler is nil in the declared Table; Build fills it from the handler
+	// map, keyed by Name, and mounts a 501 where none is supplied.
 	Handler http.HandlerFunc
 }
 

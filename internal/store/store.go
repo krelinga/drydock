@@ -47,17 +47,34 @@ func Open(ctx context.Context, path string) (*DB, error) {
 	// Pragmas in the DSN apply to every pooled connection, which matters for
 	// foreign_keys in particular: set once with Exec it would hold on one
 	// connection and silently not on the rest.
-	q := url.Values{}
-	q.Add("_pragma", "journal_mode(WAL)")
-	q.Add("_pragma", "foreign_keys(1)")
-	q.Add("_pragma", "busy_timeout(5000)")
-	q.Add("_pragma", "synchronous(NORMAL)")
-	db, err := sql.Open("sqlite", "file:"+path+"?"+q.Encode())
+	db, err := sql.Open("sqlite", "file:"+path+"?"+pragmas().Encode())
 	if err != nil {
 		lock.Close()
 		return nil, fmt.Errorf("open %s: %w", path, err)
 	}
 	s := &DB{DB: db, lock: lock}
+	if err := s.migrate(ctx); err != nil {
+		s.Close()
+		return nil, err
+	}
+	return s, nil
+}
+
+// OpenAdmin opens the database WITHOUT the single-instance lock, for
+// short-lived administrative commands — `drydock passwd` — that must work while
+// the server runs. Changing a password that may be compromised should not
+// require taking Drydock down first.
+//
+// The lock exists to stop a second *server*, which would run a second
+// supervisor against the same containers. A one-shot write is not that, and
+// SQLite's WAL mode serialises it against the running server's writes. Never
+// use this to serve.
+func OpenAdmin(ctx context.Context, path string) (*DB, error) {
+	db, err := sql.Open("sqlite", "file:"+path+"?"+pragmas().Encode())
+	if err != nil {
+		return nil, fmt.Errorf("open %s: %w", path, err)
+	}
+	s := &DB{DB: db}
 	if err := s.migrate(ctx); err != nil {
 		s.Close()
 		return nil, err
@@ -133,4 +150,16 @@ func (s *DB) SchemaVersion(ctx context.Context) (int, error) {
 	var v int
 	err := s.QueryRowContext(ctx, "PRAGMA user_version").Scan(&v)
 	return v, err
+}
+
+// pragmas go in the DSN, not an Exec after opening: foreign_keys is
+// per-connection, and set once it would hold on one pooled connection and
+// silently not on the others.
+func pragmas() url.Values {
+	q := url.Values{}
+	q.Add("_pragma", "journal_mode(WAL)")
+	q.Add("_pragma", "foreign_keys(1)")
+	q.Add("_pragma", "busy_timeout(5000)")
+	q.Add("_pragma", "synchronous(NORMAL)")
+	return q
 }

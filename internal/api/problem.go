@@ -33,6 +33,11 @@ const (
 	CodeNotFound        = "not_found"
 	CodeNotImplemented  = "not_implemented"
 	CodeInProgress      = "in_progress"
+	CodeBadRequest      = "bad_request"
+	CodeBadPassword     = "bad_password"
+	CodeLockedOut       = "locked_out"
+	CodeNotConfigured   = "not_configured"
+	CodeInternal        = "internal"
 )
 
 // WriteError sends the envelope. Nothing else in the codebase should write an
