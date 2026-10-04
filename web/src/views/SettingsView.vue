@@ -1,7 +1,7 @@
 <script setup lang="ts">
-// /settings — Phase 1 carries the device list (design §13.2: "a device list in
-// the UI, and one button that kills all sessions"). Claude identity, capacity
-// and the catalog refresh join it in later phases.
+// /settings — the device list (design §13.2: "a device list in the UI, and
+// one button that kills all sessions") and the catalog refresh. Claude
+// identity and capacity join it in later phases.
 //
 // The API offers two revocations, both of which include this device: sign out
 // here, or sign out everywhere. Neither is a surprise — the list marks which
@@ -13,9 +13,30 @@ import { describeError } from '../api/messages'
 import { endSession } from '../signout'
 import { relativeTime } from '../lib/time'
 import { useSessionStore } from '../stores/session'
+import { REFRESH_KEY, useCatalogStore } from '../stores/catalog'
+import { useStreamStore } from '../stores/stream'
 
 const session = useSessionStore()
+const catalog = useCatalogStore()
+const stream = useStreamStore()
 const router = useRouter()
+
+// The catalog refresh (§5's table): POST, discard the 202, and show only that
+// a request is in flight until repo.refreshed or repo.refresh_failed arrives
+// (§4.2). The outcome shown is the reducer's, from the event, never from the
+// response — so a refresh started on another device reports here too.
+const refreshFlight = computed(() => stream.inFlight[REFRESH_KEY] ?? null)
+const lastRefresh = computed(() => stream.entities.lastRefresh)
+const refreshError = ref<string | null>(null)
+
+async function refreshCatalog(): Promise<void> {
+  refreshError.value = null
+  try {
+    await catalog.refresh()
+  } catch (e) {
+    if (session.status === 'signed-in') refreshError.value = describeError(e)
+  }
+}
 
 // Local state, all of it legitimate per §4.2: one request in flight, one
 // sheet open, one error to show.
@@ -128,6 +149,32 @@ async function signOut(everywhere: boolean): Promise<void> {
         </div>
       </div>
     </section>
+
+    <section class="block" aria-labelledby="catalog-h">
+      <div class="sec-label"><span id="catalog-h">Repository catalog</span></div>
+      <div class="action">
+        <button
+          type="button" class="btn" data-test="refresh-catalog"
+          :disabled="refreshFlight !== null" :aria-busy="refreshFlight !== null"
+          @click="refreshCatalog"
+        >
+          <span v-if="refreshFlight" class="spinner" aria-hidden="true" />
+          Refresh catalog
+        </button>
+        <p class="note" aria-live="polite" data-test="refresh-status">
+          <template v-if="refreshFlight?.slow">No response yet. The refresh was accepted and is still running.</template>
+          <template v-else-if="refreshFlight">Asking GitHub…</template>
+          <template v-else-if="lastRefresh?.ok">
+            Refreshed {{ relativeTime(lastRefresh.at) }}: {{ lastRefresh.count }} repositories.
+          </template>
+          <template v-else-if="lastRefresh">{{ lastRefresh.message }}</template>
+          <template v-else>Drydock re-reads the list from GitHub every 15 minutes.</template>
+        </p>
+      </div>
+      <div v-if="refreshError" class="msg bad" role="alert" data-test="refresh-error">
+        <span class="glyph" aria-hidden="true">×</span><span>{{ refreshError }}</span>
+      </div>
+    </section>
   </section>
 </template>
 
@@ -157,6 +204,12 @@ async function signOut(everywhere: boolean): Promise<void> {
 .action { display: flex; flex-direction: column; gap: 6px; align-items: flex-start; }
 .note { font-size: 12.5px; color: var(--ink-3); }
 .danger-text { color: var(--bad); border-color: var(--bad); }
+.spinner {
+  width: 12px; height: 12px; border-radius: 50%;
+  border: 2px solid var(--line); border-top-color: var(--ink-2);
+  animation: spin .8s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
 
 .sheet {
   align-self: stretch;

@@ -1,11 +1,12 @@
 // The API's shapes, as the Go handlers write them.
 //
 // Frontend §4.5 says these are to be *generated* from the Go structs, so the
-// contract has one source. No generator exists yet, and Phase 1 has exactly two
-// shapes, so they are written by hand here and mirrored field for field from
-// internal/api/session_routes.go (deviceJSON) and internal/api/problem.go
-// (Error). When Phase 2 adds the event stream's dozen kinds, this file is the
-// one to replace with generated output rather than extend.
+// contract has one source. No generator exists yet, so they are written by
+// hand and mirrored field for field from internal/api/session_routes.go
+// (deviceJSON), internal/api/problem.go (Error), internal/catalog/view.go
+// (View) and internal/events/events.go (Event), with each event kind's `data`
+// read off the Emit call that writes it (see stores/reducer.ts). This file is
+// the one to replace with generated output rather than extend much further.
 
 /** One signed-in device, from `GET /api/auth/session`. */
 export interface Device {
@@ -57,3 +58,57 @@ export type ErrorCode =
   | 'internal'
   | 'network'
   | 'unparseable'
+
+/** `internal/workspace/state.go`. */
+export type WorkspaceState = 'pending' | 'cloning' | 'building' | 'running' | 'stopped' | 'failed' | 'deleting'
+
+export const WORKSPACE_STATES: readonly WorkspaceState[] = [
+  'pending', 'cloning', 'building', 'running', 'stopped', 'failed', 'deleting',
+]
+
+/** One installation of the GitHub App, from `GET /api/repos`. */
+export interface InstallationView {
+  id: number
+  account: string
+  /** Where the operator adds or removes repositories (§9.4, frontend §4.5 #8). */
+  settings_url: string
+}
+
+/** One repository, joined with its newest workspace, from `GET /api/repos`. */
+export interface RepoView {
+  id: number
+  installation_id: number
+  full_name: string
+  default_branch: string
+  private: boolean
+  archived: boolean
+  /** Null is *unknown* — never render it as "no dev container". */
+  has_devcontainer: boolean | null
+  pushed_at: string | null
+  /** The installation no longer covers it, but a workspace still holds it. */
+  removed: boolean
+  workspace: { id: string; state: WorkspaceState } | null
+}
+
+/** `GET /api/repos`. */
+export interface CatalogView {
+  /** Null before the first refresh: "loading", not "empty". */
+  refreshed_at: string | null
+  installations: InstallationView[]
+  repos: RepoView[]
+}
+
+/**
+ * One unnamed event on `GET /api/events` (internal/events.Event). `message`
+ * is for a human and nothing may parse it; `data` is what the reducer applies.
+ */
+export interface StreamEvent {
+  id: number
+  /** Absent for events about the whole system. */
+  workspace_id?: string
+  level: 'info' | 'warn' | 'error'
+  kind: string
+  message: string
+  data?: Record<string, unknown>
+  at: string
+}
