@@ -1,0 +1,22 @@
+#!/bin/sh
+# drydock-probe — the Feature's postStartCommand (design §11): one broker
+# round-trip at every start. A restarted Drydock recreates the socket, and a
+# stale or missing mount is reported now, loudly, rather than as a confusing
+# git failure on the next push.
+set -u
+require=true
+if [ -r /usr/local/drydock/etc/feature.env ]; then
+	while IFS='=' read -r k v; do
+		[ "$k" = REQUIRE_BROKER ] && require=$v
+	done </usr/local/drydock/etc/feature.env
+fi
+if out=$(drydock-broker PING 2>&1); then
+	exit 0
+fi
+if [ "$require" = false ]; then
+	echo "drydock: warning (broker not required): $out" >&2
+	exit 0
+fi
+echo "$out" >&2
+echo "drydock: this container was started without a working broker socket; GitHub access will fail. Restart it from Drydock." >&2
+exit 1
