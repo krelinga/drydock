@@ -1,0 +1,57 @@
+package api
+
+import (
+	"encoding/json"
+	"net/http"
+)
+
+// Error is the one error shape every route returns, from frontend §4.5 #7.
+//
+// The `Code` is the point. Design §12 pairs each failure mode with a specific
+// sentence and the UI renders that sentence rather than a generic one; if the
+// client had to recognise failures by matching on prose, the first reworded
+// message would silently turn a precise error into an unknown one. So the code
+// is stable and machine-readable, the message is for a human, and the detail is
+// optional context.
+type Error struct {
+	Code    string `json:"code"`
+	Message string `json:"message"`
+	Detail  string `json:"detail,omitempty"`
+}
+
+type errorEnvelope struct {
+	Error Error `json:"error"`
+}
+
+// Stable error codes. Add to this list rather than inventing a code at a call
+// site: the UI switches on these, and an unrecognised one renders as a generic
+// failure, which is the thing the envelope exists to avoid.
+const (
+	CodeUnauthenticated = "unauthenticated"
+	CodeForbiddenOrigin = "forbidden_origin"
+	CodeForbiddenHost   = "forbidden_host"
+	CodeNotFound        = "not_found"
+	CodeNotImplemented  = "not_implemented"
+	CodeInProgress      = "in_progress"
+)
+
+// WriteError sends the envelope. Nothing else in the codebase should write an
+// error body by hand.
+//
+// Detail is caller-supplied prose and is rendered by the UI as *text*, never as
+// HTML (frontend §8). It must never carry a credential: redact-by-default
+// (§13.5) applies here as much as to the event log, and an error string is one
+// of the sinks the canary sweep deliberately covers.
+func WriteError(w http.ResponseWriter, status int, code, message, detail string) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	// No CORS header, ever, on any response from any route — including the
+	// error paths, which is where a reflexive Access-Control-Allow-Origin
+	// tends to get added by someone debugging a fetch (§13.5).
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(errorEnvelope{Error: Error{
+		Code:    code,
+		Message: message,
+		Detail:  detail,
+	}})
+}

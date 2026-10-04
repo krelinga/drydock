@@ -1,3 +1,6 @@
 # Claude Code scratch worktrees. Checked-in project config under .claude/
 # (settings, agents, skills) is still tracked; only the worktrees are noise.
 .claude/worktrees/
+
+# Go build output. The binary is built, never committed.
+/drydock

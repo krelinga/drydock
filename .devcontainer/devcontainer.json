@@ -60,6 +60,11 @@
   //   npx playwright install --with-deps chromium
   // Enumerating its ~40 transitive apt packages in the feature above instead
   // would be a list that goes stale silently.
+  // The ms-playwright volume below makes Docker create /home/vscode/.cache as
+  // root to host the mount point, which breaks every other user-level cache
+  // under it -- the Go build cache first. Chown both back on create.
+  "postCreateCommand": "sudo chown vscode:vscode /home/vscode/.cache /home/vscode/.cache/ms-playwright",
+
   "mounts": [
     "source=drydock-dind-lib,target=/var/lib/docker,type=volume",
     "source=drydock-playwright-cache,target=/home/vscode/.cache/ms-playwright,type=volume"
