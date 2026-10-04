@@ -3,4 +3,4 @@ recorded_at:    2026-10-04T05:48:38Z
 command:        claude remote-control --verbose --spawn worktree --capacity 4
 pty_width:      200
 provenance:     recorded
-must_yield:     the environment id, and Capacity: N/4 as the session count
+must_yield:     the environment id from the Environment ID header, and Capacity: 1/4 (the last one wins)

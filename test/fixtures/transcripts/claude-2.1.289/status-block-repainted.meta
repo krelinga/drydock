@@ -1,6 +1,6 @@
 claude_version: 2.1.289
 recorded_at:    2026-10-04T05:48:38Z
-command:        as env-status-block
+command:        a 4480-byte PREFIX of the env-status-block capture, taken before shutdown (8 Capacity lines, no shutdown section) -- a recorder bug copied it while the server was still running; record.sh is fixed
 pty_width:      200
 provenance:     recorded
 must_yield:     ONE row from N in-place reprints — the tail must upsert by id, not append

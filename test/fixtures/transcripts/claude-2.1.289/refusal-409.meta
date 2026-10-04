@@ -3,4 +3,4 @@ recorded_at:    2026-10-04T05:49:46Z
 command:        claude remote-control after SIGKILL of a session-less server
 pty_width:      -
 provenance:     recorded
-must_yield:     409 / already served -> a WAIT, retry patiently, must not spend the restart budget
+must_yield:     already served by a terminal -> a WAIT; retry patiently; must not spend the restart budget. The file name is historical: this 2.1.289 message contains no 409 at all, so never match on it.

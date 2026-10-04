@@ -1,1 +1,1 @@
-{"outcome":"error","message":"Command failed: /bin/sh -c echo drydock-fixture-postcreate; exit 7","description":"postCreateCommand from devcontainer.json failed.","containerId":"06f74b352966579ceae456b2d5baa3c177dfe92d94c4c32eb85f3c028ac3e7b1"}
+{"outcome":"error","message":"Command failed: /bin/sh -c echo drydock-fixture-postcreate; exit 7","description":"postCreateCommand from devcontainer.json failed.","containerId":"1cc26d80cf56fc340ea85a83aabeba8a7dc173626b7152f1b3bd0566ec2adb21"}

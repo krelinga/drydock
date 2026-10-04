@@ -9,7 +9,7 @@ for the re-record ritual.
 transcripts/claude-<version>/   raw PTY bytes, escapes intact, one file per scenario
 authstatus/                     `claude auth status --json` documents, one per state
 credentials/                    .credentials.json shapes, including the tombstone
-devcontainer/                   `devcontainer up --json` results
+devcontainer/                   `devcontainer up` stdout -- one JSON object; there is no --json flag
 repos/                          the five fixture repos (testing §6.5)
 ```
 
@@ -26,10 +26,12 @@ repos/                          the five fixture repos (testing §6.5)
   command, the PTY width, and whether it was *recorded*, *hand-written*, or
   *synthetic*. The testing plan says "a header"; a header inside a file of raw
   PTY bytes would corrupt the thing under test, so provenance lives beside the
-  bytes instead. Width is part of the
-  fixture: the authorize URL wraps mid-token at ordinary widths, so
-  `login-url-200col` and `login-url-1000col` must both yield the same complete
-  URL.
+  bytes instead. Width is recorded because
+  it is a variable worth pinning, not because the URL depends on it: Claude Code
+  writes the authorize URL unbroken at every width measured, so
+  `login-url-80col` must yield a complete URL matched **per line**. Never join
+  lines before matching -- the URL's line is followed by the paste prompt, and
+  joining them appends `Paste` to `state` undetectably.
 - **Negative fixtures count.** `session-url-osc8-urlmatch` exists to keep the
   id-matching rule from being "simplified" into URL parsing later, and
   `session-id-in-model-output` must yield *no* row — an agent discussing its own
@@ -65,16 +67,25 @@ fixture if you get them wrong:
   hand-written expectation proves only that the regex matches itself. Replace
   them with `docs/design/spikes/harness-01-login/run.sh login`.
 - **`login-timeout`** needs the five-minute deadline to elapse; not recorded.
-- **`devcontainer/`** needs a real `devcontainer up`; not recorded.
-- **`session-ids-delayed`** and **`session-url-osc8-urlmatch`** from testing §7
-  are not separate recordings yet. The negative URL-match assertion can be made
-  against `session-url-osc8` as it stands, since that file already contains the
-  OSC 8 form.
 
-One fixture will be **hand-written rather than recorded** when it arrives, and
-the header must say so: the three `login-success-*` files. Spike 01 drove the
-handshake through an *invalid* code because completing a real one needs a human
-in a browser, so the `Login successful` strings come from `grep` over the binary.
-A hand-written fixture asserting a hand-written expectation proves only that the
-regex matches itself. Run `docs/design/spikes/harness-01-login/run.sh login` to
-replace them with the real thing.
+## Known defects in the committed files
+
+Two recorder bugs copied fixtures while a capture was still being written. Both
+are fixed in `record.sh`, and each affected file's `.meta` describes the bytes
+it actually holds; they are not re-recorded, because the tests pin their recorded
+ids and the next version's corpus goes in a new directory anyway.
+
+- **`login-url-1000col` is byte-identical to `login-invalid-code`**, so it yields
+  `LoginInvalidCode`. The prompt-only 1000-column capture is `login-code-prompt`.
+- **`session-url-osc8` and `status-block-repainted` are a 4,480-byte pre-shutdown
+  prefix** of the `env-status-block` capture, not copies of it.
+
+## Synthetic fixtures
+
+Built rather than recorded, each marked `provenance: synthetic` in its `.meta`:
+`session-id-in-model-output` (an id in model prose), `session-url-osc8-urlmatch`
+(the 2.1.246 ST-terminated form -- the only fixture that catches an id regex run
+over escape-stripped text), `session-ids-delayed` (a recorded prefix plus a later
+announcement), `login-success-after-prompt` (success on the paste prompt's own
+line, which the hand-written success fixtures cannot exercise), and the six
+`credentials/` shapes, which are classifier inputs rather than recordings.

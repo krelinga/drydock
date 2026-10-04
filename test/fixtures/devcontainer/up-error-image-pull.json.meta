@@ -1,7 +1,7 @@
 devcontainer_version: 0.89.0
 docker_version:       29.8.2-1 (the devcontainer's inner DinD daemon)
-recorded_at:          2026-10-04T06:24:23Z
-command:              devcontainer up --workspace-folder <mktemp dir> --id-label drydock.test.1f88a59d.workspace=badimage   (stdout only; exit 1)
+recorded_at:          2026-10-04T06:44:19Z
+command:              devcontainer up --workspace-folder <mktemp dir> --id-label drydock.test.3d8bdedc.workspace=imagepull    (stdout only; exit 1)
 config:               {"name":"drydock-fixture","image":"drydock-fixture-no-such-image:does-not-exist"}
 provenance:           recorded
-must_yield:           ContainerFailed, no containerId (none was created), and NO step -- the CLI names none; "description" is a generic sentence
+must_yield:           ContainerFailed; the description is generic, so the step must come from Drydock

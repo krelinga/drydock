@@ -3,4 +3,4 @@ recorded_at:    2026-10-04T05:46:28Z
 command:        claude auth login --claudeai
 pty_width:      1000
 provenance:     recorded
-must_yield:     the complete authorize URL, matched per-line (no de-wrapping needed)
+must_yield:     LoginInvalidCode -- this file is byte-identical to login-invalid-code. A recorder bug kept capturing into it after the bad code was sent. The prompt-only 1000-column capture is login-code-prompt; record.sh is fixed, so a fresh recording puts a prompt-only capture here.

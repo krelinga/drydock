@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Record the fixture corpus from the real Claude Code binary.
 #
-# Usage: ./record.sh [login|discovery|refusals|identity|credentials|all]
+# Usage: ./record.sh [login|discovery|refusals|hangs|devcontainer|identity|credentials|all]
 #
 # This is the tool testing-plan §11.1 step 3 calls for. It exists because a
 # corpus nobody can regenerate is worth very little: the whole point of
@@ -102,37 +102,47 @@ scratch_repo() {
 # ---------------------------------------------------------------------------
 record_login() {
 	say "== login handshake (Spike 01) =="
-	# Two widths. The assertion is that BOTH yield the complete URL from the
-	# raw stream: Spike 04-era measurement showed Claude Code does not wrap
-	# the URL itself, so a narrow PTY is a *regression guard*, not a
-	# demonstration that de-wrapping is required.
+	# Two widths, and the assertion is that BOTH yield a complete URL matched
+	# per line: Claude Code writes the URL unbroken at every width (Spike 01,
+	# re-measured on 2.1.289), so the narrow capture is a regression guard.
+	# Never join lines before matching -- the URL's line is followed by the
+	# paste prompt, and joining them corrupts `state` undetectably.
+	#
+	# The PTY streams into a SCRATCH file, and each named fixture is a copy
+	# taken at the moment it is meant to represent. An earlier version
+	# captured straight into login-url-1000col and kept recording into it
+	# after sending the bad code, so that "URL" fixture silently became a copy
+	# of login-invalid-code.
 	for w in 1000 80; do
-		local name="$TDIR/login-url-${w}col"
+		local raw="$WORK/login-$w.raw"
 		local cfg="$WORK/login-$w"
 		mkdir -p "$cfg"
 		chmod 777 "$cfg"
-		pty_capture "$name" "$w" "$cfg" \
+		pty_capture "$raw" "$w" "$cfg" \
 			"exec docker run --rm -it --name ddrec-ct -v '$BIN':/usr/local/bin/claude:ro \
 			 -v '$cfg':/cfg -e CLAUDE_CONFIG_DIR=/cfg -e HOME=/root $IMG \
 			 /usr/local/bin/claude auth login --claudeai"
 		local i
-		for i in $(seq 1 30); do grep -aq 'Paste code' "$name" && break; sleep 2; done
-		meta "$name" "claude auth login --claudeai" "$w" recorded \
-			"the complete authorize URL, matched per-line (no de-wrapping needed)"
-		say "  login-url-${w}col: $(wc -c < "$name") bytes"
+		for i in $(seq 1 30); do grep -aq 'Paste code' "$raw" && break; sleep 2; done
+		sleep 1 # let the prompt line finish arriving before the snapshot
 
-		# The invalid-code case rides the same session: submit a malformed
-		# code and keep recording, which also captures that the process
-		# stays at the prompt.
+		cp "$raw" "$TDIR/login-url-${w}col"
+		meta "$TDIR/login-url-${w}col" "claude auth login --claudeai (snapshot at the paste prompt)" "$w" recorded \
+			"a complete authorize URL matched per line, and LoginAwaitingCode"
+		say "  login-url-${w}col: $(wc -c < "$TDIR/login-url-${w}col") bytes"
+
 		if [ "$w" = 1000 ]; then
-			cp "$name" "$TDIR/login-code-prompt"
-			meta "$TDIR/login-code-prompt" "claude auth login --claudeai" "$w" recorded \
+			cp "$raw" "$TDIR/login-code-prompt"
+			meta "$TDIR/login-code-prompt" "claude auth login --claudeai (snapshot at the paste prompt)" "$w" recorded \
 				"the at-paste-prompt state: 'Paste code here if prompted >'"
+			# The invalid-code case rides the same session, so it also shows
+			# the process staying at the prompt afterwards.
 			tmux send-keys -t ddrec 'not-a-real-code-12345' Enter
-			for i in $(seq 1 20); do grep -aq 'Invalid code' "$name" && break; sleep 2; done
-			cp "$name" "$TDIR/login-invalid-code"
+			for i in $(seq 1 20); do grep -aq 'Invalid code' "$raw" && break; sleep 2; done
+			sleep 1
+			cp "$raw" "$TDIR/login-invalid-code"
 			meta "$TDIR/login-invalid-code" "claude auth login --claudeai, then a malformed code" "$w" recorded \
-				"Invalid code, AND still at the prompt — a wrong code needs no teardown"
+				"Invalid code, AND still at the prompt -- a wrong code needs no teardown"
 			say "  login-invalid-code: recorded"
 		fi
 		tmux kill-session -t ddrec 2>/dev/null
@@ -146,8 +156,8 @@ record_login() {
 	for v in plain:'Login successful' period:'Login successful.' press:'Login successful. Press any key to continue'; do
 		local tag="${v%%:*}" text="${v#*:}"
 		printf '%s\r\n' "$text" > "$TDIR/login-success-$tag"
-		meta "$TDIR/login-success-$tag" "HAND-WRITTEN — run harness-01-login/run.sh login to record for real" - handwritten \
-			"a prefix match on 'Login successful' — never a whole-line match"
+		meta "$TDIR/login-success-$tag" "HAND-WRITTEN -- run harness-01-login/run.sh login to record for real" - handwritten \
+			"a prefix match on 'Login successful' -- never a whole-line match"
 	done
 	say "  login-success-{plain,period,press}: HAND-WRITTEN, still owed a real recording"
 }
@@ -155,45 +165,49 @@ record_login() {
 # ---------------------------------------------------------------------------
 record_discovery() {
 	say "== discovery tail (Spike 02) =="
-	local cfg="$WORK/disc-cfg" repo="$WORK/disc-repo"
+	local cfg="$WORK/disc-cfg" repo="$WORK/disc-repo" raw="$WORK/discovery.raw"
 	scratch_repo "$repo"
 	mkcfg "$cfg" 1 "$repo"
-	local out="$TDIR/env-status-block"
-	pty_capture "$out" 200 "$repo" \
+	pty_capture "$raw" 200 "$repo" \
 		"exec env CLAUDE_CONFIG_DIR='$cfg' '$CLAUDE' remote-control --verbose \
 		 --spawn worktree --capacity 4 --remote-control-session-name-prefix drydockrec"
 	local i
 	for i in $(seq 1 40); do
-		sed 's/\x1b\[[0-9;]*[A-Za-z]//g' "$out" | grep -aqE 'Capacity: [1-9]' && break
+		sed 's/\x1b\[[0-9;]*[A-Za-z]//g' "$raw" | grep -aqE 'Capacity: [1-9]' && break
 		sleep 2
 	done
-	meta "$out" "claude remote-control --verbose --spawn worktree --capacity 4" 200 recorded \
-		"the environment id, and Capacity: N/4 as the session count"
 
-	# The same stream holds the OSC 8 session URL and the in-place repaints,
-	# so they are copies rather than separate runs — the point of each is a
-	# different assertion over the same bytes.
-	cp "$out" "$TDIR/session-url-osc8"
-	meta "$TDIR/session-url-osc8" "as env-status-block" 200 recorded \
-		"the session id matched as session_[A-Za-z0-9]+, never parsed out of the URL"
-	cp "$out" "$TDIR/status-block-repainted"
-	meta "$TDIR/status-block-repainted" "as env-status-block" 200 recorded \
-		"ONE row from N in-place reprints — the tail must upsert by id, not append"
-
+	# Stop it cleanly and let the shutdown output land BEFORE copying. An
+	# earlier version copied two of these fixtures while the server was still
+	# running, so they came out as a 4480-byte pre-shutdown prefix of the
+	# third rather than the same bytes, which their .meta claimed.
 	local pid
 	pid=$(tmux list-panes -t ddrec -F '#{pane_pid}' 2>/dev/null | head -1)
 	[ -n "$pid" ] && kill -TERM "$pid" 2>/dev/null
-	sleep 3
+	for i in $(seq 1 15); do kill -0 "$pid" 2>/dev/null || break; sleep 1; done
+	sleep 1
 	tmux kill-session -t ddrec 2>/dev/null
-	say "  env-status-block: $(wc -c < "$out") bytes, $(grep -ac 'Capacity:' "$out") repaints"
+
+	# Three identical copies, each named for a different assertion over the
+	# same bytes.
+	cp "$raw" "$TDIR/env-status-block"
+	meta "$TDIR/env-status-block" "claude remote-control --verbose --spawn worktree --capacity 4, then SIGTERM" 200 recorded \
+		"the environment id from the 'Environment ID:' header, and Capacity: 1/4 (the last one wins)"
+	cp "$raw" "$TDIR/session-url-osc8"
+	meta "$TDIR/session-url-osc8" "identical to env-status-block" 200 recorded \
+		"the session id, taken only from an OSC 8 hyperlink target -- never from visible text"
+	cp "$raw" "$TDIR/status-block-repainted"
+	meta "$TDIR/status-block-repainted" "identical to env-status-block" 200 recorded \
+		"ONE session from N in-place reprints -- the tail must upsert by id, not append"
+	say "  env-status-block (and two identical copies): $(wc -c < "$raw") bytes, $(grep -ac 'Capacity:' "$raw") repaints"
 
 	# A negative fixture: a session_… id that the *model* printed is not a
-	# server announcement. Synthetic on purpose — provoking an agent to say
+	# server announcement. Synthetic on purpose -- provoking an agent to say
 	# its own id is more fragile than writing the line.
 	printf 'I am running in session_01SYNTHETICMODELOUTPUT00 right now.\r\n' \
 		> "$TDIR/session-id-in-model-output"
-	meta "$TDIR/session-id-in-model-output" "SYNTHETIC — model prose containing an id" - synthetic \
-		"NO session row: an id the model printed is not a server announcement"
+	meta "$TDIR/session-id-in-model-output" "SYNTHETIC -- model prose containing an id" - synthetic \
+		"NO session: an id the model printed is not a server announcement"
 	say "  session-id-in-model-output: synthetic negative"
 }
 
@@ -246,7 +260,7 @@ record_refusals() {
 		--verbose --spawn worktree --capacity 4 --no-create-session-in-dir ) > "$out" 2>&1
 	printf 'exit_code:      %s\n' "$?" >> "$out.exit"
 	meta "$out" "claude remote-control after SIGKILL of a session-less server" - recorded \
-		"409 / already served -> a WAIT, retry patiently, must not spend the restart budget"
+		"already served by a terminal -> a WAIT; retry patiently; must not spend the restart budget. (The file name is historical: 2.1.289 dropped the 409 token, so never match on it.)"
 	say "  refusal-409: exit $(grep -o '[0-9]*$' "$out.exit"), $(grep -ac 409 "$out") lines mentioning 409"
 }
 
@@ -277,6 +291,83 @@ record_hangs() {
 		"a TIMEOUT, not a message -- asserts the hang; redirected the same case exits 1"
 	say "  hang-untrusted-tty: $verdict, $(wc -c < "$out") bytes"
 }
+
+# ---------------------------------------------------------------------------
+# The devcontainer CLI's result (design §6). Not a Claude Code recording, so
+# it lives outside the versioned transcript directory and its .meta names the
+# CLI and Docker versions instead.
+#
+# Two rules this step depends on, both learned by getting them wrong:
+#   - there is NO `--json` flag. The result is always one JSON object on
+#     stdout; logs go to stderr. Passing --json fails, and one fixture keeps
+#     that failure as evidence.
+#   - every fixture gets its OWN id-label value. The label, not the workspace
+#     folder, decides which container `up` returns: reusing a value reattaches
+#     to the previous fixture's container and records a false success.
+# The label prefix is drydock.test.<run>, never the production key (testing
+# §5.4), and every container this creates is removed before the step ends.
+record_devcontainer() {
+	say "== devcontainer up results (design §6) =="
+	need_cmd devcontainer
+	local run dir="$HERE/devcontainer"
+	run=$(head -c4 /dev/urandom | od -An -tx1 | tr -d ' \n')
+	local dcv dkv
+	dcv=$(devcontainer --version 2>/dev/null)
+	dkv=$(docker info --format '{{.ServerVersion}}' 2>/dev/null)
+
+	# rec <fixture> <label-value> <config-json> <must-yield> [extra up args]
+	rec() {
+		local name="$1" label="$2" cfg="$3" yield="$4"
+		shift 4
+		local ws
+		ws=$(mktemp -d -t ddfix-XXXXXX)
+		mkdir "$ws/.devcontainer"
+		printf '%s\n' "$cfg" > "$ws/.devcontainer/devcontainer.json"
+		devcontainer up --workspace-folder "$ws" \
+			--id-label "drydock.test.$run.workspace=$label" "$@" \
+			> "$dir/$name" 2> "$WORK/$name.stderr"
+		local rc=$?
+		cat > "$dir/$name.meta" <<-META
+			devcontainer_version: $dcv
+			docker_version:       $dkv (the devcontainer's inner DinD daemon)
+			recorded_at:          $(date -u +%Y-%m-%dT%H:%M:%SZ)
+			command:              devcontainer up --workspace-folder <mktemp dir> --id-label drydock.test.$run.workspace=$label $*   (stdout only; exit $rc)
+			config:               $cfg
+			provenance:           recorded
+			must_yield:           $yield
+		META
+		rm -rf "$ws"
+		say "  $name: exit $rc, $(wc -c < "$dir/$name") bytes"
+	}
+
+	rec up-ok.json ok \
+		'{"name":"drydock-fixture","image":"debian:bookworm-slim"}' \
+		"ContainerRunning with a containerId and remoteUser"
+	rec up-error-image-pull.json imagepull \
+		'{"name":"drydock-fixture","image":"drydock-fixture-no-such-image:does-not-exist"}' \
+		"ContainerFailed; the description is generic, so the step must come from Drydock"
+	rec up-error-config.json config \
+		'{"name":"drydock-fixture", "image": ' \
+		"ContainerFailed; a truncated config is reported as a missing image, not a parse error"
+	rec up-error-postcreate.json postcreate \
+		'{"name":"drydock-fixture","image":"debian:bookworm-slim","postCreateCommand":"echo drydock-fixture-postcreate; exit 7"}' \
+		"ContainerFailed WITH a containerId -- the container was created and left running"
+	# Evidence rather than classifier input: the flag the design used to pass.
+	rec up-unknown-argument-json.stdout unknownarg \
+		'{"name":"drydock-fixture","image":"debian:bookworm-slim"}' \
+		"empty -- there is no --json flag; the matching .stderr ends 'Unknown argument: json'" \
+		--json
+	cp "$WORK/up-unknown-argument-json.stdout.stderr" "$dir/up-unknown-argument-json.stderr"
+	sed -e 's/^must_yield:.*/must_yield:           nothing -- evidence, not classifier input; ends "Unknown argument: json"/' \
+		"$dir/up-unknown-argument-json.stdout.meta" > "$dir/up-unknown-argument-json.stderr.meta"
+
+	local left
+	docker rm -f $(docker ps -aq --filter "label=drydock.test.$run.workspace") >/dev/null 2>&1
+	left=$(docker ps -aq --filter "label=drydock.test.$run.workspace" | wc -l)
+	say "  containers left with this run's label: $left"
+	[ "$left" = 0 ] || { say "refusing to finish: containers were left behind"; exit 4; }
+}
+need_cmd() { command -v "$1" >/dev/null || { say "missing: $1"; exit 1; }; }
 
 # ---------------------------------------------------------------------------
 record_identity() {
@@ -413,6 +504,7 @@ login) record_login ;;
 discovery) record_discovery ;;
 refusals) record_refusals ;;
 hangs) record_hangs ;;
+devcontainer) record_devcontainer ;;
 identity) record_identity ;;
 credentials) record_credentials ;;
 all)
@@ -422,6 +514,7 @@ all)
 	record_discovery
 	record_refusals
 	record_hangs
+	record_devcontainer
 	;;
 *)
 	say "unknown mode: $MODE"
@@ -430,8 +523,8 @@ all)
 esac
 
 say ""
-say "recorded $(find "$TDIR" "$HERE/authstatus" "$HERE/credentials" -type f ! -name '*.meta' ! -name '*.exit' 2>/dev/null | wc -l) fixtures"
+say "corpus now holds $(find "$TDIR" "$HERE/authstatus" "$HERE/credentials" "$HERE/devcontainer" -type f ! -name '*.meta' ! -name '*.exit' 2>/dev/null | wc -l) fixtures"
 say "still owed a real recording: login-success-{plain,period,press} (needs a human in a browser),"
-say "login-timeout (needs the 5-minute deadline to elapse), devcontainer/ (needs a real build)"
+say "and login-timeout (needs the 5-minute deadline to elapse)"
 
 leak_guard
