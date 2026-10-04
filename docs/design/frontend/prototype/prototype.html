@@ -1,0 +1,1138 @@
+<title>Drydock State Harness</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<style>
+  /* ============================================================
+     Drydock frontend prototype — state harness
+
+     Two typefaces, deliberately:
+       · the HARNESS chrome is IBM Plex Sans, so scaffolding never
+         reads as product.
+       · the APP inside the frame uses the system stack and a system
+         mono, because §3.1 of the frontend design commits to no
+         webfont at all. What you see in the frame is what ships.
+
+     Palette is derived from the repo's existing diagram colors
+     (#48525E slate, #1B6B58 teal, #95590F amber) extended into a
+     full UI token set, plus one new desaturated brick for failure,
+     which the diagrams never needed.
+     ============================================================ */
+
+  :root {
+    /* app tokens — light */
+    --ground:    #F6F7F6;
+    --surface:   #FFFFFF;
+    --surface-2: #EFF1F0;
+    --line:      #DBDFDD;
+    --line-soft: #E8EBE9;
+    --ink:       #1C2327;
+    --ink-2:     #58626A;
+    --ink-3:     #8A9299;
+    --ok:        #11604F;
+    --ok-bg:     #E3EFEA;
+    --warn:      #875210;
+    --warn-bg:   #F7EDDC;
+    --bad:       #9C3729;
+    --bad-bg:    #F7E5E1;
+    --accent:    #11604F;
+
+    /* harness tokens — light */
+    --h-ground:  #ECEEEC;
+    --h-surface: #FBFCFB;
+    --h-line:    #D3D8D5;
+    --h-ink:     #242C31;
+    --h-ink-2:   #5C666D;
+    --h-accent:  #11604F;
+
+    --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+    --sans: system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    --harness: "IBM Plex Sans", system-ui, sans-serif;
+
+    --r: 5px;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --ground:    #12161A;
+      --surface:   #192025;
+      --surface-2: #212A2F;
+      --line:      #2D373D;
+      --line-soft: #232C32;
+      --ink:       #E5EAE8;
+      --ink-2:     #A3AEB6;
+      --ink-3:     #6E7980;
+      --ok:        #5DC4A6;
+      --ok-bg:     #15302A;
+      --warn:      #D9A15D;
+      --warn-bg:   #33271A;
+      --bad:       #E08C7C;
+      --bad-bg:    #351F1D;
+      --accent:    #5DC4A6;
+
+      --h-ground:  #0C1013;
+      --h-surface: #151B1F;
+      --h-line:    #262F35;
+      --h-ink:     #DDE3E1;
+      --h-ink-2:   #96A1A9;
+      --h-accent:  #5DC4A6;
+    }
+  }
+
+  :root[data-theme="dark"] {
+    --ground:    #12161A;
+    --surface:   #192025;
+    --surface-2: #212A2F;
+    --line:      #2D373D;
+    --line-soft: #232C32;
+    --ink:       #E5EAE8;
+    --ink-2:     #A3AEB6;
+    --ink-3:     #6E7980;
+    --ok:        #5DC4A6;
+    --ok-bg:     #15302A;
+    --warn:      #D9A15D;
+    --warn-bg:   #33271A;
+    --bad:       #E08C7C;
+    --bad-bg:    #351F1D;
+    --accent:    #5DC4A6;
+
+    --h-ground:  #0C1013;
+    --h-surface: #151B1F;
+    --h-line:    #262F35;
+    --h-ink:     #DDE3E1;
+    --h-ink-2:   #96A1A9;
+    --h-accent:  #5DC4A6;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    background: var(--h-ground);
+    color: var(--h-ink);
+    font-family: var(--harness);
+    font-size: 15px;
+    line-height: 1.55;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* ---------- harness chrome ---------- */
+
+  .wrap { max-width: 1240px; margin: 0 auto; padding: 28px 20px 72px; }
+
+  header.masthead { border-bottom: 1px solid var(--h-line); padding-bottom: 20px; margin-bottom: 22px; }
+  .eyebrow {
+    font-family: var(--mono); font-size: 11px; letter-spacing: .09em;
+    text-transform: uppercase; color: var(--h-accent); margin: 0 0 6px;
+  }
+  h1 { font-size: 26px; font-weight: 600; letter-spacing: -.015em; margin: 0 0 8px; text-wrap: balance; }
+  .lede { margin: 0; max-width: 64ch; color: var(--h-ink-2); font-size: 14.5px; }
+  .lede code { font-family: var(--mono); font-size: .9em; }
+
+  .controls {
+    display: flex; flex-wrap: wrap; gap: 20px 28px;
+    padding: 16px 18px; margin-bottom: 24px;
+    background: var(--h-surface); border: 1px solid var(--h-line); border-radius: var(--r);
+  }
+  .ctl { display: flex; flex-direction: column; gap: 7px; }
+  .ctl > span {
+    font-family: var(--mono); font-size: 10.5px; letter-spacing: .07em;
+    text-transform: uppercase; color: var(--h-ink-2);
+  }
+  .seg { display: flex; flex-wrap: wrap; gap: 4px; }
+  .seg button {
+    font: inherit; font-size: 13px; padding: 5px 11px; cursor: pointer;
+    background: transparent; color: var(--h-ink-2);
+    border: 1px solid var(--h-line); border-radius: 4px;
+    transition: background .12s, color .12s, border-color .12s;
+  }
+  .seg button:hover { color: var(--h-ink); border-color: var(--h-ink-3, var(--h-ink-2)); }
+  .seg button[aria-pressed="true"] {
+    background: var(--h-accent); border-color: var(--h-accent);
+    color: var(--h-surface); font-weight: 500;
+  }
+  .seg button:focus-visible { outline: 2px solid var(--h-accent); outline-offset: 2px; }
+
+  .stage { display: grid; grid-template-columns: minmax(0, 1fr); gap: 26px; align-items: start; }
+  @media (min-width: 1000px) { .stage { grid-template-columns: auto minmax(300px, 1fr); } }
+
+  /* device frame */
+  .device {
+    background: var(--ground);
+    border: 1px solid var(--h-line);
+    border-radius: 14px;
+    overflow: hidden;
+    width: 100%;
+    max-width: 392px;
+    box-shadow: 0 1px 2px rgba(0,0,0,.05), 0 12px 32px -18px rgba(0,0,0,.3);
+    transition: max-width .22s ease;
+  }
+  .device.wide { max-width: 100%; }
+  .device-inner { width: 100%; }
+  .device-cap {
+    font-family: var(--mono); font-size: 10.5px; letter-spacing: .06em;
+    text-transform: uppercase; color: var(--h-ink-2); margin: 9px 0 0; text-align: center;
+  }
+
+  /* annotation column */
+  .notes {
+    background: var(--h-surface); border: 1px solid var(--h-line);
+    border-radius: var(--r); padding: 18px 20px;
+  }
+  .notes h2 {
+    font-size: 12px; font-family: var(--mono); letter-spacing: .07em; text-transform: uppercase;
+    color: var(--h-accent); margin: 0 0 12px; font-weight: 500;
+  }
+  .notes h3 { font-size: 14.5px; font-weight: 600; margin: 18px 0 5px; }
+  .notes h3:first-of-type { margin-top: 0; }
+  .notes p { margin: 0 0 10px; font-size: 13.5px; color: var(--h-ink-2); }
+  .notes p:last-child { margin-bottom: 0; }
+  .notes strong { color: var(--h-ink); font-weight: 600; }
+  .notes code, .ref { font-family: var(--mono); font-size: 12px; }
+  .ref { color: var(--h-accent); }
+  .notes ul { margin: 0 0 10px; padding-left: 1.1em; font-size: 13.5px; color: var(--h-ink-2); }
+  .notes li { margin-bottom: 5px; }
+  .notes li::marker { color: var(--h-accent); }
+
+  /* ============================================================
+     THE APP — everything below renders inside .device
+     System stack only, per §3.1.
+     ============================================================ */
+
+  .app { font-family: var(--sans); color: var(--ink); background: var(--ground); font-size: 15px; }
+  .app * { box-sizing: border-box; }
+
+  .app-top {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 11px 14px; border-bottom: 1px solid var(--line);
+    background: var(--surface);
+  }
+  .brand { font-size: 15px; font-weight: 600; letter-spacing: -.01em; }
+  .link-live { font-family: var(--mono); font-size: 10.5px; color: var(--ink-3); }
+
+  .app-body { padding: 12px 14px 14px; display: flex; flex-direction: column; gap: 14px; }
+
+  /* fleet banner */
+  .banner {
+    border-radius: var(--r); padding: 10px 12px;
+    display: flex; gap: 10px; align-items: flex-start;
+    font-size: 13px; line-height: 1.45;
+  }
+  .banner .glyph { font-family: var(--mono); font-weight: 700; flex: none; }
+  .banner.warn { background: var(--warn-bg); color: var(--warn); }
+  .banner.bad  { background: var(--bad-bg);  color: var(--bad); }
+  .banner.info { background: var(--surface-2); color: var(--ink-2); }
+  .banner b { display: block; font-weight: 600; }
+  .banner button {
+    font: inherit; font-size: 12.5px; font-weight: 600; margin-top: 7px;
+    padding: 5px 10px; min-height: 30px; cursor: pointer;
+    background: currentColor; border: 0; border-radius: 4px;
+    color: var(--surface);
+  }
+
+  .sec-label {
+    font-family: var(--mono); font-size: 10.5px; letter-spacing: .07em;
+    text-transform: uppercase; color: var(--ink-3);
+    display: flex; justify-content: space-between; align-items: baseline;
+  }
+
+  .cards { display: flex; flex-direction: column; gap: 9px; }
+
+  /* ---------- the workspace card ---------- */
+  .card {
+    background: var(--surface); border: 1px solid var(--line);
+    border-left-width: 3px; border-radius: var(--r);
+    padding: 10px 12px; display: flex; flex-direction: column; gap: 7px;
+  }
+  .card.t-ok   { border-left-color: var(--ok); }
+  .card.t-warn { border-left-color: var(--warn); }
+  .card.t-bad  { border-left-color: var(--bad); }
+  .card.t-idle { border-left-color: var(--line); }
+
+  .card-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+  .card-name { font-family: var(--mono); font-size: 13px; font-weight: 500; }
+  .card-disk { font-family: var(--mono); font-size: 10.5px; color: var(--ink-3); font-variant-numeric: tabular-nums; flex: none; }
+
+  .card-status { display: flex; align-items: baseline; gap: 7px; font-size: 13.5px; line-height: 1.35; }
+  .card-status .mark { font-family: var(--mono); font-size: 11px; font-weight: 700; flex: none; }
+  .t-ok   .card-status, .t-ok   .mark { color: var(--ok); }
+  .t-warn .card-status, .t-warn .mark { color: var(--warn); }
+  .t-bad  .card-status, .t-bad  .mark { color: var(--bad); }
+  .t-idle .card-status, .t-idle .mark { color: var(--ink-2); }
+
+  .card-detail { font-family: var(--mono); font-size: 11px; color: var(--ink-3); line-height: 1.45; }
+  .card-detail .cap { font-variant-numeric: tabular-nums; }
+
+  .card-act { display: flex; gap: 7px; flex-wrap: wrap; margin-top: 1px; }
+  .btn {
+    font: inherit; font-size: 13px; font-weight: 500;
+    min-height: 44px; padding: 0 14px; cursor: pointer;
+    display: inline-flex; align-items: center; justify-content: center;
+    border-radius: 4px; border: 1px solid var(--line);
+    background: var(--surface); color: var(--ink);
+    touch-action: manipulation;
+  }
+  .btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .btn.primary { background: var(--accent); border-color: var(--accent); color: var(--surface); }
+  .btn.sm { min-height: 34px; font-size: 12.5px; padding: 0 11px; }
+  .btn.danger { background: var(--bad); border-color: var(--bad); color: var(--surface); }
+  .btn[disabled] { opacity: .45; cursor: not-allowed; }
+  .btn.ghost { background: transparent; }
+
+  .no-act { font-family: var(--mono); font-size: 11px; color: var(--ink-3); font-style: italic; }
+
+  /* repo rows */
+  .search {
+    width: 100%; min-height: 40px; padding: 0 12px;
+    font: inherit; font-size: 14px;
+    border: 1px solid var(--line); border-radius: 20px;
+    background: var(--surface); color: var(--ink);
+  }
+  .search::placeholder { color: var(--ink-3); }
+  .rows { display: flex; flex-direction: column; }
+  .row {
+    display: flex; align-items: center; justify-content: space-between; gap: 10px;
+    padding: 11px 2px; min-height: 44px;
+    border-bottom: 1px solid var(--line-soft);
+    font-family: var(--mono); font-size: 12.5px; color: var(--ink-2);
+  }
+  .row:last-child { border-bottom: 0; }
+  .row .tag {
+    font-size: 10px; letter-spacing: .05em; text-transform: uppercase;
+    padding: 2px 6px; border-radius: 3px; background: var(--surface-2); color: var(--ink-3); flex: none;
+  }
+
+  /* tab bar */
+  .tabs {
+    display: flex; border-top: 1px solid var(--line); background: var(--surface);
+  }
+  .tabs button {
+    flex: 1; font: inherit; font-size: 11.5px; font-weight: 500;
+    padding: 10px 4px calc(10px + env(safe-area-inset-bottom));
+    background: transparent; border: 0; cursor: pointer;
+    color: var(--ink-3); display: flex; flex-direction: column; align-items: center; gap: 3px;
+  }
+  .tabs button .ic { font-family: var(--mono); font-size: 13px; }
+  .tabs button[aria-current="page"] { color: var(--accent); }
+
+  /* ---------- state gallery ---------- */
+  .gal-group { display: flex; flex-direction: column; gap: 9px; }
+  .gal-head {
+    font-family: var(--mono); font-size: 10px; letter-spacing: .07em; text-transform: uppercase;
+    color: var(--ink-3); padding-top: 6px; border-top: 1px solid var(--line-soft);
+  }
+  .gal-pair {
+    font-family: var(--mono); font-size: 10px; color: var(--ink-3);
+    margin: -2px 0 -4px;
+  }
+
+  /* ---------- workspace detail ---------- */
+  .wsd { display: flex; flex-direction: column; gap: 16px; }
+  .wsd h2 { font-size: 18px; font-weight: 600; margin: 0; font-family: var(--mono); letter-spacing: -.01em; }
+  .wsd-sub { font-family: var(--mono); font-size: 12px; color: var(--ok); margin-top: 3px; }
+  .envline {
+    font-family: var(--mono); font-size: 10.5px; color: var(--ink-3);
+    word-break: break-all; margin-top: 4px;
+  }
+  .block { display: flex; flex-direction: column; gap: 8px; }
+  .block > .sec-label { margin-bottom: 1px; }
+
+  .port {
+    display: flex; align-items: center; gap: 10px;
+    padding: 9px 0; border-bottom: 1px solid var(--line-soft);
+  }
+  .port:last-child { border-bottom: 0; }
+  .port-num { font-family: var(--mono); font-size: 13px; font-weight: 500; width: 42px; flex: none; font-variant-numeric: tabular-nums; }
+  .port-mid { flex: 1; min-width: 0; }
+  .port-lbl { font-size: 13px; }
+  .port-note { font-family: var(--mono); font-size: 10.5px; color: var(--ink-3); line-height: 1.4; margin-top: 2px; }
+  .port-note code { background: var(--surface-2); padding: 0 3px; border-radius: 2px; }
+  .port.off .port-num, .port.off .port-lbl { color: var(--ink-3); }
+  .port-host { font-family: var(--mono); font-size: 10.5px; color: var(--accent); word-break: break-all; margin-top: 3px; }
+  .flags { display: flex; gap: 4px; margin-top: 4px; flex-wrap: wrap; }
+  .flag {
+    font-family: var(--mono); font-size: 9.5px; letter-spacing: .04em; text-transform: uppercase;
+    padding: 1px 5px; border-radius: 2px; background: var(--surface-2); color: var(--ink-3);
+  }
+  .sw { flex: none; }
+  .sw button {
+    font: inherit; font-size: 11.5px; font-weight: 500; min-height: 32px; padding: 0 10px;
+    border-radius: 16px; cursor: pointer; border: 1px solid var(--line);
+    background: var(--surface); color: var(--ink-2); touch-action: manipulation;
+  }
+  .sw button[aria-pressed="true"] { background: var(--ok-bg); border-color: var(--ok); color: var(--ok); }
+
+  .ev { display: flex; flex-direction: column; }
+  .ev-item {
+    display: flex; gap: 9px; padding: 6px 0;
+    font-family: var(--mono); font-size: 11px; line-height: 1.5;
+    border-bottom: 1px solid var(--line-soft);
+  }
+  .ev-item:last-child { border-bottom: 0; }
+  .ev-t { color: var(--ink-3); flex: none; font-variant-numeric: tabular-nums; }
+  .ev-m { color: var(--ink-2); min-width: 0; }
+  .ev-item.w .ev-m { color: var(--warn); }
+
+  /* ---------- handshake ---------- */
+  .hs { display: flex; flex-direction: column; gap: 15px; }
+  .hs h2 { font-size: 19px; font-weight: 600; margin: 0; letter-spacing: -.01em; text-wrap: balance; }
+  .hs-scope {
+    font-size: 12.5px; color: var(--warn); background: var(--warn-bg);
+    padding: 8px 10px; border-radius: var(--r); line-height: 1.45;
+  }
+  .hs-step { font-family: var(--mono); font-size: 10.5px; letter-spacing: .06em; text-transform: uppercase; color: var(--ink-3); }
+  .urlbox {
+    border: 1px solid var(--line); border-radius: var(--r);
+    background: var(--surface-2); padding: 10px 11px;
+    font-family: var(--mono); font-size: 10.5px; line-height: 1.5;
+    word-break: break-all; color: var(--ink-2); max-height: 86px; overflow-y: auto;
+  }
+  .countdown {
+    font-family: var(--mono); font-size: 12px; color: var(--ink-2);
+    display: flex; justify-content: space-between; align-items: baseline;
+    font-variant-numeric: tabular-nums;
+  }
+  .countdown b { color: var(--ink); font-weight: 600; }
+  .field { display: flex; flex-direction: column; gap: 6px; }
+  .field > label { font-size: 13px; font-weight: 500; }
+  .field .hint { font-size: 12px; color: var(--ink-3); line-height: 1.45; }
+  .field input, .field textarea {
+    font-family: var(--mono); font-size: 14px; width: 100%;
+    min-height: 44px; padding: 10px 11px;
+    border: 1px solid var(--line); border-radius: var(--r);
+    background: var(--surface); color: var(--ink);
+  }
+  .field textarea { font-family: var(--sans); min-height: 76px; resize: vertical; line-height: 1.5; }
+  .field input:focus-visible, .field textarea:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+  .field.err input { border-color: var(--bad); }
+  .errmsg { font-size: 12.5px; color: var(--bad); line-height: 1.45; display: flex; gap: 6px; }
+  .errmsg .glyph { font-family: var(--mono); font-weight: 700; flex: none; }
+  .okmsg { font-size: 13px; color: var(--ok); background: var(--ok-bg); padding: 10px 11px; border-radius: var(--r); line-height: 1.45; }
+
+  /* ---------- secret form ---------- */
+  .rules {
+    background: var(--surface-2); border-radius: var(--r); padding: 11px 12px;
+    font-size: 12.5px; color: var(--ink-2); line-height: 1.5;
+  }
+  .rules .sec-label { margin-bottom: 7px; }
+  .rules ol { margin: 0; padding-left: 1.15em; display: flex; flex-direction: column; gap: 5px; }
+  .rules li::marker { color: var(--ink-3); font-family: var(--mono); font-size: 11px; }
+  .writeonly {
+    font-family: var(--mono); font-size: 10.5px; color: var(--ink-3);
+    display: flex; gap: 6px; align-items: baseline; line-height: 1.45;
+  }
+  .grants { display: flex; flex-direction: column; }
+  .grant {
+    display: flex; align-items: center; gap: 10px; padding: 9px 0;
+    border-bottom: 1px solid var(--line-soft); font-family: var(--mono); font-size: 12.5px;
+  }
+  .grant:last-child { border-bottom: 0; }
+  .grant input { width: 20px; height: 20px; accent-color: var(--accent); flex: none; }
+  .allrepos {
+    border: 1px solid var(--warn); background: var(--warn-bg); color: var(--warn);
+    border-radius: var(--r); padding: 10px 11px; font-size: 12.5px; line-height: 1.45;
+  }
+
+  /* ---------- confirm sheet ---------- */
+  .sheet {
+    background: var(--surface); border-top: 2px solid var(--bad);
+    padding: 16px 14px; display: flex; flex-direction: column; gap: 13px;
+  }
+  .sheet h2 { font-size: 18px; margin: 0; font-weight: 600; }
+  .sheet p { margin: 0; font-size: 13.5px; color: var(--ink-2); line-height: 1.5; }
+  .sheet .survive { font-size: 13px; background: var(--bad-bg); color: var(--bad); padding: 10px 11px; border-radius: var(--r); line-height: 1.5; }
+  .sheet-act { display: flex; gap: 8px; }
+  .sheet-act .btn { flex: 1; }
+
+  /* ---------- desktop reflow ---------- */
+  .two { display: grid; grid-template-columns: 1fr; }
+  .device.wide .two { grid-template-columns: 236px minmax(0,1fr) minmax(0,1.05fr); }
+  .device.wide .rail { display: flex; }
+  .device.wide .tabs { display: none; }
+  .device.wide .app-top { display: none; }
+  .device.wide .detail-col { display: block; }
+  .detail-col { display: none; border-left: 1px solid var(--line); padding: 14px; background: var(--surface); }
+  .rail {
+    display: none; flex-direction: column; gap: 3px;
+    padding: 16px 12px; border-right: 1px solid var(--line); background: var(--surface);
+  }
+  .rail .rail-brand { font-size: 16px; font-weight: 600; margin-bottom: 14px; padding: 0 8px; }
+  .rail button {
+    font: inherit; font-size: 13.5px; text-align: left; padding: 9px 10px;
+    background: transparent; border: 0; border-radius: 4px; cursor: pointer; color: var(--ink-2);
+    display: flex; gap: 9px; align-items: center;
+  }
+  .rail button .ic { font-family: var(--mono); font-size: 12px; }
+  .rail button[aria-current="page"] { background: var(--surface-2); color: var(--accent); font-weight: 500; }
+
+  .vis-sr {
+    position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+    overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    * { animation: none !important; transition: none !important; }
+  }
+</style>
+
+<div class="wrap">
+  <header class="masthead">
+    <p class="eyebrow">Drydock · frontend design draft v2 · prototype</p>
+    <h1>Drydock state harness</h1>
+    <p class="lede">
+      Every surface from §6 of the frontend design, rendered at the real mobile width. The two
+      switches below are the ones worth playing with: <strong>Screen</strong> moves between surfaces,
+      and <strong>Claude login</strong> is the fleet-wide state from §6.6 — flip it to
+      <code>blanked</code> and watch every card rewrite itself at once. Nothing here is Vue; it is
+      plain markup standing in for it.
+    </p>
+  </header>
+
+  <div class="controls">
+    <div class="ctl">
+      <span>Screen</span>
+      <div class="seg" id="seg-screen" role="group" aria-label="Screen"></div>
+    </div>
+    <div class="ctl">
+      <span>Claude login (fleet-wide)</span>
+      <div class="seg" id="seg-identity" role="group" aria-label="Claude login state"></div>
+    </div>
+    <div class="ctl">
+      <span>Viewport</span>
+      <div class="seg" id="seg-vp" role="group" aria-label="Viewport"></div>
+    </div>
+    <div class="ctl">
+      <span>Theme</span>
+      <div class="seg" id="seg-theme" role="group" aria-label="Theme"></div>
+    </div>
+  </div>
+
+  <div class="stage">
+    <div>
+      <div class="device" id="device">
+        <div class="device-inner app" id="app"></div>
+      </div>
+      <p class="device-cap" id="vp-cap">360 px — the design target, not the degraded case</p>
+    </div>
+    <aside class="notes" id="notes" aria-live="polite"></aside>
+  </div>
+</div>
+
+<script>
+(() => {
+  "use strict";
+
+  // ---------------------------------------------------------------
+  // Fleet-wide Claude identity. §6.6: this overrides per-card
+  // presentation, because one blanked credential is one fault, not
+  // ten independent ones.
+  // ---------------------------------------------------------------
+  const IDENTITY = {
+    ok:       { tone: null,   banner: null },
+    expiring: { tone: "warn", title: "Claude login expires in 2 days",
+                body: "Signing in again now avoids every workspace stopping at once.",
+                action: "Sign in to Claude", override: false },
+    expired:  { tone: "bad",  title: "Claude login expired",
+                body: "Every workspace is waiting on a new sign-in. Restarting a session server cannot fix this.",
+                action: "Sign in to Claude", override: true },
+    blanked:  { tone: "bad",  title: "Signed out. Sign in again.",
+                body: "The shared credential was cleared, so all workspaces lost access in the same instant. None of them is at fault.",
+                action: "Sign in to Claude", override: true },
+    absent:   { tone: "info", title: "No one has signed in yet",
+                body: "Sign in once and every workspace on this server can serve sessions.",
+                action: "Sign in to Claude", override: true }
+  };
+
+  // ---------------------------------------------------------------
+  // The §6.1 state table, as data. `sessionDependent` marks the rows
+  // the fleet override replaces — a build failure stays a build
+  // failure during a credential outage.
+  // ---------------------------------------------------------------
+  const CARDS = [
+    { ws:"cloning",  sup:"—", name:"krelinga/mediaserve", tone:"warn", mark:"◍",
+      status:"Cloning…", detail:"counting objects · 12% of 48 MB", act:[] },
+    { ws:"building", sup:"—", name:"krelinga/vite-app", tone:"warn", mark:"◍",
+      status:"Building image…", detail:"step 7/12 · npm ci", act:[] },
+    { ws:"running",  sup:"absent", name:"krelinga/notes", tone:"idle", mark:"○",
+      status:"Container up, no session", act:[["Start session","primary"]], sessionDependent:true },
+    { ws:"running",  sup:"starting", name:"krelinga/dotfiles", tone:"warn", mark:"◍",
+      status:"Starting session…", act:[], sessionDependent:true },
+    { ws:"running",  sup:"awaiting_login", name:"krelinga/scratch", tone:"bad", mark:"▲",
+      status:"Claude is not signed in", act:[["Sign in to Claude","primary"]], sessionDependent:true },
+    { ws:"running",  sup:"waiting", name:"krelinga/infra", tone:"warn", mark:"◌",
+      status:"Waiting for the previous session server to release the folder",
+      detail:"elapsed 1:48 · retried on a flat interval · measured 60–200 s",
+      act:[], note:"waiting, not failed", sessionDependent:true },
+    { ws:"running",  sup:"serving", name:"krelinga/drydock", tone:"ok", mark:"●",
+      status:"Capacity 1 / 4", detail:"4 listening · 1 previewed", disk:"2.1 GB",
+      act:[["Open in Claude","primary"],["Stop","ghost"]], sessionDependent:true },
+    { ws:"running",  sup:"serving", name:"krelinga/bigrepo", tone:"ok", mark:"●",
+      status:"Capacity 4 / 4", detail:"full — a new session from the app will not start", disk:"6.4 GB",
+      act:[["Open in Claude","primary"],["Stop","ghost"]], sessionDependent:true },
+    { ws:"running",  sup:"degraded", name:"krelinga/flaky", tone:"bad", mark:"▲",
+      status:"Session degraded", detail:"lost connection to claude.ai · 3 restarts in 10 min",
+      act:[["Restart session server","primary"]], sessionDependent:true },
+    { ws:"running",  sup:"exited", name:"krelinga/old", tone:"idle", mark:"○",
+      status:"Session stopped", act:[["Start session","primary"]], sessionDependent:true },
+    { ws:"stopped",  sup:"any", name:"krelinga/archive", tone:"idle", mark:"○",
+      status:"Stopped", detail:"clone and worktrees intact · 1.2 GB", act:[["Start","primary"]] },
+    { ws:"failed",   sup:"any", name:"krelinga/broken", tone:"bad", mark:"✕",
+      status:"Failed while building the image", detail:"step 9/12 · apt-get returned 100",
+      act:[["Rebuild","primary"],["View log","ghost"]] },
+    { ws:"deleting", sup:"any", name:"krelinga/gone", tone:"idle", mark:"◌",
+      status:"Deleting…", detail:"container, clone, and 2 worktrees", act:[] }
+  ];
+
+  // §8 of the overall design: four refused starts, one exit code.
+  const REFUSED = [
+    { name:"krelinga/infra", tone:"warn", mark:"◌",
+      sig:"409 / already served by a terminal",
+      status:"Waiting for the previous session server to release the folder",
+      detail:"elapsed 1:48 — retried, and not charged to the restart budget",
+      act:[], verdict:"retry, patiently" },
+    { name:"krelinga/untrusted", tone:"bad", mark:"✕",
+      sig:"Workspace not trusted",
+      status:"Container is misconfigured",
+      detail:"the feature did not write hasTrustDialogAccepted",
+      act:[["Rebuild","primary"]], verdict:"no — config error" },
+    { name:"krelinga/noorg", tone:"bad", mark:"▲",
+      sig:"Unable to determine your organization",
+      status:"Claude is not signed in",
+      detail:"credential present, account record missing",
+      act:[["Sign in to Claude","primary"]], verdict:"no — awaiting login" },
+    { name:"krelinga/badcmd", tone:"bad", mark:"✕",
+      sig:"cannot be used with --spawn",
+      status:"Drydock built a bad command line",
+      detail:"this is a bug — please report it with the workspace id",
+      act:[["Copy diagnostics","ghost"]], verdict:"no — bug" }
+  ];
+
+  const state = {
+    screen: "home",
+    identity: "ok",
+    vp: "phone",
+    theme: "system",
+    hs: "absent",       // handshake phase
+    hsCode: "",
+    hsErr: null,
+    secs: 300
+  };
+
+  const esc = s => String(s).replace(/[&<>"']/g, c =>
+    ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[c]));
+
+  const mmss = n => `${Math.floor(n/60)}:${String(n%60).padStart(2,"0")}`;
+
+  // ----- card rendering, with the §6.6 override applied -----
+  function renderCard(c, showPair) {
+    const ov = IDENTITY[state.identity];
+    const overridden = ov && ov.override && c.sessionDependent;
+
+    const tone   = overridden ? "bad" : c.tone;
+    const mark   = overridden ? "▲" : c.mark;
+    const status = overridden ? "Waiting on Claude sign-in" : c.status;
+    const detail = overridden
+      ? "one sign-in fixes every workspace — see the banner"
+      : (c.detail || "");
+    const acts   = overridden ? [] : (c.act || []);
+
+    const pair = showPair
+      ? `<div class="gal-pair">workspace <b>${esc(c.ws)}</b> · supervisor <b>${esc(c.sup)}</b></div>`
+      : "";
+
+    return `
+      <article class="card t-${tone}">
+        ${pair}
+        <div class="card-head">
+          <span class="card-name">${esc(c.name)}</span>
+          ${c.disk && !overridden ? `<span class="card-disk">${esc(c.disk)}</span>` : ""}
+        </div>
+        <div class="card-status"><span class="mark" aria-hidden="true">${mark}</span><span>${esc(status)}</span></div>
+        ${detail ? `<div class="card-detail"><span class="cap">${esc(detail)}</span></div>` : ""}
+        ${acts.length
+          ? `<div class="card-act">${acts.map(([l,k]) =>
+              `<button class="btn sm ${k === "primary" ? "primary" : "ghost"}">${esc(l)}</button>`).join("")}</div>`
+          : (overridden ? "" : `<div class="no-act">no action — ${esc(c.note || "nothing to do but wait")}</div>`)}
+      </article>`;
+  }
+
+  function banner() {
+    const i = IDENTITY[state.identity];
+    if (!i || !i.title) return "";
+    return `
+      <div class="banner ${i.tone}">
+        <span class="glyph" aria-hidden="true">${i.tone === "bad" ? "▲" : i.tone === "warn" ? "◍" : "○"}</span>
+        <div>
+          <b>${esc(i.title)}</b>
+          ${esc(i.body)}
+          <button type="button">${esc(i.action)}</button>
+        </div>
+      </div>`;
+  }
+
+  const TABS = [
+    ["home","Workspaces","▤"],
+    ["secrets","Secrets","◆"],
+    ["settings","Settings","◎"]
+  ];
+
+  function tabbar(active) {
+    return `<nav class="tabs" aria-label="Main">${TABS.map(([id,l,ic]) =>
+      `<button type="button" data-tab="${id}" ${active === id ? 'aria-current="page"' : ""}>
+         <span class="ic" aria-hidden="true">${ic}</span>${esc(l)}</button>`).join("")}</nav>`;
+  }
+
+  function rail(active) {
+    return `<nav class="rail" aria-label="Main">
+      <span class="rail-brand">Drydock</span>
+      ${TABS.map(([id,l,ic]) =>
+        `<button type="button" data-tab="${id}" ${active === id ? 'aria-current="page"' : ""}>
+           <span class="ic" aria-hidden="true">${ic}</span>${esc(l)}</button>`).join("")}
+    </nav>`;
+  }
+
+  // ----- screens -----
+
+  function scrHome() {
+    const running = CARDS.filter(c =>
+      ["krelinga/drydock","krelinga/vite-app","krelinga/infra"].includes(c.name));
+    const repos = [
+      ["krelinga/drydock","running"], ["krelinga/notes",""], ["krelinga/mediaserve",""],
+      ["krelinga/dotfiles",""], ["krelinga/scratch","no devcontainer"]
+    ];
+    const list = `
+      <div class="app-body">
+        ${banner()}
+        <div class="block">
+          <div class="sec-label"><span>Running · ${running.length}</span><span>cap 3 / 8</span></div>
+          <div class="cards">${running.map(c => renderCard(c, false)).join("")}</div>
+        </div>
+        <div class="block">
+          <div class="sec-label"><span>All repositories</span><span>47</span></div>
+          <input class="search" type="search" placeholder="Search 47 repos" aria-label="Search repositories">
+          <div class="rows">${repos.map(([n,t]) =>
+            `<div class="row"><span>${esc(n)}</span>${t ? `<span class="tag">${esc(t)}</span>` : ""}</div>`).join("")}</div>
+        </div>
+      </div>`;
+
+    return `
+      <div class="app-top"><span class="brand">Drydock</span><span class="link-live">live</span></div>
+      <div class="two">
+        ${rail("home")}
+        <div>${list}</div>
+        <div class="detail-col">${detailBody()}</div>
+      </div>
+      ${tabbar("home")}`;
+  }
+
+  function scrGallery() {
+    const groups = [
+      ["Provisioning", CARDS.slice(0,2)],
+      ["Running — the supervisor decides what the card says", CARDS.slice(2,10)],
+      ["Terminal and idle", CARDS.slice(10)]
+    ];
+    return `
+      <div class="app-top"><span class="brand">Card states</span><span class="link-live">§6.1</span></div>
+      <div class="app-body">
+        ${banner()}
+        ${groups.map(([h, cs]) => `
+          <div class="block">
+            <div class="gal-head">${esc(h)}</div>
+            <div class="gal-group">${cs.map(c => renderCard(c, true)).join("")}</div>
+          </div>`).join("")}
+      </div>
+      ${tabbar("home")}`;
+  }
+
+  function scrRefused() {
+    return `
+      <div class="app-top"><span class="brand">Refused starts</span><span class="link-live">§8 · §9</span></div>
+      <div class="app-body">
+        <div class="banner info">
+          <span class="glyph" aria-hidden="true">○</span>
+          <div><b>Four causes, one exit code</b>
+          Every <code>remote-control</code> startup failure exits 1. One should be retried and three must not,
+          so each gets its own card message.</div>
+        </div>
+        <div class="gal-group">
+          ${REFUSED.map(r => `
+            <div class="gal-pair">signature <b>${esc(r.sig)}</b> · retry? ${esc(r.verdict)}</div>
+            ${renderCard(r, false)}`).join("")}
+        </div>
+      </div>
+      ${tabbar("home")}`;
+  }
+
+  function detailBody() {
+    const ov = IDENTITY[state.identity];
+    const dead = ov && ov.override;
+    return `
+      <div class="wsd">
+        <div>
+          <h2>krelinga/drydock</h2>
+          ${dead
+            ? `<div class="wsd-sub" style="color:var(--bad)">waiting on Claude sign-in</div>`
+            : `<div class="wsd-sub">running · Capacity 1 / 4</div>
+               <div class="envline">claude.ai/code?environment=env_01XySFjY3UuosSX8AhpjFNM3</div>`}
+        </div>
+        ${dead ? "" : `<div class="card-act">
+          <button class="btn primary sm">Open in Claude</button>
+          <button class="btn ghost sm">Restart session server</button>
+        </div>`}
+
+        <div class="block">
+          <div class="sec-label"><span>Ports</span><span>4 listening · 1 previewed</span></div>
+          <div>
+            <div class="port">
+              <span class="port-num">5173</span>
+              <div class="port-mid">
+                <div class="port-lbl">vite dev server</div>
+                <div class="port-host">myapp-5173-p2mq.drydock-preview.net</div>
+                <div class="flags"><span class="flag">declared</span><span class="flag">observed</span></div>
+              </div>
+              <span class="sw"><button type="button" aria-pressed="true">on</button></span>
+            </div>
+            <div class="port off">
+              <span class="port-num">9090</span>
+              <div class="port-mid">
+                <div class="port-lbl">metrics</div>
+                <div class="port-note">listening on loopback — start it with <code>--host 0.0.0.0</code> to preview it</div>
+                <div class="flags"><span class="flag">observed</span></div>
+              </div>
+              <span class="sw"></span>
+            </div>
+            <div class="port off">
+              <span class="port-num">8080</span>
+              <div class="port-mid">
+                <div class="port-lbl">api</div>
+                <div class="port-note">declared, not listening</div>
+                <div class="flags"><span class="flag">declared</span></div>
+              </div>
+              <span class="sw"><button type="button" aria-pressed="false">off</button></span>
+            </div>
+          </div>
+        </div>
+
+        <div class="block">
+          <div class="sec-label"><span>Recent activity</span><span>live</span></div>
+          <div class="ev">
+            <div class="ev-item"><span class="ev-t">14:02:11</span><span class="ev-m">session server serving · capacity 1/4</span></div>
+            <div class="ev-item"><span class="ev-t">14:02:09</span><span class="ev-m">environment env_01XySFjY… registered</span></div>
+            <div class="ev-item w"><span class="ev-t">14:01:54</span><span class="ev-m">409 — waiting for folder registration to lapse</span></div>
+            <div class="ev-item"><span class="ev-t">14:01:52</span><span class="ev-m">supervisor starting</span></div>
+            <div class="ev-item"><span class="ev-t">13:58:40</span><span class="ev-m">probe green · claude 2.1.246 · broker ok</span></div>
+          </div>
+        </div>
+      </div>`;
+  }
+
+  function scrWorkspace() {
+    return `
+      <div class="app-top"><span class="brand">&lsaquo; Workspaces</span><span class="link-live">live</span></div>
+      <div class="app-body">${banner()}${detailBody()}</div>
+      ${tabbar("home")}`;
+  }
+
+  function scrHandshake() {
+    const URL_ = "https://claude.com/cai/oauth/authorize?response_type=code&client_id=9d1c250a-e61b-44d9-88ed-5944d1962f5e&redirect_uri=https%3A%2F%2Fplatform.claude.com%2Foauth%2Fcode%2Fcallback&scope=user%3Ainference%20user%3Aprofile&code_challenge=F2b0rD1pQ8xZmK3vY7nL&code_challenge_method=S256&state=rT9kLm2Qp";
+    let body;
+
+    if (state.hs === "absent") {
+      body = `
+        <h2>Claude is not signed in</h2>
+        <div class="hs-scope">This signs in <b>every workspace</b> on this server — the credential lives in one shared volume.</div>
+        <button class="btn primary" data-hs="awaiting_code">Sign in to Claude</button>`;
+    } else if (state.hs === "ok") {
+      body = `
+        <h2>Signed in</h2>
+        <div class="okmsg"><b>andy@example.com</b><br>Credential valid for 29 days. Every workspace can serve sessions.</div>
+        <button class="btn ghost" data-hs="absent">Reset prototype</button>`;
+    } else if (state.hs === "timed_out") {
+      body = `
+        <h2>The login timed out</h2>
+        <div class="errmsg"><span class="glyph" aria-hidden="true">✕</span>
+          <span>The five-minute window closed before a code arrived. Nothing was written and nothing needs cleaning up.</span></div>
+        <button class="btn primary" data-hs="awaiting_code">Start over</button>`;
+    } else {
+      // awaiting_code / invalid_code — the same open form, deliberately
+      const bad = state.hs === "invalid_code";
+      body = `
+        <h2>Authorize Drydock</h2>
+        <div class="hs-step">Step 1 — open this on any device</div>
+        <div class="urlbox">${esc(URL_)}</div>
+        <div class="card-act">
+          <button class="btn primary sm">Open link</button>
+          <button class="btn ghost sm">Copy</button>
+        </div>
+        <div class="countdown"><span>Window closes in</span><b>${mmss(state.secs)}</b></div>
+        <div class="hs-step">Step 2 — paste the code it gives you back</div>
+        <div class="field ${bad ? "err" : ""}">
+          <label for="code">Login code</label>
+          <input id="code" type="text" value="${esc(state.hsCode)}"
+                 placeholder="code#state" autocomplete="off" autocapitalize="off"
+                 spellcheck="false" inputmode="text">
+          <span class="hint">Two halves joined by <code>#</code>. Copy the whole value — a truncated paste is the usual mistake.</span>
+          ${state.hsErr ? `<div class="errmsg"><span class="glyph" aria-hidden="true">✕</span><span>${esc(state.hsErr)}</span></div>` : ""}
+        </div>
+        <button class="btn primary" data-submit="1">Submit code</button>
+        <div class="writeonly"><span aria-hidden="true">·</span>
+          <span>The code is never stored, never logged, and never kept as a draft.</span></div>`;
+    }
+
+    return `
+      <div class="app-top"><span class="brand">&lsaquo; Settings</span><span class="link-live">§6.2</span></div>
+      <div class="app-body"><div class="hs">${body}</div></div>
+      ${tabbar("settings")}`;
+  }
+
+  function scrSecret() {
+    return `
+      <div class="app-top"><span class="brand">&lsaquo; Secrets</span><span class="link-live">§6.4</span></div>
+      <div class="app-body">
+        <div class="hs">
+          <h2>Add a secret</h2>
+          <div class="field">
+            <label for="sname">Name</label>
+            <input id="sname" type="text" value="TEST_DATABASE_URL" autocapitalize="characters" spellcheck="false">
+            <span class="hint">Becomes the environment variable name, so <code>[A-Z_][A-Z0-9_]*</code>.</span>
+          </div>
+          <div class="field">
+            <label for="sval">Value</label>
+            <input id="sval" type="password" value="" placeholder="paste the value">
+            <div class="writeonly"><span aria-hidden="true">·</span>
+              <span>Write-only. Nothing here is ever shown again — not in an edit form, not behind a prompt.</span></div>
+          </div>
+          <div class="field">
+            <label for="reach">What can someone do with this?</label>
+            <textarea id="reach" placeholder="Read and write the staging test database. No production data. Rotate in the Neon console.">Read and write the staging test database. No production data, no billing. Rotate in the Neon console.</textarea>
+            <span class="hint">Required. Drydock will not store a secret until this is answered.</span>
+          </div>
+          <div class="rules">
+            <div class="sec-label"><span>Before you grant this</span></div>
+            <ol>
+              <li>Prefer a credential to a disposable thing over a scoped credential to a real thing.</li>
+              <li>Prefer the sandbox account — test keys, a staging tenant, a throwaway project.</li>
+              <li>Never grant one that can spend money, delete data, or reach production.</li>
+              <li>Grant to one repo, not to all.</li>
+            </ol>
+          </div>
+          <div class="block">
+            <div class="sec-label"><span>Grant to</span><span>1 of 47</span></div>
+            <div class="grants">
+              <label class="grant"><input type="checkbox" checked> krelinga/drydock</label>
+              <label class="grant"><input type="checkbox"> krelinga/notes</label>
+              <label class="grant"><input type="checkbox"> krelinga/mediaserve</label>
+            </div>
+            <div class="allrepos">Granting to <b>all 47 repositories</b> widens the blast radius of every repo at once. It takes a separate confirmation.</div>
+          </div>
+          <button class="btn primary">Save secret</button>
+        </div>
+      </div>
+      ${tabbar("secrets")}`;
+  }
+
+  function scrConfirm() {
+    return `
+      <div class="app-top"><span class="brand">Drydock</span><span class="link-live">live</span></div>
+      <div class="app-body" style="opacity:.4;pointer-events:none">
+        <div class="block">
+          <div class="sec-label"><span>Running · 3</span><span>cap 3 / 8</span></div>
+          <div class="cards">${renderCard(CARDS[6], false)}</div>
+        </div>
+      </div>
+      <div class="sheet">
+        <h2>Delete this workspace?</h2>
+        <p><b>krelinga/drydock</b> is serving <b>1 session</b> right now.</p>
+        <div class="survive">This removes the container, the clone, and 2 worktrees. Anything unpushed in them is gone.</div>
+        <div class="field">
+          <label for="confirm">Type <code>krelinga/drydock</code> to confirm</label>
+          <input id="confirm" type="text" placeholder="krelinga/drydock" autocapitalize="off" spellcheck="false">
+        </div>
+        <div class="sheet-act">
+          <button class="btn ghost">Cancel</button>
+          <button class="btn danger" disabled>Delete</button>
+        </div>
+      </div>`;
+  }
+
+  const SCREENS = {
+    home:      ["Home",            scrHome],
+    gallery:   ["Card states",     scrGallery],
+    refused:   ["Refused starts",  scrRefused],
+    workspace: ["Workspace",       scrWorkspace],
+    handshake: ["Sign in",         scrHandshake],
+    secret:    ["Secret form",     scrSecret],
+    confirm:   ["Delete confirm",  scrConfirm]
+  };
+
+  // ----- annotations -----
+  const NOTES = {
+    home: `<h3>What earns a place above the fold</h3>
+      <p>Fifteen workspaces against fifty repos means the catalog answers a different question than
+      "what is wrong". <strong>Running</strong> comes first; the catalog and its search sit below it.</p>
+      <h3>Capacity, not a count</h3>
+      <p>The card reads <code>Capacity 1 / 4</code> because the denominator is the actionable half —
+      <code>4 / 4</code> is why a new session from the phone will not start. The pre-created session
+      occupies one slot, so four buys three on demand.</p>
+      <h3>Try the viewport switch</h3>
+      <p>At <code>900 px</code> the detail stops being a route and becomes a column, and the tab bar
+      becomes a rail. One component tree, two layouts — <span class="ref">Fig 2</span>.</p>`,
+
+    gallery: `<h3>Two state machines, one badge</h3>
+      <p>A workspace has seven states and its supervisor six, independently. Rendering both pushes the
+      join onto the reader exactly when something is broken, so the card derives <strong>one</strong>
+      status line and <strong>one</strong> primary action from the pair. The grey line above each card
+      is the pair it came from — it would not ship.</p>
+      <h3>The row to look at</h3>
+      <p><code>running</code> + <code>waiting</code> says <em>waiting</em> and offers no action.
+      Spike 02 measured that block at 60–200 seconds, and it recovers on its own. Labelling it
+      "failed" is what makes an operator start pressing rebuild on a healthy workspace.</p>
+      <h3>Only one row carries the link</h3>
+      <p><code>serving</code>. A link into a server that is not serving is worse than no link.</p>`,
+
+    refused: `<h3>One exit code, four fixes</h3>
+      <p>Spike 02 found every <code>remote-control</code> startup failure exits 1. The supervisor has
+      to read the message, and so does the card — one of these is retryable and three are not.</p>
+      <h3>Why this is a UI problem</h3>
+      <p>Collapsing them into "session failed to start" makes the one that recovers by itself
+      indistinguishable from the one that needs a rebuild and the one that needs a sign-in. The
+      classification arrives from the API as a signature, not as prose to match on
+      (<span class="ref">§4.5 #9</span>).</p>`,
+
+    workspace: `<h3>The bind address is the diagnosis</h3>
+      <p>Port 9090 is on loopback, so it is listed, greyed, and has <strong>no enable control at
+      all</strong> — not a disabled one, which reads as "try again". The fix is in the row.</p>
+      <h3>The full preview host is shown</h3>
+      <p>Previews live on a separate registrable domain and the residual risk there is lookalike
+      phishing. A UI that hides the hostname it is teaching you to trust works against the only
+      defense available.</p>
+      <h3>Discovery never interrupts</h3>
+      <p>Ports appear in this panel and nowhere else. No toast, no badge — a prompt you see whenever a
+      test opens a socket trains one reflex, and it is the wrong one.</p>`,
+
+    handshake: `<h3>A wrong code is not a dead end</h3>
+      <p>Submit <code>nonsense</code> and watch: the form stays open, the countdown keeps running, and
+      the URL stays valid. Spike 01 found the process waits at the paste prompt and accepts another
+      attempt, so tearing the handshake down on a bad verdict would discard a live PTY for the most
+      common user error there is.</p>
+      <h3>The shape is checked here</h3>
+      <p>The code is <code>code#state</code>. Paste a half and you are told instantly rather than after
+      a round trip through the container.</p>
+      <h3>It spans an app switch</h3>
+      <p>On a phone, step 1 backgrounds this page and iOS may discard it. The handshake therefore lives
+      on the server and this view re-reads it, so a reload mid-flow loses nothing.</p>`,
+
+    secret: `<h3>The friction is the feature</h3>
+      <p>"What can someone do with this?" is a visible label on a real textarea, not a placeholder —
+      placeholders vanish exactly when the question starts mattering. Drydock refuses to store a
+      secret without an answer.</p>
+      <h3>The rules are in the form</h3>
+      <p>They are the actual control, and a document nobody rereads is not. They sit next to the grant
+      decision, at the moment you are most able to answer and least likely to bother.</p>
+      <h3>Write-only, with no exceptions</h3>
+      <p>No reveal, no prefill on rotate, no re-auth escape hatch. The schema has no column for a
+      value and the API has no shape for one.</p>`,
+
+    confirm: `<h3>Typing the name is the only friction</h3>
+      <p>No second password prompt. On a single-operator system that buys habituation rather than
+      safety; what actually happens is a misplaced tap, and the name stops that.</p>
+      <h3>It says what survives, and what doesn't</h3>
+      <p>Stop keeps the clone and its worktrees and loses only the conversation. Delete takes all of
+      it, including worktrees the session server created without asking — which is why the delete
+      sentence is the longer one.</p>
+      <h3>A sheet, not a modal</h3>
+      <p>A modal plus a software keyboard plus a text input is the layout that breaks on a phone. The
+      live session count is shown because it is what makes this an informed choice.</p>`
+  };
+
+  // ----- mount -----
+  const device = document.getElementById("device");
+  const app = document.getElementById("app");
+  const notes = document.getElementById("notes");
+  const vpCap = document.getElementById("vp-cap");
+
+  function seg(host, items, current, onPick) {
+    host.innerHTML = items.map(([v, l]) =>
+      `<button type="button" data-v="${v}" aria-pressed="${v === current}">${esc(l)}</button>`).join("");
+    host.onclick = e => {
+      const b = e.target.closest("button[data-v]");
+      if (b) onPick(b.dataset.v);
+    };
+  }
+
+  function render() {
+    const [, fn] = SCREENS[state.screen];
+    app.innerHTML = fn();
+    device.classList.toggle("wide", state.vp === "desktop");
+    vpCap.textContent = state.vp === "desktop"
+      ? "920 px — detail is a column, nav is a rail"
+      : "360 px — the design target, not the degraded case";
+    notes.innerHTML = `<h2>Why it looks like this</h2>${NOTES[state.screen] || ""}`;
+
+    seg(document.getElementById("seg-screen"),
+      Object.entries(SCREENS).map(([k, v]) => [k, v[0]]), state.screen, v => {
+        state.screen = v;
+        if (v === "handshake") { state.hs = "absent"; state.hsErr = null; state.hsCode = ""; state.secs = 300; }
+        render();
+      });
+    seg(document.getElementById("seg-identity"),
+      Object.keys(IDENTITY).map(k => [k, k]), state.identity, v => { state.identity = v; render(); });
+    seg(document.getElementById("seg-vp"),
+      [["phone", "360 px"], ["desktop", "920 px"]], state.vp, v => { state.vp = v; render(); });
+    seg(document.getElementById("seg-theme"),
+      [["system", "System"], ["light", "Light"], ["dark", "Dark"]], state.theme, v => {
+        state.theme = v;
+        if (v === "system") document.documentElement.removeAttribute("data-theme");
+        else document.documentElement.setAttribute("data-theme", v);
+        render();
+      });
+  }
+
+  // handshake interactions
+  app.addEventListener("click", e => {
+    const step = e.target.closest("[data-hs]");
+    if (step) {
+      state.hs = step.dataset.hs;
+      state.hsErr = null; state.hsCode = ""; state.secs = 300;
+      render();
+      return;
+    }
+    if (e.target.closest("[data-submit]")) {
+      const input = app.querySelector("#code");
+      const v = (input ? input.value : "").trim();
+      state.hsCode = v;
+      if (!/^[^#\s]+#[^#\s]+$/.test(v)) {
+        state.hs = "invalid_code";
+        state.hsErr = v.includes("#")
+          ? "That does not look like a login code. Copy the whole value from the browser."
+          : "That looks like only half the code — the part after # is missing. Copy the whole value.";
+      } else if (v.startsWith("bad")) {
+        state.hs = "invalid_code";
+        state.hsErr = "Claude rejected that code. The link above is still valid — paste it again.";
+      } else {
+        state.hs = "ok";
+        state.hsErr = null;
+      }
+      render();
+      const again = app.querySelector("#code");
+      if (again) again.focus();
+      return;
+    }
+    const tab = e.target.closest("[data-tab]");
+    if (tab) {
+      const map = { home: "home", secrets: "secret", settings: "handshake" };
+      state.screen = map[tab.dataset.tab] || "home";
+      render();
+    }
+  });
+
+  setInterval(() => {
+    if (state.screen !== "handshake") return;
+    if (state.hs !== "awaiting_code" && state.hs !== "invalid_code") return;
+    state.secs--;
+    if (state.secs <= 0) { state.hs = "timed_out"; render(); return; }
+    const b = app.querySelector(".countdown b");
+    if (b) b.textContent = mmss(state.secs);
+  }, 1000);
+
+  render();
+})();
+</script>

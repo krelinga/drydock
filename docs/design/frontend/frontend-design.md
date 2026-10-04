@@ -2,7 +2,7 @@
 
 *A Vue single-page app, built once and embedded in the Go binary, whose central design rule is that it owns no state machine of its own: every mutation is a `202` and a wait, and the server's event stream is the only thing that ever changes what you see.*
 
-**Status** design document, draft v1 · **Date** 2 October 2026 · supplements the [overall design](../overall/drydock-design.md) (§5 API, §8 sessions, §10 secrets, §13 auth) and [port forwarding](../port-forwarding/port-forwarding-design.md) (§6 ports API, §10.5 phishing)
+**Status** design document, draft v2 · **Date** 4 October 2026 · reconciled against overall draft v6 — the card now carries one environment id and a capacity fraction, the supervisor's `waiting` state is not a failure, a bad login code retries in place (§6.1, §6.2, §6.6, §9) · supplements the [overall design](../overall/drydock-design.md) (§5 API, §8 sessions, §10 secrets, §13 auth) and [port forwarding](../port-forwarding/port-forwarding-design.md) (§6 ports API, §10.5 phishing)
 
 **Runtime** no runtime. A `dist/` directory in `go:embed`, served from the same Unix socket as the API
 
@@ -20,7 +20,7 @@ Five flows carry essentially all the value. Everything else in this document exi
 |---|---|---|
 | **Glance.** Is anything broken, and what is running? | Home list, from a phone, in five seconds | Two state machines per workspace (§4 `workspace` and `supervisor`) must collapse into one honest badge |
 | **Clone.** Pick a repo, tap once, watch it come up. | Home list → workspace detail | Three minutes of build with nothing to show but events; a double tap must not make two clones |
-| **Hand off.** Open the session in the Claude app. | Workspace card → `claude.ai/code/<id>` | The link is useless if the supervisor is `awaiting_login`; the card has to say which thing to fix |
+| **Hand off.** Open the workspace in the Claude app. | Workspace card → `claude.ai/code?environment=env_…` | The link is useless if the supervisor is `awaiting_login`; the card has to say which thing to fix |
 | **Sign in to Claude.** The §7.2 handshake. | A dedicated view, usually on a phone | It spans an app switch — the page may be discarded between showing the URL and pasting the code |
 | **Stop something.** Free capacity, or clean up. | Card action → confirm | Destructive, and the live session count is the only thing that makes it an informed choice (§12) |
 
@@ -185,7 +185,7 @@ POST/PATCH ──────────┘ (in-flight set)          └──�
 |---|---|---|
 | `stream` | The `EventSource`, connection phase, last seen event id, the in-flight request set, the normalized entity maps | Itself, from events and from request lifecycle |
 | `catalog` | Repos joined to workspace state; search and sort for the home list | Read model over entities; refetched on `repo.*` events |
-| `workspaces` | The detail view's composition: supervisor, session count, ports, recent events, disk | Read model; fetches `GET /api/workspaces/:id` on entry, then lives off the stream |
+| `workspaces` | The detail view's composition: supervisor, environment id and capacity fraction, ports, recent events, disk | Read model; fetches `GET /api/workspaces/:id` on entry, then lives off the stream |
 | `secrets` | Names, reach, grants, last access. Never a value. | Fetch + `secret.*` events |
 | `identity` | Claude login state for the whole fleet, and the in-flight handshake | Fetch + `auth.*` events |
 | `session` | Signed-in-ness, device list | `GET /api/auth/session`, and any `401` from anywhere |
@@ -197,7 +197,7 @@ Entities are normalized by id — `workspaces: Record<string, Workspace>`, `repo
 Every mutating action follows the same four steps, and the third one is the discipline:
 
 1. **Mark in flight.** `stream.begin(key)` where `key` is e.g. `workspace:01J…:stop`. The button reads this and disables, showing a spinner — not a label.
-2. **Send.** `POST`, expect `202`. A non-202 is an error (§9); a `409` is specifically "something already in progress", which is a message and not a failure.
+2. **Send.** `POST`, expect `202`. A non-202 is an error (§9); a `409` from the API is specifically "something already in progress", which is a message and not a failure. (Do not confuse it with the `409` *Claude Code* returns to a restarting supervisor — that one is a 60–200 second wait, it surfaces as a workspace state rather than a response, and §6.1 is emphatic that it must not read as a failure either.)
 3. **Do nothing with the response body.** The `202` carries the workspace, and it is tempting. It is also already stale by the time it is parsed, and applying it introduces a second write path for entity state. Discard it, or use it only to confirm the id you already had.
 4. **Clear in flight when the state actually moves,** i.e. when an event for that workspace arrives — not when the response lands.
 
@@ -233,18 +233,19 @@ Entity state is cleared rather than kept, deliberately. The alternative — sign
 
 ### 4.5  What the API must add
 
-The routes in §5 of the overall design are a backend contract and mostly complete. A UI built on §2.1's rule needs eight additions, listed here rather than there so that table stays the server's own. None is a redesign; three of them are the difference between a correct UI and a plausible one.
+The routes in §5 of the overall design are a backend contract and mostly complete. A UI built on §2.1's rule needs nine additions, listed here rather than there so that table stays the server's own. None is a redesign; three of them are the difference between a correct UI and a plausible one.
 
 | # | Addition | Why the UI cannot work without it |
 |---|---|---|
 | 1 | **`GET /api/events` sets `id:` on every event**, supports `Last-Event-ID` replay from a bounded window, emits a `resync` event when the requested id has fallen out of that window, and sends a `: ping` comment every ~20 s. | §2.3. Without ids there is no replay and every reconnect is a silent gap; without `resync` the client cannot tell a closed gap from an unclosed one; without the heartbeat a dead-but-open connection looks live. |
-| 2 | **`GET /api/auth/claude` returns any in-flight login** — `login_id`, phase, the scraped URL, the deadline — and reports a **`blanked`** status distinct from `expired`. | §2.4 and §7.3. The handshake must be recoverable after an app switch, and §7.3 requires "signed out, sign in again" to be a different message from a countdown. If the API folds them together the UI cannot un-fold them. |
+| 2 | **`GET /api/auth/claude` returns any in-flight login** — `login_id`, phase, the scraped URL, the deadline — and reports **`blanked`** and **`absent`** as statuses distinct from `expired`. | §2.4 and §7.3. The handshake must be recoverable after an app switch, and §7.3 requires three different sentences here. The backend already has to make this distinction by hand, because `auth status --json` returns `loggedIn:false` for blanked and missing alike; if the API folds them the UI cannot un-fold them. |
 | 3 | **`POST /api/workspaces` rejects a second create** for a repo that already has a workspace in a non-terminal state, with `409`. | A disabled button is not a concurrency control. Double-tap on a phone is a real input, and two clones of one repo is a wasted three-minute build plus a confusing list. |
 | 4 | **`GET /api/workspaces/:id/logs?tail=n`** reads the supervisor ring buffer (§8), redacted, never persisted. | §14 Phase 6 promises a log viewer and §5 has no route for it. The buffer is in process memory by design, so the UI has no other way in. |
 | 5 | **`PUT /api/secrets/:name`'s stale-workspace list says which *kind* of stale** per workspace: `new_commands` or `needs_supervisor_restart`. | §10.3 requires the UI to distinguish these and says Drydock knows from the resolved configuration. The UI must not infer it — guessing wrong here produces exactly the twenty minutes of confusion the §10.3 warning is about. |
 | 6 | **`GET /api/auth/session` marks the current device** with `is_current`. | So the device list's revoke button can warn that this one is you, rather than signing you out as a surprise. |
 | 7 | **A consistent error envelope** — `{"error":{"code":"…","message":"…","detail":"…"}}` — with a stable machine-readable `code`. | §9 maps the §12 failure modes to specific sentences. The alternative is matching on prose, which breaks the first time a message is reworded. |
 | 8 | **`GET /api/workspaces/:id` includes whether the resolved config declares MCP servers**, and the installation-settings URL appears in `GET /api/repos`. | The first drives #5's message on a live workspace; the second is what makes §9.4's "link straight to the installation settings page" a link rather than a sentence. |
+| 9 | **`GET /api/workspaces/:id` returns the `environment_id`, the capacity fraction (`used` / `total`), and for a refused supervisor start the matched signature** — not the raw message. | §6.1. The card renders a capacity fraction and one environment link, so it needs both numbers rather than a session list. And §8 gives four refused-start causes behind one exit code, each needing a different card message; classifying them from prose in the client is the string-matching §9's error envelope exists to avoid. |
 
 TypeScript types for all of this are **generated from the Go structs**, not hand-written. Two hand-maintained copies of a contract between two languages in one repository drift, and the drift shows up as a field that is `undefined` at runtime and fine at compile time.
 
@@ -275,7 +276,7 @@ Most of the app is a card, a badge, a button, and a list row. Six things are not
 
 ### 6.1  The workspace card: two state machines, one badge
 
-§4 of the overall design gives a workspace seven states and its supervisor five, and they are independent. A card that renders them as two badges pushes the join onto the reader at exactly the moment they are least able to do it, which is while something is broken. So the card renders **one** line of status and **one** primary action, derived from the pair.
+§4 of the overall design gives a workspace seven states, and its supervisor five plus the `waiting` state §8 added, and they are independent. A card that renders them as two badges pushes the join onto the reader at exactly the moment they are least able to do it, which is while something is broken. So the card renders **one** line of status and **one** primary action, derived from the pair.
 
 | `workspace.state` | `supervisor.state` | The card says | Primary action |
 |---|---|---|---|
@@ -283,14 +284,23 @@ Most of the app is a card, a badge, a button, and a list row. Six things are not
 | `running` | absent | *"Container up, no session"* | Start session |
 | `running` | `starting` | *"Starting session…"* | none |
 | `running` | `awaiting_login` | *"Claude is not signed in"* | **Sign in to Claude** — see §6.6 |
-| `running` | `serving` | *"3 sessions"* + the primary session link | Open in Claude |
+| `running` | `waiting` | *"Waiting for the previous session server to release the folder"* + elapsed | none — **not a failure** |
+| `running` | `serving` | *"Capacity 1 / 4"* + the environment link | Open in Claude |
 | `running` | `degraded` | *"Session degraded"* + `last_error` | Restart session server |
 | `running` | `exited` | *"Session stopped"* | Start session |
 | `stopped` | any | *"Stopped"* | Start |
 | `failed` | any | *"Failed while "* + the step that failed | Rebuild |
 | `deleting` | any | *"Deleting…"* | none |
 
-Two details that are not cosmetic. **`running` + `serving` is the only combination that shows the session link** — §1's whole promise is a session you can drive from your phone, and a link that opens a session server which is not serving is a worse outcome than no link. And **`failed` names the step**, because §6 writes an event for every step precisely so that the UI can; "failed" alone throws away the only thing that makes a rebuild an informed choice.
+Four details that are not cosmetic.
+
+**`running` + `serving` is the only combination that shows the link** — §1's whole promise is a session you can drive from your phone, and a link that opens a session server which is not serving is a worse outcome than no link.
+
+**The link is one environment, not a session.** Spike 02 settled this: the server advertises a single `claude.ai/code?environment=env_…` per workspace and reprints `Capacity: N/4` on every repaint, so the card needs no session enumeration and `rc_session` never has to be accurate for the card to be right. The card shows the capacity fraction rather than a bare count, because the denominator is the thing that makes it actionable — *"Capacity 4 / 4"* is why a new session from the phone will not start. Note the pre-created session counts toward it, so `--capacity 4` buys three on-demand ones; the card must not imply otherwise by showing *"3 sessions"* when one of the four slots is the primary checkout.
+
+**`waiting` is not `failed`, and the design says so in those words.** A `SIGKILL`ed server with no live session blocks the next start with a `409` for a measured 60–200 seconds. That is a wait, it is retried on a flat interval, and it is explicitly not charged to the crash-restart budget — so the card shows elapsed time and no action, and never the word *failed*. This state exists on the card for one reason: it is the window in which an operator who sees "failed" will start pressing rebuild on a workspace that is about to recover on its own.
+
+**`failed` names the step**, because §6 writes an event for every step precisely so that the UI can; "failed" alone throws away the only thing that makes a rebuild an informed choice. The same applies one level down to a refused supervisor start, which §9 breaks into its four distinct causes rather than one message.
 
 The card also carries, when known: disk usage, the §7.3 expiry warning dot, and the ambient port count from port forwarding §8.2 — *"4 listening · 1 previewed"*. Nothing else. The card is read at a glance from a phone; everything that is not read at a glance belongs in the detail view.
 
@@ -304,13 +314,16 @@ The most intricate screen, for the reason §2.4 gives. It is a linear flow with 
 | `starting` | *"Starting a login container…"* | Reload re-reads the in-flight login (§4.5 #2) |
 | `awaiting_code` | The scraped URL as a big tap target, a Copy button, and a countdown to the five-minute deadline (§7.2) | Same |
 | `submitting` | Spinner on the code field | Same |
+| `invalid_code` | The error **inline on the still-open form**, countdown still running | Paste again — no restart |
 | `ok` | *"Signed in as "* and the expiry | — |
-| `failed` / `timed_out` | What happened, and Start over | — |
+| `timed_out` / `failed` | What happened, and Start over | — |
 
-Four rules on this screen specifically:
+Six rules on this screen specifically, three of them from Spike 01's measurements:
 
-- **The URL is a link *and* a copy button.** On a phone, tapping it switches apps, which is the intended path. On a desktop where the UI is open in a browser the operator may want the other browser, and copy is the only way there.
-- **Nothing about the code is persisted.** No draft in `localStorage`, no autofill, `autocomplete="off" autocapitalize="off" spellcheck="false"`, cleared on submit. §2.4.
+- **A wrong code is not a dead end.** Spike 01 found the process stays at the paste prompt after `Invalid code` and accepts another attempt with the same URL still valid. So the form stays open, the countdown keeps running, and the error appears beside the field. Tearing the handshake down and making the operator start over — which is what a naive state machine does on any non-success verdict — would throw away a live PTY and a valid URL for the most likely user error there is.
+- **Validate the code's shape client-side before sending.** It is `<code>#<state>`, and a truncated copy that lost the `#state` half is the likeliest mistake. `^[^#\s]+#[^#\s]+$` in the form turns a terminal round-trip into instant feedback — *"that looks like only half the code; copy the whole value"*. The server validates it too (§7.2); this is about where the operator finds out.
+- **The URL is ~450 characters.** It is a tap target and a copy button, never raw text the operator is expected to read or retype. It must wrap without overflowing a 360 px viewport, and the copy button is the primary affordance on desktop, where the operator may want their other browser.
+- **Nothing about the code is persisted.** No draft in `localStorage`, no autofill, `autocomplete="off" autocapitalize="off" spellcheck="false"`, cleared on submit. §2.4. Spike 01 removed the original reason — the prompt does not echo, so the PTY buffer never holds the code — and supplied a better one: Drydock receives the code over HTTP and holds it in memory, where a request log, an error string, or a crash dump can still leak it.
 - **The deadline is shown, not implied.** A five-minute PTY timeout the operator cannot see is a flow that mysteriously stops working while they are reading their authenticator.
 - **This is not a per-workspace action even when reached from a card.** Login is global to the shared volume (§7.2), so the screen says so — *"signs in every workspace"* — and §6.6 explains why that sentence is load-bearing.
 
@@ -335,6 +348,7 @@ Port forwarding §8.2 is unusually prescriptive about the UI, and all of it is a
 - **Reserved names are rejected client-side with the reason** — *"disables Remote Control"* for the §2.1 four, *"shadows the `gh` shim's token"* for `GH_TOKEN` — while the server remains authoritative. A client-side check here is not security, it is the difference between learning why at keystroke time and learning that at save time.
 - **`all_repos` is a decision, not a checkbox.** It takes a separate confirm naming the count: *"This grants to all 47 repositories."*
 - After a successful rotate, the **stale-workspace list is shown with its two kinds separated** (§4.5 #5): *"picks it up on the next command"* versus *"needs a session server restart"*, the latter with the restart button beside it and the §10.3 warning about what a restart ends. Drydock never restarts on its own and the UI never offers to do it for all of them at once.
+- **Changing a grant is not a rotation, and the UI must not imply it needs a restart.** Spike 03 confirmed `CLAUDE_ENV_FILE` runs once per Bash command, and the grant set is resolved in the broker on each call — so adding or revoking a repository's access to a secret reaches the next command with nothing to restart and nothing marked stale. Only a rotated *value* produces the two-kinds list above, and only an MCP server or a background process inside the workspace needs the restart. Showing a staleness warning on a grant change would train the operator to restart sessions for no reason, which is the habit that eventually costs someone an agent mid-task.
 
 ### 6.5  The destructive confirm
 
@@ -357,6 +371,9 @@ A naive UI shows ten degraded cards with ten *Restart session server* buttons, e
 | `expiring` | A persistent, dismissible-per-session header banner with the countdown, and a warning dot on every card (§7.3). Cards otherwise behave normally. |
 | `expired` | Non-dismissible banner. Every card's session area is replaced with *"waiting on Claude sign-in"* and its restart action is replaced by the one global **Sign in to Claude**. |
 | `blanked` | Same, with §7.3's wording: ***"Signed out. Sign in again."*** Not a countdown, not "expired" — the two conditions have different fixes and the UI must not blur them. |
+| `absent` | ***"No one has signed in yet."*** The first-run state, and a different sentence again. |
+
+The last two rows are one distinction the API cannot make for the UI and the UI must not collapse. §7.3: `claude auth status --json` reports `loggedIn:false` for a blanked credential *and* for a missing one, and they are told apart by the file — present with empty token strings means **everyone just lost access**, absent means **no one ever had it**. On a first run the second is the expected state and nothing is wrong; on a Tuesday afternoon the first means ten workspaces died in the same second. Rendering both as "not signed in" is how a routine first-run screen and the worst failure in the system end up looking identical.
 
 The rule generalizes: **a fault with one cause gets one message and one button, wherever it manifests.** Per-card actions that cannot work are not shown disabled; they are replaced by the action that can.
 
@@ -409,7 +426,8 @@ X-Content-Type-Options: nosniff
 
 | Condition | What the UI shows, and where |
 |---|---|
-| Claude login expired or blanked | §6.6. Fleet banner, per-card replacement, the two wordings kept distinct. |
+| Claude login expired, blanked, or never established | §6.6. Fleet banner, per-card replacement, three wordings kept distinct. |
+| Supervisor refused to start | Four causes behind one exit code (§8), so four messages. `409` → *"waiting for the previous session server"*, with elapsed time and no action. `Workspace not trusted` → *"container misconfigured"*, pointing at a rebuild, since §11 has `postCreate` write the key. `Unable to determine your organization` → the §6.6 sign-in path, not a restart. `cannot be used with --spawn` → *"Drydock built a bad command line"*, which is a bug report and says so. One message for all four would make the only retryable one indistinguishable from the three that must not be retried. |
 | Image build failed | Card: *"Failed while building"*. Detail: the last 50 build lines inline, Rebuild as primary. The clone is retained and the UI says so, because that is what makes rebuild feel safe. |
 | Broker socket missing or stale | *"GitHub access unavailable for this workspace"* — never a raw git error. §12 is explicit about this one. |
 | GitHub rate limited or App suspended | *"GitHub is refusing requests: "*. Never phrased as a Drydock fault, and never offering a retry that will also fail. |
@@ -435,7 +453,7 @@ Empty and loading states get the same attention as errors: a first-run install w
 | Accessibility | `axe` in CI on every route | Not aspirational: §7's focus and `aria-live` requirements are testable and will rot without a test. |
 | Budget | `size-limit` in CI | §1's 100 KB. A budget without a gate is a wish. |
 
-**MSW plus a scripted event stream is also how the frontend gets built before the backend exists.** A fixture file of events replayed on a timer against a mocked API reproduces a three-minute cold build, a failed build, an `awaiting_login` supervisor, and a blanked credential — all of which are tedious to produce for real and all of which the UI has to get right. §11's phase 1 work depends on this existing first.
+**MSW plus a scripted event stream is also how the frontend gets built before the backend exists.** A fixture file of events replayed on a timer against a mocked API reproduces a three-minute cold build, a failed build, an `awaiting_login` supervisor, a `waiting` one, each of the four refused-start signatures, and a blanked credential — all of which are tedious or destructive to produce for real, and all of which the UI has to get right. §11's phase 1 work depends on this existing first.
 
 ## 11. Build plan
 
@@ -447,7 +465,7 @@ Mapped onto §14 of the overall design, so the UI arrives with the thing it disp
 | **2 — Walking skeleton** | The stream store and reducer, normalized entities, home list with `Running` + catalog, the workspace card's state table, workspace detail, event feed, reconnect and replay. | A clone you start on a laptop renders identically on a phone that was never touched, and a reload mid-build loses nothing. |
 | **3 — Credentials** | Mostly invisible: a GitHub-access health row on the detail view, the broker-socket message from §9, the installation-settings links. | A workspace whose socket is stale says *"GitHub access unavailable"* and never shows a git error. |
 | **4 — Secrets** | Secrets list, the create/rotate form with `reach` and §10.4's rules inline, grants with the `all_repos` confirm, reserved-name rejection, the two-kinds-of-stale result. | Rotating a secret tells you exactly which workspaces need a restart and which do not, and you cannot save one without saying what it reaches. |
-| **5 — Claude** | The login handshake view including app-switch recovery, the identity banner's four states, §6.6's fleet override, session count and primary link on the card. | You complete a login from a phone, switching to another app to authorize, and a blanked credential produces one banner and one button rather than ten. |
+| **5 — Claude** | The login handshake view including app-switch recovery, retry-in-place on a bad code, and client-side code-shape validation; the identity banner's five states; §6.6's fleet override; the capacity fraction and environment link on the card; the `waiting` state and the four refused-start messages. | You complete a login from a phone, switching to another app to authorize; a mistyped code keeps the form open; and a blanked credential produces one banner and one button rather than ten. |
 | **6 — Livability** | Stop / rebuild / delete sheets, the cap and disk messaging with stoppable-first sorting, the log viewer route, the §12 message table. | You stop using the terminal to clean up, and the cap tells you what to stop. |
 | **Port forwarding** | The ports panel, the ambient card count, loopback diagnosis, enable toggle, full-host preview links. | A dev server on loopback is diagnosed before anyone clicks, and no port change ever interrupts you. |
 
