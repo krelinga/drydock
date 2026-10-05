@@ -3,6 +3,7 @@ package container_test
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -20,6 +21,7 @@ import (
 	"github.com/krelinga/drydock/internal/config"
 	"github.com/krelinga/drydock/internal/github/githubtest"
 	"github.com/krelinga/drydock/internal/provision"
+	"github.com/krelinga/drydock/internal/secrets"
 	"github.com/krelinga/drydock/internal/server"
 	"github.com/krelinga/drydock/internal/sys"
 )
@@ -64,7 +66,12 @@ func TestCreateWorkspaceThroughTheServer(t *testing.T) {
 	g, _ := user.LookupGroupId(u.Gid)
 	key := filepath.Join(dir, "app.pem")
 	os.WriteFile(key, githubtest.KeyPEM(t), 0o400)
+	secretsKey := filepath.Join(dir, "secrets.key")
+	masterKey := make([]byte, secrets.KeySize)
+	rand.Read(masterKey)
+	os.WriteFile(secretsKey, masterKey, 0o400)
 	cfg := config.Default()
+	cfg.SecretsKey = secretsKey
 	cfg.UIOrigin, cfg.UIHost = "https://drydock.test", "drydock.test"
 	cfg.DatabasePath = filepath.Join(dir, "drydock.db")
 	cfg.APISocket, cfg.PreviewSocket = filepath.Join(dir, "http.sock"), filepath.Join(dir, "preview.sock")
@@ -103,6 +110,16 @@ func TestCreateWorkspaceThroughTheServer(t *testing.T) {
 			t.Fatal("the catalog never filled")
 		}
 		time.Sleep(50 * time.Millisecond)
+	}
+
+	// A secret granted to the configured repository alone, so a provisioned
+	// container's broker socket answers GET-SECRETS as well as GET-TOKEN.
+	canary := fmt.Sprintf("Pv%x", time.Now().UnixNano())
+	if _, err := srv.Secrets.Put(context.Background(), "PROVISION_CANARY", canary, "nothing; a test value", ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := srv.Secrets.SetGrants(context.Background(), "PROVISION_CANARY", []int64{101}, false); err != nil {
+		t.Fatal(err)
 	}
 
 	ids := map[string]string{}
@@ -159,16 +176,33 @@ func TestCreateWorkspaceThroughTheServer(t *testing.T) {
 	}
 
 	// Usable: devcontainer exec into each, as the remote user, in the clone.
-	for repo, id := range ids {
+	execIn := func(repo, script string) (string, error) {
+		id := ids[repo]
 		args := []string{"exec", "--workspace-folder", filepath.Join(cfg.WorkspaceRoot, id, "repo"),
 			"--id-label", p + ".workspace=" + id}
 		if repo == "102" {
 			args = append(args, "--override-config", filepath.Join(cfg.WorkspaceRoot, id, ".drydock", "devcontainer.json"))
 		}
-		out, err := exec.Command("devcontainer", append(args, "--", "sh", "-c", "whoami; git log -1 --format=%s; git config user.email")...).Output()
-		if err != nil || !strings.Contains(string(out), "vscode\nfixture\n"+botEmail) {
+		out, err := exec.Command("devcontainer", append(args, "--", "sh", "-c", script)...).Output()
+		return string(out), err
+	}
+	for repo := range ids {
+		out, err := execIn(repo, "whoami; git log -1 --format=%s; git config user.email")
+		if err != nil || !strings.Contains(out, "vscode\nfixture\n"+botEmail) {
 			t.Errorf("repository %s: exec %v:\n%s", repo, err, out)
 		}
+	}
+
+	// Secrets reach a provisioned container the way Claude Code would run a
+	// command: the Feature's CLAUDE_ENV_FILE, then the command. The granted
+	// repository's container gets the value; the other's prelude succeeds,
+	// silently, with nothing — its socket is its own, and the grant is not.
+	prelude := `eval "$(cat "$CLAUDE_ENV_FILE")" && printf '[%s]' "${PROVISION_CANARY-unset}"`
+	if out, err := execIn("101", prelude); err != nil || out != "["+canary+"]" {
+		t.Errorf("the granted workspace: exec %v, got %q", err, out)
+	}
+	if out, err := execIn("102", prelude); err != nil || out != "[unset]" {
+		t.Errorf("the ungranted workspace: exec %v, got %q", err, out)
 	}
 
 	// Neither clone was touched. For the plain repository the minimal config
@@ -208,6 +242,9 @@ func TestCreateWorkspaceThroughTheServer(t *testing.T) {
 		if bytes.Contains(corpus.Bytes(), []byte(tok)) {
 			t.Errorf("an installation token survived in the workspace tree or the database")
 		}
+	}
+	if bytes.Contains(corpus.Bytes(), []byte(canary)) {
+		t.Errorf("the secret's value is in plain text in the workspace tree or the database")
 	}
 }
 
