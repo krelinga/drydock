@@ -101,6 +101,13 @@ func secretsServer(t *testing.T, dir string, masterKey []byte) *running {
 		t.Fatal("boot reconciliation did not finish")
 	}
 	srv.DB.ExecContext(context.Background(), `UPDATE workspace SET state = 'running'`)
+	// Boot opens sockets only for running workspaces, and these were
+	// stopped until now; open them as step 5 would.
+	for _, ws := range []string{wsGranted, wsUngranted} {
+		if err := srv.Broker.Open(context.Background(), ws); err != nil {
+			t.Fatal(err)
+		}
+	}
 	r := &running{cfg: cfg, srv: srv, client: unixClient(cfg.APISocket)}
 	for _, ws := range []string{wsGranted, wsUngranted} {
 		deadline := time.Now().Add(5 * time.Second)

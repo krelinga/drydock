@@ -32,6 +32,9 @@ type runState struct {
 	// with its own devcontainer.json; "" with Drydock's minimal config.
 	lockfile container.Lockfile
 	lockPath string
+	// removeExisting passes --remove-existing-container to up: a rebuild,
+	// or a start from failed.
+	removeExisting bool
 }
 
 // dir is the workspace's directory: /srv/drydock/ws/<id>.
@@ -194,6 +197,7 @@ func (r *runState) up(ctx context.Context, w workspace.Workspace) error {
 		OverrideConfig: r.override,
 		Lockfile:       r.lockfile,
 		TempDir:        tmp,
+		Rebuild:        r.removeExisting,
 	})
 	if res.ContainerID != "" {
 		if err := r.p.Workspaces.SetContainer(context.WithoutCancel(ctx), w.ID, res.ContainerID); err != nil {

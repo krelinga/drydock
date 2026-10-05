@@ -16,6 +16,9 @@ import (
 type Provisioner interface {
 	Create(ctx context.Context, repositoryID int64, branch string) (workspace.Workspace, error)
 	Start(ctx context.Context, id string) error
+	Stop(ctx context.Context, id string) error
+	Rebuild(ctx context.Context, id string) error
+	Delete(ctx context.Context, id, confirm string) error
 }
 
 // WorkspaceReader is what they need from the workspace store and the log.
@@ -47,10 +50,13 @@ type WorkspaceRoutes struct {
 // Handlers returns the map Build consumes, keyed by route Name.
 func (wr WorkspaceRoutes) Handlers() map[string]http.HandlerFunc {
 	return map[string]http.HandlerFunc{
-		"workspaces.list":   wr.list,
-		"workspaces.read":   wr.read,
-		"workspaces.create": wr.create,
-		"workspaces.start":  wr.start,
+		"workspaces.list":    wr.list,
+		"workspaces.read":    wr.read,
+		"workspaces.create":  wr.create,
+		"workspaces.start":   wr.start,
+		"workspaces.stop":    wr.stop,
+		"workspaces.rebuild": wr.rebuild,
+		"workspaces.delete":  wr.remove,
 	}
 }
 
@@ -127,6 +133,39 @@ func (wr WorkspaceRoutes) start(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusAccepted, struct{}{})
 }
 
+// stop, rebuild and remove are Phase 6's lifecycle (§5): each answers 202
+// with an empty object once the job is started, and the outcome arrives on
+// the stream — workspace.action events for a stop's and a delete's
+// sub-steps, workspace.step for a rebuild's, workspace.state for every move,
+// and workspace.gone when a delete has removed the row.
+func (wr WorkspaceRoutes) stop(w http.ResponseWriter, r *http.Request) {
+	if err := wr.Provisioner.Stop(r.Context(), r.PathValue("id")); err != nil {
+		writeProvisionError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusAccepted, struct{}{})
+}
+
+func (wr WorkspaceRoutes) rebuild(w http.ResponseWriter, r *http.Request) {
+	if err := wr.Provisioner.Rebuild(r.Context(), r.PathValue("id")); err != nil {
+		writeProvisionError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusAccepted, struct{}{})
+}
+
+// remove is DELETE /api/workspaces/{id}?confirm=<full_name>. The confirm is
+// the repository's full name, typed: the one friction on the one action that
+// destroys unpushed work (§15.3). It is compared exactly — no trimming, no
+// case folding — because a near miss is the signal the friction exists for.
+func (wr WorkspaceRoutes) remove(w http.ResponseWriter, r *http.Request) {
+	if err := wr.Provisioner.Delete(r.Context(), r.PathValue("id"), r.URL.Query().Get("confirm")); err != nil {
+		writeProvisionError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusAccepted, struct{}{})
+}
+
 // writeProvisionError maps create's and start's refusals to the envelope.
 // Each code is one the UI can turn into a sentence and, for at_capacity, an
 // action (frontend §4.5): which workspace to stop.
@@ -141,11 +180,14 @@ func writeProvisionError(w http.ResponseWriter, err error) {
 			"That repository is not in the GitHub App's installation.", "")
 	case errors.Is(err, workspace.ErrNotFound):
 		WriteError(w, http.StatusNotFound, CodeNotFound, "There is no such workspace.", "")
+	case errors.Is(err, provision.ErrConfirmMismatch):
+		WriteError(w, http.StatusBadRequest, CodeConfirmMismatch,
+			"To delete this workspace, confirm with the repository's full name, exactly.", "")
 	case errors.Is(err, provision.ErrBadBranch):
 		WriteError(w, http.StatusBadRequest, CodeBadRequest, "That is not a branch name Drydock can clone.", "")
 	case errors.Is(err, workspace.ErrInProgress):
 		WriteError(w, http.StatusConflict, CodeInProgress,
-			"This repository already has a workspace, or this workspace is already running or starting.", "")
+			"This repository already has a workspace, or this workspace is busy or not in a state that allows this.", "")
 	case errors.Is(err, workspace.ErrAtCap):
 		WriteError(w, http.StatusConflict, CodeAtCapacity,
 			"Drydock is at its concurrent-container cap. Stop a workspace to make room.", "")

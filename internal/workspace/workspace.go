@@ -183,11 +183,14 @@ func (s *Store) SetContainer(ctx context.Context, id, containerID string) error 
 	return nil
 }
 
-// Remove deletes the row of a workspace whose delete has finished. Only a
-// workspace in Deleting can be removed: the persisted state is what lets an
-// interrupted delete be resumed at boot rather than forgotten.
-func (s *Store) Remove(ctx context.Context, id string) error {
-	res, err := s.DB.ExecContext(ctx, `DELETE FROM workspace WHERE id = ? AND state = ?`, id, string(Deleting))
+// Annotate sets the detail of a workspace without moving it, and writes a
+// workspace.state event carrying the same state and the new detail — so the
+// card says why a workspace is where it is when nothing moved it. Used for a
+// delete that stopped part-way: the workspace stays deleting, which is
+// resumable, and the detail names the sub-step that failed.
+func (s *Store) Annotate(ctx context.Context, id string, want State, detail string) error {
+	res, err := s.DB.ExecContext(ctx, `UPDATE workspace SET state_detail = ? WHERE id = ? AND state = ?`,
+		nullable(detail), id, string(want))
 	if err != nil {
 		return err
 	}
@@ -196,7 +199,52 @@ func (s *Store) Remove(ctx context.Context, id string) error {
 		if err != nil {
 			return err
 		}
+		return ErrIllegalMove{From: w.State, To: want}
+	}
+	data := map[string]any{"state": want, "from": want}
+	if detail != "" {
+		data["detail"] = detail
+	}
+	_, err = s.Events.Emit(ctx, id, events.Warn, KindState, message(want, detail), data)
+	return err
+}
+
+// Remove deletes the row of a workspace whose delete has finished. Only a
+// workspace in Deleting can be removed: the persisted state is what lets an
+// interrupted delete be resumed at boot rather than forgotten.
+//
+// What it leaves is deliberate. The event log, token_grant and
+// secret_access carry the workspace id with no foreign key and are kept:
+// "which workspaces ever held this secret?" (§10.4) is asked after the fact,
+// and a deleted workspace is exactly one whose history that question needs.
+// The supervisor row (§4) references the workspace, so it goes in the same
+// transaction — it describes a process, and the process is gone.
+func (s *Store) Remove(ctx context.Context, id string) error {
+	tx, err := s.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	// The supervisor rows first, and only for a workspace in deleting:
+	// foreign keys are checked per statement.
+	if _, err := tx.ExecContext(ctx, `DELETE FROM supervisor WHERE workspace_id = ?
+		AND EXISTS (SELECT 1 FROM workspace WHERE id = ? AND state = ?)`, id, id, string(Deleting)); err != nil {
+		return err
+	}
+	res, err := tx.ExecContext(ctx, `DELETE FROM workspace WHERE id = ? AND state = ?`, id, string(Deleting))
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		tx.Rollback()
+		w, err := s.Get(ctx, id)
+		if err != nil {
+			return err
+		}
 		return ErrIllegalMove{From: w.State, To: "removed"}
+	}
+	if err := tx.Commit(); err != nil {
+		return err
 	}
 	_, err = s.Events.Emit(ctx, id, events.Info, KindGone, "Workspace deleted.", map[string]any{})
 	return err

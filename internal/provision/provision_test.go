@@ -42,7 +42,21 @@ const feature = "ghcr.io/krelinga/drydock/drydock:0"
 type stubBroker struct {
 	mu     sync.Mutex
 	opened []string
+	closed []string
 	err    error
+}
+
+func (b *stubBroker) Close(id string) error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.closed = append(b.closed, id)
+	return nil
+}
+
+func (b *stubBroker) closes() []string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return append([]string(nil), b.closed...)
 }
 
 func (b *stubBroker) Open(_ context.Context, id string) error {
@@ -99,7 +113,11 @@ func (c *fakeCLI) runner(t *testing.T) subproc.Runner {
 	if err := os.WriteFile(p, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	return subproc.Exec{Resolver: subproc.FixedResolver{"devcontainer": p}, WaitDelay: time.Second}
+	d := filepath.Join(c.dir, "docker")
+	if err := os.WriteFile(d, []byte(fakeDocker(c.dir)), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return subproc.Exec{Resolver: subproc.FixedResolver{"devcontainer": p, "docker": d}, WaitDelay: time.Second}
 }
 
 // calls returns every recorded invocation's argv.

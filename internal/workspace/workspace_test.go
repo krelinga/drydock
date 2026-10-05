@@ -427,6 +427,74 @@ func TestRemoveOnlyFromDeleting(t *testing.T) {
 	}
 }
 
+// TestRemoveTakesTheSupervisorRowAndKeepsTheHistory: Remove takes the row's
+// supervisor with it (its foreign key would refuse the delete otherwise) and
+// leaves the event log, token_grant and secret_access — the history "which
+// workspaces ever held this secret?" is asked of after the fact (§10.4).
+func TestRemoveTakesTheSupervisorRowAndKeepsTheHistory(t *testing.T) {
+	ctx := context.Background()
+	f := newFixture(t)
+	w := f.create(t, 1)
+	db := f.store.DB
+	for _, q := range []string{
+		`INSERT INTO supervisor (id, workspace_id, state, capacity) VALUES ('s1', '` + w.ID + `', 'exited', 4)`,
+		`INSERT INTO token_grant (id, workspace_id, repository_id, permissions) VALUES ('g1', '` + w.ID + `', 1, '{}')`,
+		`INSERT INTO secret_access (secret_id, workspace_id, at) VALUES ('sec', '` + w.ID + `', 'now')`,
+	} {
+		if _, err := db.ExecContext(ctx, q); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := f.store.Remove(ctx, w.ID); err == nil {
+		t.Fatal("removed outside deleting")
+	}
+	var n int
+	db.QueryRowContext(ctx, `SELECT count(*) FROM supervisor`).Scan(&n)
+	if n != 1 {
+		t.Errorf("a refused Remove took the supervisor row")
+	}
+	f.store.Move(ctx, w.ID, Deleting, "")
+	if err := f.store.Remove(ctx, w.ID); err != nil {
+		t.Fatal(err)
+	}
+	for table, want := range map[string]int{"supervisor": 0, "workspace": 0, "token_grant": 1, "secret_access": 1} {
+		db.QueryRowContext(ctx, `SELECT count(*) FROM `+table).Scan(&n)
+		if n != want {
+			t.Errorf("%s has %d rows after Remove, want %d", table, n, want)
+		}
+	}
+	var events int
+	db.QueryRowContext(ctx, `SELECT count(*) FROM event WHERE workspace_id = ?`, w.ID).Scan(&events)
+	if events < 3 {
+		t.Errorf("the workspace's events went with it: %d left", events)
+	}
+}
+
+// TestAnnotateSetsTheDetailWithoutMoving: a delete that stops part-way stays
+// deleting and says why; Annotate refuses a workspace not in the state named.
+func TestAnnotateSetsTheDetailWithoutMoving(t *testing.T) {
+	ctx := context.Background()
+	f := newFixture(t)
+	w := f.create(t, 1)
+	if err := f.store.Annotate(ctx, w.ID, Deleting, "stuck"); err == nil {
+		t.Error("annotated a pending workspace as deleting")
+	}
+	f.store.Move(ctx, w.ID, Deleting, "")
+	if err := f.store.Annotate(ctx, w.ID, Deleting, "The delete stopped part-way."); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := f.store.Get(ctx, w.ID)
+	if got.State != Deleting || got.StateDetail != "The delete stopped part-way." {
+		t.Errorf("%+v", got)
+	}
+	all, _ := f.events.Since(ctx, 0)
+	last := all[len(all)-1]
+	if last.Kind != KindState || !strings.Contains(string(last.Data), `"detail":"The delete stopped part-way."`) ||
+		!strings.Contains(string(last.Data), `"state":"deleting"`) {
+		t.Errorf("last event %s %s", last.Kind, last.Data)
+	}
+}
+
 func TestNewID(t *testing.T) {
 	zero, _ := NewID(time.UnixMilli(0), bytes.NewReader(make([]byte, 10)))
 	if zero != "00000000000000000000000000" {
