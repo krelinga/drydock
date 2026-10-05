@@ -20,10 +20,16 @@ const SENTENCES: Record<string, string> = {
   not_implemented: 'That is not built yet.',
   in_progress: 'Already in progress.',
   // Design §1: capacity is managed by hand, so the refusal says where the
-  // workspaces holding the slots are (frontend §9). It promises no button:
-  // there is no Stop until Phase 6. REVISIT when Stop exists — name the cap's
-  // value and point at the Stop button on the cards under Running.
-  at_capacity: 'Drydock is at its cap: as many workspaces as it allows are already building or running. They are listed under Running.',
+  // workspaces holding the slots are and what frees one (frontend §9): Stop,
+  // on the cards under Running, and that stopping costs nothing it cannot
+  // bring back.
+  at_capacity:
+    'Drydock is at its cap: as many workspaces as it allows are already building or running. Stop one under Running to make room — its clone survives, and Start brings it back.',
+  // Design §5: a delete's ?confirm= is compared exactly. The sheet keeps its
+  // button off until the text matches, so this is reached only when the name
+  // changed under it (a renamed repository) or another client sent it.
+  confirm_mismatch:
+    "That is not the repository's full name exactly as written, so nothing was deleted. Type it again, capitals and all.",
   bad_request: 'Drydock did not understand that request.',
   // Design §10.1's refusals. Three of them need the server's detail to be
   // specific — which reason a name is reserved for, which character at which

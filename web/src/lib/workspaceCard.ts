@@ -6,13 +6,23 @@
 // `supervisor.state`. Phase 2 has only the first. The supervisor half is a
 // seam, not a guess — see `supervisorHalf` — and until it is filled a
 // running workspace says exactly what is known, that its container is up.
+//
+// Phase 6 adds a third input, the stop or delete in progress
+// (`liveAction`), because both run while the state stands still: a stop
+// leaves the workspace `running` until its last sub-step, and a failed one
+// leaves it `running` for good. A card that read the state alone would offer
+// Stop on a workspace already stopping.
 
-import { currentStep, failedStep, type Repo, type Workspace } from '../stores/reducer'
+import { currentStep, deleteStuck, failedStep, liveAction, type Repo, type Workspace } from '../stores/reducer'
 
 export type Tone = 'ok' | 'bad' | 'busy' | 'idle'
 
-/** The one action a card offers. Phase 2 builds `start`; the others are named for the seam. */
-export type CardAction = 'start' | null
+/**
+ * The one action a card offers. `delete` is only ever the resume of a delete
+ * that stuck — the first delete is the detail view's, behind its confirm
+ * (§6.5), and never a card's primary action.
+ */
+export type CardAction = 'start' | 'stop' | 'rebuild' | 'delete' | null
 
 export interface CardStatus {
   /** One line. */
@@ -40,6 +50,18 @@ export const STEP_LABEL: Record<string, string> = {
   up: 'starting the container', verify: 'verifying', session_server: 'starting the session server',
 }
 
+/** A stop's or a delete's sub-steps as the card says them: "Stopping · stopping the container…". */
+export const ACTION_STEP_LABEL: Record<string, string> = {
+  session_server: 'stopping the session server', container: 'stopping the container',
+  containers: 'removing the containers', broker_socket: 'closing GitHub access', files: 'removing the clone',
+}
+
+/** A sub-step's name for a heading: "Removing the clone". */
+export function actionStepTitle(name: string): string {
+  const s = ACTION_STEP_LABEL[name] ?? name
+  return s.charAt(0).toUpperCase() + s.slice(1)
+}
+
 /** The step's name for a heading: "Starting the container". */
 export function stepTitle(name: string): string {
   const s = STEP_LABEL[name] ?? name
@@ -56,7 +78,9 @@ const MOVING = new Set(['pending', 'cloning', 'building'])
  * workspace half speak. Do not fill this from `workspace.state` alone: a
  * `running` container says nothing about whether a session server is serving,
  * and "Container up, no session" with a Start session button would be a
- * claim, not a reading.
+ * claim, not a reading. When it fills, its action takes the card, Stop moves
+ * to the detail view's Actions beside Rebuild, and §6.5 has it confirm when
+ * sessions are live.
  */
 function supervisorHalf(_w: Workspace): CardStatus | null {
   return null
@@ -74,28 +98,54 @@ export function cardStatus(w: Workspace): CardStatus {
         : label
       return { line, tone: 'busy', note: w.detail, action: null }
     }
-    case 'running':
-      return supervisorHalf(w) ?? { line: label, tone: 'ok', note: w.detail, action: null }
+    case 'running': {
+      const run = liveAction(w)
+      if (run !== null) {
+        const what = ACTION_STEP_LABEL[run.last.name] ?? run.last.name
+        // A stop that failed leaves the workspace running (design §6), and
+        // asking again is the one thing to do about it.
+        if (run.last.status === 'failed') {
+          return { line: `Stop failed while ${what}`, tone: 'bad', note: run.last.detail, action: 'stop' }
+        }
+        // Stopping: nothing to press. A second Stop is a 409, and Start
+        // cannot work until the stop lands.
+        return { line: `Stopping · ${what}…`, tone: 'busy', note: null, action: null }
+      }
+      return supervisorHalf(w) ?? { line: label, tone: 'ok', note: w.detail, action: 'stop' }
+    }
     case 'stopped':
       // Fig 3: stopped says what survived, which is what makes Start cheap.
       return { line: label, tone: 'idle', note: w.detail ?? 'The clone is intact.', action: 'start' }
     case 'failed': {
-      // §6.1: `failed` names the step, never "failed" alone. Rebuild is the
-      // design's action here (Phase 6); start is what Phase 2 has, and the
-      // server accepts it from failed.
+      // §6.1: `failed` names the step, never "failed" alone, and offers
+      // Rebuild: a new container from the same clone. (A start from failed
+      // also replaces the container now, design §5; Rebuild says so.)
       const step = failedStep(w)
       const line = step !== null ? `Failed while ${STEP_LABEL[step] ?? step}` : label
-      return { line, tone: 'bad', note: w.detail, action: 'start' }
+      return { line, tone: 'bad', note: w.detail, action: 'rebuild' }
     }
-    case 'deleting':
+    case 'deleting': {
+      const run = liveAction(w)
+      if (run !== null) {
+        const what = ACTION_STEP_LABEL[run.last.name] ?? run.last.name
+        return { line: `Deleting · ${what}…`, tone: 'busy', note: null, action: null }
+      }
+      // A delete that stuck stays deleting, its annotation naming the
+      // sub-step, and Delete is still the button: asking again resumes it.
+      // The full name was typed when it began; the persisted state is the
+      // record of that (internal/provision ResumeDelete).
+      if (deleteStuck(w)) {
+        return { line: 'Delete stopped part-way', tone: 'bad', note: w.detail, action: w.fullName !== null ? 'delete' : null }
+      }
       return { line: label, tone: 'idle', note: null, action: null }
+    }
     default:
       return { line: 'Unknown', tone: 'idle', note: null, action: null }
   }
 }
 
 /** The one action a catalog row offers. */
-export type RowAction = 'clone' | 'start' | null
+export type RowAction = 'clone' | CardAction
 
 /**
  * A catalog row's action (§6.1: one per row). Clone only where no workspace

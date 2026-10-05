@@ -49,11 +49,11 @@ describe('describeError', () => {
     expect(describeError(new ApiError(0, 'network'))).not.toContain('Something went wrong')
   })
 
-  it('at_capacity says where the slots are, promises no Stop, and is not in_progress', () => {
+  it('at_capacity says where the slots are and that Stop frees one, losing nothing; it is not in_progress', () => {
     const cap = describeError(new ApiError(409, 'at_capacity', null, 'prose'))
-    expect(cap).toContain('listed under Running')
-    // There is no Stop button until Phase 6, so the sentence must not send anyone looking for one.
-    expect(cap).not.toMatch(/\bstop\b/i)
+    expect(cap).toBe('Drydock is at its cap: as many workspaces as it allows are already building or running. '
+      + 'Stop one under Running to make room — its clone survives, and Start brings it back.')
+    expect(cap).not.toContain('prose')
     // Control: the other 409 says something else entirely.
     expect(describeError(new ApiError(409, 'in_progress'))).toBe('Already in progress.')
   })
@@ -74,6 +74,15 @@ describe('describeError', () => {
     expect(sentenceFor('secret_reach_required')).not.toMatch(/2000|long/)
     expect(sentenceFor('secret_description_too_long')).toBe('The description is too long: at most 4000 bytes.')
     expect(sentenceFor('secret_description_invalid')).toBe('The description must be text.')
+  })
+
+  it('confirm_mismatch says nothing was deleted and asks for the name exactly', () => {
+    const msg = describeError(new ApiError(400, 'confirm_mismatch', null, 'XYZZY prose'))
+    expect(msg).toContain('nothing was deleted')
+    expect(msg).toContain('exactly')
+    expect(msg).not.toContain('XYZZY')
+    // Control: a plain bad_request is not mistaken for it.
+    expect(describeError(new ApiError(400, 'bad_request'))).not.toContain('deleted')
   })
 
   it('handles something that is not an ApiError', () => {

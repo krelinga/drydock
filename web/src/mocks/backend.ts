@@ -1,6 +1,7 @@
 // A pretend Drydock for the MSW harness (frontend §10): the three
 // /api/auth/session routes, GET /api/repos and its refresh, the workspace
-// routes Phase 2 has (list, read, create, start), the four /api/secrets
+// routes (list, read, create, start, and Phase 6's stop, rebuild and delete,
+// a delete that sticks and its resume included), the four /api/secrets
 // routes with every refusal they can answer, the event stream with
 // Last-Event-ID replay and `resync`, and the gate's behaviour for everything
 // else, shaped exactly as internal/api writes them — the same codes, the same
@@ -76,8 +77,22 @@ export interface MockBackend {
   scriptMode: 'auto' | 'manual'
   scriptIntervalMs: number
   scripts: Record<string, Array<() => void>>
-  /** The step the next create fails at, once (dev:mock's `failNext`). */
+  /** The step the next create, start or rebuild fails at, once (dev:mock's `failNext`). */
   failNext: string | null
+  /**
+   * The sub-step the next stop or delete fails at, once (dev:mock's
+   * `failAction`): a stop that leaves the workspace running, or a delete that
+   * sticks in `deleting` until it is asked again.
+   */
+  failAction: string | null
+  /**
+   * The job each workspace has in flight, as internal/provision's `active`
+   * map: one per workspace, so a stop or rebuild on a busy one is `409
+   * in_progress`, and a delete joins a delete or cancels anything else.
+   */
+  jobs: Record<string, 'run' | 'stop' | 'delete'>
+  /** Each auto-mode job's pending timers, so a delete can cancel the run it replaces. */
+  timers: Record<string, Array<ReturnType<typeof setTimeout>>>
   /** Hands out increasing ULID-shaped ids. */
   idSeq: number
 
@@ -233,6 +248,9 @@ function newBackendBare(now: number, overrides: Partial<MockBackend>): MockBacke
     scriptIntervalMs: 900,
     scripts: {},
     failNext: null,
+    failAction: null,
+    jobs: {},
+    timers: {},
     idSeq: 0,
     secretsKey: true,
     secrets: sampleSecrets(now),
@@ -543,6 +561,75 @@ export function startScript(b: MockBackend, id: string, failAt?: string): Array<
   return steps.run([], plan, from, failAt)
 }
 
+/** A stop's and a delete's sub-steps (internal/provision lifecycle.go), in order. */
+const STOP_SUBSTEPS = ['session_server', 'container', 'broker_socket']
+const DELETE_SUBSTEPS = ['session_server', 'containers', 'broker_socket', 'files']
+
+/** What a sub-step says when it fails: lifecycle.go's `workspace.Public` sentences. */
+const ACTION_FAILED: Record<string, string> = {
+  session_server: 'Drydock could not stop the session server.',
+  container: "docker could not stop the workspace's container.",
+  containers: "A container carrying the workspace's label is still there.",
+  broker_socket: "Drydock could not close the workspace's GitHub access socket.",
+  files: "Drydock could not remove the workspace's directory; files inside may belong to another user.",
+}
+
+/** The note a sub-step that did nothing, or something worth saying, ends `done` with. */
+function actionNote(b: MockBackend, id: string, step: string): string | undefined {
+  if (step === 'session_server') return 'Nothing to do yet: the Claude Code session server arrives with Claude support.'
+  if (step === 'containers') return b.workspaces[id]?.container_id ? 'Removed its container.' : 'No container to remove.'
+  return undefined
+}
+
+/**
+ * The events a stop emits, as internal/provision's stopJob writes them: each
+ * sub-step started and done, then running → stopped. `failAt` ends it with
+ * that sub-step failed and the workspace still running.
+ */
+export function stopScript(b: MockBackend, id: string, failAt?: string): Array<(at?: string) => void> {
+  const steps = new ScriptSteps(b, id)
+  const out: Array<(at?: string) => void> = []
+  for (const sub of STOP_SUBSTEPS) {
+    out.push(steps.action('stop', sub, 'started'))
+    if (sub === failAt) {
+      out.push(steps.action('stop', sub, 'failed', ACTION_FAILED[sub]))
+      return out
+    }
+    out.push(steps.action('stop', sub, 'done', actionNote(b, id, sub)))
+  }
+  out.push(steps.state('stopped', { from: 'running' }, 'Stopped.'))
+  return out
+}
+
+/**
+ * The events a delete emits, as internal/provision's startDelete and
+ * deleteJob write them: the move to deleting (not on a resume, which finds
+ * the workspace there already), each sub-step, then `workspace.gone`.
+ * `failAt` sticks it: the sub-step fails, and Annotate writes a deleting →
+ * deleting state event whose detail names it. Asking again resumes.
+ */
+export function deleteScript(b: MockBackend, id: string, from: WorkspaceState | null, failAt?: string): Array<(at?: string) => void> {
+  const steps = new ScriptSteps(b, id)
+  const out: Array<(at?: string) => void> = from === null ? [] : [steps.state('deleting', { from }, 'Deleting.')]
+  for (const sub of DELETE_SUBSTEPS) {
+    out.push(steps.action('delete', sub, 'started'))
+    if (sub === failAt) {
+      const pub = ACTION_FAILED[sub] ?? 'The step failed.'
+      const detail = `The delete stopped part-way: ${pub} Delete again to retry.`
+      out.push(
+        steps.action('delete', sub, 'failed', pub),
+        steps.state('deleting', { from: 'deleting', detail }, `Deleting. ${detail}`, 'warn'),
+      )
+      return out
+    }
+    out.push(steps.action('delete', sub, 'done', actionNote(b, id, sub)))
+  }
+  out.push((at?: string) => {
+    emit(b, 'workspace.gone', { workspace_id: id, message: 'Workspace deleted.', data: {}, ...(at ? { at } : {}) })
+  })
+  return out
+}
+
 /** The id `up` reports for a workspace's container: deterministic, so specs can name it. */
 export function mockContainerId(id: string): string {
   return `c0ffee${id.slice(-10).toLowerCase()}${'0'.repeat(48)}`.slice(0, 64)
@@ -565,6 +652,17 @@ class ScriptSteps {
   state(state: WorkspaceState, data: Record<string, unknown>, message: string, level: StreamEvent['level'] = 'info') {
     return (at?: string) => {
       emit(this.b, 'workspace.state', { workspace_id: this.id, level, message, data: { state, ...data }, ...(at ? { at } : {}) })
+    }
+  }
+
+  action(action: string, step: string, status: string, detail?: string) {
+    const word = action.charAt(0).toUpperCase() + action.slice(1)
+    const message = detail ? `${word}: ${step} ${status}. ${detail}` : `${word}: ${step} ${status}.`
+    return (at?: string) => {
+      emit(this.b, 'workspace.action', {
+        workspace_id: this.id, level: status === 'failed' ? 'error' : 'info', message,
+        data: { action, step, status, ...(detail ? { detail } : {}) }, ...(at ? { at } : {}),
+      })
     }
   }
 
@@ -603,15 +701,53 @@ class ScriptSteps {
 /**
  * Plays a script as the server would: its first event now — the server
  * commits the transition and its event before answering 202 — and the rest
- * from a goroutine. In `manual` mode all of it is held for a spec.
+ * from a goroutine. In `manual` mode all of it is held for a spec. The
+ * workspace's job is `kind` until the script's last event has played.
  */
-function schedule(b: MockBackend, id: string, script: Array<(at?: string) => void>): void {
+function schedule(b: MockBackend, id: string, script: Array<(at?: string) => void>, kind: 'run' | 'stop' | 'delete' = 'run'): void {
+  b.jobs[id] = kind
+  const last = script.length - 1
+  if (last >= 0) {
+    const end = script[last]!
+    script[last] = (at?: string) => {
+      end(at)
+      if (b.jobs[id] === kind) delete b.jobs[id]
+      delete b.timers[id]
+    }
+  } else {
+    delete b.jobs[id]
+  }
   if (b.scriptMode === 'manual') {
     b.scripts[id] = script
     return
   }
   script[0]?.()
-  script.slice(1).forEach((play, i) => setTimeout(() => play(), (i + 1) * b.scriptIntervalMs))
+  b.timers[id] = script.slice(1).map((play, i) => setTimeout(() => play(), (i + 1) * b.scriptIntervalMs))
+}
+
+/** Ends a workspace's job where it stands: what a delete's cancel does to a run. */
+function cancelJob(b: MockBackend, id: string): void {
+  for (const t of b.timers[id] ?? []) clearTimeout(t)
+  delete b.timers[id]
+  delete b.scripts[id]
+  delete b.jobs[id]
+}
+
+/** Starts a stop, as the route does — also how dev:mock plays one "from another device". */
+export function scheduleStop(b: MockBackend, id: string): void {
+  const failAt = b.failAction ?? undefined
+  b.failAction = null
+  schedule(b, id, stopScript(b, id, failAt), 'stop')
+}
+
+/** Starts a delete, or resumes a stuck one; joins one already in flight, and cancels any other job. */
+export function scheduleDelete(b: MockBackend, id: string): void {
+  const w = b.workspaces[id]
+  if (w === undefined || b.jobs[id] === 'delete') return
+  cancelJob(b, id)
+  const failAt = b.failAction ?? undefined
+  b.failAction = null
+  schedule(b, id, deleteScript(b, id, w.state === 'deleting' ? null : w.state, failAt), 'delete')
 }
 
 /** Plays a held script (manual mode) to the end, or its first `n` events. */
@@ -661,6 +797,8 @@ function strictBody(text: string, fields: Record<string, 'string' | 'boolean' | 
 }
 
 const unauthenticated = () => envelope(401, 'unauthenticated', 'Sign in to continue.')
+const busy = () => envelope(409, 'in_progress',
+  'This repository already has a workspace, or this workspace is busy or not in a state that allows this.')
 const appNotConfigured = () =>
   envelope(503, 'app_not_configured', 'No GitHub App is configured, so there is no repository list.')
 
@@ -826,6 +964,61 @@ export function handlersFor(b: MockBackend): HttpHandler[] {
       const failAt = b.failNext ?? undefined
       b.failNext = null
       schedule(b, id, startScript(b, id, failAt))
+      return HttpResponse.json({}, { status: 202 })
+    }),
+
+    // Phase 6 (internal/api/workspace_routes.go, internal/provision
+    // lifecycle.go): each answers 202 {} once its job is started.
+    http.post('/api/workspaces/:id/stop', ({ request, params }) => {
+      record(request)
+      if (!b.signedIn) return unauthenticated()
+      const id = String(params.id)
+      const w = b.workspaces[id]
+      if (w === undefined) return envelope(404, 'not_found', 'There is no such workspace.')
+      // Only a running workspace with nothing in flight stops: a build is
+      // refused rather than cancelled (design §6).
+      if (w.state !== 'running' || b.jobs[id] !== undefined) return busy()
+      scheduleStop(b, id)
+      return HttpResponse.json({}, { status: 202 })
+    }),
+
+    // Rebuild is start's run with --remove-existing-container: from step 3,
+    // or step 2 for a failed clone — the same events as a start.
+    http.post('/api/workspaces/:id/rebuild', ({ request, params }) => {
+      record(request)
+      if (!b.signedIn) return unauthenticated()
+      if (!b.appConfigured) {
+        return envelope(503, 'app_not_configured', 'No GitHub App is configured, so Drydock cannot clone anything.')
+      }
+      const id = String(params.id)
+      const w = b.workspaces[id]
+      if (w === undefined) return envelope(404, 'not_found', 'There is no such workspace.')
+      if (b.jobs[id] !== undefined || !['running', 'stopped', 'failed'].includes(w.state)) return busy()
+      // A running workspace holds its slot already; a stopped or failed one takes one.
+      if (w.state !== 'running' && Object.values(b.workspaces).filter((x) => OCCUPYING.has(x.state)).length >= b.capacity) {
+        return envelope(409, 'at_capacity', 'Drydock is at its concurrent-container cap. Stop a workspace to make room.')
+      }
+      const failAt = b.failNext ?? undefined
+      b.failNext = null
+      schedule(b, id, startScript(b, id, failAt))
+      return HttpResponse.json({}, { status: 202 })
+    }),
+
+    // DELETE ?confirm=<full_name>, compared exactly — no trimming, no case
+    // folding. A delete in flight is joined, one that stuck is resumed, and
+    // any other job is cancelled first.
+    http.delete('/api/workspaces/:id', ({ request, params }) => {
+      record(request)
+      if (!b.signedIn) return unauthenticated()
+      const id = String(params.id)
+      const w = b.workspaces[id]
+      if (w === undefined) return envelope(404, 'not_found', 'There is no such workspace.')
+      const fullName = b.repos.find((r) => r.id === w.repository_id)?.full_name ?? ''
+      const confirm = new URL(request.url).searchParams.get('confirm') ?? ''
+      if (fullName === '' || confirm !== fullName) {
+        return envelope(400, 'confirm_mismatch', "To delete this workspace, confirm with the repository's full name, exactly.")
+      }
+      scheduleDelete(b, id)
       return HttpResponse.json({}, { status: 202 })
     }),
 

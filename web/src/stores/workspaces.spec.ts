@@ -5,9 +5,9 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 import { createPinia, setActivePinia } from 'pinia'
 import { freshBackend, settle, useMockApi } from '../test/setup'
-import { WS_FAILED } from '../mocks/backend'
+import { WS_FAILED, WS_RUNNING } from '../mocks/backend'
 import { useStreamStore } from './stream'
-import { cloneKey, startKey, useWorkspacesStore } from './workspaces'
+import { cloneKey, deleteKey, startKey, stopKey, useWorkspacesStore } from './workspaces'
 
 useMockApi()
 
@@ -74,6 +74,32 @@ describe('the workspaces store', () => {
     b.capacity = 2
     await ws.start(WS_FAILED)
     expect(startKey(WS_FAILED) in useStreamStore().inFlight).toBe(true)
+  })
+
+  it('a delete sends its confirm exactly as given — no trimming, no case folding — and the server decides', async () => {
+    const b = freshBackend({ signedIn: true, scriptMode: 'manual' })
+    const ws = useWorkspacesStore()
+    const confirms = () => b.log.filter((r) => r.method === 'DELETE').map((r) => new URL(r.url).searchParams.get('confirm'))
+    for (const near of [' krelinga/drydock', 'krelinga/drydock ', 'Krelinga/Drydock']) {
+      await expect(ws.remove(WS_RUNNING, near)).rejects.toMatchObject({ status: 400, code: 'confirm_mismatch' })
+      expect(deleteKey(WS_RUNNING) in useStreamStore().inFlight).toBe(false)
+    }
+    expect(confirms()).toEqual([' krelinga/drydock', 'krelinga/drydock ', 'Krelinga/Drydock'])
+    // Control: the exact name is accepted and stays in flight past the 202.
+    await ws.remove(WS_RUNNING, 'krelinga/drydock')
+    expect(deleteKey(WS_RUNNING) in useStreamStore().inFlight).toBe(true)
+    // And a second tap while it is in flight sends nothing.
+    await ws.remove(WS_RUNNING, 'krelinga/drydock')
+    expect(confirms().length).toBe(4)
+  })
+
+  it('a stop refused because the workspace is not running clears its mark; a running one keeps it', async () => {
+    freshBackend({ signedIn: true, scriptMode: 'manual' })
+    const ws = useWorkspacesStore()
+    await expect(ws.stop(WS_FAILED)).rejects.toMatchObject({ status: 409, code: 'in_progress' })
+    expect(stopKey(WS_FAILED) in useStreamStore().inFlight).toBe(false)
+    await ws.stop(WS_RUNNING)
+    expect(stopKey(WS_RUNNING) in useStreamStore().inFlight).toBe(true)
   })
 
   it('loads the list and a detail into the reducer, and remembers a 404', async () => {

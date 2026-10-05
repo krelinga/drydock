@@ -23,8 +23,12 @@ export type CatalogStatus = 'idle' | 'loading' | 'ready' | 'not_configured' | 'e
 
 export const REFRESH_KEY = 'catalog:refresh'
 
-/** Workspace states the home screen's `Running` section shows: occupying, or failed. */
-const RUNNING_SECTION = new Set(['pending', 'cloning', 'building', 'running', 'failed'])
+/**
+ * Workspace states the home screen's `Running` section shows: occupying,
+ * failed, or deleting — a delete may still hold a container, and one that
+ * stuck is waiting on the operator, which is what the section is for.
+ */
+const RUNNING_SECTION = new Set(['pending', 'cloning', 'building', 'running', 'failed', 'deleting'])
 
 export interface CatalogRow {
   repo: Repo

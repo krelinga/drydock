@@ -31,6 +31,10 @@
 //                      {state, repository_id, branch}          workspace.Create
 //                      {state, adopted, repository_id, branch, detail?}  Adopt
 //   workspace.step     {step, status: started|done|failed, detail?}
+//   workspace.action   {action: stop|delete, step, status: started|done|failed, detail?}
+//                                           internal/provision subSteps (Phase 6)
+//                      {state: deleting, from: deleting, detail}  Annotate: a stuck
+//                                           delete, written as a workspace.state
 //   workspace.gone     {}
 //   workspace.adopted  {container_id}       a known row matched to a container
 //   repo.refreshed     {count, added, removed}
@@ -119,6 +123,35 @@ export interface Workspace {
   containerAt: number
   /** The id of the event that last wrote `step`. */
   stepAt: number
+  /**
+   * The latest stop or delete, sub-step by sub-step (`workspace.action`).
+   * Whether it is still going is a question for `liveAction`, not this field:
+   * a finished run is kept so a stuck delete can still name its sub-step.
+   */
+  action: ActionRun | null
+  /**
+   * The id of the newest `workspace.state` *event* seen for this workspace,
+   * live or in a detail body — never a snapshot position, unlike `stateAt`.
+   * Every stop and delete ends in a state event (the move to stopped, a stuck
+   * delete's annotation) or in `workspace.gone`, so an action run newer than
+   * this is one still in progress, or one that failed and left the state
+   * where it was.
+   */
+  stateEventId: number
+}
+
+/** One stop or delete, as its `workspace.action` events tell it. */
+export interface ActionRun {
+  /** `stop` or `delete` (internal/provision ActStop, ActDelete). */
+  name: string
+  /** Each sub-step's latest status in this run, by name. */
+  steps: Record<string, StepRecord>
+  /** The newest sub-step event: what the card's line names. */
+  last: StepInfo
+  /** The id of the event that began this run; anything older is an earlier run's. */
+  startId: number
+  /** The id of the newest event in this run. */
+  eventId: number
 }
 
 export interface Repo {
@@ -307,6 +340,7 @@ function stub(id: string): Workspace {
   return {
     id, repositoryId: null, fullName: null, branch: null, state: null, detail: null, step: null,
     steps: {}, containerId: null, createdAt: null, adopted: false, stateAt: 0, stepAt: 0, containerAt: 0,
+    action: null, stateEventId: 0,
   }
 }
 
@@ -359,6 +393,7 @@ function applyEvent(prev: Entities, ev: StreamEvent): Entities {
 
   switch (ev.kind) {
     case 'workspace.state': {
+      if (ev.id > cur.stateEventId) next = { ...next, stateEventId: ev.id }
       // The move to running carries the container's id (design §6), so
       // nothing has to refetch the workspace to learn it. Versioned on its
       // own: a snapshot that already knew the id may have overtaken the state.
@@ -402,6 +437,9 @@ function applyEvent(prev: Entities, ev: StreamEvent): Entities {
       if (ev.id > cur.stepAt) next = { ...next, step: { name, status, detail }, stepAt: ev.id }
       break
     }
+    case 'workspace.action':
+      next = withAction(next, ev)
+      break
     case 'workspace.adopted': {
       // A known row matched to its container at boot; the state is unchanged.
       const containerId = str(data.container_id)
@@ -417,6 +455,78 @@ function applyEvent(prev: Entities, ev: StreamEvent): Entities {
 
   if (next === cur && known !== undefined) return fed
   return { ...fed, workspaces: { ...fed.workspaces, [wsId]: next } }
+}
+
+/**
+ * The sub-steps of a stop and a delete, in the order internal/provision runs
+ * them. Both begin with the session server, so its `started` is what opens a
+ * new run of the same action.
+ */
+export const ACTION_STEPS: Readonly<Record<string, readonly string[]>> = {
+  stop: ['session_server', 'container', 'broker_socket'],
+  delete: ['session_server', 'containers', 'broker_socket', 'files'],
+}
+const FIRST_SUB_STEP = 'session_server'
+
+/**
+ * One `workspace.action` event folded into the workspace's action run. A
+ * new run begins at a different action, or at the first sub-step's
+ * `started`; each sub-step is versioned on its own, as the steps are, so a
+ * late event lands in its own row without moving the line back; and an
+ * event older than the run it would join belongs to an earlier one and is
+ * dropped. Returns `w` itself when nothing changed.
+ */
+function withAction(w: Workspace, ev: StreamEvent): Workspace {
+  const data = ev.data ?? {}
+  const name = str(data.action)
+  const step = str(data.step)
+  const status = data.status
+  if (name === null || step === null || !isStepStatus(status)) return w
+  const detail = str(data.detail)
+  const rec: StepRecord = { status, detail, at: ev.at, eventId: ev.id }
+  const run = w.action
+  if (run === null || (ev.id > run.eventId && (name !== run.name || (step === FIRST_SUB_STEP && status === 'started')))) {
+    return { ...w, action: { name, steps: { [step]: rec }, last: { name: step, status, detail }, startId: ev.id, eventId: ev.id } }
+  }
+  if (name !== run.name || ev.id < run.startId) return w
+  const old = run.steps[step]
+  const steps = old === undefined || ev.id > old.eventId ? { ...run.steps, [step]: rec } : run.steps
+  const newer = ev.id > run.eventId
+  if (steps === run.steps && !newer) return w
+  return {
+    ...w,
+    action: {
+      ...run, steps,
+      last: newer ? { name: step, status, detail } : run.last,
+      eventId: newer ? ev.id : run.eventId,
+    },
+  }
+}
+
+/**
+ * The stop or delete still in progress — or one that failed and left the
+ * state where it was — or null. A run is current while it is newer than the
+ * last state event: a stop ends in the move to stopped, a stuck delete in its
+ * annotation, a finished one in `workspace.gone`. And it only ever describes
+ * the state it runs in: a stop run on a workspace that is not running is a
+ * stale one a snapshot overtook.
+ */
+export function liveAction(w: Workspace): ActionRun | null {
+  const run = w.action
+  if (run === null || run.eventId <= w.stateEventId) return null
+  if (run.name === 'stop' && w.state !== 'running') return null
+  if (run.name === 'delete' && w.state !== 'deleting') return null
+  return run
+}
+
+/**
+ * Whether a delete stopped part-way and is waiting to be asked again: the
+ * workspace is `deleting`, the server's annotation says why, and no newer
+ * sub-step says a resume is already running (design §6: asking again, or the
+ * next boot, resumes it).
+ */
+export function deleteStuck(w: Workspace): boolean {
+  return w.state === 'deleting' && w.detail !== null && liveAction(w) === null
 }
 
 /** Merges events into a feed: by id, newest first, capped. Returns `feed` itself when nothing changed. */
@@ -521,8 +631,12 @@ function mergeView(cur: Workspace | undefined, at: number, v: WorkspaceView): Wo
   }
   const eventsWin = base.stateAt > at
   const containerWins = base.containerAt > at
+  // The snapshot moved the state past a run we saw part of: that run is over,
+  // and whatever ended it fell in a gap. A detail body puts back what it can.
+  const staleRun = !eventsWin && base.state !== v.state && base.action !== null && base.action.eventId <= at
   return {
     ...base,
+    action: staleRun ? null : base.action,
     repositoryId: v.repository_id,
     fullName: v.full_name,
     branch: v.branch,
@@ -581,10 +695,20 @@ function applyWorkspaceDetail(prev: Entities, at: number, view: WorkspaceDetail)
     return at > prev.lastEventId ? { ...prev, lastEventId: at } : prev
   }
   const events = (view.events ?? []).filter((e) => str(e.workspace_id) === view.id)
+  // The body's events are the stream's own, ids and all, so the stop or
+  // delete they tell — and the state event that ended it, if one did — fold
+  // in exactly as they would have live. That is what lets a reload show a
+  // stuck delete's sub-steps, or a stop that failed.
+  let w = mergeView(prev.workspaces[view.id], at, view)
+  for (const e of [...events].sort((a, b) => a.id - b.id)) {
+    if (!Number.isInteger(e.id) || e.id <= 0) continue
+    if (e.kind === 'workspace.state' && e.id > w.stateEventId) w = { ...w, stateEventId: e.id }
+    else if (e.kind === 'workspace.action') w = withAction(w, e)
+  }
   return {
     ...prev,
     lastEventId: Math.max(prev.lastEventId, at),
-    workspaces: { ...prev.workspaces, [view.id]: mergeView(prev.workspaces[view.id], at, view) },
+    workspaces: { ...prev.workspaces, [view.id]: w },
     feeds: { ...prev.feeds, [view.id]: mergeFeed(prev.feeds[view.id], events) },
   }
 }

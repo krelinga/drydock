@@ -206,15 +206,16 @@ describe('the clone button (§4.2)', () => {
     expect(cloneBtn(wrapper, 'krelinga/scratch').exists()).toBe(false)
   })
 
-  it('a failed or stopped workspace holds its repository: Start, never Clone, until the delete is done', async () => {
+  it('a failed or stopped workspace holds its repository: its own action, never Clone, until the delete is done', async () => {
     const b = freshBackend({ signedIn: true, scriptMode: 'manual' })
     const { wrapper } = await mountApp('/')
     FakeEventSource.latest().open().pipe(b)
     const startIn = (name: string) => row(wrapper, name).find('[data-test="start"] [data-test="action"]')
+    const rebuildIn = (name: string) => row(wrapper, name).find('[data-test="rebuild"] [data-test="action"]')
     // homelab's workspace failed at `up`: the server refuses a create (409
-    // in_progress) until it is deleted, so the row offers its Start.
+    // in_progress) until it is deleted, so the row offers its Rebuild.
     expect(cloneBtn(wrapper, 'krelinga/homelab').exists()).toBe(false)
-    expect(startIn('krelinga/homelab').exists()).toBe(true)
+    expect(rebuildIn('krelinga/homelab').exists()).toBe(true)
     emit(b, 'workspace.state', { workspace_id: WS_FAILED, data: { state: 'stopped', from: 'failed' } })
     await settle()
     expect(cloneBtn(wrapper, 'krelinga/homelab').exists()).toBe(false)
@@ -224,6 +225,7 @@ describe('the clone button (§4.2)', () => {
     await settle()
     expect(cloneBtn(wrapper, 'krelinga/homelab').exists()).toBe(false)
     expect(startIn('krelinga/homelab').exists()).toBe(false)
+    expect(rebuildIn('krelinga/homelab').exists()).toBe(false)
     // Control: once the row is gone, Clone is back, and the server takes it.
     emit(b, 'workspace.gone', { workspace_id: WS_FAILED, data: {} })
     await settle()
@@ -335,7 +337,7 @@ describe('the clone button (§4.2)', () => {
     await settle()
     const err = row(wrapper, 'krelinga/notes').find('[data-test="action-error"]')
     expect(err.attributes('role')).toBe('alert')
-    expect(err.text()).toContain('They are listed under Running')
+    expect(err.text()).toContain('Stop one under Running to make room')
     expect(cloneBtn(wrapper, 'krelinga/notes').attributes('disabled')).toBeUndefined()
     expect('repo:3:clone' in useStreamStore(pinia).inFlight).toBe(false)
     // Control: with room, the same tap is accepted and in flight.
@@ -382,21 +384,21 @@ describe('the Running section', () => {
     expect(row(wrapper, 'krelinga/homelab').find('[data-test="repo-state"]').text()).toBe('Failed while starting the container')
   })
 
-  it('a failed card offers Start, which stays in flight until the workspace moves', async () => {
+  it('a failed card offers Rebuild, which stays in flight until the workspace moves', async () => {
     const b = freshBackend({ signedIn: true, scriptMode: 'manual' })
     const { wrapper } = await mountApp('/')
     FakeEventSource.latest().open().pipe(b)
     const card = () => wrapper.findAll('[data-test="running-row"]')[0]!
     expect(card().find('[data-test="ws-link"]').text()).toBe('krelinga/homelab')
-    await card().find('[data-test="start"] [data-test="action"]').trigger('click')
+    await card().find('[data-test="rebuild"] [data-test="action"]').trigger('click')
     await settle()
-    expect(posts(b, `/api/workspaces/${WS_FAILED}/start`).length).toBe(1)
-    expect(card().find('[data-test="start"] [data-test="action"]').attributes('disabled')).toBeDefined()
+    expect(posts(b, `/api/workspaces/${WS_FAILED}/rebuild`).length).toBe(1)
+    expect(card().find('[data-test="rebuild"] [data-test="action"]').attributes('disabled')).toBeDefined()
     expect(card().find('[data-test="running-state"]').text()).toBe('Failed while starting the container')
     playScript(b, WS_FAILED, 1) // failed → building
     await settle()
     expect(card().find('[data-test="running-state"]').text()).toBe('Building')
-    expect(card().find('[data-test="start"]').exists()).toBe(false)
+    expect(card().find('[data-test="rebuild"]').exists()).toBe(false)
   })
 
   it('the cards link to the detail route', async () => {

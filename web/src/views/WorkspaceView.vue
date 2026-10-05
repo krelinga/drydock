@@ -8,6 +8,12 @@
 // After that it lives off the stream, so a clone started on another device
 // moves here without a reload.
 //
+// Phase 6 puts the lifecycle here: the card's one action (WorkspaceAction,
+// the same button the home list shows), Rebuild where it is not already that
+// action, a stop's or a delete's sub-steps while it runs or where it stuck,
+// and Delete behind §6.5's confirm — the repository's full name, typed, and
+// nothing else.
+//
 // Event messages are rendered as text, never HTML (§8): `message` is the
 // server's prose about things that can carry repository content.
 import { computed, nextTick, onMounted, ref, watch } from 'vue'
@@ -15,12 +21,13 @@ import { RouterLink, useRoute } from 'vue-router'
 import { WORKSPACE_STEPS, type StreamEvent } from '../api/types'
 import { describeError } from '../api/messages'
 import ActionButton from '../components/ActionButton.vue'
+import WorkspaceAction from '../components/WorkspaceAction.vue'
 import { useStreamRefetch } from '../lib/refetch'
 import { relativeTime } from '../lib/time'
-import { cardStatus, stepTitle } from '../lib/workspaceCard'
-import { failedStep, runSteps } from '../stores/reducer'
+import { actionStepTitle, cardStatus, stepTitle } from '../lib/workspaceCard'
+import { ACTION_STEPS, failedStep, liveAction, runSteps } from '../stores/reducer'
 import { useStreamStore } from '../stores/stream'
-import { startKey, useWorkspacesStore } from '../stores/workspaces'
+import { deleteKey, rebuildKey, useWorkspacesStore } from '../stores/workspaces'
 
 const route = useRoute()
 const stream = useStreamStore()
@@ -81,6 +88,60 @@ watch(() => feed.value.length, async () => {
 })
 
 const shortId = (c: string) => c.slice(0, 12)
+
+// A stop's or a delete's sub-steps: while one runs, where a stop failed, and
+// for as long as a delete has not finished — a stuck one names its sub-step.
+const run = computed(() => {
+  const w = ws.value
+  if (w === null) return null
+  const live = liveAction(w)
+  if (live !== null) return live
+  return w.state === 'deleting' && w.action?.name === 'delete' ? w.action : null
+})
+const runRows = computed(() => {
+  const r = run.value
+  if (r === null) return []
+  const names = [...(ACTION_STEPS[r.name] ?? [])]
+  for (const n of Object.keys(r.steps)) if (!names.includes(n)) names.push(n)
+  return names.map((step) => ({ step, title: actionStepTitle(step), rec: r.steps[step] ?? null }))
+})
+const RUN_TITLE: Record<string, string> = { stop: 'Stop', delete: 'Delete' }
+
+// Rebuild beside the card's action, where it can work and is not already it:
+// from running or stopped, with no stop in progress (design §5).
+const canRebuild = computed(() => {
+  const w = ws.value
+  if (w === null || status.value === null || status.value.action === 'rebuild') return false
+  return (w.state === 'running' || w.state === 'stopped') && liveAction(w) === null
+})
+
+// §6.5: the destructive confirm. The typed text is the one piece of local
+// state a form may hold (§4.2), compared to the full name exactly — no trim,
+// no case folding, as the server compares it — and sent as typed, so the
+// server stays the authority. No re-auth prompt (design §13.5).
+const confirming = ref(false)
+const typed = ref('')
+const confirmInput = ref<HTMLInputElement | null>(null)
+const deleteFlight = computed(() => stream.inFlight[deleteKey(id.value)] ?? null)
+const matches = computed(() => ws.value?.fullName != null && typed.value === ws.value.fullName)
+const canDelete = computed(() => ws.value !== null && ws.value.state !== 'deleting' && ws.value.fullName !== null)
+const showSheet = computed(() => confirming.value && (canDelete.value || deleteFlight.value !== null))
+
+async function openConfirm(): Promise<void> {
+  typed.value = ''
+  confirming.value = true
+  await nextTick()
+  confirmInput.value?.focus()
+}
+// The delete stuck, or the workspace is gone: the sheet has nothing left to
+// confirm. (A delete in flight keeps it, spinner and all, until it settles.)
+watch(showSheet, (shown) => {
+  if (!shown) confirming.value = false
+})
+watch(id, () => {
+  confirming.value = false
+  typed.value = ''
+})
 </script>
 
 <template>
@@ -95,17 +156,29 @@ const shortId = (c: string) => c.slice(0, 12)
           <span v-if="ws.branch" class="branch">{{ ws.branch }}</span>
         </div>
         <p v-if="status.note" class="note" data-test="ws-note">{{ status.note }}</p>
-        <ActionButton
-          v-if="status.action === 'start'" label="Start" primary
-          :flight-key="startKey(ws.id)" :run="() => workspaces.start(ws!.id)"
-          data-test="start"
-        />
+        <WorkspaceAction :workspace="ws" :action="status.action" primary />
         <dl class="facts">
           <div><dt>Workspace</dt><dd class="mono">{{ ws.id }}</dd></div>
           <div v-if="ws.containerId"><dt>Container</dt><dd class="mono" :title="ws.containerId">{{ shortId(ws.containerId) }}</dd></div>
           <div v-if="ws.createdAt"><dt>Created</dt><dd :title="ws.createdAt">{{ relativeTime(ws.createdAt) }}</dd></div>
           <div v-if="ws.adopted"><dt>Adopted</dt><dd>Found running after a restart</dd></div>
         </dl>
+      </div>
+
+      <div v-if="run" class="block" data-test="action-run" :data-action="run.name">
+        <div class="sec-label"><span>{{ RUN_TITLE[run.name] ?? run.name }}</span></div>
+        <ol class="steps">
+          <li
+            v-for="s in runRows" :key="s.step" class="step" :class="s.rec?.status ?? 'none'"
+            data-test="action-step" :data-step="s.step"
+          >
+            <span class="glyph" aria-hidden="true">{{ s.rec ? GLYPH[s.rec.status] : '·' }}</span>
+            <span class="step-name">{{ s.title }}</span>
+            <span class="step-status" data-test="step-status">{{ s.rec ? WORD[s.rec.status] : 'not run' }}</span>
+            <time v-if="s.rec" class="step-at" :datetime="s.rec.at" :title="s.rec.at">{{ relativeTime(s.rec.at) }}</time>
+            <p v-if="s.rec?.detail" class="step-detail" data-test="step-detail">{{ s.rec.detail }}</p>
+          </li>
+        </ol>
       </div>
 
       <div class="block" data-test="steps">
@@ -138,6 +211,51 @@ const shortId = (c: string) => c.slice(0, 12)
         </div>
         <div v-else class="empty"><span>No events yet.</span></div>
         <button v-if="feed.length > 0 && !atEnd" type="button" class="btn ghost jump" @click="jump">Jump to latest</button>
+      </div>
+
+      <div v-if="canRebuild || canDelete || showSheet" class="block" data-test="more-actions">
+        <div class="sec-label"><span>Actions</span></div>
+        <div v-if="canRebuild" class="more" data-test="rebuild-block">
+          <p class="sub">Rebuild replaces the container with a new one from the dev container configuration. The clone, and everything in it, stays.</p>
+          <ActionButton
+            label="Rebuild" :flight-key="rebuildKey(ws.id)" :run="() => workspaces.rebuild(ws!.id)"
+            data-test="rebuild"
+          />
+        </div>
+        <div v-if="canDelete && !showSheet">
+          <button type="button" class="btn ghost danger-text" data-test="delete" @click="openConfirm">Delete workspace…</button>
+        </div>
+        <!-- §6.5's sheet: in place, not a modal (§7), with the input at its top. -->
+        <div v-if="showSheet" class="sheet" role="group" aria-labelledby="del-h" data-test="confirm-delete">
+          <h2 id="del-h">Delete this workspace?</h2>
+          <p data-test="delete-goes">
+            This removes its container, its clone, and any unpushed work in that clone: commits not yet pushed,
+            uncommitted changes, and every worktree.
+          </p>
+          <p data-test="delete-survives">
+            Nothing of the workspace survives. The repository on GitHub is untouched, and whatever was pushed is
+            safe there.
+          </p>
+          <div class="field">
+            <label for="del-confirm">Type <code class="name">{{ ws.fullName }}</code> to confirm</label>
+            <input
+              id="del-confirm" ref="confirmInput" v-model="typed" type="text" data-test="delete-input"
+              autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false"
+              :disabled="deleteFlight !== null"
+            >
+          </div>
+          <div class="act">
+            <button
+              type="button" class="btn" data-test="delete-cancel" :disabled="deleteFlight !== null"
+              @click="confirming = false"
+            >Cancel</button>
+            <ActionButton
+              label="Delete workspace" danger :blocked="!matches"
+              :flight-key="deleteKey(ws.id)" :run="() => workspaces.remove(ws!.id, typed)"
+              data-test="delete-confirm"
+            />
+          </div>
+        </div>
       </div>
     </template>
 
@@ -212,4 +330,16 @@ const shortId = (c: string) => c.slice(0, 12)
 .ev-at { font-family: var(--mono); font-size: 11px; color: var(--ink-3); white-space: nowrap; }
 .ev-msg { white-space: pre-wrap; overflow-wrap: anywhere; }
 .jump { align-self: flex-start; }
+
+.more { display: flex; flex-direction: column; gap: 6px; }
+.sub { font-size: 13px; color: var(--ink-2); }
+.danger-text { color: var(--bad); border-color: var(--bad); }
+.sheet {
+  background: var(--surface); border: 1px solid var(--line); border-top: 2px solid var(--bad);
+  border-radius: var(--r); padding: 14px; display: flex; flex-direction: column; gap: 10px; font-size: 14px;
+}
+.sheet .name { overflow-wrap: anywhere; }
+.act { display: flex; gap: 8px; align-items: flex-start; }
+.act > * { flex: 1; }
+.act :deep(.btn) { width: 100%; }
 </style>

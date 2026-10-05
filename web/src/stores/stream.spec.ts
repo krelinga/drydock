@@ -3,6 +3,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createPinia, setActivePinia } from 'pinia'
+import { toRaw } from 'vue'
 import { onUnauthorized } from '../api/client'
 import { FakeEventSource } from '../test/fakeEventSource'
 import { freshBackend, settle, useMockApi } from '../test/setup'
@@ -209,6 +210,27 @@ describe('the in-flight set (§4.2)', () => {
     expect('catalog:refresh' in stream.inFlight).toBe(true)
     es.send(REFRESHED(20))
     expect('catalog:refresh' in stream.inFlight).toBe(false)
+  })
+
+  it('settles when an action runs with a wrapping proxy as `this`, as Pinia\'s devtools call it', () => {
+    // pinia's devtools plugin (dev builds, so `npm run dev:mock`) calls every
+    // action with `this` set to a fresh `new Proxy(store, …)`. Keyed by
+    // `this`, `begin` and `receive` got different runtimes, and no button
+    // ever settled in the browser. The runtime must be the store's own.
+    const stream = useStreamStore()
+    stream.connect()
+    const es = FakeEventSource.latest().open()
+    const tracked = () => new Proxy(stream, {})
+    stream.begin.call(tracked(), 'catalog:refresh', (ev) => ev.kind === 'repo.refreshed')
+    expect('catalog:refresh' in stream.inFlight).toBe(true)
+    es.send(REFRESHED(20))
+    expect('catalog:refresh' in stream.inFlight).toBe(false)
+    // And the other way round: begun plainly, received through a proxy.
+    stream.begin('catalog:refresh', (ev) => ev.kind === 'repo.refreshed')
+    stream.receive.call(tracked(), REFRESHED(21))
+    expect('catalog:refresh' in stream.inFlight).toBe(false)
+    // Control: the raw store is the key, so it is the same runtime.
+    expect(toRaw(tracked())).toBe(toRaw(stream))
   })
 
   it('says "no response yet" after ten seconds and never turns into a failure', () => {

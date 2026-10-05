@@ -2,7 +2,8 @@
 // server writes, frame for frame, for the flows Phase 2 has. Each frame's
 // `data` is exactly what the Go Emit call marshals — internal/workspace
 // (Create, Move, stepEvent, Remove, Adopt), internal/reconcile,
-// internal/catalog and internal/broker — so a reducer test over these is a
+// internal/catalog and internal/broker, and Phase 6's internal/provision
+// lifecycle (subSteps, Annotate) — so a reducer test over these is a
 // test against the server's shapes, not against our memory of them.
 
 import type { CatalogView, StepView, StreamEvent, WorkspaceDetail, WorkspaceList, WorkspaceView } from '../api/types'
@@ -107,6 +108,90 @@ export const RESTART_FAILS_EARLY: StreamEvent[] = [
     'Could not read the dev container configuration.', 'error'),
   ev(64, 'workspace.state', WS, { state: 'failed', from: 'building', detail: 'Could not read the dev container configuration.' },
     'Failed. Could not read the dev container configuration.', 'error'),
+]
+
+/**
+ * One `workspace.action` frame, as internal/provision subSteps writes it:
+ * `{action, step, status, detail?}`, the message "<Action>: <step> <status>."
+ * with the detail after it, and level error for a failure.
+ */
+export const actionEvent = (id: number, ws: string, action: string, sub: string, status: string, detail?: string): StreamEvent => {
+  const word = action.charAt(0).toUpperCase() + action.slice(1)
+  return ev(id, 'workspace.action', ws, { action, step: sub, status, ...(detail !== undefined ? { detail } : {}) },
+    detail !== undefined ? `${word}: ${sub} ${status}. ${detail}` : `${word}: ${sub} ${status}.`,
+    status === 'failed' ? 'error' : 'info')
+}
+
+const NO_SUPERVISOR = 'Nothing to do yet: the Claude Code session server arrives with Claude support.'
+
+/** WS after CLONE_OK, stopped: the three sub-steps, then running → stopped. */
+export const STOP_OK: StreamEvent[] = [
+  actionEvent(70, WS, 'stop', 'session_server', 'started'),
+  actionEvent(71, WS, 'stop', 'session_server', 'done', NO_SUPERVISOR),
+  actionEvent(72, WS, 'stop', 'container', 'started'),
+  actionEvent(73, WS, 'stop', 'container', 'done'),
+  actionEvent(74, WS, 'stop', 'broker_socket', 'started'),
+  actionEvent(75, WS, 'stop', 'broker_socket', 'done'),
+  ev(76, 'workspace.state', WS, { state: 'stopped', from: 'running' }, 'Stopped.'),
+]
+
+/** WS after CLONE_OK: a stop whose `docker stop` fails. No state event follows — it stays running. */
+export const STOP_FAILS: StreamEvent[] = [
+  actionEvent(80, WS, 'stop', 'session_server', 'started'),
+  actionEvent(81, WS, 'stop', 'session_server', 'done', NO_SUPERVISOR),
+  actionEvent(82, WS, 'stop', 'container', 'started'),
+  actionEvent(83, WS, 'stop', 'container', 'failed', "docker could not stop the workspace's container."),
+]
+
+export const STUCK_DETAIL = "The delete stopped part-way: Drydock could not remove the workspace's directory; files inside may belong to another user. Delete again to retry."
+
+/**
+ * WS after CLONE_OK: a delete that sticks at `files`. The move to deleting,
+ * three sub-steps done, `files` failed, and then Annotate's deleting →
+ * deleting state event, whose detail names the sub-step.
+ */
+export const DELETE_STUCK: StreamEvent[] = [
+  ev(90, 'workspace.state', WS, { state: 'deleting', from: 'running' }, 'Deleting.'),
+  actionEvent(91, WS, 'delete', 'session_server', 'started'),
+  actionEvent(92, WS, 'delete', 'session_server', 'done', NO_SUPERVISOR),
+  actionEvent(93, WS, 'delete', 'containers', 'started'),
+  actionEvent(94, WS, 'delete', 'containers', 'done', 'Removed its container.'),
+  actionEvent(95, WS, 'delete', 'broker_socket', 'started'),
+  actionEvent(96, WS, 'delete', 'broker_socket', 'done'),
+  actionEvent(97, WS, 'delete', 'files', 'started'),
+  actionEvent(98, WS, 'delete', 'files', 'failed',
+    "Drydock could not remove the workspace's directory; files inside may belong to another user."),
+  ev(99, 'workspace.state', WS, { state: 'deleting', from: 'deleting', detail: STUCK_DETAIL }, `Deleting. ${STUCK_DETAIL}`, 'warn'),
+]
+
+/**
+ * DELETE_STUCK asked again: no state move (it is deleting already), every
+ * sub-step rerun — each is idempotent — and then the row goes.
+ */
+export const DELETE_RESUMED: StreamEvent[] = [
+  actionEvent(100, WS, 'delete', 'session_server', 'started'),
+  actionEvent(101, WS, 'delete', 'session_server', 'done', NO_SUPERVISOR),
+  actionEvent(102, WS, 'delete', 'containers', 'started'),
+  actionEvent(103, WS, 'delete', 'containers', 'done', 'No container to remove.'),
+  actionEvent(104, WS, 'delete', 'broker_socket', 'started'),
+  actionEvent(105, WS, 'delete', 'broker_socket', 'done'),
+  actionEvent(106, WS, 'delete', 'files', 'started'),
+  actionEvent(107, WS, 'delete', 'files', 'done'),
+  ev(108, 'workspace.gone', WS, {}, 'Workspace deleted.'),
+]
+
+/** WS2 after CLONE_FAILS_AT_UP, deleted in one go: the move, four sub-steps, the gone. */
+export const DELETE_OK: StreamEvent[] = [
+  ev(110, 'workspace.state', WS2, { state: 'deleting', from: 'failed' }, 'Deleting.'),
+  actionEvent(111, WS2, 'delete', 'session_server', 'started'),
+  actionEvent(112, WS2, 'delete', 'session_server', 'done', NO_SUPERVISOR),
+  actionEvent(113, WS2, 'delete', 'containers', 'started'),
+  actionEvent(114, WS2, 'delete', 'containers', 'done', 'No container to remove.'),
+  actionEvent(115, WS2, 'delete', 'broker_socket', 'started'),
+  actionEvent(116, WS2, 'delete', 'broker_socket', 'done'),
+  actionEvent(117, WS2, 'delete', 'files', 'started'),
+  actionEvent(118, WS2, 'delete', 'files', 'done'),
+  ev(119, 'workspace.gone', WS2, {}, 'Workspace deleted.'),
 ]
 
 export const step = (status: StepView['status'], n: number, detail?: string): StepView =>
