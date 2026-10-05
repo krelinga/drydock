@@ -50,6 +50,11 @@ them. Each one is also mentioned at the step where it bites.
    installer run.
 4. **There is no `uninstall`.** [Step 10](#10-upgrade-roll-back-uninstall-logs) lists what to remove
    by hand. The list is derived from what `deploy/install.sh` creates.
+5. **v0.2.0's first release run failed, and v0.2.0 is a draft until it is resumed.** The release
+   job's test environment lacked `socat`, which CI's had since the broker landed, so the socat half
+   of the broker client tests failed (`the broker did not answer`). Nothing was published, and
+   *Latest* stayed `v0.1.0`. The two now share one environment. Once that fix is on `main`, finish
+   v0.2.0 with [step 2's resume](#resume-a-draft-release); do not merge a new release PR for it.
 
 Three issues listed here earlier are fixed from the release that carries this runbook's
 `--ca-cert` flag (v0.2.0, if it is cut after that fix merged — check with
@@ -199,6 +204,10 @@ release-please PR, which is currently titled **`chore(main): release 0.2.0`**. M
 `v0.2.0`. If more `feat:` or `fix:` commits land first, the PR's number stays the same and its
 title and changelog grow.
 
+> **v0.2.0 specifically:** its release PR (#11) is already merged and its first run failed
+> ([Known issue 5](#0-known-issues--read-these-first)), so there is no release PR to merge for it.
+> Skip to [Resume a draft release](#resume-a-draft-release), then *Confirm it published*.
+
 Run these from any machine with `gh` signed in as a repository admin:
 
 - [ ] **Find the release PR and read its changelog**:
@@ -215,23 +224,55 @@ Run these from any machine with `gh` signed in as a repository admin:
   gh pr merge <number> --repo krelinga/drydock --squash --admin
   ```
   On the web, this is *Merge without waiting for requirements to be met (bypass rules)*.
-- [ ] **Watch the release workflow to the end.** It has four jobs: `release-please` tags `vX.Y.Z`
-  and creates the Release **as a draft**, `assets` runs the whole Go suite and then uploads the
-  files to the draft, `verify` downloads them back and runs the README one-liner against them, and
-  `publish` makes the release public and *Latest*, then checks that
-  `releases/latest/download/install.sh` serves it.
+- [ ] **Watch the release workflow to the end.** It has five jobs: `release-please` tags `vX.Y.Z`
+  and creates the Release **as a draft**, `test` runs the whole Go suite in exactly CI's `go`
+  environment (both use `.github/actions/go-suite`), `assets` uploads the files to the draft,
+  `verify` downloads them back and runs the README one-liner against them, and `publish` makes the
+  release public and *Latest*, then checks that `releases/latest/download/install.sh` serves it.
   ```sh
   gh run list --repo krelinga/drydock --workflow release-please.yml --limit 1
   gh run watch <run-id> --repo krelinga/drydock --exit-status
   ```
-  **Wait until all four jobs are green.** If any job fails, nothing is public: the release stays a
-  draft that only repository admins can see, and the one-liner keeps installing the previous
-  release. *Why:* a release that became *Latest* before its files were uploaded would make the
-  one-liner 404 for everyone. A transient failure (a flaky download, a runner hiccup) can be
-  retried with `gh run rerun <run-id> --repo krelinga/drydock --failed`, which resumes from the
-  draft. A real one is fixed forward with a `fix:` commit and a new release; the failed draft can
-  stay, or be removed with `gh release delete vX.Y.Z --repo krelinga/drydock --yes` (which keeps the
-  tag). **Do not install until `publish` is green.**
+  **Wait until all five jobs are green. Do not install until `publish` is green.** If any job
+  fails, nothing is public: the release stays a draft that only repository admins can see, and the
+  one-liner keeps installing the previous release. *Why:* a release that became *Latest* before its
+  files were uploaded would make the one-liner 404 for everyone. Confirm that with
+  `gh release list --repo krelinga/drydock --limit 3`: the new tag shows `Draft`, the previous one
+  `Latest`. Then read the failure with `gh run view <run-id> --repo krelinga/drydock --log-failed`
+  and pick the recovery below by what has to change.
+
+#### If the release workflow fails
+
+| What has to change | Do this |
+|---|---|
+| Nothing: a flaky download, a runner hiccup | `gh run rerun <run-id> --repo krelinga/drydock --failed`. A re-run uses the **workflow file its run started with**, so it cannot pick up a fix. |
+| The workflow or its test environment (`.github/workflows/release-please.yml`, `.github/actions/`) | Merge the fix to `main` as `ci:`, then [resume the draft](#resume-a-draft-release). The code at the tag was fine, so it stays the release. |
+| The code | Fix forward: merge a `fix:` PR, and release-please opens a release PR for the next patch version; merge that as above. The failed draft can stay, or be removed with `gh release delete vX.Y.Z --repo krelinga/drydock --yes`, which keeps the tag. Keep the tag: release-please finds its previous release by it. |
+
+Do not delete the tag to make release-please try again. Its release PR is already labelled
+`autorelease: tagged`, so it would not recreate the release, and without the tag it would plan the
+next release from `v0.1.0` again.
+
+#### Resume a draft release
+
+`workflow_dispatch` runs `main`'s release workflow against an existing draft. It skips
+release-please and runs `test`, `assets`, `verify` and `publish` on the **code at the tag**, with
+**`main`'s workflow and test environment**. It refuses a tag whose release is not a draft, so it
+cannot replace a public release's files.
+
+- [ ] **Check the draft and its tag exist**, and that the fix is on `main`:
+  ```sh
+  gh release view v0.2.0 --repo krelinga/drydock --json isDraft,tagName,assets --jq '{isDraft, tagName, assets: [.assets[].name]}'
+  gh api repos/krelinga/drydock/git/ref/tags/v0.2.0 --jq .object.sha
+  ```
+  `isDraft` must be `true`. Any assets left from an earlier run are replaced (`--clobber`).
+- [ ] **Run it and watch it**:
+  ```sh
+  gh workflow run release-please.yml --repo krelinga/drydock --ref main -f tag=v0.2.0
+  gh run list --repo krelinga/drydock --workflow release-please.yml --event workflow_dispatch --limit 1
+  gh run watch <run-id> --repo krelinga/drydock --exit-status
+  ```
+  All five jobs must be green; `release-please` only checks the draft and the tag here.
 - [ ] **Confirm it published.** Both of these should print the new tag:
   ```sh
   gh release view --repo krelinga/drydock --json tagName,assets --jq '.tagName, [.assets[].name]'

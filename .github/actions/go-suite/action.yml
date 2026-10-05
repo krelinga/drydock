@@ -1,0 +1,75 @@
+# The Go suite's environment and its commands, in one place. CI's `go` job and
+# the release workflow's `test` job both run this, so the suite a release must
+# pass is the suite every PR passed, by construction rather than by a comment
+# asking someone to keep two lists in step. (They drifted once: socat reached
+# ci.yml with the broker in #16 and never reached the release job, so v0.2.0's
+# release failed the socat half of the broker client tests.)
+#
+# Expects the code under test checked out at the workspace root. Its tools:
+#   Go          from go.mod
+#   Caddy       pinned below; the devcontainer's feature takes the latest, so
+#               bump this when a rebuild moves it
+#   devcontainer CLI   the container tier runs real `devcontainer up`, pinned
+#               to the corpus's version
+#   socat       the broker's in-container clients are tested over both
+#               transports they support: socat, and OpenBSD netcat's -U
+#               (preinstalled on the runner)
+# and the runner's own Docker, for the container tier.
+name: go-suite
+description: Install the Go suite's tools and run gofmt, go vet and go test with every DRYDOCK_REQUIRE_* flag CI sets.
+
+inputs:
+  run-suite:
+    description: "'false' installs the tools (Go and Caddy are what the browser tier needs) without running the suite."
+    default: "true"
+
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-go@v6
+      with:
+        go-version-file: go.mod
+
+    - name: Install Caddy
+      shell: bash
+      env:
+        CADDY_VERSION: 2.11.7
+      run: |
+        dir=$(mktemp -d)
+        base=https://github.com/caddyserver/caddy/releases/download/v$CADDY_VERSION
+        tarball=caddy_${CADDY_VERSION}_linux_amd64.tar.gz
+        (cd "$dir" &&
+          curl -fsSLO "$base/$tarball" -fsSLO "$base/caddy_${CADDY_VERSION}_checksums.txt" &&
+          grep " $tarball\$" "caddy_${CADDY_VERSION}_checksums.txt" | sha512sum -c -)
+        sudo tar -xzf "$dir/$tarball" -C /usr/local/bin caddy
+        rm -rf "$dir"
+        caddy version
+
+    - name: Install the devcontainer CLI
+      shell: bash
+      run: npm install -g @devcontainers/cli@0.89.0
+
+    - name: Install socat
+      shell: bash
+      run: sudo apt-get update -q && sudo apt-get install -y -q --no-install-recommends socat
+
+    - name: gofmt
+      if: inputs.run-suite == 'true'
+      shell: bash
+      run: test -z "$(gofmt -l . | tee /dev/stderr)"
+
+    - name: go vet
+      if: inputs.run-suite == 'true'
+      shell: bash
+      run: go vet ./...
+
+    # Without DRYDOCK_REQUIRE_CADDY a missing caddy is a skip, which would be a
+    # silent pass of the one test of the LAN-facing surface; likewise Docker
+    # and the container tier (test/container).
+    - name: go test
+      if: inputs.run-suite == 'true'
+      shell: bash
+      env:
+        DRYDOCK_REQUIRE_CADDY: "1"
+        DRYDOCK_REQUIRE_DOCKER: "1"
+      run: go test ./...
