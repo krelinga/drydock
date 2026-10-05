@@ -35,7 +35,10 @@ defineEmits<{ dismiss: [] }>()
 
     <template v-else-if="!outcome.rotated">
       <p class="msg ok"><span class="glyph" aria-hidden="true">✓</span><span>Saved.</span></p>
-      <p data-test="result-unchanged">The value is the one already stored, so this was not a rotation and no workspace is stale.</p>
+      <p v-if="!outcome.valueSent" data-test="result-unchanged">
+        The value was kept as it is, so this was not a rotation and no workspace is stale.
+      </p>
+      <p v-else data-test="result-unchanged">The value is the one already stored, so this was not a rotation and no workspace is stale.</p>
     </template>
 
     <template v-else>

@@ -111,11 +111,48 @@ describe('checkValue', () => {
 })
 
 describe('checkReach and checkDescription', () => {
-  it('a reach is required and bounded; a description is optional and bounded', () => {
+  it('a blank reach and a long one are two codes; a description is optional and bounded', () => {
     expect(checkReach('   \n ')?.code).toBe('secret_reach_required')
-    expect(checkReach('x'.repeat(MAX_REACH_LEN + 1))?.code).toBe('secret_reach_required')
+    expect(checkReach('x'.repeat(MAX_REACH_LEN + 1))).toEqual({ code: 'secret_reach_too_long', detail: 'At most 2000 bytes.' })
+    // Bytes, as the server counts: 1001 two-byte characters is over.
+    expect(checkReach('é'.repeat(MAX_REACH_LEN / 2 + 1))?.code).toBe('secret_reach_too_long')
+    // Controls: at the limit, and an ordinary sentence, pass.
+    expect(checkReach('x'.repeat(MAX_REACH_LEN))).toBeNull()
     expect(checkReach('Read the staging database.')).toBeNull()
     expect(checkDescription('')).toBeNull()
-    expect(checkDescription('x'.repeat(MAX_DESCRIPTION_LEN + 1))?.code).toBe('secret_description_invalid')
+    expect(checkDescription('line one\nline two')).toBeNull()
+    expect(checkDescription('x'.repeat(MAX_DESCRIPTION_LEN))).toBeNull()
+    expect(checkDescription('x'.repeat(MAX_DESCRIPTION_LEN + 1))).toEqual({ code: 'secret_description_too_long', detail: 'At most 4000 bytes.' })
+  })
+})
+
+describe('the codes match validate.go', () => {
+  // Every code a check here can return, and the server constant it mirrors.
+  const MIRRORED: Record<string, string> = {
+    secret_name_invalid: 'CodeNameInvalid',
+    secret_name_reserved: 'CodeNameReserved',
+    secret_value_empty: 'CodeValueEmpty',
+    secret_value_too_long: 'CodeValueTooLong',
+    secret_value_control_character: 'CodeValueControl',
+    secret_reach_required: 'CodeReachRequired',
+    secret_reach_too_long: 'CodeReachTooLong',
+    secret_description_too_long: 'CodeDescriptionTooLong',
+  }
+
+  it('each code the client produces is the server constant of that name, and its detail is the server\'s', () => {
+    const consts = block('const (\n\tCodeNameInvalid', '\n)\n')
+    for (const [code, ident] of Object.entries(MIRRORED)) {
+      expect(consts, ident).toMatch(new RegExp(`\\b${ident}\\s+= "${code}"`))
+    }
+    // The over-long reach and description: the code is used where the detail is written.
+    expect(GO).toMatch(/Code: CodeReachTooLong, Message: "The reach is too long\.",\s+Detail: fmt\.Sprintf\("At most %d bytes\.", MaxReachLen\)/)
+    expect(GO).toMatch(/Code: CodeDescriptionTooLong, Message: "The description is too long\.",\s+Detail: fmt\.Sprintf\("At most %d bytes\.", MaxDescriptionLen\)/)
+    // Control: the produced codes are the ones listed, so the table cannot be vacuous.
+    const produced = new Set([
+      checkName('')?.code, checkName('GH_TOKEN')?.code, checkValue('')?.code, checkValue('a\n')?.code,
+      checkValue('a'.repeat(MAX_VALUE_LEN + 1))?.code, checkReach('')?.code, checkReach('x'.repeat(MAX_REACH_LEN + 1))?.code,
+      checkDescription('x'.repeat(MAX_DESCRIPTION_LEN + 1))?.code,
+    ])
+    expect([...produced].sort()).toEqual(Object.keys(MIRRORED).sort())
   })
 })

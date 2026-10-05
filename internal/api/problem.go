@@ -68,7 +68,11 @@ const (
 	// CodeSecretNameReserved: a name on §10.1's reserved list; the detail
 	// says why that one.
 	CodeSecretNameReserved = secrets.CodeNameReserved
-	// CodeSecretValueEmpty: indistinguishable from unset, so refused.
+	// CodeSecretValueRequired: a PUT with no `value` for a name that has no
+	// secret. Absent means "keep the stored value", and there is none.
+	CodeSecretValueRequired = secrets.CodeValueRequired
+	// CodeSecretValueEmpty: a `value` sent as "". Indistinguishable from
+	// unset, so refused — and never read as absent.
 	CodeSecretValueEmpty = secrets.CodeValueEmpty
 	// CodeSecretValueControl: a newline, carriage return, NUL, tab or other
 	// control character — or bytes that are not UTF-8. The detail names
@@ -77,10 +81,15 @@ const (
 	CodeSecretValueControl = secrets.CodeValueControl
 	// CodeSecretValueTooLong: over 32 KiB.
 	CodeSecretValueTooLong = secrets.CodeValueTooLong
-	// CodeSecretReachRequired: blank (or over-long) reach. The field is the
-	// control (§10.4), not documentation.
+	// CodeSecretReachRequired: a blank reach. The field is the control
+	// (§10.4), not documentation.
 	CodeSecretReachRequired = secrets.CodeReachRequired
-	// CodeSecretDescriptionInvalid: over-long or not text.
+	// CodeSecretReachTooLong: a reach over 2000 bytes.
+	CodeSecretReachTooLong = secrets.CodeReachTooLong
+	// CodeSecretDescriptionTooLong: a description over 4000 bytes.
+	CodeSecretDescriptionTooLong = secrets.CodeDescriptionTooLong
+	// CodeSecretDescriptionInvalid: a description that is not UTF-8. A JSON
+	// body cannot carry one, so the API does not send this today.
 	CodeSecretDescriptionInvalid = secrets.CodeDescriptionBad
 	// CodeUnknownRepository: a grant names a repository id the catalog
 	// does not have.

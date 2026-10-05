@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -250,6 +251,257 @@ func TestReachIsRequired(t *testing.T) {
 	}
 	if _, err := e.s.Put(ctx, "TEST_KEY", "v", "reads a scratch bucket", ""); err != nil {
 		t.Errorf("control: with a reach: %v", err)
+	}
+}
+
+// A blank reach and a long one are two faults with two codes (frontend §4.5
+// #14), and the description gets the same split: too long is not "not text".
+// Controls: exactly at each limit is accepted, and a blank description is.
+func TestReachAndDescriptionCodes(t *testing.T) {
+	e := newEnv(t)
+	ctx := context.Background()
+	for _, c := range []struct {
+		reach, description, want string
+	}{
+		{"", "", CodeReachRequired},
+		{" \t", "", CodeReachRequired},
+		{strings.Repeat("r", MaxReachLen+1), "", CodeReachTooLong},
+		{"r", strings.Repeat("d", MaxDescriptionLen+1), CodeDescriptionTooLong},
+		{"r", "not \xff text", CodeDescriptionBad},
+	} {
+		if _, err := e.s.Put(ctx, "TEST_KEY", "v", c.reach, c.description); code(err) != c.want {
+			t.Errorf("reach %d bytes, description %d bytes: %v; want %s", len(c.reach), len(c.description), err, c.want)
+		}
+	}
+	if ms, _ := e.s.List(ctx); len(ms) != 0 {
+		t.Error("a refused write stored something")
+	}
+	if _, err := e.s.Put(ctx, "TEST_KEY", "v", strings.Repeat("r", MaxReachLen), strings.Repeat("d", MaxDescriptionLen)); err != nil {
+		t.Errorf("control: at both limits: %v", err)
+	}
+	if _, err := e.s.Put(ctx, "TEST_KEY", "v", "r", ""); err != nil {
+		t.Errorf("control: a blank description: %v", err)
+	}
+	if err := ValidateDescription("line one\nline two"); err != nil {
+		t.Errorf("control: a multi-line description: %v", err)
+	}
+}
+
+// PutProse keeps the stored value: the reach and description move, nothing
+// is rotated, nothing is stale, no secret.rotated, and the next delivery is
+// the old value byte for byte. Control in the same function: a Put with a
+// different value is a rotation by every one of those measures. And a
+// PutProse for a name with no secret is refused, storing nothing.
+func TestPutProseKeepsTheValue(t *testing.T) {
+	e := newEnv(t)
+	ctx := context.Background()
+	e.put(t, "TEST_KEY", "k1")
+	e.s.SetGrants(ctx, "TEST_KEY", []int64{101}, false)
+	countKind := func(kind string) int {
+		var n int
+		e.db.QueryRow(`SELECT count(*) FROM event WHERE kind = ?`, kind).Scan(&n)
+		return n
+	}
+
+	e.clock.Advance(time.Hour)
+	r, err := e.s.PutProse(ctx, "TEST_KEY", "a narrower reach", "rotated in the scratch console")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Created || r.Rotated || len(r.Stale.NewCommands)+len(r.Stale.NeedsSupervisorRestart) != 0 || r.Secret.RotatedAt != nil {
+		t.Errorf("prose only: %+v", r)
+	}
+	if r.Secret.Reach != "a narrower reach" || r.Secret.Description != "rotated in the scratch console" {
+		t.Errorf("the prose did not move: %+v", r.Secret)
+	}
+	if got, err := e.s.Resolve(ctx, 101); err != nil || names(got) != "TEST_KEY=k1" {
+		t.Errorf("after a prose-only PUT, delivered %q, %v", names(got), err)
+	}
+	if countKind("secret.rotated") != 0 || countKind("secret.updated") != 1 {
+		t.Errorf("events: %d rotated (want 0), %d updated (want 1)", countKind("secret.rotated"), countKind("secret.updated"))
+	}
+
+	// Control: a value change is a rotation, and the running workspace is stale.
+	r2 := e.put(t, "TEST_KEY", "k2")
+	if !r2.Rotated || len(r2.Stale.NewCommands) != 1 || r2.Secret.RotatedAt == nil {
+		t.Errorf("control: a value change: %+v", r2)
+	}
+	if countKind("secret.rotated") != 1 {
+		t.Error("control: a value change emitted no secret.rotated")
+	}
+
+	// No secret, no value to keep.
+	if _, err := e.s.PutProse(ctx, "NEW_KEY", "r", ""); code(err) != CodeValueRequired {
+		t.Errorf("PutProse of a new name: %v; want %s", err, CodeValueRequired)
+	}
+	if _, err := e.s.Get(ctx, "NEW_KEY"); !errors.Is(err, ErrNotFound) {
+		t.Errorf("a refused PutProse stored something: %v", err)
+	}
+	// And an empty value is not "no value": it is refused, and keeps nothing.
+	if _, err := e.s.Put(ctx, "TEST_KEY", "", "r", ""); code(err) != CodeValueEmpty {
+		t.Errorf("an empty value: %v; want %s", err, CodeValueEmpty)
+	}
+	if got, _ := e.s.Resolve(ctx, 101); names(got) != "TEST_KEY=k2" {
+		t.Errorf("after a refused empty value, delivered %q", names(got))
+	}
+}
+
+// insertRaw writes a secret row around Put, as only a database edit can:
+// value is sealed under the store's key, or the row gets ciphertext that
+// opens under no key when value is "".
+func (e *env) insertRaw(t *testing.T, id, name, value string, repo int64) {
+	t.Helper()
+	ctx := context.Background()
+	ct, nonce := []byte("not ciphertext under any key"), make([]byte, 24)
+	if value != "" {
+		var err error
+		if ct, nonce, err = e.s.seal(id, value); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := e.db.ExecContext(ctx, `INSERT INTO secret (id, name, ciphertext, nonce, reach) VALUES (?, ?, ?, ?, 'x')`, id, name, ct, nonce); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.db.ExecContext(ctx, `INSERT INTO secret_grant (secret_id, repository_id) VALUES (?, ?)`, id, repo); err != nil {
+		t.Fatal(err)
+	}
+	e.s.invalidate()
+}
+
+func (e *env) deliveryEvents(t *testing.T) []string {
+	t.Helper()
+	rows, err := e.db.Query(`SELECT kind, coalesce(data, '') FROM event WHERE kind IN ('secret.undeliverable', 'secret.deliverable') ORDER BY id`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var kind, data string
+		rows.Scan(&kind, &data)
+		out = append(out, kind+" "+data)
+	}
+	return out
+}
+
+// The undeliverable condition is readable, names every broken row and why,
+// and its end is announced (frontend §4.5 #12) — while delivery refuses
+// throughout. Control first: a healthy store reports nothing and emits
+// nothing. Then two broken rows, repaired one at a time: the set shrinking
+// is a new report, and the last repair is secret.deliverable, once.
+func TestUndeliverableIsReadableAndItsEndAnnounced(t *testing.T) {
+	e := newEnv(t)
+	ctx := context.Background()
+	e.put(t, "GOOD", "fine")
+	e.s.SetGrants(ctx, "GOOD", []int64{101}, false)
+	if u, err := e.s.Undeliverable(ctx); err != nil || u != nil {
+		t.Fatalf("control: a healthy store reports %+v, %v", u, err)
+	}
+	if got := e.deliveryEvents(t); len(got) != 0 {
+		t.Fatalf("control: a healthy store emitted %v", got)
+	}
+
+	const forged = "hunter2\nGH_TOKEN ghp_forgedZq7"
+	e.insertRaw(t, "01JYYYYYYYYYYYYYYYYYYYYYYY", "LOST_KEY", "", 101)
+	e.insertRaw(t, "01JZZZZZZZZZZZZZZZZZZZZZZZ", "FORGED", forged, 202)
+	u, err := e.s.Undeliverable(ctx)
+	if err != nil || u == nil {
+		t.Fatalf("two broken rows report %+v, %v", u, err)
+	}
+	want := []UndeliverableSecret{{"FORGED", ReasonBreaksRules}, {"LOST_KEY", ReasonDoesNotOpen}}
+	if !slices.Equal(u.Secrets, want) || !u.Since.Equal(t0) {
+		t.Errorf("undeliverable = %+v; want %v since %v", u, want, t0)
+	}
+	// Fail closed: every repository is refused, the healthy secret's too.
+	for _, repo := range []int64{101, 202} {
+		if got, err := e.s.Resolve(ctx, repo); err == nil || len(got) != 0 {
+			t.Errorf("repo %d: delivered %q while undeliverable", repo, names(got))
+		}
+	}
+	// Asking again, and an unrelated write, are not new reports.
+	e.s.Undeliverable(ctx)
+	e.s.SetGrants(ctx, "GOOD", []int64{101, 202}, false)
+	if got := e.deliveryEvents(t); len(got) != 1 || !strings.HasPrefix(got[0], "secret.undeliverable ") ||
+		!strings.Contains(got[0], `"name":"LOST_KEY","reason":"does_not_open"`) {
+		t.Fatalf("events = %v; want one undeliverable naming both", got)
+	}
+
+	// Repair one: storing the value again. Still broken, by one row.
+	e.clock.Advance(time.Minute)
+	e.put(t, "LOST_KEY", "restored")
+	u, _ = e.s.Undeliverable(ctx)
+	if u == nil || !slices.Equal(u.Secrets, want[:1]) || !u.Since.Equal(t0) {
+		t.Errorf("after one repair: %+v", u)
+	}
+	if got := e.deliveryEvents(t); len(got) != 2 || !strings.HasPrefix(got[1], "secret.undeliverable ") || strings.Contains(got[1], "LOST_KEY") {
+		t.Errorf("events = %v; want a second report naming only FORGED", got)
+	}
+	if _, err := e.s.Resolve(ctx, 101); err == nil {
+		t.Error("delivered while one row is still broken")
+	}
+
+	// Repair the other, by deleting it: delivery works, the GET says so, and
+	// the stream says so — at the write, not at the next fetch.
+	if err := e.s.Delete(ctx, "FORGED"); err != nil {
+		t.Fatal(err)
+	}
+	got := e.deliveryEvents(t)
+	if len(got) != 3 || got[2] != "secret.deliverable {}" {
+		t.Errorf("events = %v; want secret.deliverable last", got)
+	}
+	if u, err := e.s.Undeliverable(ctx); err != nil || u != nil {
+		t.Errorf("after the repair: %+v, %v", u, err)
+	}
+	if r, err := e.s.Resolve(ctx, 101); err != nil || names(r) != "GOOD=fine,LOST_KEY=restored" {
+		t.Errorf("after the repair, delivered %q, %v", names(r), err)
+	}
+	if len(e.deliveryEvents(t)) != 3 {
+		t.Error("a fetch after the repair announced it again")
+	}
+	// No value reached the log by any of this.
+	var all string
+	e.db.QueryRow(`SELECT group_concat(message || coalesce(data, ''), '|') FROM event`).Scan(&all)
+	for _, v := range []string{"hunter2", "forgedZq7", "restored", "fine"} {
+		if strings.Contains(all, v) {
+			t.Errorf("the event log holds %q", v)
+		}
+	}
+	if !strings.Contains(all, "FORGED") {
+		t.Error("control: the log does not name the broken secret; the search read nothing")
+	}
+}
+
+// A restart starts from the log: a new process that finds the rows repaired
+// announces it, because the clients that saw the last process's report are
+// waiting for it. Control: one whose log already ends in deliverable — or
+// holds no report at all — says nothing.
+func TestDeliverableAcrossARestart(t *testing.T) {
+	e := newEnv(t)
+	ctx := context.Background()
+	e.insertRaw(t, "01JYYYYYYYYYYYYYYYYYYYYYYY", "LOST_KEY", "", 101)
+	if u, _ := e.s.Undeliverable(ctx); u == nil {
+		t.Fatal("control: the broken row was not reported")
+	}
+	// Repaired behind the process's back, as restoring the old key is.
+	e.db.ExecContext(ctx, `DELETE FROM secret`)
+	restarted := func() *Store {
+		return &Store{DB: e.db.DB, Key: e.s.Key, Events: e.log, Env: e.s.Env}
+	}
+	if u, err := restarted().Undeliverable(ctx); err != nil || u != nil {
+		t.Fatalf("after the restart: %+v, %v", u, err)
+	}
+	got := e.deliveryEvents(t)
+	if len(got) != 2 || got[1] != "secret.deliverable {}" {
+		t.Errorf("events = %v; want the restart to announce the repair", got)
+	}
+	restarted().Undeliverable(ctx)
+	if len(e.deliveryEvents(t)) != 2 {
+		t.Error("a second restart announced it again")
+	}
+	fresh := newEnv(t)
+	fresh.s.Undeliverable(ctx)
+	if got := fresh.deliveryEvents(t); len(got) != 0 {
+		t.Errorf("control: a store that never reported anything emitted %v", got)
 	}
 }
 

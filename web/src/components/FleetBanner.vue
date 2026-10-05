@@ -3,45 +3,65 @@
 // one message here, above every card, rather than one on each. Phase 5's
 // identity store supplies the five Claude-login states.
 //
-// Phase 4's one fleet-wide fault: `secret.undeliverable`. When the broker
-// finds a stored secret it cannot deliver it fails *every* workspace's fetch
-// rather than hand out half an environment (design §10.3), so every
-// workspace's commands stop at once and none of them is at fault — §6.6's
-// shape exactly. It is an error the operator must see wherever they are, so
-// it is here rather than only on /secrets.
+// Phase 4's one fleet-wide fault: stored secrets that cannot be delivered.
+// When the broker finds a stored secret it cannot deliver it fails *every*
+// workspace's fetch rather than hand out half an environment (design §10.3),
+// so every workspace's commands stop at once and none of them is at fault —
+// §6.6's shape exactly. It is an error the operator must see wherever they
+// are, so it is here rather than only on /secrets.
 //
-// Nothing on the stream says it was fixed: there is no "delivered again"
-// event. So after a later change to secrets the banner says that the report
-// predates it, rather than either vanishing (a guess that the change fixed
-// it) or staying as though nothing happened. A reload drops it: GET
-// /api/secrets does not carry it (an API gap, frontend §4.5 #12).
-import { computed } from 'vue'
+// The fault is entity state like any other (frontend §4.5 #12): GET
+// /api/secrets carries it, so a reload shows a standing fault, and
+// `secret.deliverable` clears it, so the banner goes when the fault does and
+// not before. This component loads the list for that reason — on every
+// screen, since the banner is on every screen — and refetches it when the
+// stream reopens. It renders only what the reducer holds.
+import { computed, watch } from 'vue'
 import { RouterLink } from 'vue-router'
+import { useStreamRefetch } from '../lib/refetch'
 import { relativeTime } from '../lib/time'
+import { useSecretsStore } from '../stores/secrets'
+import { useSessionStore } from '../stores/session'
 import { useStreamStore } from '../stores/stream'
 
 interface Banner {
   tone: 'warn' | 'bad'
   title: string
   body: string
-  /** The server's sentence, shown as text after ours, never parsed. */
-  detail?: string
+  /** One line per secret at fault: its name and what repairs it. */
+  items: Array<{ name: string; fix: string }>
   link?: { to: string; label: string }
 }
 
 const stream = useStreamStore()
+const secrets = useSecretsStore()
+const session = useSessionStore()
+
+watch(() => session.status, (s) => {
+  if (s === 'signed-in') void secrets.load()
+}, { immediate: true })
+useStreamRefetch({ refetch: () => secrets.load() })
+
+/** What repairs each reason (internal/secrets ReasonDoesNotOpen, ReasonBreaksRules). */
+function fixFor(reason: string): string {
+  switch (reason) {
+    case 'does_not_open':
+      return "Drydock's secrets key cannot open it. Store its value again."
+    case 'breaks_write_rules':
+      return 'It breaks the rules every write is held to, so it was stored around them. Delete it.'
+  }
+  return 'It cannot be delivered.'
+}
 
 const banner = computed<Banner | null>(() => {
   const fault = stream.entities.secretFault
   if (fault === null) return null
-  const superseded = stream.entities.secretsWrittenAt > fault.eventId
+  const since = fault.since !== null ? ` Since ${relativeTime(fault.since)}.` : ''
   return {
-    tone: superseded ? 'warn' : 'bad',
+    tone: 'bad',
     title: 'Stored secrets cannot be delivered.',
-    body: superseded
-      ? `Reported ${relativeTime(fault.at)}, before the latest change to secrets. If it is still broken, the next command any workspace runs reports it again.`
-      : `Every workspace's commands fail until this is fixed. Reported ${relativeTime(fault.at)}.`,
-    detail: fault.message,
+    body: `Every workspace's commands fail until this is fixed.${since}`,
+    items: fault.secrets.map((s) => ({ name: s.name, fix: fixFor(s.reason) })),
     link: { to: '/secrets', label: 'Secrets' },
   }
 })
@@ -53,12 +73,17 @@ const banner = computed<Banner | null>(() => {
     <div>
       <b>{{ banner.title }}</b>
       <p>{{ banner.body }}</p>
-      <p v-if="banner.detail" class="detail" data-test="fleet-detail">{{ banner.detail }}</p>
+      <ul v-if="banner.items.length > 0" class="items" data-test="fleet-items">
+        <li v-for="i in banner.items" :key="i.name" data-test="fleet-item">
+          <span class="mono">{{ i.name }}</span>: {{ i.fix }}
+        </li>
+      </ul>
       <RouterLink v-if="banner.link" :to="banner.link.to">{{ banner.link.label }}</RouterLink>
     </div>
   </div>
 </template>
 
 <style scoped>
-.detail { font-family: var(--mono); font-size: 11.5px; overflow-wrap: anywhere; margin-top: 4px; }
+.items { margin: 4px 0; padding-left: 18px; font-size: 13px; }
+.mono { font-family: var(--mono); font-size: 12px; overflow-wrap: anywhere; }
 </style>

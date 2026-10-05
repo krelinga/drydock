@@ -36,14 +36,21 @@
 //   repo.refreshed     {count, added, removed}
 //   repo.refresh_failed {}                  the reason is in `message`
 //   secret.created     {secret}             internal/secrets Put, Meta
-//   secret.updated     {secret}             reach or description only
 //   secret.rotated     {secret, stale}      the value changed
 //   secret.grants      {secret}             SetGrants
 //   secret.deleted     {name}
-//   secret.undeliverable  (no data)         level error; the reason is in `message`
+//   secret.updated     {secret}             reach or description only: the
+//                                           value is unchanged, never a rotation
+//   secret.undeliverable  {undeliverable: {since, secrets: [{name, reason}]}}
+//                                           level error; sent when delivery
+//                                           breaks or the broken set changes
+//   secret.deliverable    {}                the condition cleared
 //
 // Secrets have a sixth input, `secrets` — a GET /api/secrets body — and are
-// written by it and by the secret.* events, and by nothing else. PUT
+// written by it and by the secret.* events, and by nothing else. The same
+// two inputs write the fleet fault: the body's `undeliverable` (null when
+// delivery works) and the two delivery events, versioned by one id like any
+// field, so a reload shows a standing fault and a repair clears it. PUT
 // /api/secrets/:name answers 200 with the secret's metadata, and that body is
 // deliberately *not* an input: it carries no event id, so it could not be
 // ordered against an event from another device that beat it here, and
@@ -158,12 +165,16 @@ export interface Secret {
   at: number
 }
 
-/** The latest `secret.undeliverable`: every workspace's commands fail until it is fixed. */
+/**
+ * Stored secrets cannot be delivered: every workspace's commands fail until
+ * it is fixed. From GET /api/secrets' `undeliverable` or `secret.undeliverable`,
+ * whichever is newer; `secret.deliverable` or a snapshot reporting null clears it.
+ */
 export interface SecretFault {
-  at: string
-  /** The server's sentence; it names a secret by id or rule, never by value. Shown, never parsed. */
-  message: string
-  eventId: number
+  /** When the server first found it. */
+  since: string | null
+  /** The secrets that fail, by name, and why. Never a value: there is none to give. */
+  secrets: Array<{ name: string; reason: string }>
 }
 
 export interface Entities {
@@ -210,9 +221,10 @@ export interface Entities {
   secretsDeleted: Record<string, number>
   /** Null until a GET /api/secrets has been applied: "not loaded", distinct from "none". */
   secretsLoaded: boolean
+  /** Null while delivery works, or before anything has said otherwise. */
   secretFault: SecretFault | null
-  /** The id of the newest secret write event, so a fault can say whether a change came after it. */
-  secretsWrittenAt: number
+  /** The event id (or snapshot position) that last wrote `secretFault`, set or cleared. */
+  secretFaultAt: number
 }
 
 export type Action =
@@ -241,7 +253,7 @@ export function emptyEntities(): Entities {
     secretsDeleted: {},
     secretsLoaded: false,
     secretFault: null,
-    secretsWrittenAt: 0,
+    secretFaultAt: 0,
   }
 }
 
@@ -612,32 +624,46 @@ function toSecret(m: unknown, at: number): Secret | null {
   }
 }
 
+/**
+ * The delivery fault, named fields only. An undeliverable report whose body
+ * cannot be read is still a fault — the event's kind is the fact, and
+ * dropping it would hide the one fleet-wide failure Phase 4 has — so it
+ * becomes one with no names, dated by the event.
+ */
+function toFault(u: unknown, fallbackSince: string | null): SecretFault {
+  const v = (u !== null && typeof u === 'object' ? u : {}) as { since?: unknown; secrets?: unknown }
+  const secrets = Array.isArray(v.secrets) ? v.secrets.flatMap((s: unknown) => {
+    const x = s as { name?: unknown; reason?: unknown } | null
+    const name = str(x?.name)
+    return name === null ? [] : [{ name, reason: typeof x?.reason === 'string' ? x.reason : '' }]
+  }) : []
+  return { since: str(v.since) ?? fallbackSince, secrets }
+}
+
 /** The secret.* events. Versioned per name, and against the name's last delete. */
 function applySecretEvent(base: Entities, ev: StreamEvent): Entities {
   const data = ev.data ?? {}
-  if (ev.kind === 'secret.undeliverable') {
-    if (base.secretFault !== null && base.secretFault.eventId >= ev.id) return base
-    return { ...base, secretFault: { at: ev.at, message: ev.message, eventId: ev.id } }
+  if (ev.kind === 'secret.undeliverable' || ev.kind === 'secret.deliverable') {
+    if (ev.id <= base.secretFaultAt) return base
+    const fault = ev.kind === 'secret.deliverable' ? null : toFault(data.undeliverable, ev.at)
+    return { ...base, secretFault: fault, secretFaultAt: ev.id }
   }
-  const written = SECRET_WRITES.has(ev.kind) || ev.kind === 'secret.deleted'
-  const next = written && ev.id > base.secretsWrittenAt ? { ...base, secretsWrittenAt: ev.id } : base
-
   if (ev.kind === 'secret.deleted') {
     const name = str(data.name)
-    if (name === null) return next
-    const cur = next.secrets[name]
-    if (cur !== undefined && cur.at >= ev.id) return next // recreated after this delete
-    const secrets = { ...next.secrets }
+    if (name === null) return base
+    const cur = base.secrets[name]
+    if (cur !== undefined && cur.at >= ev.id) return base // recreated after this delete
+    const secrets = { ...base.secrets }
     delete secrets[name]
-    return { ...next, secrets, secretsDeleted: { ...next.secretsDeleted, [name]: Math.max(ev.id, next.secretsDeleted[name] ?? 0) } }
+    return { ...base, secrets, secretsDeleted: { ...base.secretsDeleted, [name]: Math.max(ev.id, base.secretsDeleted[name] ?? 0) } }
   }
-  if (!SECRET_WRITES.has(ev.kind)) return next // a secret.* kind from a later phase
+  if (!SECRET_WRITES.has(ev.kind)) return base // a secret.* kind from a later phase
   const s = toSecret(data.secret, ev.id)
-  if (s === null) return next
-  const cur = next.secrets[s.name]
-  if (cur !== undefined && cur.at >= ev.id) return next
-  if ((next.secretsDeleted[s.name] ?? 0) >= ev.id) return next
-  return { ...next, secrets: { ...next.secrets, [s.name]: s } }
+  if (s === null) return base
+  const cur = base.secrets[s.name]
+  if (cur !== undefined && cur.at >= ev.id) return base
+  if ((base.secretsDeleted[s.name] ?? 0) >= ev.id) return base
+  return { ...base, secrets: { ...base.secrets, [s.name]: s } }
 }
 
 /**
@@ -661,11 +687,18 @@ function applySecretList(prev: Entities, at: number, view: SecretList): Entities
   for (const [name, s] of Object.entries(prev.secrets)) {
     if (secrets[name] === undefined && s.at > at) secrets[name] = s
   }
+  // The delivery fault, by the same rule: the snapshot's answer stands unless
+  // a delivery event newer than it was applied. A body without the field (a
+  // server older than §4.5 #12) says nothing about it either way.
+  const fault = 'undeliverable' in view && prev.secretFaultAt <= at
+    ? { secretFault: view.undeliverable == null ? null : toFault(view.undeliverable, null), secretFaultAt: at }
+    : {}
   return {
     ...prev,
     lastEventId: Math.max(prev.lastEventId, at),
     secrets,
     secretsLoaded: true,
+    ...fault,
   }
 }
 

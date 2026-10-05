@@ -143,15 +143,19 @@ export function checkReach(reach: string): SecretRefusal | null {
     return { code: 'secret_reach_required', detail: 'The reach field is required: it is the decision to grant, written down.' }
   }
   if (byteLength(reach) > MAX_REACH_LEN) {
-    return { code: 'secret_reach_required', detail: `At most ${MAX_REACH_LEN} bytes.` }
+    return { code: 'secret_reach_too_long', detail: `At most ${MAX_REACH_LEN} bytes.` }
   }
   return null
 }
 
-/** validate.go validateDescription. */
+/**
+ * validate.go ValidateDescription: optional, may span lines, bounded. Its
+ * other refusal, `secret_description_invalid`, is bytes that are not UTF-8,
+ * which a JavaScript string sent as JSON cannot be.
+ */
 export function checkDescription(description: string): SecretRefusal | null {
   if (byteLength(description) > MAX_DESCRIPTION_LEN) {
-    return { code: 'secret_description_invalid', detail: `At most ${MAX_DESCRIPTION_LEN} bytes of UTF-8.` }
+    return { code: 'secret_description_too_long', detail: `At most ${MAX_DESCRIPTION_LEN} bytes.` }
   }
   return null
 }

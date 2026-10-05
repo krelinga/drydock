@@ -1,6 +1,8 @@
+import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { ApiError } from './client'
-import { describeError, inDuration } from './messages'
+import { describeError, inDuration, sentenceFor } from './messages'
 
 describe('describeError', () => {
   it('maps by code and never shows the server prose', () => {
@@ -54,6 +56,24 @@ describe('describeError', () => {
     expect(cap).not.toMatch(/\bstop\b/i)
     // Control: the other 409 says something else entirely.
     expect(describeError(new ApiError(409, 'in_progress'))).toBe('Already in progress.')
+  })
+
+  it('has a sentence for every code internal/secrets can refuse with, and the split codes say different things', () => {
+    const go = readFileSync(resolve(process.cwd(), '../internal/secrets/validate.go'), 'utf8')
+    const codes = [...go.matchAll(/^\s*Code\w+\s+= "([a-z_]+)"$/gm)].map((m) => m[1]!)
+    // Control: the parse found the block, new codes included.
+    expect(codes).toEqual(expect.arrayContaining(['secret_value_required', 'secret_reach_too_long', 'secret_description_too_long']))
+    for (const c of codes) expect(sentenceFor(c), c).toBeDefined()
+
+    // §4.5 #13: absent on a new name and empty are different refusals.
+    expect(sentenceFor('secret_value_required')).toBe('A new secret needs a value. There is no stored value to keep.')
+    expect(sentenceFor('secret_value_empty')).toContain('cannot be told apart from an unset variable')
+    // §4.5 #14: blank and too long are two sentences, neither describing the other.
+    expect(sentenceFor('secret_reach_required')).toBe('Say what someone could do with this secret. The answer is required.')
+    expect(sentenceFor('secret_reach_too_long')).toBe('The answer to "what can someone do with this?" is too long: at most 2000 bytes.')
+    expect(sentenceFor('secret_reach_required')).not.toMatch(/2000|long/)
+    expect(sentenceFor('secret_description_too_long')).toBe('The description is too long: at most 4000 bytes.')
+    expect(sentenceFor('secret_description_invalid')).toBe('The description must be text.')
   })
 
   it('handles something that is not an ApiError', () => {

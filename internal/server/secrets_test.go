@@ -59,7 +59,10 @@ func forms(s string) map[string]string {
 
 // secretsServer is a real server with an App (faked) and a master key, two
 // running workspaces on two repositories, and their broker sockets.
-func secretsServer(t *testing.T, dir string, masterKey []byte) *running {
+//
+// seed is SQL run after those rows and before Serve, for a test that needs the
+// database in a state no route can produce.
+func secretsServer(t *testing.T, dir string, masterKey []byte, seed ...string) *running {
 	t.Helper()
 	cfg := testConfig(t, dir)
 	f := githubtest.New(t, 5189455, time.Now)
@@ -79,14 +82,14 @@ func secretsServer(t *testing.T, dir string, masterKey []byte) *running {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, q := range []string{
+	for _, q := range append([]string{
 		`INSERT INTO repository (id, installation_id, full_name, default_branch) VALUES (101, 77, 'krelinga/alpha', 'main')`,
 		`INSERT INTO repository (id, installation_id, full_name, default_branch) VALUES (202, 77, 'krelinga/beta', 'main')`,
 		// Stopped, so boot reconciliation leaves them alone whether or not
 		// this machine has Docker; marked running once it has finished.
 		`INSERT INTO workspace (id, repository_id, host_path, branch, state) VALUES ('` + wsGranted + `', 101, '/x', 'main', 'stopped')`,
 		`INSERT INTO workspace (id, repository_id, host_path, branch, state) VALUES ('` + wsUngranted + `', 202, '/y', 'main', 'stopped')`,
-	} {
+	}, seed...) {
 		if _, err := srv.DB.ExecContext(context.Background(), q); err != nil {
 			t.Fatal(err)
 		}

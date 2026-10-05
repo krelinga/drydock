@@ -122,25 +122,72 @@ describe('the secrets list', () => {
   })
 })
 
-describe('secret.undeliverable', () => {
-  it('is one banner on every screen, and says when a later change came after it', async () => {
+describe('undeliverable secrets (frontend §4.5 #12)', () => {
+  const banner = (w: Mounted['wrapper']) => w.find('[data-test="fleet-banner"]')
+  const STRIPE_LOST = { since: new Date(Date.now() - 5 * 60e3).toISOString(), secrets: [{ name: 'STRIPE_TEST_KEY', reason: 'does_not_open' }] }
+
+  it('is one banner on every screen, naming the secret and its repair, and a write that repairs nothing leaves it', async () => {
     const { wrapper, b, router } = await open('/')
-    expect(wrapper.find('[data-test="fleet-banner"]').exists()).toBe(false)
+    expect(banner(wrapper).exists()).toBe(false) // control: a healthy fleet has none
     secretUndeliverable(b)
     await settle()
-    const banner = () => wrapper.find('[data-test="fleet-banner"]')
-    expect(banner().attributes('role')).toBe('alert')
-    expect(banner().find('b').text()).toBe('Stored secrets cannot be delivered.')
-    expect(banner().text()).toContain("Every workspace's commands fail until this is fixed.")
-    expect(banner().find('[data-test="fleet-detail"]').text()).toContain('does not open with the current key')
+    expect(banner(wrapper).attributes('role')).toBe('alert')
+    expect(banner(wrapper).find('b').text()).toBe('Stored secrets cannot be delivered.')
+    expect(banner(wrapper).text()).toContain("Every workspace's commands fail until this is fixed.")
+    expect(wrapper.findAll('[data-test="fleet-item"]').map((i) => i.text()))
+      .toEqual(["STRIPE_TEST_KEY: Drydock's secrets key cannot open it. Store its value again."])
     await router.push('/settings')
     await settle()
-    expect(banner().exists()).toBe(true)
-    // A later write: the report predates it, and the banner says so.
-    emit(b, 'secret.updated', { data: { secret: secretMeta(b, b.secrets.STRIPE_TEST_KEY!) } })
+    expect(banner(wrapper).exists()).toBe(true)
+    // A write is not a repair: the banner stays, unchanged, until the server says so.
+    emit(b, 'secret.updated', { data: { secret: secretMeta(b, b.secrets.NPM_READ_TOKEN!) } })
     await settle()
-    expect(banner().text()).toContain('before the latest change to secrets')
-    expect(banner().classes()).toContain('warn')
+    expect(banner(wrapper).classes()).toContain('bad')
+    expect(wrapper.findAll('[data-test="fleet-item"]').length).toBe(1)
+  })
+
+  it('a reload shows a standing fault from GET /api/secrets, on a screen that is not about secrets', async () => {
+    // Nothing on the stream: the fault predates this page, as after a reload.
+    const { wrapper, b, es } = await open('/', { undeliverable: STRIPE_LOST })
+    expect(b.events.some((e) => e.kind === 'secret.undeliverable')).toBe(false)
+    expect(banner(wrapper).exists()).toBe(true)
+    expect(banner(wrapper).text()).toContain('Since 5 minutes ago.')
+    expect(wrapper.find('[data-test="fleet-item"]').text()).toContain('STRIPE_TEST_KEY')
+    // Control: the snapshot decides both ways. Repaired while this page
+    // missed the event (the server restarted, say), the next refetch clears it.
+    b.undeliverable = null
+    es.drop().open()
+    await settle()
+    expect(banner(wrapper).exists()).toBe(false)
+  })
+
+  it('storing the value again clears it, by secret.deliverable — on every device, not only the one that repaired it', async () => {
+    const { wrapper, b, router } = await open('/secrets/STRIPE_TEST_KEY', { undeliverable: STRIPE_LOST })
+    expect(banner(wrapper).exists()).toBe(true)
+    await wrapper.find('[data-test="edit"]').trigger('click')
+    await wrapper.find('[data-test="value"]').setValue('sk_test_restored')
+    await wrapper.find('[data-test="save"]').trigger('click')
+    await settle()
+    expect(b.events.at(-1)?.kind).toBe('secret.deliverable')
+    expect(banner(wrapper).exists()).toBe(false)
+    await router.push('/')
+    await settle()
+    expect(banner(wrapper).exists()).toBe(false)
+    // Control: break it again and it is back; the clear was the event, not a one-way latch.
+    secretUndeliverable(b)
+    await settle()
+    expect(banner(wrapper).exists()).toBe(true)
+  })
+
+  it('a repair made on another device clears it here, with no refetch', async () => {
+    const { wrapper, b } = await open('/', { undeliverable: STRIPE_LOST })
+    expect(banner(wrapper).exists()).toBe(true)
+    const reads = secretReads(b)
+    b.undeliverable = null
+    emit(b, 'secret.deliverable', { data: {} })
+    await settle()
+    expect(banner(wrapper).exists()).toBe(false)
+    expect(secretReads(b)).toBe(reads)
   })
 })
 
@@ -228,7 +275,10 @@ describe('the create form', () => {
     ['secret_value_empty', 400, 'value-error'],
     ['secret_value_control_character', 400, 'value-error', 'It contains the control character U+0085 at byte 3. A multi-line credential, such as a PEM, goes in as base64.'],
     ['secret_value_too_long', 400, 'value-error'],
+    ['secret_value_required', 400, 'value-error'],
     ['secret_reach_required', 400, 'reach-error'],
+    ['secret_reach_too_long', 400, 'reach-error'],
+    ['secret_description_too_long', 400, 'description-error'],
     ['secret_description_invalid', 400, 'description-error'],
     ['secrets_not_configured', 503, 'form-error'],
     ['bad_request', 400, 'form-error'],
@@ -282,7 +332,7 @@ describe('the create form', () => {
     expect(JSON.stringify(b.events)).not.toContain(canary)
 
     // Opening the replace form on the same secret finds an empty field.
-    await wrapper.find('[data-test="replace"]').trigger('click')
+    await wrapper.find('[data-test="edit"]').trigger('click')
     expect((wrapper.find('[data-test="value"]').element as HTMLTextAreaElement).value).toBe('')
     expect(fieldValues().join('\n')).not.toContain(canary)
   })
@@ -305,10 +355,13 @@ describe('replacing a value', () => {
   it('opens empty, says the current value is not shown, and pre-fills only the prose', async () => {
     const { wrapper, b } = await open('/secrets/STRIPE_TEST_KEY')
     expect(wrapper.find('[data-test="value"]').exists()).toBe(false) // no field until asked
-    await wrapper.find('[data-test="replace"]').trigger('click')
+    await wrapper.find('[data-test="edit"]').trigger('click')
     const value = wrapper.find('[data-test="value"]').element as HTMLTextAreaElement
     expect(value.value).toBe('')
-    expect(wrapper.find('[data-test="value-help"]').text()).toContain('The current value is not shown. Saving replaces it.')
+    const help = wrapper.find('[data-test="value-help"]').text()
+    expect(help).toContain('The current value is not shown. Leave this empty to keep it')
+    // §4.5 #13 is closed: nothing asks for the current value to be typed again.
+    expect(help).not.toMatch(/again|current value again|re-?enter/i)
     // Control: the form is pre-filled — with the reach, which is metadata.
     expect((wrapper.find('[data-test="reach"]').element as HTMLTextAreaElement).value).toBe(b.secrets.STRIPE_TEST_KEY!.reach)
     expect(fieldValues()).not.toContain(b.secrets.STRIPE_TEST_KEY!.value)
@@ -317,7 +370,7 @@ describe('replacing a value', () => {
   it('splits the stale workspaces into two kinds, with the restart warning on the second only', async () => {
     const { wrapper, b } = await open('/secrets/STRIPE_TEST_KEY')
     const rotate = async (v: string) => {
-      await wrapper.find('[data-test="replace"]').trigger('click')
+      await wrapper.find('[data-test="edit"]').trigger('click')
       await wrapper.find('[data-test="value"]').setValue(v)
       await wrapper.find('[data-test="save"]').trigger('click')
       await settle()
@@ -343,9 +396,54 @@ describe('replacing a value', () => {
     expect(section('new-commands').find('[data-test="restart-warning"]').exists()).toBe(false)
   })
 
+  it('changing only the reach sends no value key and is not a rotation; a value edit sends one', async () => {
+    const { wrapper, b } = await open('/secrets/STRIPE_TEST_KEY')
+    const stored = b.secrets.STRIPE_TEST_KEY!.value
+    await wrapper.find('[data-test="edit"]').trigger('click')
+    expect(wrapper.find('[data-test="save"]').text()).toBe('Save changes')
+    await wrapper.find('[data-test="reach"]').setValue('Test mode charges only, in the sandbox account.')
+    await wrapper.find('[data-test="save"]').trigger('click')
+    await settle()
+    // No `value` key at all: not "", not null — absent is the request that means "keep".
+    const sent = JSON.parse(puts(b)[0]!.body) as Record<string, unknown>
+    expect(Object.keys(sent).sort()).toEqual(['description', 'reach'])
+    expect(b.secrets.STRIPE_TEST_KEY!.value).toBe(stored)
+    // No client-side "needs a value" on the way, and the result says the value was kept.
+    expect(wrapper.find('[data-test="value-error"]').exists()).toBe(false)
+    expect(wrapper.find('[data-test="result-unchanged"]').text()).toContain('The value was kept as it is')
+    expect(wrapper.find('[data-test="stale-new-commands"]').exists()).toBe(false)
+    expect(b.events.at(-1)?.kind).toBe('secret.updated')
+    expect(wrapper.find('[data-test="detail-reach"]').text()).toBe('Test mode charges only, in the sandbox account.')
+
+    // Control: typing a value sends it, the button says so, and it is a rotation.
+    await wrapper.find('[data-test="dismiss"]').trigger('click')
+    await wrapper.find('[data-test="edit"]').trigger('click')
+    await wrapper.find('[data-test="value"]').setValue('sk_test_rotated')
+    expect(wrapper.find('[data-test="save"]').text()).toBe('Replace value')
+    await wrapper.find('[data-test="save"]').trigger('click')
+    await settle()
+    expect(JSON.parse(puts(b)[1]!.body)).toMatchObject({ value: 'sk_test_rotated' })
+    expect(b.events.at(-1)?.kind).toBe('secret.rotated')
+    expect(wrapper.find('[data-test="stale-new-commands"]').exists()).toBe(true)
+  })
+
+  it('a new secret still needs a value: the create form refuses an empty one before sending', async () => {
+    const { wrapper, b } = await open('/secrets/new')
+    await fillCreate(wrapper, 'NEW_KEY', '')
+    await wrapper.find('[data-test="save"]').trigger('click')
+    await settle()
+    expect(said(wrapper.find('[data-test="value-error"]'))).toBe(sentenceFor('secret_value_empty'))
+    expect(puts(b)).toEqual([])
+    // Control: with a value it sends, and the value is in the body.
+    await wrapper.find('[data-test="value"]').setValue('v')
+    await wrapper.find('[data-test="save"]').trigger('click')
+    await settle()
+    expect(JSON.parse(puts(b)[0]!.body)).toMatchObject({ value: 'v' })
+  })
+
   it('the same value again is not a rotation, and nothing is stale', async () => {
     const { wrapper, b } = await open('/secrets/STRIPE_TEST_KEY')
-    await wrapper.find('[data-test="replace"]').trigger('click')
+    await wrapper.find('[data-test="edit"]').trigger('click')
     await wrapper.find('[data-test="value"]').setValue(b.secrets.STRIPE_TEST_KEY!.value)
     await wrapper.find('[data-test="reach"]').setValue('Test mode charges only.')
     await wrapper.find('[data-test="save"]').trigger('click')
@@ -362,7 +460,7 @@ describe('replacing a value', () => {
       created: false, rotated: true, stale: { new_commands: [], needs_supervisor_restart: [] },
       secret: { ...secretMeta(b, b.secrets.STRIPE_TEST_KEY!), reach: 'FROM-THE-BODY' },
     })))
-    await wrapper.find('[data-test="replace"]').trigger('click')
+    await wrapper.find('[data-test="edit"]').trigger('click')
     await wrapper.find('[data-test="value"]').setValue('sk_test_x')
     await wrapper.find('[data-test="save"]').trigger('click')
     await settle()
@@ -459,7 +557,7 @@ describe('delete', () => {
 
   it('a secret deleted on another device shows as gone, and its form goes with it', async () => {
     const { wrapper, b } = await open('/secrets/STRIPE_TEST_KEY')
-    await wrapper.find('[data-test="replace"]').trigger('click')
+    await wrapper.find('[data-test="edit"]').trigger('click')
     await wrapper.find('[data-test="value"]').setValue('typed-before-delete')
     delete b.secrets.STRIPE_TEST_KEY
     emit(b, 'secret.deleted', { data: { name: 'STRIPE_TEST_KEY' } })

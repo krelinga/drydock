@@ -33,7 +33,6 @@ describe('secret events', () => {
     expect(e.secrets.API_KEY).toMatchObject({
       name: 'API_KEY', rotatedAt: at(3), grants: [{ repositoryId: 1, fullName: 'krelinga/drydock' }], at: 3,
     })
-    expect(e.secretsWrittenAt).toBe(3)
     e = reduce(e, { type: 'event', event: ev(4, 'secret.deleted', { name: 'API_KEY' }) })
     expect(e.secrets.API_KEY).toBeUndefined()
     expect(e.secretsDeleted.API_KEY).toBe(4)
@@ -89,16 +88,65 @@ describe('secret events', () => {
   })
 
   it('records secret.undeliverable as the fleet fault, newest wins', () => {
+    const report = (...names: string[]) => ({
+      undeliverable: { since: at(1), secrets: names.map((name) => ({ name, reason: 'does_not_open' })) },
+    })
     const e = play([
-      ev(1, 'secret.undeliverable', undefined, 'first', 'error'),
-      ev(3, 'secret.undeliverable', undefined, 'second', 'error'),
-      ev(2, 'secret.undeliverable', undefined, 'late', 'error'),
+      ev(1, 'secret.undeliverable', report('A', 'B'), 'first', 'error'),
+      ev(3, 'secret.undeliverable', report('B'), 'second', 'error'),
+      ev(2, 'secret.undeliverable', report('A', 'B', 'C'), 'late', 'error'),
     ])
-    expect(e.secretFault).toEqual({ at: at(3), message: 'second', eventId: 3 })
-    // A write after it is what the banner uses to say the report is older.
-    expect(e.secretsWrittenAt).toBe(0)
-    expect(reduce(e, { type: 'event', event: ev(4, 'secret.created', { secret: meta('K') }) }).secretsWrittenAt).toBe(4)
+    expect(e.secretFault).toEqual({ since: at(1), secrets: [{ name: 'B', reason: 'does_not_open' }] })
+    expect(e.secretFaultAt).toBe(3)
     expect(emptyEntities().secretFault).toBeNull()
+    // A write is not a repair: the fault stands until something says so.
+    expect(reduce(e, { type: 'event', event: ev(4, 'secret.created', { secret: meta('K') }) }).secretFault).not.toBeNull()
+  })
+
+  it('secret.deliverable clears it, and a late report cannot bring it back', () => {
+    const broke = ev(1, 'secret.undeliverable', { undeliverable: { since: at(1), secrets: [{ name: 'K', reason: 'does_not_open' }] } }, 'm', 'error')
+    const fixed = ev(2, 'secret.deliverable', {})
+    expect(play([broke, fixed]).secretFault).toBeNull()
+    // Out of order: the older report arrives after the repair, and changes nothing.
+    expect(play([fixed, broke]).secretFault).toBeNull()
+    // Control: without the repair the fault stands, and a later break after it does too.
+    expect(play([broke]).secretFault).not.toBeNull()
+    expect(play([broke, fixed, ev(3, 'secret.undeliverable', {}, 'm', 'error')]).secretFault).toEqual({ since: at(3), secrets: [] })
+  })
+
+  it('copies the fault by named fields, so nothing else a frame carries reaches the store', () => {
+    const e = play([ev(1, 'secret.undeliverable', {
+      undeliverable: { since: at(1), secrets: [{ name: 'K', reason: 'does_not_open', value: 'CANARY-in-a-fault' }], value: 'CANARY-top' },
+    }, 'm', 'error')])
+    expect(JSON.stringify(e)).not.toContain('CANARY')
+    expect(e.secretFault!.secrets).toEqual([{ name: 'K', reason: 'does_not_open' }]) // control
+  })
+})
+
+describe('the delivery fault from GET /api/secrets', () => {
+  const fault = { since: at(0), secrets: [{ name: 'K', reason: 'does_not_open' }] }
+
+  it('a reload shows a standing fault, and a later snapshot that reports none clears it', () => {
+    const e = reduce(emptyEntities(), { type: 'secrets', at: 0, view: { secrets: [meta('K')], undeliverable: fault } })
+    expect(e.secretFault).toEqual(fault)
+    expect(reduce(e, { type: 'secrets', at: 0, view: { secrets: [meta('K')], undeliverable: null } }).secretFault).toBeNull()
+    // Control: a body from a server without the field says nothing either way.
+    expect(reduce(e, { type: 'secrets', at: 0, view: { secrets: [meta('K')] } }).secretFault).toEqual(fault)
+  })
+
+  it('is ordered against the delivery events like any field', () => {
+    const broke = ev(5, 'secret.undeliverable', { undeliverable: fault }, 'm', 'error')
+    const fixed = ev(6, 'secret.deliverable', {})
+    // A snapshot asked before the repair landed (at 5) cannot undo it.
+    const repaired = play([broke, fixed])
+    expect(reduce(repaired, { type: 'secrets', at: 5, view: { secrets: [], undeliverable: fault } }).secretFault).toBeNull()
+    // A snapshot asked after it (at 6) is believed, whichever way it says.
+    expect(reduce(repaired, { type: 'secrets', at: 6, view: { secrets: [], undeliverable: fault } }).secretFault).toEqual(fault)
+    // And an event newer than a snapshot beats it.
+    const loaded = reduce(emptyEntities(), { type: 'secrets', at: 3, view: { secrets: [], undeliverable: fault } })
+    expect(reduce(loaded, { type: 'event', event: ev(4, 'secret.deliverable', {}) }).secretFault).toBeNull()
+    // Control: an event at or below the snapshot's position is a replay, and changes nothing.
+    expect(reduce(loaded, { type: 'event', event: ev(3, 'secret.deliverable', {}) }).secretFault).toEqual(fault)
   })
 })
 

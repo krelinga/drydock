@@ -29,7 +29,12 @@
 //                                 refused with that code (any §10.1 code, with the
 //                                 server's own detail), whatever it sent
 //   drydockMock.noSecretsKey()    every /api/secrets route answers secrets_not_configured
-//   drydockMock.undeliverable()   the broker reports secret.undeliverable (fleet banner)
+//   drydockMock.undeliverable()   the key no longer opens STRIPE_TEST_KEY: the fleet
+//                                 banner, from the event and from a reload's GET.
+//                                 Storing its value again (Edit…) or deleting it
+//                                 repairs it, and secret.deliverable clears the banner
+//   drydockMock.undeliverable('NAME', 'breaks_write_rules')   another row, another
+//                                 reason (deleting it is that one's repair)
 //   drydockMock.fetchSecrets(id)  a workspace fetches its secrets: last access moves,
 //                                 with no event, so only a refetch shows it
 //   drydockMock.needsRestart(id)  a rotation reports that workspace as
@@ -50,8 +55,11 @@ const REFUSALS: Record<string, { status: number; message: string; detail?: strin
   secret_value_empty: { status: 400, message: 'A secret needs a value.', detail: 'An empty value cannot be told apart from an unset variable.' },
   secret_value_control_character: { status: 400, message: "A secret's value must be a single line with no control characters.", detail: 'It contains a newline (U+000A) at byte 7. A multi-line credential, such as a PEM, goes in as base64.' },
   secret_value_too_long: { status: 400, message: 'That value is too long.', detail: 'A value is at most 32768 bytes. Encode a large or multi-line credential, such as a PEM, as base64.' },
+  secret_value_required: { status: 400, message: 'A new secret needs a value.', detail: 'There is no secret by this name, so there is no stored value to keep.' },
   secret_reach_required: { status: 400, message: 'Say what someone could do with this secret.', detail: 'The reach field is required: it is the decision to grant, written down.' },
-  secret_description_invalid: { status: 400, message: 'The description is too long or is not text.', detail: 'At most 4000 bytes of UTF-8.' },
+  secret_reach_too_long: { status: 400, message: 'The reach is too long.', detail: 'At most 2000 bytes.' },
+  secret_description_too_long: { status: 400, message: 'The description is too long.', detail: 'At most 4000 bytes.' },
+  secret_description_invalid: { status: 400, message: 'The description must be text.', detail: 'It is not valid UTF-8.' },
   unknown_repository: { status: 400, message: 'That repository is not in the catalog.', detail: 'No repository has id 99. Refresh the repository list and try again.' },
   not_found: { status: 404, message: 'There is no secret by that name.' },
   bad_request: { status: 400, message: 'Send a JSON object with the documented fields.' },
@@ -113,7 +121,9 @@ export async function startMockWorker(): Promise<void> {
       backend.refuseNextSecret = { code, ...r }
     },
     noSecretsKey(on = true) { backend.secretsKey = !on },
-    undeliverable() { return secretUndeliverable(backend) },
+    undeliverable(name?: string, reason = 'does_not_open') {
+      return secretUndeliverable(backend, name === undefined ? undefined : [{ name, reason }])
+    },
     fetchSecrets(id: string) { return recordSecretFetch(backend, id) },
     needsRestart(id: string) { backend.staleRestart.push(id) },
     rotateElsewhere(name: string) {
