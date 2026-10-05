@@ -117,9 +117,16 @@ type Config struct {
 	CleanupImage string
 
 	// ClaudeVolume is the shared Claude credential volume (§7.1): the local
-	// Docker volume every workspace container mounts at CLAUDE_CONFIG_DIR,
-	// and the one the identity watch reads (§7.3). Configuration so a test
-	// Drydock never reads the real one; the design's name is the default.
+	// Docker volume every workspace container mounts at its CLAUDE_CONFIG_DIR
+	// (§6 step 4) — one login, shared by all of them — and the one the
+	// identity watch reads (§7.3). Step 4 creates it with the local driver
+	// and labels it with LabelPrefix, and refuses one of this name that lacks
+	// the label or is not a plain local volume — the refresh lock inside it
+	// needs mkdir to be atomic, which NFS and CIFS do not give (Spike 00);
+	// the watch refuses to read one without the label. Configuration so a
+	// test Drydock, with its own prefix, never touches the real login. Where
+	// it is mounted is not configuration: it is the Feature's
+	// CLAUDE_CONFIG_DIR (container.ClaudeConfigMountPoint).
 	ClaudeVolume string
 	// ClaudeBaseImage is the image Drydock builds its Claude image from —
 	// the short-lived container that runs `claude auth status --json`
@@ -136,7 +143,7 @@ type Config struct {
 	IdentityExpiringWindow time.Duration
 }
 
-// DefaultClaudeVolume is the volume name design §6 step 6 mounts.
+// DefaultClaudeVolume is the shared Claude credential volume's name (§6).
 const DefaultClaudeVolume = "drydock-claude-config"
 
 // DefaultClaudeBaseImage is node 22 on bookworm-slim by its multi-arch index
@@ -144,8 +151,14 @@ const DefaultClaudeVolume = "drydock-claude-config"
 // binary it installs needs glibc.
 const DefaultClaudeBaseImage = "node:22-bookworm-slim@sha256:43ac6c60b8f89723f746e8a92ce91abd5017e627ce1ddfe4238355d3a30b772c"
 
-// volumeNamePattern is Docker's own rule for a volume name.
+// volumeNamePattern is Docker's own rule for a volume name, and so nothing
+// that could read as an option or a second --mount field.
 var volumeNamePattern = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_.-]+$`)
+
+// ValidVolumeName reports whether name can be the shared credential volume.
+// The one rule: Validate, step 4 (internal/container) and the identity watch
+// all ask it.
+func ValidVolumeName(name string) bool { return volumeNamePattern.MatchString(name) }
 
 // DefaultCleanupImage is busybox 1.37.0 by its multi-arch index digest. The
 // helper needs only `find` with -mindepth and -delete.
@@ -153,8 +166,11 @@ const DefaultCleanupImage = "busybox:1.37.0@sha256:bdf57e528e45e4433820e045b29b4
 
 var cleanupImagePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9./_:-]*@sha256:[0-9a-f]{64}$`)
 
-// DefaultFeature is the published Feature, by major tag.
-const DefaultFeature = "ghcr.io/krelinga/drydock/drydock:0"
+// DefaultFeature is the published Feature, by major tag. Major 1 is the
+// Feature with Claude Code (§11): it refuses a container without the shared
+// credential volume this Drydock mounts, so a Drydock from before it, which
+// mounts none, stays on :0.
+const DefaultFeature = "ghcr.io/krelinga/drydock/drydock:1"
 
 // WorkspaceLabel is the full label key used for adoption and deletion.
 func (c Config) WorkspaceLabel() string { return c.LabelPrefix + ".workspace" }
@@ -259,7 +275,9 @@ func (c Config) Validate() error {
 	if !cleanupImagePattern.MatchString(c.CleanupImage) {
 		return fmt.Errorf("cleanup image %q must be pinned by digest (name@sha256:<64 hex>): it runs as root with a host directory mounted", c.CleanupImage)
 	}
-	if !volumeNamePattern.MatchString(c.ClaudeVolume) {
+	// Without the shared volume every workspace would need its own login,
+	// and the Feature refuses a container with nothing at CLAUDE_CONFIG_DIR.
+	if !ValidVolumeName(c.ClaudeVolume) {
 		return fmt.Errorf("claude volume %q must be a Docker volume name", c.ClaudeVolume)
 	}
 	// The Claude image reads the login every container runs on, as root

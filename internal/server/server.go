@@ -111,7 +111,10 @@ func New(ctx context.Context, cfg config.Config, env sys.Env) (*Server, error) {
 	s := &Server{DB: db, Auth: svc, Events: events.New(db.DB, env.Clock), reconciled: make(chan struct{})}
 	s.Workspaces = &workspace.Store{DB: db.DB, Events: s.Events, Env: env, Root: cfg.WorkspaceRoot, Cap: cfg.ContainerCap}
 	containers := container.Manager{Run: subproc.Exec{}, LabelPrefix: cfg.LabelPrefix, CleanupImage: cfg.CleanupImage}
-	feature := map[string]any{}
+	// The Claude Code version is this binary's, not the Feature's default:
+	// the classifiers compiled in here were recorded against it, so a
+	// Feature release under the same major tag cannot move it (§11).
+	feature := map[string]any{"claudeCodeVersion": classify.ClaudeCodeVersion}
 	if cfg.BotName != "" {
 		feature["botName"] = cfg.BotName
 	}
@@ -120,6 +123,7 @@ func New(ctx context.Context, cfg config.Config, env sys.Env) (*Server, error) {
 	}
 	s.Provisioner = &provision.Provisioner{Workspaces: s.Workspaces, Events: s.Events, Containers: containers,
 		Feature: cfg.Feature, FeatureOptions: feature, Timeout: cfg.ProvisionTimeout,
+		ClaudeVolume: cfg.ClaudeVolume, ClaudeCodeVersion: classify.ClaudeCodeVersion,
 		Logf: func(f string, a ...any) { fmt.Fprintf(os.Stderr, f+"\n", a...) }}
 	// A deleting row found at boot is finished by the same delete the route
 	// runs (§6: resume the delete), so a delete is resumable from any

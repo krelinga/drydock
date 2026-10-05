@@ -16,6 +16,7 @@ import (
 	"github.com/krelinga/drydock/internal/classify"
 	"github.com/krelinga/drydock/internal/claudeimage"
 	"github.com/krelinga/drydock/internal/config"
+	"github.com/krelinga/drydock/internal/container"
 	"github.com/krelinga/drydock/internal/events"
 	"github.com/krelinga/drydock/internal/identity"
 	"github.com/krelinga/drydock/internal/store"
@@ -86,15 +87,19 @@ func TestIdentityWatchReadsARealVolume(t *testing.T) {
 
 	// A volume of the name that this Drydock did not make (§6 step 4 labels
 	// the one it makes, and refuses to mount one without): the check fails
-	// rather than reading it, and keeps the state. Then the label, as step 4
-	// puts it, and the same volume is read — the control.
+	// rather than reading it, and keeps the state. Then the volume as step 4
+	// itself makes it — container.EnsureClaudeVolume, the real writer — is
+	// read: the control, and the proof the reader accepts what the writer
+	// makes.
 	docker(t, "volume", "create", vol)
 	var re *identity.ReadError
 	if _, err := w.Check(ctx); !errors.As(err, &re) || re.Problem != identity.ProblemForeign {
 		t.Fatalf("an unlabelled volume: %v; want a foreign_volume read error", err)
 	}
 	docker(t, "volume", "rm", vol)
-	docker(t, "volume", "create", "--label", p+"."+identity.LabelVolume+"=true", vol)
+	if created, err := (container.Manager{Run: subproc.Exec{}, LabelPrefix: p}).EnsureClaudeVolume(ctx, vol); err != nil || !created {
+		t.Fatalf("step 4's volume: created %v, %v", created, err)
+	}
 	check(identity.Absent)
 
 	fixtures, _ := filepath.Abs(filepath.Join("..", "fixtures", "credentials"))

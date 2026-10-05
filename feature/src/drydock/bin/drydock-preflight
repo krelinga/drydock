@@ -1,0 +1,129 @@
+#!/bin/sh
+# drydock-preflight — the first half of the Feature's postCreateCommand
+# (design §11): refuse, loudly and by name, a container in which Claude Code's
+# Remote Control would build and start and then never connect. Every check
+# here guards something that otherwise fails silently (§12, "everything
+# builds, nothing connects"):
+#
+#   * The five variables of §2.1. Any of DISABLE_TELEMETRY, DO_NOT_TRACK,
+#     CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC or DISABLE_GROWTHBOOK being set
+#     — to anything, even empty — or ANTHROPIC_BASE_URL pointing anywhere but
+#     https://api.anthropic.com disables Remote Control while everything else
+#     works. They are checked in this process's environment, which carries
+#     containerEnv and remoteEnv both, and in the env blocks of the settings
+#     files Claude Code reads, because an env block there sets the same
+#     variables for every session.
+#   * CLAUDE_CONFIG_DIR is the Feature's, and Drydock's shared credential
+#     volume is the one thing mounted there (§7.1). Another Feature or the
+#     repository setting CLAUDE_CONFIG_DIR elsewhere, or mounting a volume of
+#     its own over or inside it, gives this container a login of its own:
+#     nothing fails, it just never shares the fleet's (§11, "Relationship to
+#     the existing setup"). Two mounts at exactly the same path never get
+#     here — Docker refuses the container ("Duplicate mount point", measured
+#     on Docker 29 and CLI 0.89.0) — but a mount inside it, or the variable
+#     moved, would.
+#   * The volume is not on a network filesystem. Claude Code's refresh lock
+#     is a mkdir(2) lock in this directory, and NFS or CIFS do not give mkdir
+#     the atomicity it rests on (Spike 00).
+#   * The remote user — who runs this — is not root and owns the directory.
+#     Every container on the shared volume must run as the same user, or one
+#     cannot read the credential another wrote (mode 0600).
+#
+# Every failed check is reported, each on its own line naming what failed,
+# and then the command exits 1, which fails `devcontainer up`.
+set -u
+
+# The Feature's CLAUDE_CONFIG_DIR, as devcontainer-feature.json's
+# containerEnv sets it and Drydock mounts its volume (container.ClaudeConfigMountPoint).
+want=/home/vscode/.claude
+
+failed=0
+fail() {
+	echo "drydock feature: $*" >&2
+	failed=1
+}
+
+# --- §2.1's variables, in the environment ---------------------------------
+for v in DISABLE_TELEMETRY DO_NOT_TRACK CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC DISABLE_GROWTHBOOK; do
+	eval "set_=\${$v+x}"
+	# shellcheck disable=SC2154 # set by the eval
+	[ -z "$set_" ] || fail "$v is set in the container's environment, and it disables Claude Code's Remote Control (design §2.1). Remove it from the dev container's containerEnv or remoteEnv."
+done
+# The value is not printed: a gateway URL can carry a credential.
+if [ -n "${ANTHROPIC_BASE_URL+x}" ]; then
+	case $ANTHROPIC_BASE_URL in
+	https://api.anthropic.com | https://api.anthropic.com/) ;;
+	*) fail "ANTHROPIC_BASE_URL is set to something other than https://api.anthropic.com, and any gateway or proxy disables Claude Code's Remote Control (design §2.1). Unset it in the dev container's containerEnv or remoteEnv." ;;
+	esac
+fi
+
+# --- and in the settings files whose env block Claude Code applies ---------
+# The user settings on the shared volume, the project's two in the workspace
+# folder (this runs there), and the managed policy file.
+for f in "$want/settings.json" "$PWD/.claude/settings.json" "$PWD/.claude/settings.local.json" \
+	/etc/claude-code/managed-settings.json; do
+	[ -e "$f" ] || continue
+	if ! names=$(jq -r '(.env // {}) | if type == "object" then
+			(to_entries[] | select(.key != "ANTHROPIC_BASE_URL" or
+				(.value != "https://api.anthropic.com" and .value != "https://api.anthropic.com/")) | .key)
+			else error("env is not an object") end' "$f" 2>/dev/null); then
+		fail "$f is not JSON Drydock can read, and Claude Code applies its env block; Drydock cannot tell whether it disables Remote Control."
+		continue
+	fi
+	for v in ANTHROPIC_BASE_URL DISABLE_TELEMETRY DO_NOT_TRACK CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC DISABLE_GROWTHBOOK; do
+		if printf '%s\n' "$names" | grep -qx "$v"; then
+			fail "$v is set in the env block of $f, and it disables Claude Code's Remote Control (design §2.1). Remove it from that file."
+		fi
+	done
+done
+
+# --- the shared credential volume ------------------------------------------
+dir=${CLAUDE_CONFIG_DIR-}
+if [ "$dir" != "$want" ]; then
+	fail "CLAUDE_CONFIG_DIR is '$dir', not the Drydock Feature's $want: something else in this dev container sets it, and Claude Code would keep a login of its own there instead of using Drydock's shared credential volume (design §7.1)."
+fi
+
+# /proc/self/mountinfo: field 5 is the mount point, and the field after the
+# lone "-" is the filesystem type. The paths compared contain no spaces, so
+# mountinfo's \040 escaping cannot hide a match.
+mounts=$(awk -v d="$want" '$5 == d || index($5, d "/") == 1 {
+	for (i = 7; i <= NF; i++) if ($i == "-") { print $5, $(i + 1); break }
+}' /proc/self/mountinfo)
+at=$(printf '%s\n' "$mounts" | awk -v d="$want" '$1 == d' | grep -c . || true)
+if [ "$at" = 0 ]; then
+	fail "nothing is mounted at $want: Drydock's shared credential volume is missing, so this container would need a login of its own (design §7.1). Drydock passes the mount to devcontainer up; this container was not made by Drydock, or the mount was dropped."
+elif [ "$at" != 1 ]; then
+	fail "$at filesystems are mounted at $want; only Drydock's shared credential volume may be (design §11)."
+fi
+printf '%s\n' "$mounts" | awk -v d="$want" '$1 != "" && $1 != d { print $1 }' | while read -r m; do
+	echo "drydock feature: $m is a separate mount inside $want, so part of the shared Claude configuration would not be shared; remove that mount from the dev container (design §11)." >&2
+done
+if printf '%s\n' "$mounts" | awk -v d="$want" '$1 != "" && $1 != d { found = 1 } END { exit !found }'; then
+	failed=1
+fi
+fstype=$(printf '%s\n' "$mounts" | awk -v d="$want" '$1 == d { print $2; exit }')
+case $fstype in
+nfs* | cifs | smb* | 9p | ceph* | glusterfs | lustre | gpfs | afs | fuse | fuse.*)
+	fail "$want is on a $fstype filesystem. Drydock's shared credential volume must be a local Docker volume: Claude Code's refresh lock relies on mkdir being atomic, which network filesystems do not guarantee (Spike 00)."
+	;;
+esac
+
+# --- the remote user --------------------------------------------------------
+uid=$(id -u)
+user=$(id -un 2>/dev/null || echo "uid $uid")
+if [ "$uid" = 0 ]; then
+	fail "the dev container's remote user is root. Claude Code's sessions run as the remote user, and the shared credential volume belongs to the non-root user every workspace runs as (vscode in Drydock's own configuration); set remoteUser."
+elif [ -d "$want" ]; then
+	owner=$(stat -c %u "$want")
+	if [ "$owner" != "$uid" ]; then
+		fail "$want belongs to uid $owner, but the remote user $user is uid $uid. Every container on the shared credential volume must run as the user it belongs to, or one cannot read the login another wrote."
+	elif [ ! -w "$want" ]; then
+		fail "$want is not writable by the remote user $user."
+	fi
+fi
+
+if [ "$failed" != 0 ]; then
+	echo "drydock feature: this container is not fit to run a Claude Code Remote Control session; see above." >&2
+	exit 1
+fi
+exit 0

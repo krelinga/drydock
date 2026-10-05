@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/krelinga/drydock/internal/api"
+	"github.com/krelinga/drydock/internal/classify"
 	"github.com/krelinga/drydock/internal/github/githubtest"
 	"github.com/krelinga/drydock/internal/subproc"
 	"github.com/krelinga/drydock/internal/sys"
@@ -36,13 +37,35 @@ func fakeDevcontainer(t *testing.T, origin string) subproc.Runner {
 		// the real CLI names the folder it was given ($3), so the fake does.
 		"read-configuration) sed \"s#/srv/drydock/ws/FIXTURE/repo#$3#g\" <<'EOF'\n" + read("read-configuration-ok.json") + "\nEOF\n;;\n" +
 		"up) cat <<'EOF'\n" + read("up-ok.json") + "\nEOF\n;;\n" +
-		"exec) case \" $* \" in *\" remote -v \"*) printf 'origin\\t%s (fetch)\\n' '" + origin + "' ;; esac ;;\n" +
+		"exec) case \" $* \" in *\" remote -v \"*) printf 'origin\\t%s (fetch)\\n' '" + origin + "' ;;\n" +
+		"  *\" claude --version \"*) echo '" + classify.ClaudeCodeVersion + " (Claude Code)' ;; esac ;;\n" +
 		"*) exit 64 ;;\nesac\n"
-	p := filepath.Join(t.TempDir(), "devcontainer")
+	dir := t.TempDir()
+	p := filepath.Join(dir, "devcontainer")
 	if err := os.WriteFile(p, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	return subproc.Exec{Resolver: subproc.FixedResolver{"devcontainer": p}}
+	// docker: step 4's shared credential volume, absent and then created —
+	// under whatever name the config gives it, echoed from the argv, never
+	// assumed; no containers listed; every stop and rm accepted. The last
+	// argument of a volume command is the name (after "--", or name=<x>).
+	d := filepath.Join(dir, "docker")
+	if err := os.WriteFile(d, []byte(`#!/bin/sh
+case "$1" in ps|stop|rm) exit 0 ;; esac
+for last; do :; done
+case "$1 $2" in
+"volume ls") if [ -e "$0.made" ]; then cat "$0.name"; fi ;;
+"volume create") echo "$6" >"$0.made"; echo "$last" >"$0.name"; echo "$last" ;;
+"volume inspect")
+  label=$(sed 's/=.*//' "$0.made")
+  if [ "$3" = --format ]; then printf '{"%s":"true"}\n' "$label"
+  else printf '[{"Name":"%s","Driver":"local","Labels":{"%s":"true"}}]\n' "$last" "$label"; fi ;;
+*) exit 64 ;;
+esac
+`), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return subproc.Exec{Resolver: subproc.FixedResolver{"devcontainer": p, "docker": d}}
 }
 
 func body(t *testing.T, r io.Reader, v any) {

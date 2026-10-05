@@ -113,9 +113,15 @@ func TestWorkspaceContainerReachesOnlyItsOwnRepository(t *testing.T) {
 	remoteEnv := map[string]string{"DRYDOCK_GITHUB_HOST": host}
 	upCtx, cancel := context.WithTimeout(ctx, 10*time.Minute)
 	defer cancel()
+	// The shared credential volume, as step 4 makes it: the Feature refuses
+	// a container without one.
+	if _, err := m.EnsureClaudeVolume(ctx, claudeVolume(p)); err != nil {
+		t.Fatal(err)
+	}
 	res, stderr, err := m.Up(upCtx, container.UpSpec{
 		WorkspaceID: ws, RepositoryID: 101, FullName: "krelinga/alpha", Branch: "main", Folder: folder,
 		BrokerSocket: b.SocketPath(ws),
+		ClaudeVolume: claudeVolume(p),
 		RemoteEnv:    remoteEnv,
 	})
 	if err != nil || res.Outcome != classify.ContainerRunning {

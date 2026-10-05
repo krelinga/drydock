@@ -24,7 +24,7 @@ import (
 
 // TestStopStartRebuildDelete is Phase 6's lifecycle in the container tier:
 // through the real server, signed in, with the real devcontainer CLI and the
-// published Feature on the devcontainer's Docker. One workspace goes
+// Feature from this checkout on the devcontainer's Docker. One workspace goes
 // provision → stop → start → rebuild → delete, and at each point Docker is
 // asked what is true rather than the row:
 //
@@ -70,6 +70,7 @@ func TestStopStartRebuildDelete(t *testing.T) {
 	cfg.SocketGroup, cfg.LabelPrefix = g.Name, p
 	cfg.GitHubAppID, cfg.GitHubAppKey, cfg.GitHubAPI = 4242, key, f.URL
 	cfg.BotName, cfg.BotEmail = "krelinga-drydock-dev[bot]", botEmail
+	cfg.Feature, cfg.ClaudeVolume = newFeatureRegistry(t).Drydock, claudeVolume(p)
 
 	srv, err := server.New(context.Background(), cfg, sys.Production())
 	if err != nil {
@@ -256,5 +257,10 @@ func TestStopStartRebuildDelete(t *testing.T) {
 	}
 	if err := token(id); err == nil {
 		t.Error("a token request on the deleted workspace's socket path succeeded")
+	}
+	// The shared credential volume is every workspace's login: a delete
+	// never takes it (§7.1).
+	if got := docker(t, "volume", "ls", "-q", "--filter", "label="+p+".claude-config"); got != claudeVolume(p) {
+		t.Errorf("after delete, the shared credential volume: %q", got)
 	}
 }

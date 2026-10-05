@@ -9,6 +9,8 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/krelinga/drydock/internal/config"
+	"github.com/krelinga/drydock/internal/container"
 	"github.com/krelinga/drydock/internal/subproc"
 )
 
@@ -66,12 +68,12 @@ const Mount = "/claude"
 const LabelIdentity = "identity"
 
 // LabelVolume is the label, under the prefix, that §6 step 4 puts on the
-// shared credential volume when it makes it (internal/container's
-// LabelClaudeConfig, which must stay equal to this). A volume of the
+// shared credential volume when it makes it — internal/container's
+// LabelClaudeConfig itself, so the writer and the reader cannot drift. A volume of the
 // configured name without it was made by something else — another Drydock
 // with its own prefix, or a hand — and step 4 refuses to mount it, so the
 // watch refuses to read it: a login no workspace runs on is not the fleet's.
-const LabelVolume = "claude-config"
+const LabelVolume = container.LabelClaudeConfig
 
 // maxRead bounds what Drydock reads from either helper. A credential file is a
 // few hundred bytes; anything past this is not one.
@@ -86,7 +88,6 @@ const credentialsScript = `f=` + Mount + `/.credentials.json; if [ -e "$f" ] || 
 const exitAbsent = 3
 
 var (
-	volumePattern  = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_.-]+$`)
 	imageIDPattern = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
 	pinnedPattern  = regexp.MustCompile(`^[a-z0-9][a-z0-9./_:-]*@sha256:[0-9a-f]{64}$`)
 )
@@ -178,7 +179,7 @@ func (d DockerSource) AuthStatus(ctx context.Context) ([]byte, error) {
 // RunArgs is the helper's `docker run` argv, exported so it can be asserted
 // on directly: it mounts the login every workspace runs on.
 func (d DockerSource) RunArgs(image string, entrypoint string, args ...string) ([]string, error) {
-	if !volumePattern.MatchString(d.Volume) {
+	if !config.ValidVolumeName(d.Volume) {
 		return nil, fmt.Errorf("identity: %q is not a volume name", d.Volume)
 	}
 	if !imageIDPattern.MatchString(image) && !pinnedPattern.MatchString(image) {
@@ -208,7 +209,7 @@ func (d DockerSource) RunArgs(image string, entrypoint string, args ...string) (
 }
 
 func (d DockerSource) volumeExists(ctx context.Context) (bool, error) {
-	if !volumePattern.MatchString(d.Volume) {
+	if !config.ValidVolumeName(d.Volume) {
 		return false, fmt.Errorf("identity: %q is not a volume name", d.Volume)
 	}
 	// The name filter is a substring match, so the answer is the exact

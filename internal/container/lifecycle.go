@@ -52,7 +52,7 @@ func (m Manager) Stop(ctx context.Context, ids []string) error {
 // Remove removes containers with `docker rm --force --volumes`: running or
 // not, and with their anonymous volumes, which nothing else will ever name
 // again. Named volumes are never removed — the shared Claude credential
-// volume (§7.1) is one, and it is every workspace's.
+// volume (§7.1, EnsureClaudeVolume) is one, and it is every workspace's.
 func (m Manager) Remove(ctx context.Context, ids []string) error {
 	return m.each(ctx, "rm", []string{"rm", "--force", "--volumes"}, ids)
 }
