@@ -7,7 +7,9 @@
 //   event       an unnamed frame off GET /api/events
 //   resync      the one named frame: replay could not close the gap
 //   snapshot    a GET /api/repos body, with the stream position it was asked at
-//   workspaces  a GET /api/workspaces body, likewise
+//   workspaces  a GET /api/workspaces body, likewise — and the one input that
+//               writes the cap (its `capacity`); the occupied count is never
+//               stored, it is counted from the entities (lib/capacity.ts)
 //   workspace   a GET /api/workspaces/:id body — one workspace and its recent
 //               events — likewise
 //
@@ -35,6 +37,10 @@
 //                                           internal/provision subSteps (Phase 6)
 //                      {state: deleting, from: deleting, detail}  Annotate: a stuck
 //                                           delete, written as a workspace.state
+//                      {state: running, from: running, detail}  Annotate: a failed
+//                                           stop (frontend §4.5 #15)
+//                      {state, from: state}  ClearDetail: a retry clearing either
+//                                           as it starts (§4.5 #15, #16)
 //   workspace.gone     {}
 //   workspace.adopted  {container_id}       a known row matched to a container
 //   repo.refreshed     {count, added, removed}
@@ -130,6 +136,14 @@ export interface Workspace {
    */
   action: ActionRun | null
   /**
+   * The latest stop or delete sub-step, from `workspace.action` events or a
+   * snapshot's `last_action`, whichever is newer. Unlike `action` it says
+   * nothing about whether a run is in progress; it is what lets a card loaded
+   * from the list alone name the sub-step a failed stop stopped at
+   * (`stopFailed`), since the list carries no action events.
+   */
+  lastAction: LastAction | null
+  /**
    * The id of the newest `workspace.state` *event* seen for this workspace,
    * live or in a detail body — never a snapshot position, unlike `stateAt`.
    * Every stop and delete ends in a state event (the move to stopped, a stuck
@@ -138,6 +152,17 @@ export interface Workspace {
    * where it was.
    */
   stateEventId: number
+}
+
+/** The latest action sub-step, versioned like any field. */
+export interface LastAction {
+  /** `stop` or `delete`. */
+  name: string
+  step: string
+  status: StepStatus
+  detail: string | null
+  /** The id of the event (or snapshot position) that wrote it. */
+  at: number
 }
 
 /** One stop or delete, as its `workspace.action` events tell it. */
@@ -258,6 +283,13 @@ export interface Entities {
   secretFault: SecretFault | null
   /** The event id (or snapshot position) that last wrote `secretFault`, set or cleared. */
   secretFaultAt: number
+  /**
+   * The concurrent-container cap, from the last GET /api/workspaces; null
+   * until one carrying it has been applied, or when the server has none. It
+   * is configuration, so no event changes it — a restart that changed it
+   * reopens the stream, and the reopen refetches the list.
+   */
+  cap: number | null
 }
 
 export type Action =
@@ -287,6 +319,7 @@ export function emptyEntities(): Entities {
     secretsLoaded: false,
     secretFault: null,
     secretFaultAt: 0,
+    cap: null,
   }
 }
 
@@ -340,7 +373,7 @@ function stub(id: string): Workspace {
   return {
     id, repositoryId: null, fullName: null, branch: null, state: null, detail: null, step: null,
     steps: {}, containerId: null, createdAt: null, adopted: false, stateAt: 0, stepAt: 0, containerAt: 0,
-    action: null, stateEventId: 0,
+    action: null, lastAction: null, stateEventId: 0,
   }
 }
 
@@ -476,13 +509,16 @@ const FIRST_SUB_STEP = 'session_server'
  * event older than the run it would join belongs to an earlier one and is
  * dropped. Returns `w` itself when nothing changed.
  */
-function withAction(w: Workspace, ev: StreamEvent): Workspace {
+function withAction(prev: Workspace, ev: StreamEvent): Workspace {
   const data = ev.data ?? {}
   const name = str(data.action)
   const step = str(data.step)
   const status = data.status
-  if (name === null || step === null || !isStepStatus(status)) return w
+  if (name === null || step === null || !isStepStatus(status)) return prev
   const detail = str(data.detail)
+  const w = prev.lastAction === null || ev.id > prev.lastAction.at
+    ? { ...prev, lastAction: { name, step, status, detail, at: ev.id } }
+    : prev
   const rec: StepRecord = { status, detail, at: ev.at, eventId: ev.id }
   const run = w.action
   if (run === null || (ev.id > run.eventId && (name !== run.name || (step === FIRST_SUB_STEP && status === 'started')))) {
@@ -527,6 +563,21 @@ export function liveAction(w: Workspace): ActionRun | null {
  */
 export function deleteStuck(w: Workspace): boolean {
   return w.state === 'deleting' && w.detail !== null && liveAction(w) === null
+}
+
+/**
+ * Whether a stop failed and left the workspace running, annotated (design §6,
+ * frontend §4.5 #15): `running`, the server's sentence in the detail, no stop
+ * in progress, and the latest sub-step a failed stop's. The detail is never
+ * parsed — the structure says it was a stop; the sentence is only shown. On a
+ * running workspace a detail is written by that annotation or by an orphan's
+ * adoption, and any move clears it, so the last sub-step is what tells the
+ * two apart. A stop asked for again clears the detail as it starts.
+ */
+export function stopFailed(w: Workspace): boolean {
+  const a = w.lastAction
+  return w.state === 'running' && w.detail !== null && liveAction(w) === null &&
+    a !== null && a.name === 'stop' && a.status === 'failed'
 }
 
 /** Merges events into a feed: by id, newest first, capped. Returns `feed` itself when nothing changed. */
@@ -634,9 +685,19 @@ function mergeView(cur: Workspace | undefined, at: number, v: WorkspaceView): Wo
   // The snapshot moved the state past a run we saw part of: that run is over,
   // and whatever ended it fell in a gap. A detail body puts back what it can.
   const staleRun = !eventsWin && base.state !== v.state && base.action !== null && base.action.eventId <= at
+  // The latest sub-step, by the same rule as every field: an event newer than
+  // the body keeps its own. A body without the field (an older server) says
+  // nothing either way.
+  const la = v.last_action
+  const lastAction = la === undefined || (base.lastAction !== null && base.lastAction.at > at)
+    ? base.lastAction
+    : la === null || !isStepStatus(la.status) || str(la.action) === null || str(la.step) === null
+      ? null
+      : { name: la.action, step: la.step, status: la.status, detail: str(la.detail), at }
   return {
     ...base,
     action: staleRun ? null : base.action,
+    lastAction,
     repositoryId: v.repository_id,
     fullName: v.full_name,
     branch: v.branch,
@@ -681,6 +742,8 @@ function applyWorkspaceList(prev: Entities, at: number, view: WorkspaceList): En
     staleSince: prev.staleSince !== null && at < prev.staleSince ? prev.staleSince : null,
     workspaces,
     feeds,
+    // A body without the field (an older server) leaves what was known.
+    ...(view.capacity !== undefined ? { cap: num(view.capacity.cap) } : {}),
   }
 }
 

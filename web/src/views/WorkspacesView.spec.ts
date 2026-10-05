@@ -330,14 +330,40 @@ describe('the clone button (§4.2)', () => {
     expect(cloneBtn(wrapper, 'krelinga/notes').attributes('disabled')).toBeUndefined()
   })
 
-  it('at_capacity says where the running workspaces are; under the cap it is accepted', async () => {
+  it('at the cap, Clone is replaced by where to make room — never shown disabled', async () => {
     const b = freshBackend({ signedIn: true, scriptMode: 'manual', capacity: 1 })
+    const { wrapper } = await mountApp('/')
+    // One running workspace and a cap of one (frontend §4.5 #17, §9).
+    const notes = row(wrapper, 'krelinga/notes')
+    expect(notes.find('[data-test="clone"]').exists()).toBe(false)
+    expect(notes.find('[data-test="make-room"]').text()).toBe(
+      'At the cap: 1 of 1 workspaces are building or running. Stop one under Running to make room.')
+    expect(notes.find('[data-test="make-room"] a').attributes('href')).toBe('/#running')
+    expect(wrapper.find('[data-test="capacity"]').text()).toBe('1 of 1 slots')
+    // Control: a stop elsewhere frees the slot, and Clone comes back from the
+    // stream alone — nothing refetched.
+    FakeEventSource.latest().open().pipe(b)
+    const lists = b.log.filter((r) => new URL(r.url).pathname === '/api/workspaces').length
+    emit(b, 'workspace.state', { workspace_id: WS_RUNNING, data: { state: 'stopped', from: 'running' } })
+    await settle()
+    expect(cloneBtn(wrapper, 'krelinga/notes').exists()).toBe(true)
+    expect(row(wrapper, 'krelinga/notes').find('[data-test="make-room"]').exists()).toBe(false)
+    expect(wrapper.find('[data-test="capacity"]').text()).toBe('0 of 1 slots')
+    expect(b.log.filter((r) => new URL(r.url).pathname === '/api/workspaces').length).toBe(lists)
+  })
+
+  it('at_capacity, when the page\'s count was behind, names the cap; under the cap it is accepted', async () => {
+    const b = freshBackend({ signedIn: true, scriptMode: 'manual', capacity: 4 })
     const { wrapper, pinia } = await mountApp('/')
+    // The cap moved under the page (a restart with another --container-cap
+    // the stream has not reopened for): the page offers Clone, the server refuses.
+    b.capacity = 1
     await cloneBtn(wrapper, 'krelinga/notes').trigger('click')
     await settle()
     const err = row(wrapper, 'krelinga/notes').find('[data-test="action-error"]')
     expect(err.attributes('role')).toBe('alert')
     expect(err.text()).toContain('Stop one under Running to make room')
+    expect(err.text()).toContain('The cap is 1.')
     expect(cloneBtn(wrapper, 'krelinga/notes').attributes('disabled')).toBeUndefined()
     expect('repo:3:clone' in useStreamStore(pinia).inFlight).toBe(false)
     // Control: with room, the same tap is accepted and in flight.
@@ -376,8 +402,9 @@ describe('the Running section', () => {
     }
     const { wrapper } = await mountApp('/')
     const rows = wrapper.findAll('[data-test="running-row"]')
+    // Stoppable first (design §1), each group newest first.
     expect(rows.map((r) => r.find('[data-test="running-state"]').text())).toEqual([
-      'Failed while starting the container', 'Running', 'Running',
+      'Running', 'Running', 'Failed while starting the container',
     ])
     expect(rows.filter((r) => r.find('[data-test="ws-link"]').text() === 'krelinga/homelab').length).toBe(2)
     // Control: the catalog row still joins the newest.
@@ -388,8 +415,8 @@ describe('the Running section', () => {
     const b = freshBackend({ signedIn: true, scriptMode: 'manual' })
     const { wrapper } = await mountApp('/')
     FakeEventSource.latest().open().pipe(b)
-    const card = () => wrapper.findAll('[data-test="running-row"]')[0]!
-    expect(card().find('[data-test="ws-link"]').text()).toBe('krelinga/homelab')
+    const card = () => wrapper.findAll('[data-test="running-row"]')
+      .find((r) => r.find('[data-test="ws-link"]').text() === 'krelinga/homelab')!
     await card().find('[data-test="rebuild"] [data-test="action"]').trigger('click')
     await settle()
     expect(posts(b, `/api/workspaces/${WS_FAILED}/rebuild`).length).toBe(1)
@@ -406,6 +433,31 @@ describe('the Running section', () => {
     const { wrapper, router } = await mountApp('/')
     await wrapper.findAll('[data-test="ws-link"]')[0]!.trigger('click')
     await settle()
-    expect(router.currentRoute.value.fullPath).toBe(`/ws/${WS_FAILED}`)
+    expect(router.currentRoute.value.fullPath).toBe(`/ws/${WS_RUNNING}`)
+  })
+
+  it('sorts the stoppable first, so at the cap the cards to stop lead (design §1)', async () => {
+    const b = freshBackend({ signedIn: true, capacity: 2 })
+    // A newer failed workspace and a newer one mid-build: newest first alone
+    // would put both above the running one.
+    b.workspaces['01JC0000000000000000000091'] = {
+      id: '01JC0000000000000000000091', repository_id: 3, branch: 'main', state: 'building',
+      state_detail: null, container_id: null, created_at: new Date().toISOString(), steps: {},
+    }
+    const { wrapper } = await mountApp('/')
+    const order = () => wrapper.findAll('[data-test="running-row"]').map((r) => r.find('[data-test="ws-link"]').text())
+    expect(order()).toEqual(['krelinga/drydock', 'krelinga/notes', 'krelinga/homelab'])
+    expect(wrapper.find('[data-test="capacity"]').text()).toBe('2 of 2 slots')
+    // Control: once the build is running it is stoppable too, and newest first among the stoppable.
+    FakeEventSource.latest().open().pipe(b)
+    emit(b, 'workspace.state', { workspace_id: '01JC0000000000000000000091', data: { state: 'running', from: 'building' } })
+    await settle()
+    expect(order()).toEqual(['krelinga/notes', 'krelinga/drydock', 'krelinga/homelab'])
+    // The failed card's Rebuild would take a slot: at the cap it points at Stop instead.
+    const failed = wrapper.findAll('[data-test="running-row"]')[2]!
+    expect(failed.find('[data-test="rebuild"]').exists()).toBe(false)
+    expect(failed.find('[data-test="make-room"]').exists()).toBe(true)
+    // Control: the running cards keep Stop, which is what frees one.
+    expect(wrapper.findAll('[data-test="running-row"]')[0]!.find('[data-test="stop"] [data-test="action"]').exists()).toBe(true)
   })
 })

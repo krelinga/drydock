@@ -7,13 +7,14 @@ import { describe, expect, it } from 'vitest'
 import type { StreamEvent } from '../api/types'
 import {
   FEED_LIMIT, currentStep, deleteStuck, emptyEntities, failedStep, hasStubs, liveAction, reduce, reduceAll, runSteps,
-  workspaceForRepo,
+  stopFailed, workspaceForRepo,
   type Action, type Entities,
 } from './reducer'
 import {
   CLONE_FAILS_AT_UP, CLONE_OK, DELETE, ORPHAN, RECONCILE, REFRESH_FAILED, REFRESHED, RESTART_FAILS_EARLY,
   START_AFTER_FAIL, WS, WS2, catalogBody, detailBody, listBody, stateEvent, step, stepEvent, tokenIssued, ws2View, wsView,
-  DELETE_OK, DELETE_RESUMED, DELETE_STUCK, STOP_FAILS, STOP_OK, STUCK_DETAIL, actionEvent,
+  DELETE_OK, DELETE_RESUMED, DELETE_STUCK, STOP_FAILED_DETAIL, STOP_FAILS, STOP_OK, STOP_RETRIED, STUCK_DETAIL,
+  actionEvent, listWithCap,
 } from './reducer.fixtures'
 
 const events = (evs: StreamEvent[]): Action[] => evs.map((event) => ({ type: 'event', event }))
@@ -594,14 +595,65 @@ describe('workspace.action: a stop\'s and a delete\'s sub-steps (Phase 6)', () =
     expect(statuses(done)).toEqual({ session_server: 'done', container: 'done', broker_socket: 'done' })
   })
 
-  it('a failed stop stays live — no state event ends it — and the workspace stays running', () => {
+  it('a failed stop is ended by its annotation: running, the server\'s sentence, stopFailed', () => {
     const e = play([...CLONE_OK, ...STOP_FAILS])
-    expect(ws(e).state).toBe('running')
-    expect(liveAction(ws(e))?.last).toEqual({ name: 'container', status: 'failed', detail: "docker could not stop the workspace's container." })
-    // Asking again starts a new run: the old failure is not part of it.
-    const again = play([actionEvent(84, WS, 'stop', 'session_server', 'started')], e)
+    expect(ws(e)).toMatchObject({ state: 'running', detail: STOP_FAILED_DETAIL })
+    expect(liveAction(ws(e))).toBeNull()
+    expect(stopFailed(ws(e))).toBe(true)
+    expect(ws(e).lastAction).toMatchObject({ name: 'stop', step: 'container', status: 'failed' })
+    expect(statuses(e)).toEqual({ session_server: 'done', container: 'failed' })
+    // Control: one event earlier — failed, not yet annotated — the run is live and stopFailed is not (yet) true.
+    const before = play([...CLONE_OK, ...STOP_FAILS.slice(0, 4)])
+    expect(liveAction(ws(before))?.last).toEqual({ name: 'container', status: 'failed', detail: "docker could not stop the workspace's container." })
+    expect(stopFailed(ws(before))).toBe(false)
+  })
+
+  it('a stop asked again clears the failure as it starts, and is a new run', () => {
+    const e = play([...CLONE_OK, ...STOP_FAILS])
+    const cleared = play(STOP_RETRIED.slice(0, 1), e)
+    expect(ws(cleared).detail).toBeNull()
+    expect(stopFailed(ws(cleared))).toBe(false)
+    const again = play(STOP_RETRIED.slice(1, 2), cleared)
     expect(statuses(again)).toEqual({ session_server: 'started' })
-    expect(ws(again).action!.startId).toBe(84)
+    expect(ws(again).action!.startId).toBe(86)
+    expect(liveAction(ws(again))?.name).toBe('stop')
+    // Control: without the clear, the annotation would still say it failed.
+    expect(stopFailed(ws(e))).toBe(true)
+  })
+
+  it('a failed stop reads the same from the list alone, and only a failed stop does (§4.5 #15)', () => {
+    const lastAction = { action: 'stop', step: 'container', status: 'failed' as const, detail: "docker could not stop the workspace's container.", at: '2026-10-04T12:01:23Z' }
+    const cold = reduce(emptyEntities(), { type: 'workspaces', at: 84, view: listBody(wsView({ state_detail: STOP_FAILED_DETAIL, last_action: lastAction })) })
+    expect(stopFailed(ws(cold))).toBe(true)
+    expect(ws(cold).detail).toBe(STOP_FAILED_DETAIL)
+    // Live and cold agree on everything the card reads.
+    const live = play([...CLONE_OK, ...STOP_FAILS])
+    expect([ws(cold).state, ws(cold).detail, ws(cold).lastAction?.step]).toEqual([ws(live).state, ws(live).detail, ws(live).lastAction?.step])
+    // Controls: an adopted orphan's note is a detail on running with no stop behind it;
+    // a failed stop whose annotation a retry cleared has no detail; a stop that worked is stopped.
+    const adopted = reduce(emptyEntities(), { type: 'workspaces', at: 5, view: listBody(wsView({ state_detail: 'Found with no record; adopted from its labels.', last_action: null })) })
+    expect(stopFailed(ws(adopted))).toBe(false)
+    const retried = reduce(emptyEntities(), { type: 'workspaces', at: 85, view: listBody(wsView({ last_action: lastAction })) })
+    expect(stopFailed(ws(retried))).toBe(false)
+    const deleteFailed = reduce(emptyEntities(), { type: 'workspaces', at: 99, view: listBody(wsView({ state: 'deleting', state_detail: STUCK_DETAIL, last_action: { ...lastAction, action: 'delete', step: 'files' } })) })
+    expect(stopFailed(ws(deleteFailed))).toBe(false)
+    expect(deleteStuck(ws(deleteFailed))).toBe(true)
+  })
+
+  it('the last sub-step is versioned like any field', () => {
+    const e = play([...CLONE_OK, ...STOP_FAILS])
+    const done = { action: 'stop', step: 'broker_socket', status: 'done' as const, at: '2026-10-04T12:02:00Z' }
+    // A list taken before the failure cannot replace it…
+    const older = reduce(e, { type: 'workspaces', at: 82, view: listBody(wsView({ last_action: done })) })
+    expect(ws(older).lastAction).toMatchObject({ step: 'container', status: 'failed', at: 83 })
+    // …one taken after it can, and a body without the field changes nothing.
+    const newer = reduce(e, { type: 'workspaces', at: 90, view: listBody(wsView({ last_action: done })) })
+    expect(ws(newer).lastAction).toMatchObject({ step: 'broker_socket', status: 'done', at: 90 })
+    const silent = reduce(e, { type: 'workspaces', at: 90, view: listBody(wsView()) })
+    expect(ws(silent).lastAction).toBe(ws(e).lastAction)
+    // And an event newer than a list replaces the list's.
+    const after = play([actionEvent(91, WS, 'stop', 'session_server', 'started')], newer)
+    expect(ws(after).lastAction).toMatchObject({ step: 'session_server', status: 'started', at: 91 })
   })
 
   it('a stuck delete keeps its failed sub-step and its annotation; nothing is live', () => {
@@ -616,15 +668,24 @@ describe('workspace.action: a stop\'s and a delete\'s sub-steps (Phase 6)', () =
     expect(liveAction(ws(before))?.last.status).toBe('failed')
   })
 
-  it('a resumed delete is a new run, live again over the stale annotation, until the gone', () => {
-    const resuming = play([...CLONE_OK, ...DELETE_STUCK, ...DELETE_RESUMED.slice(0, 3)])
-    // state_detail still carries the stuck sentence (the server does not clear it), but a newer sub-step overrides it.
-    expect(ws(resuming).detail).toBe(STUCK_DETAIL)
+  it('a resumed delete clears the stuck note as it starts, and is a new run until the gone (§4.5 #16)', () => {
+    // The clear alone — no sub-step of the resume yet, as a list-only page
+    // or a page between the two events sees it — is already not stuck.
+    const clearing = play([...CLONE_OK, ...DELETE_STUCK, ...DELETE_RESUMED.slice(0, 1)])
+    expect(ws(clearing)).toMatchObject({ state: 'deleting', detail: null })
+    expect(deleteStuck(ws(clearing))).toBe(false)
+    const resuming = play([...CLONE_OK, ...DELETE_STUCK, ...DELETE_RESUMED.slice(0, 4)])
     expect(deleteStuck(ws(resuming))).toBe(false)
     expect(statuses(resuming)).toEqual({ session_server: 'done', containers: 'started' })
+    // A list taken mid-resume, cold: nothing offers Delete again.
+    const cold = reduce(emptyEntities(), { type: 'workspaces', at: 103, view: listBody(wsView({ state: 'deleting', state_detail: null })) })
+    expect(deleteStuck(ws(cold))).toBe(false)
+    // Control: a list taken while it was stuck does offer it.
+    const stuckCold = reduce(emptyEntities(), { type: 'workspaces', at: 99, view: listBody(wsView({ state: 'deleting', state_detail: STUCK_DETAIL })) })
+    expect(deleteStuck(ws(stuckCold))).toBe(true)
     const gone = play([...CLONE_OK, ...DELETE_STUCK, ...DELETE_RESUMED])
     expect(gone.workspaces[WS]).toBeUndefined()
-    expect(gone.gone[WS]).toBe(108)
+    expect(gone.gone[WS]).toBe(109)
   })
 
   it('a delete in one go reaches workspace.gone, and a late sub-step cannot bring it back', () => {
@@ -648,10 +709,10 @@ describe('workspace.action: a stop\'s and a delete\'s sub-steps (Phase 6)', () =
     const shuffledRun = play([...CLONE_OK, DELETE_STUCK[0]!, DELETE_STUCK[2]!, DELETE_STUCK[1]!])
     expect(ws(shuffledRun).action!.steps.session_server!.status).toBe('done')
     // An event from before the resume's start is not merged into the resume.
-    const resumed = play(DELETE_RESUMED.slice(0, 2), e)
+    const resumed = play(DELETE_RESUMED.slice(0, 3), e)
     expect(ws(play([actionEvent(97, WS, 'delete', 'files', 'started')], resumed)).action!.steps.files).toBeUndefined()
     // Control: the resume's own `files` does land.
-    expect(ws(play([DELETE_RESUMED[6]!], resumed)).action!.steps.files!.status).toBe('started')
+    expect(ws(play([DELETE_RESUMED[7]!], resumed)).action!.steps.files!.status).toBe('started')
   })
 
   it('every action event joins the feed, and a malformed one changes no run', () => {
@@ -669,9 +730,10 @@ describe('workspace.action: a stop\'s and a delete\'s sub-steps (Phase 6)', () =
     const cold = reduce(emptyEntities(), { type: 'workspace', at: 99, view })
     expect(statuses(cold)).toEqual({ session_server: 'done', containers: 'done', broker_socket: 'done', files: 'failed' })
     expect(deleteStuck(ws(cold))).toBe(true)
-    // A failed stop on reload: the body's state events end before the stop's, so it is live.
-    const stopCold = reduce(emptyEntities(), { type: 'workspace', at: 83, view: detailBody({}, [...CLONE_OK, ...STOP_FAILS]) })
-    expect(liveAction(ws(stopCold))?.last.status).toBe('failed')
+    // A failed stop on reload: the body carries the annotation and the run it ended.
+    const stopCold = reduce(emptyEntities(), { type: 'workspace', at: 84, view: detailBody({ state_detail: STOP_FAILED_DETAIL }, [...CLONE_OK, ...STOP_FAILS]) })
+    expect(stopFailed(ws(stopCold))).toBe(true)
+    expect(ws(stopCold).action?.steps.container?.status).toBe('failed')
     // Control: a finished stop on reload is not live — its move to stopped is in the body.
     const stoppedCold = reduce(emptyEntities(), { type: 'workspace', at: 76, view: detailBody({ state: 'stopped' }, [...CLONE_OK, ...STOP_OK]) })
     expect(liveAction(ws(stoppedCold))).toBeNull()
@@ -685,5 +747,19 @@ describe('workspace.action: a stop\'s and a delete\'s sub-steps (Phase 6)', () =
     // Control: a list that agrees with the state keeps the run live.
     const same = reduce(e, { type: 'workspaces', at: 80, view: listBody(wsView()) })
     expect(liveAction(ws(same))?.name).toBe('stop')
+  })
+})
+
+describe('the cap (frontend §4.5 #17)', () => {
+  it('is written by the workspace list, and only by one that carries it', () => {
+    expect(emptyEntities().cap).toBeNull()
+    const e = reduce(emptyEntities(), { type: 'workspaces', at: 13, view: listWithCap(10) })
+    expect(e.cap).toBe(10)
+    // A list from a server older than the field leaves it as it was.
+    expect(reduce(e, { type: 'workspaces', at: 14, view: listBody() }).cap).toBe(10)
+    // No cap is null, not a number.
+    expect(reduce(e, { type: 'workspaces', at: 15, view: listWithCap(null) }).cap).toBeNull()
+    // Control: no event writes it — not even a burst of moves.
+    expect(play([...CLONE_OK, ...STOP_OK], e).cap).toBe(10)
   })
 })

@@ -22,15 +22,19 @@ const testPrefix = "drydock.test.provision"
 // "<id> <workspace> <status>" line each, so up, ps, inspect, stop and rm all
 // see one world. It records argv beside the devcontainer fake's, first line
 // "docker". A file docker-fail-<subcommand> in dir makes that subcommand
-// fail; docker-sticky makes rm report success and remove nothing. run is the
+// fail, and docker-fail-cleanup-ps only the helper label's listing;
+// docker-sticky makes rm report success and remove nothing. run is the
 // cleanup helper: it empties its --mount's source, as `find -delete` would,
-// and the helper label's listing is empty — helpers are never in the world.
+// and the helper label's listing by workspace is empty — helpers are never
+// in the world. Leftover helpers, for the boot sweep, are "<id> <workspace>"
+// lines in a file of their own, listed only by the bare cleanup label.
 func fakeDocker(dir string) string {
 	return `#!/bin/sh
 dir='` + dir + `'
 st="$dir/containers"
+hs="$dir/helpers"
 { echo docker; printf '%s\n' "$@"; echo @@; } >> "$dir/argv"
-touch "$st"
+touch "$st" "$hs"
 if [ -e "$dir/docker-fail-$1" ]; then echo "docker $1: the daemon said no" >&2; exit 1; fi
 case "$1" in
 ps)
@@ -38,7 +42,8 @@ ps)
   for a in "$@"; do
     case "$a" in
     label=*.workspace=*) ws=${a#label=*.workspace=} ;;
-    label=*.cleanup=*) exit 0 ;;
+    label=*.cleanup=*) [ -e "$dir/docker-fail-cleanup-ps" ] && { echo "docker ps: no" >&2; exit 1; }; exit 0 ;;
+    label=*.cleanup) awk '{print $1}' "$hs"; exit 0 ;;
     esac
   done
   if [ -n "$ws" ]; then awk -v ws="$ws" '$2==ws {print $1}' "$st"; else awk '{print $1}' "$st"; fi ;;
@@ -49,6 +54,7 @@ inspect)
   for id; do
     printf '%s' "$sep"
     awk -v id="$id" -v p='` + testPrefix + `' '$1==id {printf "{\"Id\":\"%s\",\"State\":{\"Status\":\"%s\",\"Running\":%s},\"Config\":{\"Labels\":{\"%s.workspace\":\"%s\",\"%s.repository-id\":\"101\",\"%s.repo\":\"krelinga/alpha\",\"%s.branch\":\"main\"}}}", $1, $3, ($3=="running"?"true":"false"), p, $2, p, p, p}' "$st"
+    awk -v id="$id" -v p='` + testPrefix + `' '$1==id {printf "{\"Id\":\"%s\",\"State\":{\"Status\":\"exited\",\"Running\":false},\"Config\":{\"Labels\":{\"%s.cleanup\":\"%s\"}}}", $1, p, $2}' "$hs"
     sep=,
   done
   printf ']\n' ;;
@@ -58,7 +64,10 @@ stop)
 rm)
   [ -e "$dir/docker-sticky" ] && exit 0
   while [ "$1" != -- ]; do shift; done; shift
-  for id; do awk -v id="$id" '$1!=id' "$st" > "$st.t" && mv "$st.t" "$st"; done ;;
+  for id; do
+    awk -v id="$id" '$1!=id' "$st" > "$st.t" && mv "$st.t" "$st"
+    awk -v id="$id" '$1!=id' "$hs" > "$hs.t" && mv "$hs.t" "$hs"
+  done ;;
 run)
   for a in "$@"; do
     case "$a" in type=bind,source=*) src=${a#type=bind,source=}; src=${src%%,target=*} ;; esac
@@ -308,15 +317,92 @@ func TestStopFailureLeavesItRunning(t *testing.T) {
 	if c := e.broker.closes(); len(c) != 0 {
 		t.Errorf("the socket was closed after a failed stop: %v", c)
 	}
-	// Control: the same stop with docker willing.
+	// The failure is on the row, where a list snapshot reads it (frontend
+	// §4.5 #15), as the sub-step's own sentence; and the view carries the
+	// failed sub-step as structure, so the card need not parse that.
+	failedDetail := StopFailedDetail("docker could not stop the workspace's container.")
+	failed := e.view(t, v.ID)
+	if deref(failed.StateDetail) != failedDetail {
+		t.Errorf("state_detail after a failed stop = %q, want %q", deref(failed.StateDetail), failedDetail)
+	}
+	if la := failed.LastAction; la == nil || la.Action != ActStop || la.Step != SubContainer || la.Status != "failed" {
+		t.Errorf("last_action %+v", la)
+	}
+	if got := e.states(t, v.ID); got[len(got)-1] != "running|"+failedDetail {
+		t.Errorf("the annotation is not a workspace.state event: %v", got)
+	}
+
+	// Control: the same stop with docker willing. The annotation goes as it
+	// starts — a state event with no detail, before its first sub-step — and
+	// the stop then lands with no detail either.
 	os.Remove(filepath.Join(e.cli.dir, "docker-fail-stop"))
+	mark := len(e.timeline(t, v.ID))
 	if err := e.p.Stop(context.Background(), v.ID); err != nil {
 		t.Fatal(err)
 	}
 	e.p.wg.Wait()
-	if s := e.view(t, v.ID).State; s != workspace.Stopped {
-		t.Errorf("control: state %s", s)
+	after := e.view(t, v.ID)
+	if after.State != workspace.Stopped || after.StateDetail != nil {
+		t.Errorf("control: state %s (%q)", after.State, deref(after.StateDetail))
 	}
+	if got := e.timeline(t, v.ID)[mark:]; len(got) < 2 || got[0] != "state:running|" || got[1] != "action:stop:session_server:started" {
+		t.Errorf("a stop asked for again did not clear the failure first: %v", got)
+	}
+
+	// A rebuild after a failed stop clears it too: any move replaces it.
+	e.wire(t)
+	if err := e.p.Start(context.Background(), v.ID); err != nil {
+		t.Fatal(err)
+	}
+	e.p.wg.Wait()
+	os.WriteFile(filepath.Join(e.cli.dir, "docker-fail-stop"), nil, 0o600)
+	e.p.Stop(context.Background(), v.ID)
+	e.p.wg.Wait()
+	if d := deref(e.view(t, v.ID).StateDetail); d != failedDetail {
+		t.Fatalf("setup: detail %q", d)
+	}
+	os.Remove(filepath.Join(e.cli.dir, "docker-fail-stop"))
+	if err := e.p.Rebuild(context.Background(), v.ID); err != nil {
+		t.Fatal(err)
+	}
+	e.p.wg.Wait()
+	if r := e.view(t, v.ID); r.State != workspace.Running || r.StateDetail != nil {
+		t.Errorf("after a rebuild: %s (%q)", r.State, deref(r.StateDetail))
+	}
+}
+
+// states is the workspace's workspace.state events as "state|detail", in order.
+func (e *env) states(t *testing.T, id string) []string {
+	t.Helper()
+	var out []string
+	for _, l := range e.timeline(t, id) {
+		if s, ok := strings.CutPrefix(l, "state:"); ok {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+// timeline is the workspace's state and action events, in order:
+// "state:<state>|<detail>" and "action:<action>:<step>:<status>".
+func (e *env) timeline(t *testing.T, id string) []string {
+	t.Helper()
+	evs, err := e.log.ForWorkspace(context.Background(), id, 1000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out []string
+	for i := len(evs) - 1; i >= 0; i-- {
+		var d struct{ State, Detail, Action, Step, Status string }
+		json.Unmarshal(evs[i].Data, &d)
+		switch evs[i].Kind {
+		case workspace.KindState:
+			out = append(out, "state:"+d.State+"|"+d.Detail)
+		case KindAction:
+			out = append(out, "action:"+d.Action+":"+d.Step+":"+d.Status)
+		}
+	}
+	return out
 }
 
 // TestRebuildReplacesTheContainer: a rebuild runs from resolve_config — no
@@ -813,14 +899,33 @@ func TestDeleteNamesAStuckSubStep(t *testing.T) {
 			if _, err := os.Stat(filepath.Join(e.root, v.ID, "repo", ".git")); err != nil {
 				t.Errorf("the clone went past a stuck containers step: %v", err)
 			}
+			// Asking again while docker still refuses: the stuck note goes
+			// as the resume starts (frontend §4.5 #16) — a state event with
+			// no detail before the resume's first sub-step — and a new one
+			// is written when it sticks again.
+			stuck := deref(got.StateDetail)
+			mark := len(e.timeline(t, v.ID))
+			if err := e.p.Delete(ctx, v.ID, "krelinga/alpha"); err != nil {
+				t.Fatal(err)
+			}
+			e.p.wg.Wait()
+			tl := e.timeline(t, v.ID)[mark:]
+			if len(tl) < 2 || tl[0] != "state:deleting|" || tl[1] != "action:delete:session_server:started" ||
+				tl[len(tl)-1] != "state:deleting|"+stuck {
+				t.Errorf("a resume that sticks again: %v", tl)
+			}
 			// Control: docker recovers; asking again finishes it.
 			os.Remove(filepath.Join(e.cli.dir, c.file))
+			mark = len(e.timeline(t, v.ID))
 			if err := e.p.Delete(ctx, v.ID, "krelinga/alpha"); err != nil {
 				t.Fatal(err)
 			}
 			e.p.wg.Wait()
 			if _, err := e.p.Workspaces.Get(ctx, v.ID); !errors.Is(err, workspace.ErrNotFound) {
 				t.Errorf("control: %v", err)
+			}
+			if tl := e.timeline(t, v.ID)[mark:]; len(tl) == 0 || tl[0] != "state:deleting|" {
+				t.Errorf("the resume did not clear the stuck note first: %v", tl)
 			}
 		})
 	}
@@ -1037,18 +1142,116 @@ func TestDeleteFallsBackToTheHelperContainer(t *testing.T) {
 	}
 	e.p.wg.Wait()
 	got := e.view(t, f.ID)
-	if got.State != workspace.Deleting || !strings.Contains(deref(got.StateDetail), "helper container") {
-		t.Errorf("a failing helper: %s (%s)", got.State, deref(got.StateDetail))
+	ran := "Drydock could not remove the workspace's directory, even with a helper container for the files it does not own."
+	if got.State != workspace.Deleting || detail(f.ID) != "failed: "+ran {
+		t.Errorf("a failing helper: %s (%s), files %q", got.State, deref(got.StateDetail), detail(f.ID))
 	}
 	if a := e.actions(t, f.ID); a[len(a)-1] != "delete:files:failed" {
 		t.Errorf("actions %v", a)
 	}
 	os.Remove(filepath.Join(e.cli.dir, "docker-fail-run"))
+
+	// The helper never ran, so the sentence must not say it was tried: an
+	// image not pinned by digest names the flag, and a stray listing docker
+	// refused says the helper could not start. Neither calls `docker run`;
+	// the case above, which did, is their control.
+	before := len(runs())
+	for _, c := range []struct{ name, image, file, want string }{
+		{"an unpinned image", "busybox:1.37.0", "",
+			"Drydock could not remove the workspace's directory: some files belong to another user, and the helper container that removes those cannot run, because --cleanup-image is not pinned by digest."},
+		{"docker cannot list strays", e.p.Containers.CleanupImage, "docker-fail-cleanup-ps",
+			"Drydock could not remove the workspace's directory: some files belong to another user, and Drydock could not start the helper container that removes those."},
+	} {
+		pinned := e.p.Containers.CleanupImage
+		e.p.Containers.CleanupImage = c.image
+		if c.file != "" {
+			os.WriteFile(filepath.Join(e.cli.dir, c.file), nil, 0o600)
+		}
+		if err := e.p.Delete(ctx, f.ID, "krelinga/alpha"); err != nil {
+			t.Fatal(err)
+		}
+		e.p.wg.Wait()
+		if d := detail(f.ID); d != "failed: "+c.want {
+			t.Errorf("%s: files %q\nwant %q", c.name, d, "failed: "+c.want)
+		}
+		if v := e.view(t, f.ID); !strings.Contains(deref(v.StateDetail), c.want) {
+			t.Errorf("%s: state_detail %q", c.name, deref(v.StateDetail))
+		}
+		if n := len(runs()); n != before {
+			t.Errorf("%s: docker run was called", c.name)
+		}
+		e.p.Containers.CleanupImage = pinned
+		if c.file != "" {
+			os.Remove(filepath.Join(e.cli.dir, c.file))
+		}
+	}
 	if err := e.p.Delete(ctx, f.ID, "krelinga/alpha"); err != nil {
 		t.Fatal(err)
 	}
 	e.p.wg.Wait()
 	if _, err := e.p.Workspaces.Get(ctx, f.ID); !errors.Is(err, workspace.ErrNotFound) {
 		t.Errorf("retry after the helper recovered: %v", err)
+	}
+}
+
+// TestSweepHelpersSkipsAJobInFlight: the boot sweep removes leftover cleanup
+// helpers by the bare cleanup label, writes one system event saying how many,
+// and leaves alone a helper whose workspace has a job running here — a
+// delete started since boot may be running that helper. The control is the
+// same helper swept once the job has ended. That the sweep never touches a
+// workspace's container is the container tier's to prove, against the real
+// daemon's label filter (test/container).
+func TestSweepHelpersSkipsAJobInFlight(t *testing.T) {
+	ctx := context.Background()
+	e := lifecycleEnv(t)
+	busy := e.running(t, alpha)
+	stray, held := strings.Repeat("1", 64), strings.Repeat("2", 64)
+	os.WriteFile(filepath.Join(e.cli.dir, "helpers"),
+		[]byte(stray+" 01JABCDEFGHJKMNPQRSTVWXYZ0\n"+held+" "+busy.ID+"\n"), 0o600)
+	removed := func() []string {
+		var out []string
+		for _, c := range e.cli.callsTo(t, "docker") {
+			if len(c) > 1 && c[1] == "rm" {
+				out = append(out, strings.Join(c[1:], " "))
+			}
+		}
+		return out
+	}
+
+	// A job in flight on the busy workspace: a rebuild whose up sleeps.
+	e.cli.up = "sleep 2; " + registeringUp(e.cli.dir)
+	e.wire(t)
+	if err := e.p.Rebuild(ctx, busy.ID); err != nil {
+		t.Fatal(err)
+	}
+	n, err := e.p.SweepHelpers(ctx)
+	if err != nil || n != 1 {
+		t.Fatalf("sweep = %d, %v; want 1", n, err)
+	}
+	if got := removed(); len(got) != 1 || got[0] != "rm --force --volumes -- "+stray {
+		t.Errorf("removed %q; want only the stray of the idle workspace", got)
+	}
+	evs, _ := e.log.Since(ctx, 0)
+	var swept int
+	for _, ev := range evs {
+		if ev.Kind == KindHelpersSwept && ev.WorkspaceID == "" && string(ev.Data) == `{"count":1}` {
+			swept++
+		}
+	}
+	if swept != 1 {
+		t.Errorf("%d %s events with count 1", swept, KindHelpersSwept)
+	}
+
+	// Control: the job ends, and the next sweep takes the other.
+	e.p.wg.Wait()
+	if n, err := e.p.SweepHelpers(ctx); err != nil || n != 1 {
+		t.Errorf("sweep after the job = %d, %v", n, err)
+	}
+	if got := removed(); len(got) != 2 || got[1] != "rm --force --volumes -- "+held {
+		t.Errorf("removed %q", got)
+	}
+	// Nothing left: nothing removed, nothing written.
+	if n, err := e.p.SweepHelpers(ctx); err != nil || n != 0 {
+		t.Errorf("an empty sweep = %d, %v", n, err)
 	}
 }

@@ -9,7 +9,10 @@
 // deleted workspace coming back as running, say — is refused in one place.
 package workspace
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+)
 
 // State is workspace.state; the database's CHECK constraint holds the same set.
 type State string
@@ -79,4 +82,46 @@ func Occupying(s State) bool {
 		return true
 	}
 	return false
+}
+
+// occupyingSQL is Occupying as an SQL list — 'pending','cloning',… — built
+// from Occupying itself, so the count Create checks inside its transaction
+// and the count a start or rebuild checks (Occupied) are not two spellings of
+// one rule that can drift from each other or from the Go function.
+var occupyingSQL = func() string {
+	var in []string
+	for _, s := range States {
+		if Occupying(s) {
+			in = append(in, "'"+string(s)+"'")
+		}
+	}
+	return strings.Join(in, ",")
+}()
+
+// Capacity is the concurrent-container cap and how many workspaces count
+// against it, as GET /api/workspaces reports them (frontend §4.5 #17). Cap is
+// nil when there is none — a Store.Cap of 0, which only a test has: config
+// refuses a cap below 1.
+type Capacity struct {
+	Cap      *int `json:"cap"`
+	Occupied int  `json:"occupied"`
+}
+
+// CapacityOf counts views by Occupying — the rule create, start and rebuild
+// enforce — against the store's cap. It counts the rows the caller already
+// read, so the number and the list it is served beside are one snapshot (one
+// SELECT): a client that counts the list by the same rule gets the same
+// answer, which is what lets the UI keep the count live from the stream.
+func (s *Store) CapacityOf(vs []View) Capacity {
+	c := Capacity{}
+	if s.Cap > 0 {
+		n := s.Cap
+		c.Cap = &n
+	}
+	for _, v := range vs {
+		if Occupying(v.State) {
+			c.Occupied++
+		}
+	}
+	return c
 }

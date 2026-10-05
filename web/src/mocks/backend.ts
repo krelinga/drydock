@@ -16,7 +16,7 @@
 
 import { http, HttpResponse, sse, type HttpHandler } from 'msw'
 import type {
-  CatalogView, Device, InstallationView, PutSecretResult, RepoView, SecretMeta, SessionInfo, Stale, StaleWorkspace,
+  ActionView, CatalogView, Device, InstallationView, PutSecretResult, RepoView, SecretMeta, SessionInfo, Stale, StaleWorkspace,
   StepView, StreamEvent, Undeliverable, UndeliverableSecret, WorkspaceDetail, WorkspaceList, WorkspaceState, WorkspaceView,
 } from '../api/types'
 import { checkDescription, checkName, checkReach, checkValue, type SecretRefusal } from '../lib/secretRules'
@@ -145,6 +145,8 @@ export interface MockWorkspace {
   container_id: string | null
   created_at: string
   steps: Record<string, StepView>
+  /** The latest workspace.action event, as internal/workspace's view reads it; absent is none. */
+  last_action?: ActionView | null
 }
 
 const CURRENT_ID = 'c0ffee0000000000000000000000000000000000000000000000000000000001'
@@ -406,7 +408,13 @@ export function workspaceView(b: MockBackend, w: MockWorkspace): WorkspaceView {
     container_id: w.container_id,
     created_at: w.created_at,
     steps: structuredClone(w.steps),
+    last_action: w.last_action ? { ...w.last_action } : null,
   }
+}
+
+/** The cap and the occupied count, as internal/workspace CapacityOf counts the list's rows. */
+export function capacityView(b: MockBackend): { cap: number; occupied: number } {
+  return { cap: b.capacity, occupied: Object.values(b.workspaces).filter((w) => OCCUPYING.has(w.state)).length }
 }
 
 /** `GET /api/workspaces`: every row, newest first. */
@@ -415,6 +423,7 @@ export function workspaceList(b: MockBackend): WorkspaceList {
     workspaces: Object.values(b.workspaces)
       .sort((x, y) => y.id.localeCompare(x.id))
       .map((w) => workspaceView(b, w)),
+    capacity: capacityView(b),
   }
 }
 
@@ -495,6 +504,14 @@ export function emit(
       const step: StepView = { status: d.status as StepView['status'], at: ev.at }
       if (typeof d.detail === 'string') step.detail = d.detail
       b.workspaces[id] = { ...cur, steps: { ...cur.steps, [d.step]: step } }
+    }
+  }
+  if (id !== undefined && kind === 'workspace.action' && typeof d.step === 'string' && typeof d.action === 'string') {
+    const cur = b.workspaces[id]
+    if (cur !== undefined) {
+      const last: ActionView = { action: d.action, step: d.step, status: d.status as ActionView['status'], at: ev.at }
+      if (typeof d.detail === 'string') last.detail = d.detail
+      b.workspaces[id] = { ...cur, last_action: last }
     }
   }
   if (id !== undefined && kind === 'workspace.adopted' && typeof d.container_id === 'string') {
@@ -581,10 +598,16 @@ function actionNote(b: MockBackend, id: string, step: string): string | undefine
   return undefined
 }
 
+/** internal/provision StopFailedDetail: the annotation a failed stop leaves. */
+export function stopFailedDetail(pub: string): string {
+  return `The stop did not finish: ${pub} Stop again to retry.`
+}
+
 /**
  * The events a stop emits, as internal/provision's stopJob writes them: each
  * sub-step started and done, then running → stopped. `failAt` ends it with
- * that sub-step failed and the workspace still running.
+ * that sub-step failed and the workspace still running, annotated with the
+ * sub-step's sentence (Annotate: a running → running state event).
  */
 export function stopScript(b: MockBackend, id: string, failAt?: string): Array<(at?: string) => void> {
   const steps = new ScriptSteps(b, id)
@@ -592,7 +615,12 @@ export function stopScript(b: MockBackend, id: string, failAt?: string): Array<(
   for (const sub of STOP_SUBSTEPS) {
     out.push(steps.action('stop', sub, 'started'))
     if (sub === failAt) {
-      out.push(steps.action('stop', sub, 'failed', ACTION_FAILED[sub]))
+      const pub = ACTION_FAILED[sub] ?? 'The step failed.'
+      const detail = stopFailedDetail(pub)
+      out.push(
+        steps.action('stop', sub, 'failed', pub),
+        steps.state('running', { from: 'running', detail }, `Running. ${detail}`, 'warn'),
+      )
       return out
     }
     out.push(steps.action('stop', sub, 'done', actionNote(b, id, sub)))
@@ -733,8 +761,21 @@ function cancelJob(b: MockBackend, id: string): void {
   delete b.jobs[id]
 }
 
+/**
+ * A retry's ClearDetail: the annotation a failed stop or a stuck delete left
+ * goes as the retry starts, before the 202, as the server clears it under the
+ * lock before launching the job (frontend §4.5 #15, #16).
+ */
+function clearDetail(b: MockBackend, id: string, state: WorkspaceState): void {
+  const w = b.workspaces[id]
+  if (w === undefined || w.state !== state || w.state_detail === null) return
+  const said: Partial<Record<WorkspaceState, string>> = { running: 'Running.', deleting: 'Deleting.' }
+  emit(b, 'workspace.state', { workspace_id: id, message: said[state] ?? state, data: { state, from: state } })
+}
+
 /** Starts a stop, as the route does — also how dev:mock plays one "from another device". */
 export function scheduleStop(b: MockBackend, id: string): void {
+  clearDetail(b, id, 'running')
   const failAt = b.failAction ?? undefined
   b.failAction = null
   schedule(b, id, stopScript(b, id, failAt), 'stop')
@@ -745,6 +786,7 @@ export function scheduleDelete(b: MockBackend, id: string): void {
   const w = b.workspaces[id]
   if (w === undefined || b.jobs[id] === 'delete') return
   cancelJob(b, id)
+  clearDetail(b, id, 'deleting')
   const failAt = b.failAction ?? undefined
   b.failAction = null
   schedule(b, id, deleteScript(b, id, w.state === 'deleting' ? null : w.state, failAt), 'delete')
@@ -804,6 +846,9 @@ const appNotConfigured = () =>
 
 /** The handlers, closed over one backend so a spec can reach in and change it. */
 export function handlersFor(b: MockBackend): HttpHandler[] {
+  // internal/api writeProvisionError: the detail names the configured cap.
+  const atCapacity = () => envelope(409, 'at_capacity',
+    'Drydock is at its concurrent-container cap. Stop a workspace to make room.', {}, `The cap is ${b.capacity}.`)
   const record = (request: Request) => {
     b.log.push({
       method: request.method,
@@ -930,9 +975,7 @@ export function handlersFor(b: MockBackend): HttpHandler[] {
       if (rows.some((w) => w.repository_id === repoId)) {
         return envelope(409, 'in_progress', 'That repository already has a workspace.')
       }
-      if (rows.filter((w) => OCCUPYING.has(w.state)).length >= b.capacity) {
-        return envelope(409, 'at_capacity', 'The concurrent-container cap is reached.')
-      }
+      if (rows.filter((w) => OCCUPYING.has(w.state)).length >= b.capacity) return atCapacity()
       const id = nextWorkspaceId(b)
       const failAt = b.failNext ?? undefined
       b.failNext = null
@@ -958,9 +1001,7 @@ export function handlersFor(b: MockBackend): HttpHandler[] {
         return envelope(409, 'in_progress', 'The workspace is not stopped or failed.')
       }
       // A start takes a container slot, so the cap applies as to a create.
-      if (Object.values(b.workspaces).filter((x) => OCCUPYING.has(x.state)).length >= b.capacity) {
-        return envelope(409, 'at_capacity', 'The concurrent-container cap is reached.')
-      }
+      if (Object.values(b.workspaces).filter((x) => OCCUPYING.has(x.state)).length >= b.capacity) return atCapacity()
       const failAt = b.failNext ?? undefined
       b.failNext = null
       schedule(b, id, startScript(b, id, failAt))
@@ -988,7 +1029,7 @@ export function handlersFor(b: MockBackend): HttpHandler[] {
       record(request)
       if (!b.signedIn) return unauthenticated()
       if (!b.appConfigured) {
-        return envelope(503, 'app_not_configured', 'No GitHub App is configured, so Drydock cannot clone anything.')
+        return envelope(503, 'app_not_configured', 'No GitHub App is configured, so Drydock cannot clone, start or rebuild a workspace.')
       }
       const id = String(params.id)
       const w = b.workspaces[id]
@@ -996,7 +1037,7 @@ export function handlersFor(b: MockBackend): HttpHandler[] {
       if (b.jobs[id] !== undefined || !['running', 'stopped', 'failed'].includes(w.state)) return busy()
       // A running workspace holds its slot already; a stopped or failed one takes one.
       if (w.state !== 'running' && Object.values(b.workspaces).filter((x) => OCCUPYING.has(x.state)).length >= b.capacity) {
-        return envelope(409, 'at_capacity', 'Drydock is at its concurrent-container cap. Stop a workspace to make room.')
+        return atCapacity()
       }
       const failAt = b.failNext ?? undefined
       b.failNext = null

@@ -17,6 +17,9 @@ declare module 'vue-router' {
 export function createAppRouter(history: RouterHistory): Router {
   return createRouter({
     history,
+    // A link to a section — MakeRoom's "Stop one under Running" — scrolls to
+    // it. Nothing else scrolls on navigation, as before.
+    scrollBehavior: (to) => (to.hash ? { el: to.hash } : false),
     routes: [
       { path: '/signin', name: 'signin', component: SignInView, meta: { public: true, title: 'Sign in' } },
       { path: '/', name: 'workspaces', component: WorkspacesView, meta: { title: 'Workspaces' } },

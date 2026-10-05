@@ -13,7 +13,8 @@
 // leaves it `running` for good. A card that read the state alone would offer
 // Stop on a workspace already stopping.
 
-import { currentStep, deleteStuck, failedStep, liveAction, type Repo, type Workspace } from '../stores/reducer'
+import { currentStep, deleteStuck, failedStep, liveAction, stopFailed, type Repo, type Workspace } from '../stores/reducer'
+import { needsSlot } from './capacity'
 
 export type Tone = 'ok' | 'bad' | 'busy' | 'idle'
 
@@ -23,6 +24,19 @@ export type Tone = 'ok' | 'bad' | 'busy' | 'idle'
  * (§6.5), and never a card's primary action.
  */
 export type CardAction = 'start' | 'stop' | 'rebuild' | 'delete' | null
+
+/**
+ * What is rendered where an action would be: the action, or — when it needs a
+ * container slot and Drydock is at its cap — `make_room`, a pointer to the
+ * workspaces under Running that can be stopped (design §1). Never the action
+ * disabled: one that cannot work is replaced by the one that can (§6.6).
+ */
+export type ShownAction = CardAction | 'clone' | 'make_room'
+
+/** `action` at the cap: replaced by `make_room` when it would need a slot. */
+export function withRoom(action: CardAction | 'clone', w: Workspace | null, full: boolean): ShownAction {
+  return full && needsSlot(action, w) ? 'make_room' : action
+}
 
 export interface CardStatus {
   /** One line. */
@@ -111,6 +125,13 @@ export function cardStatus(w: Workspace): CardStatus {
         // cannot work until the stop lands.
         return { line: `Stopping · ${what}…`, tone: 'busy', note: null, action: null }
       }
+      // A stop that failed, after the fact: the server annotated the row, so
+      // this reads the same from a reload of the list as it did live (§4.5
+      // #15). The sentence is the server's; the sub-step is structure.
+      if (stopFailed(w)) {
+        const step = w.lastAction!.step
+        return { line: `Stop failed while ${ACTION_STEP_LABEL[step] ?? step}`, tone: 'bad', note: w.detail, action: 'stop' }
+      }
       return supervisorHalf(w) ?? { line: label, tone: 'ok', note: w.detail, action: 'stop' }
     }
     case 'stopped':
@@ -146,6 +167,15 @@ export function cardStatus(w: Workspace): CardStatus {
 
 /** The one action a catalog row offers. */
 export type RowAction = 'clone' | CardAction
+
+/**
+ * Whether a workspace can be stopped from its card: what the Running section
+ * sorts first, so at the cap the cards to stop are the first ones read
+ * (design §1: "the UI shows you which one to stop").
+ */
+export function stoppable(w: Workspace): boolean {
+  return cardStatus(w).action === 'stop'
+}
 
 /**
  * A catalog row's action (§6.1: one per row). Clone only where no workspace

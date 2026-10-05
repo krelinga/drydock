@@ -495,6 +495,96 @@ func TestAnnotateSetsTheDetailWithoutMoving(t *testing.T) {
 	}
 }
 
+// TestClearDetailOnlyWhenThereIsOne: a retry's clear writes a state event
+// with the same state and no detail, and only when there was a detail to
+// clear in the state named — so a resume of a delete that never stuck, or a
+// stop of a workspace with nothing to say, writes nothing.
+func TestClearDetailOnlyWhenThereIsOne(t *testing.T) {
+	ctx := context.Background()
+	f := newFixture(t)
+	w := f.create(t, 1)
+	f.store.Move(ctx, w.ID, Deleting, "")
+	count := func() int {
+		all, _ := f.events.Since(ctx, 0)
+		return len(all)
+	}
+	n := count()
+	if cleared, err := f.store.ClearDetail(ctx, w.ID, Deleting); err != nil || cleared || count() != n {
+		t.Errorf("no detail: cleared %v, err %v, %d events written", cleared, err, count()-n)
+	}
+	f.store.Annotate(ctx, w.ID, Deleting, "The delete stopped part-way.")
+	if cleared, err := f.store.ClearDetail(ctx, w.ID, Running); err != nil || cleared {
+		t.Errorf("the wrong state: cleared %v, err %v", cleared, err)
+	}
+	n = count()
+	if cleared, err := f.store.ClearDetail(ctx, w.ID, Deleting); err != nil || !cleared {
+		t.Fatalf("cleared %v, err %v", cleared, err)
+	}
+	all, _ := f.events.Since(ctx, 0)
+	if len(all) != n+1 || all[n].Kind != KindState || string(all[n].Data) != `{"from":"deleting","state":"deleting"}` {
+		t.Errorf("events after the clear: %+v", all[n:])
+	}
+	if got, _ := f.store.Get(ctx, w.ID); got.State != Deleting || got.StateDetail != "" {
+		t.Errorf("%+v", got)
+	}
+}
+
+// TestCapacityIsOccupyingCountedOneWay: the count GET /api/workspaces
+// reports, the count a start checks (Occupied), and the boundary Create
+// enforces are one rule — Occupying — over a workspace in every state. The
+// count is checked against Occupying itself, and then against what Create
+// does at exactly that cap and one above it, so a count by any other rule
+// fails one of the three.
+func TestCapacityIsOccupyingCountedOneWay(t *testing.T) {
+	ctx := context.Background()
+	f := newFixture(t)
+	f.store.Cap = 0
+	path := map[State][]State{
+		Pending: nil, Cloning: {Cloning}, Building: {Cloning, Building}, Running: {Cloning, Building, Running},
+		Stopped: {Cloning, Building, Running, Stopped}, Failed: {Failed}, Deleting: {Deleting},
+	}
+	want := 0
+	for i, s := range States {
+		w := f.create(t, int64(i+1))
+		for _, to := range path[s] {
+			if _, err := f.store.Move(ctx, w.ID, to, ""); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if Occupying(s) {
+			want++
+		}
+	}
+	if want != 4 {
+		t.Fatalf("Occupying counts %d states; the test expects pending, cloning, building and running", want)
+	}
+	vs, err := f.store.Views(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.store.Cap = 9
+	c := f.store.CapacityOf(vs)
+	if c.Occupied != want || c.Cap == nil || *c.Cap != 9 {
+		t.Errorf("CapacityOf = %+v; want %d of 9", c, want)
+	}
+	if n, err := f.store.Occupied(ctx); err != nil || n != want {
+		t.Errorf("Occupied = %d, %v; want %d", n, err, want)
+	}
+	// The enforced boundary: at a cap of exactly the count a create is
+	// refused, and one above it is let through.
+	f.store.Cap = c.Occupied
+	if _, err := f.store.Create(ctx, 18, "main"); !errors.Is(err, ErrAtCap) {
+		t.Errorf("create at a cap of %d = %v; want ErrAtCap", c.Occupied, err)
+	}
+	f.store.Cap = c.Occupied + 1
+	if _, err := f.store.Create(ctx, 18, "main"); err != nil {
+		t.Errorf("create at a cap of %d = %v", c.Occupied+1, err)
+	}
+	if got := (&Store{}).CapacityOf(vs); got.Cap != nil {
+		t.Errorf("no cap is reported as %d", *got.Cap)
+	}
+}
+
 func TestNewID(t *testing.T) {
 	zero, _ := NewID(time.UnixMilli(0), bytes.NewReader(make([]byte, 10)))
 	if zero != "00000000000000000000000000" {

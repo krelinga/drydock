@@ -16,6 +16,8 @@
 import { defineStore } from 'pinia'
 import * as api from '../api/client'
 import type { CatalogView, InstallationView, StreamEvent } from '../api/types'
+import { capacity, type Capacity } from '../lib/capacity'
+import { stoppable } from '../lib/workspaceCard'
 import { repoHeld, workspaceForRepo, type Repo, type Workspace } from './reducer'
 import { useStreamStore } from './stream'
 
@@ -80,12 +82,23 @@ export const useCatalogStore = defineStore('catalog', {
       if (q === '') return this.rows
       return this.rows.filter((r) => r.repo.fullName.toLowerCase().includes(q))
     },
+    /**
+     * The `Running` section: stoppable workspaces first, then the rest, each
+     * newest first. Design §1: when the cap refuses a new workspace the UI
+     * shows you which one to stop, and the first cards read are the ones
+     * whose Stop button frees a slot.
+     */
     running(): RunningRow[] {
       const e = useStreamStore().entities
       return Object.values(e.workspaces)
         .filter((w) => w.state !== null && RUNNING_SECTION.has(w.state))
-        .sort((a, b) => b.id.localeCompare(a.id))
-        .map((w) => ({ workspace: w, repo: w.repositoryId === null ? null : e.repos[w.repositoryId] ?? null }))
+        .map((w) => ({ w, stop: stoppable(w) }))
+        .sort((a, b) => (a.stop === b.stop ? b.w.id.localeCompare(a.w.id) : a.stop ? -1 : 1))
+        .map(({ w }) => ({ workspace: w, repo: w.repositoryId === null ? null : e.repos[w.repositoryId] ?? null }))
+    },
+    /** The cap and the occupied count, live (lib/capacity.ts). */
+    capacity(): Capacity {
+      return capacity(useStreamStore().entities)
     },
     installations(): InstallationView[] {
       return Object.values(useStreamStore().entities.installations)

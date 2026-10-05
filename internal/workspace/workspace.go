@@ -58,6 +58,9 @@ const (
 	KindState = "workspace.state" // data: {state, from, detail?}
 	KindStep  = "workspace.step"  // data: {step, status, detail?}
 	KindGone  = "workspace.gone"  // data: {} — the row is removed
+	// KindAction is a stop's or a delete's sub-step, written by
+	// internal/provision. data: {action: stop|delete, step, status, detail?}
+	KindAction = "workspace.action"
 )
 
 // Create is step 1, allocate: a new row in pending, with its directory path
@@ -85,7 +88,6 @@ func (s *Store) Create(ctx context.Context, repositoryID int64, branch string) (
 		return Workspace{}, err
 	}
 	defer tx.Rollback()
-	occupying := `'pending','cloning','building','running'` // Occupying, as SQL
 	var same, total int
 	if err := tx.QueryRowContext(ctx,
 		`SELECT count(*) FROM workspace WHERE repository_id = ?`, // any state: see ErrInProgress
@@ -96,7 +98,7 @@ func (s *Store) Create(ctx context.Context, repositoryID int64, branch string) (
 		return Workspace{}, ErrInProgress
 	}
 	if err := tx.QueryRowContext(ctx,
-		`SELECT count(*) FROM workspace WHERE state IN (`+occupying+`)`).Scan(&total); err != nil {
+		`SELECT count(*) FROM workspace WHERE state IN (`+occupyingSQL+`)`).Scan(&total); err != nil {
 		return Workspace{}, err
 	}
 	if s.Cap > 0 && total >= s.Cap {
@@ -121,7 +123,7 @@ func (s *Store) Create(ctx context.Context, repositoryID int64, branch string) (
 func (s *Store) Occupied(ctx context.Context) (int, error) {
 	var n int
 	err := s.DB.QueryRowContext(ctx,
-		`SELECT count(*) FROM workspace WHERE state IN ('pending','cloning','building','running')`).Scan(&n)
+		`SELECT count(*) FROM workspace WHERE state IN (`+occupyingSQL+`)`).Scan(&n)
 	return n, err
 }
 
@@ -186,8 +188,11 @@ func (s *Store) SetContainer(ctx context.Context, id, containerID string) error 
 // Annotate sets the detail of a workspace without moving it, and writes a
 // workspace.state event carrying the same state and the new detail — so the
 // card says why a workspace is where it is when nothing moved it. Used for a
-// delete that stopped part-way: the workspace stays deleting, which is
-// resumable, and the detail names the sub-step that failed.
+// delete that stopped part-way — the workspace stays deleting, which is
+// resumable, and the detail names the sub-step that failed — and for a stop
+// that failed, which leaves the workspace running (frontend §4.5 #15). Any
+// later move replaces it (Move writes its own detail), and ClearDetail
+// removes it as a retry starts.
 func (s *Store) Annotate(ctx context.Context, id string, want State, detail string) error {
 	res, err := s.DB.ExecContext(ctx, `UPDATE workspace SET state_detail = ? WHERE id = ? AND state = ?`,
 		nullable(detail), id, string(want))
@@ -207,6 +212,31 @@ func (s *Store) Annotate(ctx context.Context, id string, want State, detail stri
 	}
 	_, err = s.Events.Emit(ctx, id, events.Warn, KindState, message(want, detail), data)
 	return err
+}
+
+// ClearDetail removes the detail Annotate set, as the operation it explains
+// starts again: a resumed delete, or a stop asked for again after one failed
+// (frontend §4.5 #15, #16). It writes a workspace.state event carrying the
+// same state and no detail, so a client following the stream drops the
+// sentence as the retry begins, and one that reads only GET /api/workspaces
+// stops offering the retry for a job that is already running. A workspace
+// with no detail, or not in want, is left alone and nothing is written;
+// cleared reports whether there was a detail to clear.
+func (s *Store) ClearDetail(ctx context.Context, id string, want State) (cleared bool, err error) {
+	res, err := s.DB.ExecContext(ctx,
+		`UPDATE workspace SET state_detail = NULL WHERE id = ? AND state = ? AND state_detail IS NOT NULL`,
+		id, string(want))
+	if err != nil {
+		return false, err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return false, nil
+	}
+	if _, err := s.Events.Emit(ctx, id, events.Info, KindState, message(want, ""),
+		map[string]any{"state": want, "from": want}); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 // Remove deletes the row of a workspace whose delete has finished. Only a

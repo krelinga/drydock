@@ -252,6 +252,14 @@ func (s *Server) Serve(ctx context.Context) error {
 			s.Events.Emit(ctx, "", events.Warn, "system.reconcile",
 				"Could not reconcile workspaces with Docker at startup; nothing was changed. See the service log.", nil)
 		}
+		// Then the cleanup helpers an interrupted delete left (§6): after
+		// reconciliation, whose resumed deletes have finished by now, and by
+		// this instance's cleanup label only — never a workspace container.
+		if ctx.Err() == nil {
+			if _, err := s.Provisioner.SweepHelpers(ctx); err != nil && ctx.Err() == nil {
+				fmt.Fprintf(os.Stderr, "drydock: sweeping cleanup helpers: %v\n", err)
+			}
+		}
 		// Every running workspace gets its broker socket back after a
 		// restart — after reconciliation, so the set is the one Docker
 		// confirmed: a row it marked stopped gets no socket, as a stop
