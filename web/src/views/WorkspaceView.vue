@@ -18,7 +18,7 @@ import ActionButton from '../components/ActionButton.vue'
 import { useStreamRefetch } from '../lib/refetch'
 import { relativeTime } from '../lib/time'
 import { cardStatus, stepTitle } from '../lib/workspaceCard'
-import { failedStep } from '../stores/reducer'
+import { failedStep, runSteps } from '../stores/reducer'
 import { useStreamStore } from '../stores/stream'
 import { startKey, useWorkspacesStore } from '../stores/workspaces'
 
@@ -41,18 +41,19 @@ const name = computed(() => {
 
 onMounted(() => void workspaces.loadOne(id.value))
 watch(id, (now) => void workspaces.loadOne(now))
-// The container id is the one fact no event carries, so a move to running
-// (or an adoption) makes the read model stale too.
-useStreamRefetch({
-  refetch: () => workspaces.loadOne(id.value),
-  when: (ev) => ev.workspace_id === id.value
-    && ((ev.kind === 'workspace.state' && ev.data?.state === 'running') || ev.kind === 'workspace.adopted'),
-})
+// The backstop only: a reopened stream or a `resync`. Nothing else here needs
+// a refetch — the move to running and `workspace.adopted` both carry the
+// container id, so the reducer has it from the event (design §6).
+useStreamRefetch({ refetch: () => workspaces.loadOne(id.value) })
 
 const failed = computed(() => (ws.value?.state === 'failed' ? failedStep(ws.value) : null))
 
+// Only the current run's steps (reducer.ts runSteps): after a start, a step
+// the earlier run reached and this one has not is "not run", not its old
+// status.
+const current = computed(() => (ws.value !== null ? runSteps(ws.value) : {}))
 const timeline = computed(() => WORKSPACE_STEPS.map((step) => {
-  const rec = ws.value?.steps[step] ?? null
+  const rec = current.value[step] ?? null
   return { step, title: stepTitle(step), rec, isFailed: failed.value === step }
 }))
 

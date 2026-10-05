@@ -2,9 +2,9 @@
 // state renders one status line and at most one action.
 
 import { describe, expect, it } from 'vitest'
-import { emptyEntities, reduce, reduceAll, type Workspace } from '../stores/reducer'
+import { emptyEntities, reduce, reduceAll, type Repo, type Workspace } from '../stores/reducer'
 import { CLONE_FAILS_AT_UP, CLONE_OK, WS, WS2, listBody, stateEvent, ws2View } from '../stores/reducer.fixtures'
-import { cardStatus } from './workspaceCard'
+import { cardStatus, rowAction } from './workspaceCard'
 
 const at = (n: number) => reduceAll(emptyEntities(), CLONE_OK.slice(0, n).map((event) => ({ type: 'event' as const, event }))).workspaces[WS]!
 
@@ -53,5 +53,27 @@ describe('the card, workspace half (§6.1)', () => {
     expect(s.action).toBeNull()
     // Control: the line is the workspace state's own.
     expect(s.line).toBe('Running')
+  })
+})
+
+describe('the catalog row action: one repository, one workspace (design §5)', () => {
+  const repo = (over: Partial<Repo> = {}): Repo => ({
+    id: 1, installationId: 101, fullName: 'krelinga/drydock', defaultBranch: 'main', private: true,
+    archived: false, hasDevcontainer: true, pushedAt: null, removed: false, ...over,
+  })
+
+  it.each([
+    ['pending', null], ['cloning', null], ['building', null], ['running', null],
+    ['stopped', 'start'], ['failed', 'start'], ['deleting', null],
+  ])('a %s workspace holds the repository: %s, never clone', (state, action) => {
+    expect(rowAction({ repo: repo(), workspace: withState(state), held: true })).toBe(action)
+  })
+
+  it('offers Clone only where nothing holds the repository, and never on a removed one', () => {
+    // Control: no workspace at all is the one case that clones.
+    expect(rowAction({ repo: repo(), workspace: null, held: false })).toBe('clone')
+    // A workspace whose state is not yet known (a stub) still holds it.
+    expect(rowAction({ repo: repo(), workspace: null, held: true })).toBeNull()
+    expect(rowAction({ repo: repo({ removed: true }), workspace: null, held: false })).toBeNull()
   })
 })

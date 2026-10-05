@@ -27,6 +27,7 @@
 // Event data shapes, from the Emit calls that write them:
 //
 //   workspace.state    {state, from, detail?}                  workspace.Move
+//                      {state: running, from, container_id}    Move to running
 //                      {state, repository_id, branch}          workspace.Create
 //                      {state, adopted, repository_id, branch, detail?}  Adopt
 //   workspace.step     {step, status: started|done|failed, detail?}
@@ -86,6 +87,12 @@ export interface Workspace {
   adopted: boolean
   /** The id of the event (or snapshot position) that last wrote `state`. */
   stateAt: number
+  /**
+   * The id of the event (or snapshot position) that last wrote
+   * `containerId`. Versioned apart from `state`: the move to running and
+   * `workspace.adopted` both carry the id, and the latter changes no state.
+   */
+  containerAt: number
   /** The id of the event that last wrote `step`. */
   stepAt: number
 }
@@ -220,7 +227,7 @@ function num(v: unknown): number | null {
 function stub(id: string): Workspace {
   return {
     id, repositoryId: null, fullName: null, branch: null, state: null, detail: null, step: null,
-    steps: {}, containerId: null, createdAt: null, adopted: false, stateAt: 0, stepAt: 0,
+    steps: {}, containerId: null, createdAt: null, adopted: false, stateAt: 0, stepAt: 0, containerAt: 0,
   }
 }
 
@@ -271,9 +278,14 @@ function applyEvent(prev: Entities, ev: StreamEvent): Entities {
 
   switch (ev.kind) {
     case 'workspace.state': {
+      // The move to running carries the container's id (design §6), so
+      // nothing has to refetch the workspace to learn it. Versioned on its
+      // own: a snapshot that already knew the id may have overtaken the state.
+      const containerId = str(data.container_id)
+      if (containerId !== null && ev.id > cur.containerAt) next = { ...next, containerId, containerAt: ev.id }
       if (!isState(data.state) || ev.id <= cur.stateAt) break
       next = {
-        ...cur,
+        ...next,
         state: data.state,
         detail: str(data.detail),
         stateAt: ev.id,
@@ -285,7 +297,8 @@ function applyEvent(prev: Entities, ev: StreamEvent): Entities {
       // written before it belongs to this workspace's timeline. Start moves
       // stopped or failed to building instead, and each step it reruns
       // overwrites its own row, so the timeline is "latest per step" — the
-      // same thing the server's `steps` reports.
+      // same thing the server's `steps` reports. What a start left behind
+      // from an earlier run is trimmed on read, by runSteps.
       if (data.state === 'pending') {
         if (next.stepAt < ev.id) next = { ...next, step: null, stepAt: ev.id }
         const kept = Object.entries(next.steps).filter(([, r]) => r.eventId > ev.id)
@@ -310,8 +323,9 @@ function applyEvent(prev: Entities, ev: StreamEvent): Entities {
     }
     case 'workspace.adopted': {
       // A known row matched to its container at boot; the state is unchanged.
-      const containerId = str(data.container_id) ?? cur.containerId
-      if (!cur.adopted || containerId !== cur.containerId) next = { ...cur, adopted: true, containerId }
+      const containerId = str(data.container_id)
+      if (containerId !== null && ev.id > cur.containerAt) next = { ...next, containerId, containerAt: ev.id }
+      if (!next.adopted) next = { ...next, adopted: true }
       break
     }
     default:
@@ -425,6 +439,7 @@ function mergeView(cur: Workspace | undefined, at: number, v: WorkspaceView): Wo
     steps[name] = { status: sv.status, detail: str(sv.detail), at: sv.at, eventId: at }
   }
   const eventsWin = base.stateAt > at
+  const containerWins = base.containerAt > at
   return {
     ...base,
     repositoryId: v.repository_id,
@@ -433,7 +448,8 @@ function mergeView(cur: Workspace | undefined, at: number, v: WorkspaceView): Wo
     state: eventsWin ? base.state : v.state,
     detail: eventsWin ? base.detail : v.state_detail,
     stateAt: eventsWin ? base.stateAt : at,
-    containerId: v.container_id ?? (eventsWin ? base.containerId : null),
+    containerId: containerWins ? base.containerId : v.container_id,
+    containerAt: containerWins ? base.containerAt : at,
     createdAt: v.created_at,
     steps,
   }
@@ -493,31 +509,70 @@ function applyWorkspaceDetail(prev: Entities, at: number, view: WorkspaceDetail)
 }
 
 const stepOrder = (n: string) => (WORKSPACE_STEPS as readonly string[]).indexOf(n)
+const time = (iso: string) => {
+  const t = Date.parse(iso)
+  return Number.isNaN(t) ? -Infinity : t
+}
+
+/** Whether step record `a` happened after `b`: by the server's time, then event id, then run order. */
+function later(a: [string, StepRecord], b: [string, StepRecord]): boolean {
+  const ta = time(a[1].at)
+  const tb = time(b[1].at)
+  if (ta !== tb) return ta > tb
+  if (a[1].eventId !== b[1].eventId) return a[1].eventId > b[1].eventId
+  return stepOrder(a[0]) > stepOrder(b[0])
+}
+
+/** The latest-written step, or null for an empty timeline. */
+function latestStep(steps: Record<string, StepRecord>): [string, StepRecord] | null {
+  let best: [string, StepRecord] | null = null
+  for (const entry of Object.entries(steps)) if (best === null || later(entry, best)) best = entry
+  return best
+}
+
+/**
+ * The step timeline of the current run (frontend §6.1, *Steps after a
+ * start*). `steps` holds the latest event per step — the server's `steps`
+ * says the same — and a start reruns only from step 3 (or 2), so a step the
+ * earlier run reached and this one has not yet keeps the earlier run's
+ * status: a `failed` from the last attempt, or a `done` from before a stop.
+ *
+ * The rule: find the latest-written step, L. Every run walks the steps in
+ * order, so a step *after* L in run order that was written *before* L
+ * belongs to an earlier run, and is left out — shown as not run. Steps
+ * before L in run order are kept, whether this run wrote them or they are
+ * the prefix it resumed after (allocate, clone): those happened, and their
+ * result is what the run is standing on. A create clears the timeline
+ * outright (the `pending` case in applyEvent), so this only ever trims what
+ * a start left behind.
+ *
+ * Time is the server's `at`, not the event id: a snapshot versions every row
+ * at its own position, so ids cannot order rows that came from one.
+ */
+export function runSteps(w: Workspace): Record<string, StepRecord> {
+  const last = latestStep(w.steps)
+  if (last === null) return w.steps
+  const lastOrder = stepOrder(last[0])
+  const lastAt = time(last[1].at)
+  const kept = Object.entries(w.steps).filter(([name, r]) => !(stepOrder(name) > lastOrder && time(r.at) < lastAt))
+  return kept.length === Object.keys(w.steps).length ? w.steps : Object.fromEntries(kept)
+}
 
 /**
  * The step the card names: the most recent step event, or — when only a
- * snapshot has been seen — the latest-written row of the timeline, ties
- * broken by run order.
+ * snapshot has been seen — the latest-written row of the current run.
  */
 export function currentStep(w: Workspace): StepInfo | null {
   if (w.step !== null) return w.step
-  let best: [string, StepRecord] | null = null
-  for (const entry of Object.entries(w.steps)) {
-    if (best === null || entry[1].eventId > best[1].eventId
-      || (entry[1].eventId === best[1].eventId && stepOrder(entry[0]) > stepOrder(best[0]))) best = entry
-  }
+  const best = latestStep(runSteps(w))
   return best === null ? null : { name: best[0], status: best[1].status, detail: best[1].detail }
 }
 
-/** The step a failed workspace failed at, or null when nothing says. */
+/** The step a failed workspace failed at in its current run, or null when nothing says. */
 export function failedStep(w: Workspace): string | null {
   if (w.step?.status === 'failed') return w.step.name
-  let best: [string, StepRecord] | null = null
-  for (const entry of Object.entries(w.steps)) {
-    if (entry[1].status !== 'failed') continue
-    if (best === null || entry[1].eventId > best[1].eventId) best = entry
-  }
-  return best?.[0] ?? null
+  const failed = Object.fromEntries(Object.entries(runSteps(w)).filter(([, r]) => r.status === 'failed'))
+  return latestStep(failed)?.[0] ?? null
 }
 
 /** The newest workspace holding a repository: the join the home list shows. */
@@ -529,6 +584,17 @@ export function workspaceForRepo(e: Entities, repoId: number): Workspace | null 
     if (best === null || w.id > best.id) best = w
   }
   return best
+}
+
+/**
+ * Whether any workspace at all holds a repository — in any state, a stub
+ * whose state is not yet known included. The server refuses a second create
+ * for a repository with a workspace row in any state (design §5: one
+ * repository, one workspace, until a delete finishes), so this, not
+ * `workspaceForRepo`, is what decides whether Clone is offered.
+ */
+export function repoHeld(e: Entities, repoId: number): boolean {
+  return Object.values(e.workspaces).some((w) => w.repositoryId === repoId)
 }
 
 /** Whether the store owes a refetch: something named a workspace it cannot place. */

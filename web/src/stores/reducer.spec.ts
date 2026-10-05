@@ -6,12 +6,12 @@
 import { describe, expect, it } from 'vitest'
 import type { StreamEvent } from '../api/types'
 import {
-  FEED_LIMIT, currentStep, emptyEntities, failedStep, hasStubs, reduce, reduceAll, workspaceForRepo,
+  FEED_LIMIT, currentStep, emptyEntities, failedStep, hasStubs, reduce, reduceAll, runSteps, workspaceForRepo,
   type Action, type Entities,
 } from './reducer'
 import {
-  CLONE_FAILS_AT_UP, CLONE_OK, DELETE, ORPHAN, RECONCILE, REFRESH_FAILED, REFRESHED, START_AFTER_FAIL, WS, WS2,
-  catalogBody, detailBody, listBody, stateEvent, stepEvent, tokenIssued, ws2View, wsView,
+  CLONE_FAILS_AT_UP, CLONE_OK, DELETE, ORPHAN, RECONCILE, REFRESH_FAILED, REFRESHED, RESTART_FAILS_EARLY,
+  START_AFTER_FAIL, WS, WS2, catalogBody, detailBody, listBody, stateEvent, step, stepEvent, tokenIssued, ws2View, wsView,
 } from './reducer.fixtures'
 
 const events = (evs: StreamEvent[]): Action[] => evs.map((event) => ({ type: 'event', event }))
@@ -353,6 +353,80 @@ describe('the step timeline', () => {
     const before = play([stepEvent(5, WS, 'up', 'failed'), stateEvent(7, WS, 'pending', { repository_id: 1, branch: 'main' })])
     expect(before.workspaces[WS]!.steps).toEqual({})
     expect(before.workspaces[WS]!.step).toBeNull()
+  })
+})
+
+describe('the current run (frontend §6.1, steps after a start)', () => {
+  it('leaves out a step an earlier run reached and this one has not, from events', () => {
+    const before = play([...CLONE_OK, ...RESTART_FAILS_EARLY.slice(0, 2)])
+    // Control: until the start writes a step, the last run's timeline stands.
+    expect(Object.keys(runSteps(before.workspaces[WS]!))).toEqual(['allocate', 'clone', 'resolve_config', 'up'])
+
+    const e = play(RESTART_FAILS_EARLY.slice(2), before)
+    const w = e.workspaces[WS]!
+    // The raw rows still hold `up` from the first run — what the server reports…
+    expect(w.steps.up).toMatchObject({ status: 'done', eventId: 12 })
+    // …but it is not this run's: resolve_config, before it in run order, was written after it.
+    expect(Object.keys(runSteps(w))).toEqual(['allocate', 'clone', 'resolve_config'])
+    expect(runSteps(w).resolve_config).toMatchObject({ status: 'failed' })
+    expect(failedStep(w)).toBe('resolve_config')
+  })
+
+  it('does the same from a snapshot alone, where every row carries one event id', () => {
+    const body = wsView({
+      state: 'failed', state_detail: 'Could not read the dev container configuration.',
+      steps: {
+        allocate: step('done', 3), clone: step('done', 6), resolve_config: step('failed', 63, 'Could not read…'),
+        up: step('done', 12), verify: step('failed', 14, 'an older run'),
+      },
+    })
+    const w = reduce(emptyEntities(), { type: 'workspaces', at: 70, view: listBody(body) }).workspaces[WS]!
+    expect(Object.keys(runSteps(w)).sort()).toEqual(['allocate', 'clone', 'resolve_config'])
+    // Ids tie, so run order alone would have named verify, the last step with a row.
+    expect(failedStep(w)).toBe('resolve_config')
+    expect(currentStep(w)).toMatchObject({ name: 'resolve_config', status: 'failed' })
+    // Control: the same rows with the first run's times intact are all one run.
+    const whole = reduce(emptyEntities(), {
+      type: 'workspaces', at: 70,
+      view: listBody(wsView({ steps: { ...body.steps, resolve_config: step('done', 8) } })),
+    }).workspaces[WS]!
+    expect(Object.keys(runSteps(whole)).sort()).toEqual(['allocate', 'clone', 'resolve_config', 'up', 'verify'])
+    expect(failedStep(whole)).toBe('verify')
+  })
+
+  it('keeps the prefix a start resumed after, and a completed run whole', () => {
+    const e = play([...CLONE_FAILS_AT_UP, ...START_AFTER_FAIL])
+    expect(Object.keys(runSteps(e.workspaces[WS2]!))).toEqual(['up'])
+    const ok = play(CLONE_OK).workspaces[WS]!
+    expect(runSteps(ok)).toBe(ok.steps)
+  })
+})
+
+describe('the container id', () => {
+  it('arrives on the move to running, with no refetch', () => {
+    expect(play(CLONE_OK).workspaces[WS]).toMatchObject({ containerId: 'c0ffee0123456789', containerAt: 13 })
+    // Control: a step short of running, there is none.
+    expect(play(CLONE_OK.slice(0, 12)).workspaces[WS]!.containerId).toBeNull()
+  })
+
+  it('is versioned on its own: a late older event and an older snapshot do not replace it', () => {
+    const e = play([...CLONE_OK, stateEvent(20, WS, 'running', { from: 'building', container_id: 'newer' })])
+    const late = play([stateEvent(15, WS, 'running', { from: 'building', container_id: 'older' })], e)
+    expect(late.workspaces[WS]!.containerId).toBe('newer')
+    const snap = reduce(e, { type: 'workspaces', at: 18, view: listBody(wsView({ container_id: 'snapshot' })) })
+    expect(snap.workspaces[WS]!.containerId).toBe('newer')
+    // Control: a snapshot from after the event is believed.
+    const fresh = reduce(e, { type: 'workspaces', at: 21, view: listBody(wsView({ container_id: 'snapshot' })) })
+    expect(fresh.workspaces[WS]).toMatchObject({ containerId: 'snapshot', containerAt: 21 })
+  })
+
+  it('lands even when a snapshot already carried the state the event moves to', () => {
+    // The list (at 12, state running from a racing read) beat the event that also names the container.
+    const snap = reduce(play(CLONE_OK.slice(0, 12)), {
+      type: 'workspaces', at: 12, view: listBody(wsView({ container_id: null })),
+    })
+    const e = play([CLONE_OK[12]!], snap)
+    expect(e.workspaces[WS]!.containerId).toBe('c0ffee0123456789')
   })
 })
 

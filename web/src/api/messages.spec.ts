@@ -35,9 +35,11 @@ describe('describeError', () => {
     expect(describeError(new ApiError(0, 'network'))).not.toContain('Something went wrong')
   })
 
-  it('at_capacity points at what to stop, and is not in_progress', () => {
+  it('at_capacity says where the slots are, promises no Stop, and is not in_progress', () => {
     const cap = describeError(new ApiError(409, 'at_capacity', null, 'prose'))
-    expect(cap).toContain('Running section')
+    expect(cap).toContain('listed under Running')
+    // There is no Stop button until Phase 6, so the sentence must not send anyone looking for one.
+    expect(cap).not.toMatch(/\bstop\b/i)
     // Control: the other 409 says something else entirely.
     expect(describeError(new ApiError(409, 'in_progress'))).toBe('Already in progress.')
   })

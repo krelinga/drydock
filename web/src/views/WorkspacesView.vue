@@ -23,7 +23,7 @@ import type { Workspace } from '../stores/reducer'
 import { cloneKey, startKey, useWorkspacesStore } from '../stores/workspaces'
 import { useStreamRefetch } from '../lib/refetch'
 import { relativeTime } from '../lib/time'
-import { cardStatus } from '../lib/workspaceCard'
+import { cardStatus, rowAction } from '../lib/workspaceCard'
 
 const catalog = useCatalogStore()
 const workspaces = useWorkspacesStore()
@@ -143,17 +143,17 @@ function rowNote(r: CatalogRow): string | null {
               <span v-if="r.repo.pushedAt" class="pushed">pushed {{ relativeTime(r.repo.pushedAt) }}</span>
             </div>
             <!--
-              One action per row (§6.1): Clone when nothing holds the repo,
-              Start when its workspace is stopped or failed. A removed repo is
-              read-only, so it offers no clone (the server would answer 404).
+              One action per row (§6.1), from lib/workspaceCard.ts rowAction:
+              Clone only when no workspace holds the repo in any state, Start
+              when its workspace is stopped or failed.
             -->
             <ActionButton
-              v-if="r.workspace === null && !r.repo.removed" label="Clone"
+              v-if="rowAction(r) === 'clone'" label="Clone"
               :flight-key="cloneKey(r.repo.id)" :run="() => workspaces.create(r.repo.id)"
               data-test="clone"
             />
             <ActionButton
-              v-else-if="r.workspace && status(r.workspace).action === 'start'" label="Start"
+              v-else-if="r.workspace && rowAction(r) === 'start'" label="Start"
               :flight-key="startKey(r.workspace.id)" :run="() => workspaces.start(r.workspace!.id)"
               data-test="start"
             />

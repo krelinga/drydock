@@ -16,7 +16,7 @@
 import { defineStore } from 'pinia'
 import * as api from '../api/client'
 import type { CatalogView, InstallationView, StreamEvent } from '../api/types'
-import { workspaceForRepo, type Repo, type Workspace } from './reducer'
+import { repoHeld, workspaceForRepo, type Repo, type Workspace } from './reducer'
 import { useStreamStore } from './stream'
 
 export type CatalogStatus = 'idle' | 'loading' | 'ready' | 'not_configured' | 'error'
@@ -29,6 +29,8 @@ const RUNNING_SECTION = new Set(['pending', 'cloning', 'building', 'running', 'f
 export interface CatalogRow {
   repo: Repo
   workspace: Workspace | null
+  /** Whether any workspace holds the repository, whatever its state: see `repoHeld`. */
+  held: boolean
   installation: InstallationView | null
 }
 
@@ -63,7 +65,10 @@ export const useCatalogStore = defineStore('catalog', {
       return e.repoOrder.flatMap((id) => {
         const repo = e.repos[id]
         if (repo === undefined) return []
-        return [{ repo, workspace: workspaceForRepo(e, id), installation: e.installations[repo.installationId] ?? null }]
+        return [{
+          repo, workspace: workspaceForRepo(e, id), held: repoHeld(e, id),
+          installation: e.installations[repo.installationId] ?? null,
+        }]
       })
     },
     filtered(): CatalogRow[] {
