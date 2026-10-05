@@ -16,6 +16,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"regexp"
 	"sort"
 	"strconv"
@@ -66,6 +67,19 @@ type UpSpec struct {
 	Features map[string]map[string]any
 	// RemoteEnv is --remote-env: set for the remote user's processes.
 	RemoteEnv map[string]string
+	// TempDir, when set, is the TMPDIR `up` runs with. It must be this
+	// workspace's alone: CLI 0.89.0 stages each run's Features in
+	// $TMPDIR/devcontainercli-<user>/container-features/<version>-<Date.now()>,
+	// so two `up`s that start in the same millisecond share one folder and
+	// build each other's Features — measured: of two workspaces created
+	// together, one came up without a Feature its config declares.
+	// Empty inherits Drydock's.
+	TempDir string
+	// Lockfile is what `up` does with the repository's
+	// devcontainer-lock.json: LockfileHonour reads a committed one, and
+	// rewrites it if it is stale, as VS Code would; LockfileIgnore (the zero
+	// value), for a repository without one, never writes. See LockfileMode.
+	Lockfile Lockfile
 	// OverrideConfig is --override-config: a devcontainer.json outside the
 	// clone, used in place of the repository's. Drydock writes one only for
 	// a repository that has none (§6 step 3), so the repository is never
@@ -97,22 +111,29 @@ func (m Manager) Args(s UpSpec) ([]string, error) {
 	if s.RepositoryID <= 0 || s.Branch == "" || !strings.HasPrefix(s.Folder, "/") {
 		return nil, errors.New("container: a repository id, a branch, and an absolute folder are required")
 	}
-	args := []string{"up",
-		"--workspace-folder", s.Folder,
-		// Measured on CLI 0.89.0: with features in play, `up` writes
-		// devcontainer-lock.json beside the config it believes it read — in
-		// the repository's .devcontainer/, an untracked file in the agent's
-		// working tree, adding Drydock's own Feature to it. With
-		// --override-config and no .devcontainer/ in the repository it
-		// fails outright (ENOENT opening that path). Drydock never writes
-		// into the clone, so no lockfile, ever. The cost: a repository's
-		// own committed lockfile is not verified either.
-		"--no-lockfile",
-		"--id-label", m.key(LabelWorkspace) + "=" + s.WorkspaceID,
-		"--id-label", m.key(LabelRepositoryID) + "=" + strconv.FormatInt(s.RepositoryID, 10),
-		"--id-label", m.key(LabelRepo) + "=" + s.FullName,
-		"--id-label", m.key(LabelBranch) + "=" + s.Branch,
+	// With no lockfile flag `up` may write devcontainer-lock.json into the
+	// clone (measured on CLI 0.89.0); see Lockfile.
+	lock, err := s.Lockfile.flag()
+	if err != nil {
+		return nil, err
 	}
+	if s.Lockfile == LockfileHonour && s.OverrideConfig != "" {
+		// The override is Drydock's own config for a repository with none,
+		// and with no flag the CLI fails writing a lockfile at the
+		// repository's default path (ENOENT, measured) — there is nothing to
+		// honour, and a lockfile beside the override is never read.
+		return nil, errors.New("container: honouring a lockfile with an override config")
+	}
+	args := []string{"up", "--workspace-folder", s.Folder}
+	if lock != "" {
+		args = append(args, lock)
+	}
+	args = append(args,
+		"--id-label", m.key(LabelWorkspace)+"="+s.WorkspaceID,
+		"--id-label", m.key(LabelRepositoryID)+"="+strconv.FormatInt(s.RepositoryID, 10),
+		"--id-label", m.key(LabelRepo)+"="+s.FullName,
+		"--id-label", m.key(LabelBranch)+"="+s.Branch,
+	)
 	if s.BrokerSocket != "" {
 		// --mount is comma-separated key=value pairs, so a comma or an equals
 		// sign in the path would let it add mount options of its own.
@@ -207,7 +228,14 @@ func (m Manager) Up(ctx context.Context, s UpSpec) (classify.Container, []byte, 
 		return classify.Container{}, nil, err
 	}
 	var stdout, stderr bytes.Buffer
-	res := m.Run.Run(ctx, subproc.Cmd{Name: "devcontainer", Args: args, Stdout: &stdout, Stderr: limit(&stderr, 1<<20)})
+	cmd := subproc.Cmd{Name: "devcontainer", Args: args, Stdout: &stdout, Stderr: limit(&stderr, 1<<20)}
+	if s.TempDir != "" {
+		if !strings.HasPrefix(s.TempDir, "/") {
+			return classify.Container{}, nil, fmt.Errorf("container: temp dir %q must be absolute", s.TempDir)
+		}
+		cmd.Env = withTempDir(os.Environ(), s.TempDir)
+	}
+	res := m.Run.Run(ctx, cmd)
 	if res.Err != nil {
 		return classify.Container{}, stderr.Bytes(), fmt.Errorf("devcontainer up: %w", res.Err)
 	}
@@ -338,4 +366,15 @@ func remoteEnvArgs(env map[string]string) ([]string, error) {
 		args = append(args, "--remote-env", k+"="+env[k])
 	}
 	return args, nil
+}
+
+// withTempDir is env with TMPDIR set to dir, replacing any TMPDIR in it.
+func withTempDir(env []string, dir string) []string {
+	out := make([]string, 0, len(env)+1)
+	for _, kv := range env {
+		if !strings.HasPrefix(kv, "TMPDIR=") {
+			out = append(out, kv)
+		}
+	}
+	return append(out, "TMPDIR="+dir)
 }

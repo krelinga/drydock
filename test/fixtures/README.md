@@ -9,7 +9,9 @@ for the re-record ritual.
 transcripts/claude-<version>/   raw PTY bytes, escapes intact, one file per scenario
 authstatus/                     `claude auth status --json` documents, one per state
 credentials/                    .credentials.json shapes, including the tombstone
-devcontainer/                   `devcontainer up` stdout -- one JSON object; there is no --json flag
+devcontainer/                   `devcontainer up` stdout -- one JSON object; there is no --json flag --
+                                plus read-configuration results and lockfile-behaviour.txt, the
+                                measured lockfile matrix (design §6)
 repos/                          the five fixture repos (testing §6.5)
 ```
 
@@ -39,7 +41,7 @@ repos/                          the five fixture repos (testing §6.5)
 
 ## Recording it
 
-`./record.sh [login|discovery|refusals|hangs|identity|credentials|all]` regenerates
+`./record.sh [login|discovery|refusals|hangs|devcontainer|readconfig|lockfile|identity|credentials|all]` regenerates
 everything from the real binary. That script *is* testing-plan §11.1 step 3, and
 the ritual order matters: **re-run the four spike harnesses first.** They drive
 the binary and fail loudly on a behavioural change; the recorder only records

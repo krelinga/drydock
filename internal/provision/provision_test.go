@@ -73,8 +73,10 @@ func fixture(t *testing.T, name string) string {
 
 func newFakeCLI(t *testing.T, origin string) *fakeCLI {
 	return &fakeCLI{
-		dir:        t.TempDir(),
-		readConfig: "cat <<'EOF'\n" + fixture(t, "read-configuration-ok.json") + "\nEOF\n",
+		dir: t.TempDir(),
+		// The recording's folder was rewritten to /srv/drydock/ws/FIXTURE/repo;
+		// the real CLI names the folder it was given ($3), so the fake does.
+		readConfig: "sed \"s#/srv/drydock/ws/FIXTURE/repo#$3#g\" <<'EOF'\n" + fixture(t, "read-configuration-ok.json") + "\nEOF\n",
 		up:         "cat <<'EOF'\n" + fixture(t, "up-ok.json") + "\nEOF\necho 'a log line' >&2\n",
 		// The probe answers; git prints the origin the clone left.
 		exec: `case " $* " in
@@ -143,7 +145,9 @@ type env struct {
 	dbPath string
 }
 
-func newEnv(t *testing.T) *env {
+// newEnv builds the harness. Each setup edits the fake GitHub's repositories
+// before its git remote builds them, which EnableGit does at once.
+func newEnv(t *testing.T, setup ...func(*githubtest.Fake)) *env {
 	t.Helper()
 	ctx := context.Background()
 	dir := t.TempDir()
@@ -160,6 +164,9 @@ func newEnv(t *testing.T) *env {
 			Files: []string{"README.md", ".devcontainer/devcontainer.json"}},
 		{ID: plain, FullName: "krelinga/plain", DefaultBranch: "trunk", Files: []string{"README.md"}},
 	}}}
+	for _, fn := range setup {
+		fn(f)
+	}
 	f.EnableGit(t)
 	for _, q := range []string{
 		`INSERT INTO repository (id, installation_id, full_name, default_branch) VALUES (101, 77, 'krelinga/alpha', 'main')`,
@@ -400,7 +407,8 @@ func TestEachRealStepNamesItsFailure(t *testing.T) {
 		name   string
 		repo   int64
 		break_ func(e *env)
-		step   workspace.Step // "" is the control
+		setup  func(*githubtest.Fake) // edits the repositories before they are built
+		step   workspace.Step         // "" is the control
 		detail string
 	}{
 		{name: "control", repo: alpha},
@@ -424,6 +432,12 @@ func TestEachRealStepNamesItsFailure(t *testing.T) {
 			}},
 		{name: "up unreadable", repo: alpha, step: workspace.StepUp, detail: "could not run devcontainer up",
 			break_: func(e *env) { e.cli.up = "echo 'Unknown argument: json' >&2; exit 1" }},
+		{name: "resolve_config lockfile pins Drydock", repo: alpha, step: workspace.StepResolveConfig,
+			detail: "pins Drydock's own Feature",
+			setup:  withLockfile(`{"features":{"` + feature + `":{"version":"0.0.1"}}}`)},
+		{name: "resolve_config lockfile unreadable", repo: alpha, step: workspace.StepResolveConfig,
+			detail: "not a lockfile the dev container CLI could use",
+			setup:  withLockfile(`{"features":`)},
 		{name: "verify probe", repo: alpha, step: workspace.StepVerify, detail: "socket did not answer",
 			break_: func(e *env) { e.cli.exec = "case \" $* \" in *\" drydock-probe \"*) exit 1 ;; esac" }},
 		{name: "verify origin", repo: alpha, step: workspace.StepVerify, detail: "origin is not the repository",
@@ -433,7 +447,11 @@ func TestEachRealStepNamesItsFailure(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			e := newEnv(t)
+			var setup []func(*githubtest.Fake)
+			if c.setup != nil {
+				setup = append(setup, c.setup)
+			}
+			e := newEnv(t, setup...)
 			if c.break_ != nil {
 				c.break_(e)
 			}
