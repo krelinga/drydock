@@ -3,8 +3,8 @@
 // This is a lookup on the envelope's `code`, never a match on the server's
 // prose. The server's `message` is written for a human too, but a reworded
 // message must not change what the UI says, and a message the server never
-// meant for this screen must not leak onto it. So the server's text is not an
-// input here at all.
+// meant for this screen must not leak onto it. So the server's `message` is
+// not an input here at all, and its `detail` only for the codes in DETAILED.
 
 import { ApiError } from './client'
 
@@ -25,8 +25,42 @@ const SENTENCES: Record<string, string> = {
   // value and point at the Stop button on the cards under Running.
   at_capacity: 'Drydock is at its cap: as many workspaces as it allows are already building or running. They are listed under Running.',
   bad_request: 'Drydock did not understand that request.',
+  // Design §10.1's refusals. Three of them need the server's detail to be
+  // specific — which reason a name is reserved for, which character at which
+  // byte, which repository id — and DETAILED below says which.
+  secrets_not_configured:
+    'Drydock has no secrets key, so secrets cannot be stored. Start `drydock serve` with `--secrets-key`; the installer creates the key.',
+  secret_name_invalid:
+    "A secret's name is its environment variable name: capital letters, digits and underscores, not starting with a digit, at most 128 characters.",
+  secret_name_reserved: 'That name is reserved.',
+  secret_value_empty: 'A secret needs a value. An empty value cannot be told apart from an unset variable.',
+  secret_value_control_character: "A secret's value must be a single line with no control characters.",
+  secret_value_too_long:
+    'That value is too long: at most 32768 bytes. Encode a large or multi-line credential, such as a PEM, as base64.',
+  secret_reach_required: 'Say what someone could do with this secret. The answer is required, in at most 2000 bytes.',
+  secret_description_invalid: 'The description is too long: at most 4000 bytes of text.',
+  unknown_repository: 'That repository is not in the catalog.',
   internal: 'Drydock hit an internal error. The host’s log has the detail.',
   network: 'Could not reach Drydock. Check the connection and try again.',
+}
+
+/**
+ * Codes whose sentence is completed by the envelope's `detail`. The detail is
+ * the one piece of server text the UI shows, and only for these: it names the
+ * rule or the character (internal/secrets.Invalid — "never the value"), which
+ * is what makes the sentence worth reading. It is rendered as text (§8).
+ */
+const DETAILED = new Set(['secret_name_reserved', 'secret_value_control_character', 'unknown_repository'])
+
+/**
+ * The sentence for a code and its detail. A refusal the form caught before
+ * sending (lib/secretRules.ts) comes through here too, with the same code and
+ * detail the server would have sent, so it reads the same either way.
+ */
+export function sentenceFor(code: string, detail = ''): string | undefined {
+  const sentence = SENTENCES[code]
+  if (sentence === undefined) return undefined
+  return DETAILED.has(code) && detail !== '' ? `${sentence} ${detail}` : sentence
 }
 
 /** `in 45 seconds`, `in 2 minutes` — rounded up, never "in 0". */
@@ -48,7 +82,7 @@ export function describeError(err: unknown): string {
     const when = err.retryAfter !== null ? `Try again ${inDuration(err.retryAfter)}.` : 'Wait a while before trying again.'
     return `Too many failed sign-ins. ${when}`
   }
-  const sentence = SENTENCES[err.code]
+  const sentence = sentenceFor(err.code, err.detail)
   if (sentence !== undefined) return sentence
   // An unknown code is rendered as one, visibly, rather than guessed at:
   // the code is what someone will search for.

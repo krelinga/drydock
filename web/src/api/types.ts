@@ -4,7 +4,8 @@
 // contract has one source. No generator exists yet, so they are written by
 // hand and mirrored field for field from internal/api/session_routes.go
 // (deviceJSON), internal/api/problem.go (Error), internal/catalog/view.go
-// (View) and internal/events/events.go (Event), with each event kind's `data`
+// (View), internal/events/events.go (Event) and internal/secrets/store.go
+// (Meta, PutResult), with each event kind's `data`
 // read off the Emit call that writes it (see stores/reducer.ts). This file is
 // the one to replace with generated output rather than extend much further.
 
@@ -32,6 +33,7 @@ export interface ErrorEnvelope {
   error: {
     code: string
     message: string
+    /** Context for the code: which rule, which character. Shown as text, never parsed. */
     detail?: string
   }
 }
@@ -56,6 +58,15 @@ export type ErrorCode =
   | 'locked_out'
   | 'not_configured'
   | 'app_not_configured'
+  | 'secrets_not_configured'
+  | 'secret_name_invalid'
+  | 'secret_name_reserved'
+  | 'secret_value_empty'
+  | 'secret_value_control_character'
+  | 'secret_value_too_long'
+  | 'secret_reach_required'
+  | 'secret_description_invalid'
+  | 'unknown_repository'
   | 'internal'
   | 'network'
   | 'unparseable'
@@ -160,4 +171,60 @@ export interface StreamEvent {
   message: string
   data?: Record<string, unknown>
   at: string
+}
+
+/** One repository a secret may reach (internal/secrets.Grant). */
+export interface SecretGrant {
+  repository_id: number
+  full_name: string
+}
+
+/**
+ * Everything about a secret except its value (internal/secrets.Meta). There
+ * is no field a value could go in, here or in the Go type: no route returns
+ * one (design §13.5, frontend §2.5).
+ */
+export interface SecretMeta {
+  name: string
+  /** The answer to "what can someone do with this?" (design §10.4). */
+  reach: string
+  description: string
+  /** Every repository, including ones added to the installation later. */
+  all_repos: boolean
+  grants: SecretGrant[]
+  created_at: string | null
+  /** Null until the value first changes. */
+  rotated_at: string | null
+  last_access_at: string | null
+  /** Workspace ids that have fetched it, most recent first. */
+  accessed_by: string[]
+}
+
+/** `GET /api/secrets`. */
+export interface SecretList {
+  secrets: SecretMeta[]
+}
+
+/** A running workspace a rotation reached (internal/secrets.StaleWorkspace). */
+export interface StaleWorkspace {
+  workspace_id: string
+  repository_id: number
+  full_name: string
+}
+
+/**
+ * Which running workspaces hold a rotated value, by what it costs them
+ * (design §10.3, frontend §4.5 #5). Both lists are always present.
+ */
+export interface Stale {
+  new_commands: StaleWorkspace[]
+  needs_supervisor_restart: StaleWorkspace[]
+}
+
+/** `PUT /api/secrets/:name`'s 200 body (internal/secrets.PutResult). */
+export interface PutSecretResult {
+  secret: SecretMeta
+  created: boolean
+  rotated: boolean
+  stale: Stale
 }

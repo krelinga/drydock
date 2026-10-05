@@ -11,8 +11,13 @@ const items = [
   { to: '/secrets', name: 'secrets', label: 'Secrets', glyph: '◆' },
   { to: '/settings', name: 'settings', label: 'Settings', glyph: '◎' },
 ] as const
-// A workspace's detail is reached from Workspaces, so that tab stays current.
-const active = computed(() => (route.name === 'workspace' ? 'workspaces' : route.name))
+// A workspace's detail is reached from Workspaces, and a secret's from
+// Secrets, so those tabs stay current.
+const active = computed(() => {
+  if (route.name === 'workspace') return 'workspaces'
+  if (route.name === 'secret' || route.name === 'secret-new') return 'secrets'
+  return route.name
+})
 </script>
 
 <template>

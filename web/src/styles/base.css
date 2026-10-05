@@ -49,14 +49,15 @@ button, input, textarea, select { font: inherit; color: inherit; }
 
 .field { display: flex; flex-direction: column; gap: 6px; }
 .field > label { font-size: 13px; font-weight: 500; }
-.field input {
+.field input, .field textarea {
   font-size: 16px; /* below 16 px, iOS Safari zooms the page on focus */
   width: 100%; min-height: var(--tap); padding: 10px 11px;
   border: 1px solid var(--line); border-radius: var(--r);
   background: var(--surface); color: var(--ink);
 }
-.field input:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
-.field.err input { border-color: var(--bad); }
+.field input:focus-visible, .field textarea:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.field textarea { resize: vertical; line-height: 1.45; }
+.field.err input, .field.err textarea { border-color: var(--bad); }
 
 /* Status is never colour alone (§7): every message carries a glyph too. */
 .msg { font-size: 13px; line-height: 1.45; display: flex; gap: 7px; padding: 9px 11px; border-radius: var(--r); }

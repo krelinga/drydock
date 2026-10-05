@@ -21,9 +21,41 @@
 //   drydockMock.dropStream()      cut the stream; the browser retries (CONNECTING)
 //   drydockMock.refreshFails()    the next catalog refresh reports a failure
 //   drydockMock.noApp()           GET /api/repos answers app_not_configured
+//
+// Secrets (Phase 4). The form checks everything the server does before it
+// sends, so a server-side refusal is reached by forcing one:
+//
+//   drydockMock.refuseSecret('secret_name_reserved')   the next secret write is
+//                                 refused with that code (any §10.1 code, with the
+//                                 server's own detail), whatever it sent
+//   drydockMock.noSecretsKey()    every /api/secrets route answers secrets_not_configured
+//   drydockMock.undeliverable()   the broker reports secret.undeliverable (fleet banner)
+//   drydockMock.fetchSecrets(id)  a workspace fetches its secrets: last access moves,
+//                                 with no event, so only a refetch shows it
+//   drydockMock.needsRestart(id)  a rotation reports that workspace as
+//                                 needs_supervisor_restart (Phase 5's hook)
+//   drydockMock.rotateElsewhere(name)  another device rotates a secret
 
 import { setupWorker } from 'msw/browser'
-import { cloneScript, completeRefresh, emit, handlersFor, MOCK_PASSWORD, newBackend, nextWorkspaceId } from './backend'
+import {
+  cloneScript, completeRefresh, emit, handlersFor, MOCK_PASSWORD, newBackend, nextWorkspaceId, recordSecretFetch,
+  secretMeta, secretUndeliverable,
+} from './backend'
+
+/** The server's detail for each refusal dev:mock can force: what internal/secrets would say. */
+const REFUSALS: Record<string, { status: number; message: string; detail?: string }> = {
+  secrets_not_configured: { status: 503, message: 'No secrets master key is configured, so secrets cannot be stored.', detail: 'Start drydock serve with --secrets-key; the installer creates the key.' },
+  secret_name_invalid: { status: 400, message: "A secret's name is its environment variable name.", detail: 'Use capital letters, digits and underscores, not starting with a digit, at most 128 characters.' },
+  secret_name_reserved: { status: 400, message: 'GH_TOKEN is reserved.', detail: "Drydock refuses it because gh reads GH_* itself; GH_TOKEN would shadow the shim's repository-scoped token (§9.2)." },
+  secret_value_empty: { status: 400, message: 'A secret needs a value.', detail: 'An empty value cannot be told apart from an unset variable.' },
+  secret_value_control_character: { status: 400, message: "A secret's value must be a single line with no control characters.", detail: 'It contains a newline (U+000A) at byte 7. A multi-line credential, such as a PEM, goes in as base64.' },
+  secret_value_too_long: { status: 400, message: 'That value is too long.', detail: 'A value is at most 32768 bytes. Encode a large or multi-line credential, such as a PEM, as base64.' },
+  secret_reach_required: { status: 400, message: 'Say what someone could do with this secret.', detail: 'The reach field is required: it is the decision to grant, written down.' },
+  secret_description_invalid: { status: 400, message: 'The description is too long or is not text.', detail: 'At most 4000 bytes of UTF-8.' },
+  unknown_repository: { status: 400, message: 'That repository is not in the catalog.', detail: 'No repository has id 99. Refresh the repository list and try again.' },
+  not_found: { status: 404, message: 'There is no secret by that name.' },
+  bad_request: { status: 400, message: 'Send a JSON object with the documented fields.' },
+}
 
 export async function startMockWorker(): Promise<void> {
   const backend = newBackend()
@@ -75,6 +107,22 @@ export async function startMockWorker(): Promise<void> {
       }, 100)
     },
     noApp(on = true) { backend.appConfigured = !on },
+    refuseSecret(code: string) {
+      const r = REFUSALS[code]
+      if (r === undefined) throw new Error(`no such refusal; one of ${Object.keys(REFUSALS).join(', ')}`)
+      backend.refuseNextSecret = { code, ...r }
+    },
+    noSecretsKey(on = true) { backend.secretsKey = !on },
+    undeliverable() { return secretUndeliverable(backend) },
+    fetchSecrets(id: string) { return recordSecretFetch(backend, id) },
+    needsRestart(id: string) { backend.staleRestart.push(id) },
+    rotateElsewhere(name: string) {
+      const s = backend.secrets[name]
+      if (s === undefined) return
+      s.value = `${s.value}x`
+      s.rotated_at = new Date().toISOString()
+      emit(backend, 'secret.rotated', { message: `Rotated the secret ${name}.`, data: { secret: secretMeta(backend, s), stale: { new_commands: [], needs_supervisor_restart: [] } } })
+    },
   }
   ;(window as unknown as { drydockMock: typeof handle }).drydockMock = handle
   console.info('[drydock] mock API active. Password: %s. See window.drydockMock.', MOCK_PASSWORD)

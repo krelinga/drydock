@@ -35,6 +35,22 @@
 //   workspace.adopted  {container_id}       a known row matched to a container
 //   repo.refreshed     {count, added, removed}
 //   repo.refresh_failed {}                  the reason is in `message`
+//   secret.created     {secret}             internal/secrets Put, Meta
+//   secret.updated     {secret}             reach or description only
+//   secret.rotated     {secret, stale}      the value changed
+//   secret.grants      {secret}             SetGrants
+//   secret.deleted     {name}
+//   secret.undeliverable  (no data)         level error; the reason is in `message`
+//
+// Secrets have a sixth input, `secrets` — a GET /api/secrets body — and are
+// written by it and by the secret.* events, and by nothing else. PUT
+// /api/secrets/:name answers 200 with the secret's metadata, and that body is
+// deliberately *not* an input: it carries no event id, so it could not be
+// ordered against an event from another device that beat it here, and
+// applying it would be the second write path §2.1 rules out. The event that
+// the same write emitted arrives on the stream and carries the same metadata.
+// (`stale` in secret.rotated is the operation's result, not the secret's
+// state; it is shown by the screen that asked — views/secrets — and not kept.)
 //
 // Every other kind (token.*, container.unclaimed, system.reconcile, and
 // whatever a later phase adds) advances the stream position and changes no
@@ -44,8 +60,9 @@
 // branch rather than vanishing (events_routes.go).
 
 import {
-  WORKSPACE_STATES, WORKSPACE_STEPS, type CatalogView, type InstallationView, type RepoView, type StepStatus,
-  type StreamEvent, type WorkspaceDetail, type WorkspaceList, type WorkspaceState, type WorkspaceView,
+  WORKSPACE_STATES, WORKSPACE_STEPS, type CatalogView, type InstallationView, type RepoView, type SecretList,
+  type SecretMeta, type StepStatus, type StreamEvent, type WorkspaceDetail, type WorkspaceList, type WorkspaceState,
+  type WorkspaceView,
 } from '../api/types'
 
 export interface StepInfo {
@@ -121,6 +138,34 @@ export interface RefreshOutcome {
   eventId: number
 }
 
+/**
+ * One secret's metadata (design §10.1). There is no value field, and nothing
+ * that writes this type could fill one: neither the events nor the list carry
+ * a value (frontend §2.5).
+ */
+export interface Secret {
+  name: string
+  reach: string
+  description: string
+  allRepos: boolean
+  grants: Array<{ repositoryId: number; fullName: string }>
+  createdAt: string | null
+  rotatedAt: string | null
+  lastAccessAt: string | null
+  /** Workspace ids, most recent first. */
+  accessedBy: string[]
+  /** The id of the event (or snapshot position) that last wrote it. */
+  at: number
+}
+
+/** The latest `secret.undeliverable`: every workspace's commands fail until it is fixed. */
+export interface SecretFault {
+  at: string
+  /** The server's sentence; it names a secret by id or rule, never by value. Shown, never parsed. */
+  message: string
+  eventId: number
+}
+
 export interface Entities {
   /** The highest event id applied. What the next snapshot is "as of". */
   lastEventId: number
@@ -154,6 +199,20 @@ export interface Entities {
   catalogRefreshError: { at: string; message: string } | null
   catalogLoaded: boolean
   lastRefresh: RefreshOutcome | null
+  /** By name. Only GET /api/secrets and secret.* events write it. */
+  secrets: Record<string, Secret>
+  /**
+   * Deleted secrets, by the id of their `secret.deleted`. Unlike a workspace
+   * id a name can come back, so this is a version, not a tombstone: a
+   * `secret.created` after it recreates the secret, and a snapshot taken
+   * before it cannot.
+   */
+  secretsDeleted: Record<string, number>
+  /** Null until a GET /api/secrets has been applied: "not loaded", distinct from "none". */
+  secretsLoaded: boolean
+  secretFault: SecretFault | null
+  /** The id of the newest secret write event, so a fault can say whether a change came after it. */
+  secretsWrittenAt: number
 }
 
 export type Action =
@@ -162,6 +221,7 @@ export type Action =
   | { type: 'snapshot'; at: number; view: CatalogView }
   | { type: 'workspaces'; at: number; view: WorkspaceList }
   | { type: 'workspace'; at: number; view: WorkspaceDetail }
+  | { type: 'secrets'; at: number; view: SecretList }
 
 export function emptyEntities(): Entities {
   return {
@@ -177,6 +237,11 @@ export function emptyEntities(): Entities {
     catalogRefreshError: null,
     catalogLoaded: false,
     lastRefresh: null,
+    secrets: {},
+    secretsDeleted: {},
+    secretsLoaded: false,
+    secretFault: null,
+    secretsWrittenAt: 0,
   }
 }
 
@@ -200,6 +265,8 @@ export function reduce(prev: Entities, action: Action): Entities {
       return applyWorkspaceList(prev, action.at, action.view)
     case 'workspace':
       return applyWorkspaceDetail(prev, action.at, action.view)
+    case 'secrets':
+      return applySecretList(prev, action.at, action.view)
   }
 }
 
@@ -250,6 +317,8 @@ function applyEvent(prev: Entities, ev: StreamEvent): Entities {
       },
     }
   }
+
+  if (ev.kind.startsWith('secret.')) return applySecretEvent(base, ev)
 
   const wsId = str(ev.workspace_id)
   if (wsId === null) return base
@@ -506,6 +575,103 @@ function applyWorkspaceDetail(prev: Entities, at: number, view: WorkspaceDetail)
     workspaces: { ...prev.workspaces, [view.id]: mergeView(prev.workspaces[view.id], at, view) },
     feeds: { ...prev.feeds, [view.id]: mergeFeed(prev.feeds[view.id], events) },
   }
+}
+
+const SECRET_WRITES = new Set(['secret.created', 'secret.updated', 'secret.rotated', 'secret.grants'])
+
+function strOrNull(v: unknown): string | null {
+  return typeof v === 'string' ? v : null
+}
+
+/**
+ * A secret's metadata, field by named field. Nothing is spread from the
+ * input, so a field this type does not name — a `value`, were a server bug
+ * ever to send one — cannot reach the store, and so cannot reach a template.
+ */
+function toSecret(m: unknown, at: number): Secret | null {
+  if (m === null || typeof m !== 'object') return null
+  const v = m as Partial<Record<keyof SecretMeta, unknown>>
+  const name = str(v.name)
+  if (name === null || typeof v.reach !== 'string') return null
+  const grants = Array.isArray(v.grants) ? v.grants.flatMap((g: unknown) => {
+    const x = g as { repository_id?: unknown; full_name?: unknown } | null
+    const id = num(x?.repository_id)
+    return id === null ? [] : [{ repositoryId: id, fullName: typeof x?.full_name === 'string' ? x.full_name : '' }]
+  }) : []
+  return {
+    name,
+    reach: v.reach,
+    description: typeof v.description === 'string' ? v.description : '',
+    allRepos: v.all_repos === true,
+    grants,
+    createdAt: strOrNull(v.created_at),
+    rotatedAt: strOrNull(v.rotated_at),
+    lastAccessAt: strOrNull(v.last_access_at),
+    accessedBy: Array.isArray(v.accessed_by) ? v.accessed_by.filter((x): x is string => typeof x === 'string') : [],
+    at,
+  }
+}
+
+/** The secret.* events. Versioned per name, and against the name's last delete. */
+function applySecretEvent(base: Entities, ev: StreamEvent): Entities {
+  const data = ev.data ?? {}
+  if (ev.kind === 'secret.undeliverable') {
+    if (base.secretFault !== null && base.secretFault.eventId >= ev.id) return base
+    return { ...base, secretFault: { at: ev.at, message: ev.message, eventId: ev.id } }
+  }
+  const written = SECRET_WRITES.has(ev.kind) || ev.kind === 'secret.deleted'
+  const next = written && ev.id > base.secretsWrittenAt ? { ...base, secretsWrittenAt: ev.id } : base
+
+  if (ev.kind === 'secret.deleted') {
+    const name = str(data.name)
+    if (name === null) return next
+    const cur = next.secrets[name]
+    if (cur !== undefined && cur.at >= ev.id) return next // recreated after this delete
+    const secrets = { ...next.secrets }
+    delete secrets[name]
+    return { ...next, secrets, secretsDeleted: { ...next.secretsDeleted, [name]: Math.max(ev.id, next.secretsDeleted[name] ?? 0) } }
+  }
+  if (!SECRET_WRITES.has(ev.kind)) return next // a secret.* kind from a later phase
+  const s = toSecret(data.secret, ev.id)
+  if (s === null) return next
+  const cur = next.secrets[s.name]
+  if (cur !== undefined && cur.at >= ev.id) return next
+  if ((next.secretsDeleted[s.name] ?? 0) >= ev.id) return next
+  return { ...next, secrets: { ...next.secrets, [s.name]: s } }
+}
+
+/**
+ * Merges a GET /api/secrets body taken when the stream stood at `at`. The
+ * list names every secret, so it is the authority on which exist — a secret
+ * it omits is dropped, unless an event newer than `at` wrote it. A secret an
+ * event newer than `at` wrote keeps the event's version; one deleted after
+ * `at` stays deleted. Last access is the one thing only the list carries
+ * fresh (a fetch writes `secret_access`, not an event), so it is why the list
+ * is refetched on entry.
+ */
+function applySecretList(prev: Entities, at: number, view: SecretList): Entities {
+  const secrets: Record<string, Secret> = {}
+  for (const m of view.secrets ?? []) {
+    const s = toSecret(m, at)
+    if (s === null) continue
+    if ((prev.secretsDeleted[s.name] ?? 0) > at) continue
+    const cur = prev.secrets[s.name]
+    secrets[s.name] = cur !== undefined && cur.at > at ? cur : s
+  }
+  for (const [name, s] of Object.entries(prev.secrets)) {
+    if (secrets[name] === undefined && s.at > at) secrets[name] = s
+  }
+  return {
+    ...prev,
+    lastEventId: Math.max(prev.lastEventId, at),
+    secrets,
+    secretsLoaded: true,
+  }
+}
+
+/** Secrets by name, for the list. */
+export function secretList(e: Entities): Secret[] {
+  return Object.values(e.secrets).sort((a, b) => a.name.localeCompare(b.name))
 }
 
 const stepOrder = (n: string) => (WORKSPACE_STEPS as readonly string[]).indexOf(n)
