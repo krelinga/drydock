@@ -233,4 +233,47 @@ func TestRecordedLockfileBehaviour(t *testing.T) {
 			t.Errorf("%s: exit %s, marker %s, status %q; the design assumes %s", c.row, r[2], r[4], r[5], c.why)
 		}
 	}
+
+	// Drydock's own Feature, injected as Drydock injects it. These rows'
+	// "lockfile after" compares bytes with what was committed: "unchanged",
+	// or the sha256 of what up left.
+	const dirty = " M .devcontainer/devcontainer-lock.json;"
+	for _, c := range []struct {
+		row, marker, status, lock, why string
+	}{
+		// The rows the design rests on: with no dependsOn, a lockfile VS Code
+		// wrote comes through a workspace's whole life byte for byte, and its
+		// pin is honoured (1.0.0, where the tag now resolves to 1.1.0).
+		{"vscode-create", "1.0.0", "clean", "unchanged", "a VS Code lockfile is untouched by a create"},
+		{"vscode-start", "1.0.0", "clean", "unchanged", "and by a start after a stop"},
+		{"vscode-rebuild", "1.0.0", "clean", "unchanged", "and by a rebuild"},
+		// The control: the same Feature with the dependsOn it used to carry
+		// rewrites that same lockfile on the first create.
+		{"vscode-create-dependson", "1.0.0", dirty, "", "a Feature dependency is written into the lockfile"},
+		{"stale-vscode", "1.0.0", dirty, "", "VS Code rewrites a stale lockfile"},
+		{"stale-drydock", "1.0.0", dirty, "", "so does up with Drydock's Feature"},
+		{"stale-drydock-dependson", "1.0.0", dirty, "", "and with the dependency, differently"},
+	} {
+		r, ok := rows[c.row]
+		if !ok {
+			t.Errorf("%s: not recorded", c.row)
+			continue
+		}
+		if r[2] != "0" || r[4] != c.marker || r[5] != c.status || (c.lock != "" && r[6] != c.lock) {
+			t.Errorf("%s: exit %s, marker %s, status %q, lockfile %s; the design assumes %s", c.row, r[2], r[4], r[5], r[6], c.why)
+		}
+	}
+	// A stale lockfile is rewritten to exactly the bytes VS Code writes —
+	// which is why Drydock leaves the rewrite in the clone — and the
+	// dependency is what made it differ before.
+	vs, dd, dep := rows["stale-vscode"], rows["stale-drydock"], rows["stale-drydock-dependson"]
+	if vs == nil || dd == nil || dep == nil {
+		t.Fatal("the stale rows are not recorded")
+	}
+	if !strings.HasPrefix(vs[6], "sha256:") || dd[6] != vs[6] {
+		t.Errorf("a stale lockfile became %s with Drydock and %s with VS Code; the design assumes the same bytes", dd[6], vs[6])
+	}
+	if dep[6] == vs[6] {
+		t.Errorf("with the dependency the stale lockfile became the same bytes as VS Code's (%s), so the comparison above proves nothing", dep[6])
+	}
 }

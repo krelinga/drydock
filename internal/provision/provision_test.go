@@ -438,17 +438,6 @@ func TestEachRealStepNamesItsFailure(t *testing.T) {
 		{name: "resolve_config lockfile unreadable", repo: alpha, step: workspace.StepResolveConfig,
 			detail: "not a lockfile the dev container CLI could use",
 			setup:  withLockfile(`{"features":`)},
-		// up succeeds, but leaves something at the lockfile's path that
-		// cannot be put back over: the step fails rather than reporting a
-		// clean clone it does not have.
-		{name: "up lockfile not restored", repo: alpha, step: workspace.StepUp,
-			detail: "could not restore the repository's devcontainer lockfile",
-			setup:  withLockfile(lockfile),
-			break_: func(e *env) {
-				e.cli.up = `l="$3/.devcontainer/devcontainer-lock.json"; rm -f "$l"; mkdir -p "$l/x"
-cat <<'EOF'
-` + fixtureBytes("up-ok.json") + "\nEOF\n"
-			}},
 		{name: "verify probe", repo: alpha, step: workspace.StepVerify, detail: "socket did not answer",
 			break_: func(e *env) { e.cli.exec = "case \" $* \" in *\" drydock-probe \"*) exit 1 ;; esac" }},
 		{name: "verify origin", repo: alpha, step: workspace.StepVerify, detail: "origin is not the repository",

@@ -23,20 +23,21 @@ import (
 //   - no flag: `up` reads the lockfile and installs the versions it pins, and
 //     writes the lockfile into the clone whenever what it resolved differs
 //     from it — a new untracked file when the repository has none, a rewrite
-//     when the committed one is stale, blank, or merely lacks a dependency of
-//     a Feature Drydock injects. Drydock's own Feature dependsOn github-cli,
-//     and that dependency is written in, so in practice `up` rewrites every
-//     committed lockfile;
+//     when the committed one is stale, blank, or lacks a dependency of a
+//     Feature Drydock injects. An injected Feature itself is never written.
+//     So with Drydock's Feature, which has no dependencies, a lockfile VS
+//     Code wrote is left byte for byte through create, start and rebuild,
+//     and a stale one is rewritten to exactly the bytes `up` without Drydock
+//     — VS Code — writes;
 //   - --no-lockfile: neither reads nor writes. A committed lockfile is
 //     ignored and every Feature floats to its tag's newest version;
 //   - --frozen-lockfile: reads, never writes, and refuses to build unless the
-//     lockfile is exactly what `up` would write — which, for the dependency
-//     above, no lockfile VS Code wrote ever is. So it cannot be used.
+//     lockfile is exactly what `up` would write: a lockfile a commit stale,
+//     which VS Code would quietly rewrite, fails the build.
 //
-// Honouring a committed lockfile therefore means letting `up` write, and the
-// caller putting the committed bytes back afterwards (provision does, and
-// recovers them after a crash). A repository without one gets --no-lockfile,
-// and nothing is ever written.
+// Honouring a committed lockfile therefore means letting `up` do what it does
+// in VS Code. A repository without one gets --no-lockfile, so none is
+// created.
 type Lockfile uint8
 
 const (
@@ -44,9 +45,8 @@ const (
 	// It is the zero value, so a spec that forgets to decide never writes.
 	LockfileIgnore Lockfile = iota
 	// LockfileHonour passes no lockfile flag: `up` reads the repository's
-	// lockfile and installs what it pins, and may rewrite it. The caller
-	// must have saved the committed bytes outside the clone first, and must
-	// restore them after.
+	// lockfile and installs what it pins, and rewrites it when it is stale,
+	// as VS Code would. The caller reports a rewrite rather than undoing it.
 	LockfileHonour
 )
 
@@ -92,7 +92,7 @@ var ErrLockfileUnreadable = errors.New("the repository's devcontainer lockfile i
 // container gets; it is refused instead.
 var ErrLockfilePinsInjected = errors.New("the repository's devcontainer lockfile pins a Feature Drydock injects")
 
-// MaxLockfile bounds what Drydock reads and saves. A lockfile is a few
+// MaxLockfile bounds what Drydock reads. A lockfile is a few
 // hundred bytes per Feature.
 const MaxLockfile = 1 << 20
 
@@ -107,8 +107,8 @@ const MaxLockfile = 1 << 20
 // checking it is a lockfile at all and pins none of Drydock's own Features.
 //
 // A symbolic link is refused rather than followed: the clone is the
-// repository's to arrange, and Drydock reads, saves and restores this file
-// with its own uid.
+// repository's to arrange, and Drydock reads this file, and compares it
+// after `up`, with its own uid.
 func LockfileMode(configFile string, injected []string) (Lockfile, error) {
 	path := LockfilePath(configFile)
 	b, err := ReadLockfile(path)

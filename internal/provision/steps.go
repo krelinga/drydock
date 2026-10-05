@@ -28,7 +28,8 @@ type runState struct {
 	folder string
 	// lockfile is what up does with the repository's devcontainer-lock.json:
 	// honoured when the repository commits one, ignored when it does not.
-	// lockPath is the file, when honoured.
+	// lockPath is where up reads and writes that file, for any repository
+	// with its own devcontainer.json; "" with Drydock's minimal config.
 	lockfile container.Lockfile
 	lockPath string
 }
@@ -69,9 +70,6 @@ func (r *runState) allocate(_ context.Context, w workspace.Workspace) error {
 // .devcontainer/ is one the CLI would not pick without --config, so it gets
 // the minimal config as well, and the step says so.
 func (r *runState) resolveConfig(ctx context.Context, w workspace.Workspace) error {
-	if err := r.recoverLockfile(w); err != nil {
-		return err
-	}
 	has := false
 	for _, rel := range []string{".devcontainer/devcontainer.json", ".devcontainer.json"} {
 		ok, err := exists(filepath.Join(w.HostPath, rel))
@@ -117,9 +115,10 @@ func (r *runState) resolveConfig(ctx context.Context, w workspace.Workspace) err
 // devcontainer-lock.json (design §6, "The repository's lockfile"). A committed lockfile
 // is honoured — its pinned Feature versions are what the container gets, as
 // in VS Code — and a repository without one gets --no-lockfile, which never
-// writes. The path comes from what read-configuration says it read, and it
-// must be inside the clone after symbolic links are resolved: Drydock saves
-// and restores this file with its own uid, and so does the CLI write it.
+// writes, so no lockfile appears in a clone that had none. The path comes
+// from what read-configuration says it read, and it must be inside the clone
+// after symbolic links are resolved: Drydock reads this file with its own
+// uid, and the CLI writes it with the same.
 func (r *runState) resolveLockfile(w workspace.Workspace, configFile string) error {
 	if !strings.HasPrefix(configFile, w.HostPath+"/") {
 		return workspace.Public("devcontainer reported a configuration file outside the clone.",
@@ -141,9 +140,8 @@ func (r *runState) resolveLockfile(w workspace.Workspace, configFile string) err
 	case err != nil:
 		return workspace.Public("Drydock could not read the repository's devcontainer lockfile.", err)
 	}
-	r.lockfile = mode
+	r.lockfile, r.lockPath = mode, path
 	if mode == container.LockfileHonour {
-		r.lockPath = path
 		return workspace.Note("The repository commits a devcontainer lockfile, so its pinned Feature versions are the ones installed.")
 	}
 	return nil
@@ -170,37 +168,15 @@ func (r *runState) brokerSocket(ctx context.Context, w workspace.Workspace) erro
 // postCreateCommand leaves it created and running (§6) — so the id is
 // recorded whatever the outcome, for teardown and reconciliation to find.
 //
-// Honouring a committed lockfile lets `up` rewrite it (container.Lockfile),
-// so its bytes are saved outside the clone first and put back after, whatever
-// the outcome; a restore that fails fails the step, and leaves the save for
-// the next run or boot to finish (see lockfile.go).
-func (r *runState) up(ctx context.Context, w workspace.Workspace) (err error) {
+// Honouring a committed lockfile lets `up` rewrite it when it is stale
+// (container.Lockfile). The rewrite is left in the clone, and the step names
+// the file so it does not surprise anyone at commit time (see lockfile.go).
+func (r *runState) up(ctx context.Context, w workspace.Workspace) error {
 	fullName, err := r.fullName(ctx, w)
 	if err != nil {
 		return err
 	}
-	if err := r.recoverLockfile(w); err != nil {
-		return err
-	}
-	lock := r.lockfile
-	if lock == container.LockfileHonour {
-		saved, serr := saveLockfile(r.dir(w), r.lockPath)
-		if serr != nil {
-			return workspace.Public("Drydock could not save the repository's devcontainer lockfile before devcontainer up.", serr)
-		}
-		if !saved {
-			lock = container.LockfileIgnore // gone since resolve_config: nothing to honour
-		} else {
-			defer func() {
-				if rerr := restoreLockfile(r.dir(w), w.HostPath); rerr != nil {
-					r.p.logf("drydock: workspace %s: restoring the lockfile: %v", w.ID, rerr)
-					if err == nil {
-						err = workspace.Public("Drydock could not restore the repository's devcontainer lockfile after devcontainer up.", rerr)
-					}
-				}
-			}()
-		}
-	}
+	before := snapshotLockfile(r.lockPath)
 	// A TMPDIR of the workspace's own, beside the clone: the CLI stages
 	// Features under $TMPDIR in a folder named by the millisecond, which
 	// concurrent creates otherwise share (container.UpSpec.TempDir).
@@ -216,7 +192,7 @@ func (r *runState) up(ctx context.Context, w workspace.Workspace) (err error) {
 		Features:       map[string]map[string]any{r.p.Feature: r.p.FeatureOptions},
 		RemoteEnv:      r.remoteEnv(w, fullName),
 		OverrideConfig: r.override,
-		Lockfile:       lock,
+		Lockfile:       r.lockfile,
 		TempDir:        tmp,
 	})
 	if res.ContainerID != "" {
@@ -235,7 +211,7 @@ func (r *runState) up(ctx context.Context, w workspace.Workspace) (err error) {
 		return workspace.Public("devcontainer up did not bring the container up; the service log has its output.",
 			fmt.Errorf("devcontainer up: %s %s", res.Message, res.Description))
 	}
-	return nil
+	return lockfileChange(before, w.HostPath)
 }
 
 func (r *runState) fullName(ctx context.Context, w workspace.Workspace) (string, error) {

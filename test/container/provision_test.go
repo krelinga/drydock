@@ -30,17 +30,19 @@ import (
 // container tier (design §14: "the button produces a running container you
 // can devcontainer exec into"): POST /api/workspaces through the real server,
 // over its Unix socket and signed in, against the fake GitHub and its git
-// remote, with the real devcontainer CLI and the published Feature. Two
-// repositories at once — one with a devcontainer.json, one without — and
-// both reach running, with the container found again by its label.
+// remote, with the real devcontainer CLI and Drydock's Feature from this
+// checkout, served by a local registry. Two repositories at once — one with
+// a devcontainer.json, one without — and both reach running, with the
+// container found again by its label.
 //
-// Two more exercise the repository's devcontainer-lock.json (design §6),
-// with a Feature from a local registry whose versions are told apart inside
+// Three more exercise the repository's devcontainer-lock.json (design §6),
+// with a Feature from the same registry whose versions are told apart inside
 // the container: one commits a lockfile pinning the older version and gets
-// it; the control, the same config with no lockfile, gets the newer. `up`
-// rewrites the committed lockfile — the published Feature's dependency on
-// github-cli is written in — and Drydock puts it back, so all four clones
-// are left as cloned.
+// it; the control, the same config with no lockfile, gets the newer. The
+// pinned one's lockfile is in sync, as VS Code writes it, and `up` leaves it
+// byte for byte — Drydock's Feature has no dependsOn to write into it — so
+// those clones are left as cloned. The third commits a stale lockfile, which
+// `up` rewrites as VS Code would; Drydock leaves the rewrite and says so.
 //
 // Two test-only settings, both because the fake GitHub listens on the
 // host's loopback: the containers run with --network=host (in the repository's
@@ -75,6 +77,8 @@ func TestCreateWorkspaceThroughTheServer(t *testing.T) {
 			Files: []string{"README.md"}},
 		locked(103, "krelinga/pinned", reg.lockfile("1.0.0")),
 		locked(104, "krelinga/unpinned", ""),
+		// Stale: written before the configuration declared the marker.
+		locked(105, "krelinga/stale", "{\n  \"features\": {}\n}\n"),
 	}}}
 	f.EnableGit(t)
 
@@ -101,6 +105,7 @@ func TestCreateWorkspaceThroughTheServer(t *testing.T) {
 	cfg.SocketGroup, cfg.LabelPrefix = g.Name, p
 	cfg.GitHubAppID, cfg.GitHubAppKey, cfg.GitHubAPI = 4242, key, f.URL
 	cfg.BotName, cfg.BotEmail = "krelinga-drydock-dev[bot]", botEmail
+	cfg.Feature = reg.Drydock
 
 	srv, err := server.New(context.Background(), cfg, sys.Production())
 	if err != nil {
@@ -125,7 +130,7 @@ func TestCreateWorkspaceThroughTheServer(t *testing.T) {
 	for {
 		var repos struct{ Repos []struct{ ID int64 } }
 		c.get("/api/repos", &repos)
-		if len(repos.Repos) == 4 {
+		if len(repos.Repos) == 5 {
 			break
 		}
 		if time.Now().After(deadline) {
@@ -145,7 +150,7 @@ func TestCreateWorkspaceThroughTheServer(t *testing.T) {
 	}
 
 	ids := map[string]string{}
-	for _, repo := range []string{"101", "102", "103", "104"} {
+	for _, repo := range []string{"101", "102", "103", "104", "105"} {
 		status, body := c.post("/api/workspaces", `{"repository_id":`+repo+`}`)
 		var created struct{ ID string }
 		if status != 202 || json.Unmarshal([]byte(body), &created) != nil || created.ID == "" {
@@ -214,6 +219,11 @@ func TestCreateWorkspaceThroughTheServer(t *testing.T) {
 			t.Errorf("repository %s: exec %v:\n%s", repo, err, out)
 		}
 	}
+	// The Feature installed is this checkout's, which records where gh came
+	// from (the published one before 0.3.0 does not), and gh is there.
+	if out, err := execIn("101", "grep GH_INSTALLED_BY= /usr/local/drydock/etc/feature.env && /usr/local/drydock/real/gh --version 2>/dev/null || /usr/bin/gh --version"); err != nil || !strings.Contains(out, "gh version") {
+		t.Errorf("the workspace's Feature: exec %v:\n%s", err, out)
+	}
 
 	// Secrets reach a provisioned container the way Claude Code would run a
 	// command: the Feature's CLAUDE_ENV_FILE, then the command. The granted
@@ -231,7 +241,7 @@ func TestCreateWorkspaceThroughTheServer(t *testing.T) {
 	// where the same configuration without a lockfile gets the newest. The
 	// control is what makes the pin's assertion mean something — a registry
 	// whose major tag served 1.0.0 would pass it vacuously.
-	for repo, want := range map[string]string{"103": "1.0.0", "104": "1.1.0"} {
+	for repo, want := range map[string]string{"103": "1.0.0", "104": "1.1.0", "105": "1.1.0"} {
 		if out, err := execIn(repo, "cat "+markerPath); err != nil || strings.TrimSpace(out) != want {
 			t.Errorf("repository %s: the Feature installed %q (%v); want %s", repo, strings.TrimSpace(out), err, want)
 		}
@@ -240,15 +250,29 @@ func TestCreateWorkspaceThroughTheServer(t *testing.T) {
 		t.Errorf("the pinned repository's resolve_config says %q", d)
 	}
 
-	// No clone was touched. For the plain repository the minimal config
-	// is beside the clone, never in it; where no lockfile is committed `up`
-	// created none (it does with no lockfile flag, measured), and where one
-	// is, it is byte for byte as cloned although `up` rewrote it.
+	// No clone was touched but the stale one's. For the plain repository the
+	// minimal config is beside the clone, never in it; where no lockfile is
+	// committed `up` created none (it does with no lockfile flag, measured);
+	// and an in-sync lockfile is byte for byte as cloned, with nothing put
+	// back — Drydock no longer puts anything back. The stale lockfile is the
+	// control: the same comparison does see a rewrite, which `up` left and
+	// the up step names.
 	for repo, id := range ids {
 		clone := filepath.Join(cfg.WorkspaceRoot, id, "repo")
-		if out, err := exec.Command("git", "-C", clone, "status", "--porcelain", "--ignored").CombinedOutput(); err != nil || len(out) != 0 {
-			t.Errorf("repository %s: the clone has changes (%v):\n%s", repo, err, out)
+		want := ""
+		if repo == "105" {
+			want = " M .devcontainer/devcontainer-lock.json\n"
 		}
+		if out, err := exec.Command("git", "-C", clone, "status", "--porcelain", "--ignored").CombinedOutput(); err != nil || string(out) != want {
+			t.Errorf("repository %s: the clone's status is %q (%v); want %q", repo, out, err, want)
+		}
+		d := views[repo].Steps["up"].Detail
+		if (repo == "105") != strings.Contains(d, `rewrote ".devcontainer/devcontainer-lock.json"`) {
+			t.Errorf("repository %s: the up step says %q", repo, d)
+		}
+	}
+	if b, err := os.ReadFile(filepath.Join(cfg.WorkspaceRoot, ids["105"], "repo", ".devcontainer", "devcontainer-lock.json")); err != nil || !strings.Contains(string(b), reg.Ref) {
+		t.Errorf("the stale lockfile was rewritten to %q (%v); want an entry for %s", b, err, reg.Ref)
 	}
 
 	// The canary sweep (testing §4.2): no installation token in the

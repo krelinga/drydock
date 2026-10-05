@@ -1,19 +1,18 @@
 package provision
 
 import (
-	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/krelinga/drydock/internal/github/githubtest"
 	"github.com/krelinga/drydock/internal/workspace"
 )
 
-// lockfile is a devcontainer-lock.json as VS Code writes one.
+// lockfile is a devcontainer-lock.json as VS Code writes one: in sync with
+// the repository's configuration.
 const lockfile = `{
   "features": {
     "ghcr.io/devcontainers/features/node:1": {
@@ -24,6 +23,18 @@ const lockfile = `{
   }
 }
 `
+
+// staleLockfile is one the repository's configuration has moved on from.
+// The fake up below tells it from an in-sync one by its "stale" entry.
+const staleLockfile = `{
+  "features": {
+    "ghcr.io/devcontainers/features/stale:1": {}
+  }
+}
+`
+
+// refreshed is what the fake up writes over a stale lockfile.
+const refreshed = `{"features":{"refreshed":{}}}`
 
 // withLockfile makes the alpha repository commit body as its
 // .devcontainer/devcontainer-lock.json; a setup for newEnv.
@@ -38,15 +49,15 @@ func withLockfile(body string) func(*githubtest.Fake) {
 	}
 }
 
-// upWrites is a fake `up` that does to the lockfile what CLI 0.89.0 does
-// (test/fixtures/devcontainer/lockfile-behaviour.txt): with --no-lockfile
-// nothing; with no lockfile flag it writes one — a new file if there was
-// none, a rewrite if there was — because Drydock's Feature brings a
-// dependency no committed lockfile lists. Then it reports success. $3 is
-// the workspace folder.
-const upWrites = `case " $* " in
+// upWrites is a fake `up` that does to the lockfile what CLI 0.89.0 does with
+// Drydock's Feature injected (test/fixtures/devcontainer/lockfile-behaviour.txt):
+// with --no-lockfile or --frozen-lockfile, nothing; with no flag it leaves an
+// in-sync lockfile byte for byte, rewrites a stale one, and creates one where
+// there is none. $3 is the workspace folder.
+const upWrites = `l="$3/.devcontainer/devcontainer-lock.json"
+case " $* " in
 *" --no-lockfile "*|*" --frozen-lockfile "*) ;;
-*) printf '{"features":{"rewritten":{}}}\n' > "$3/.devcontainer/devcontainer-lock.json" ;;
+*) if [ ! -e "$l" ] || grep -q stale "$l"; then printf '%s\n' '` + refreshed + `' > "$l"; fi ;;
 esac
 `
 
@@ -55,20 +66,29 @@ func upOK(t *testing.T) string {
 }
 
 // A committed lockfile is honoured — up gets no lockfile flag, so the CLI
-// reads it — and a repository without one gets --no-lockfile. Either way the
-// clone is left as it was cloned: the fake up rewrites the lockfile as the
-// real one does, and Drydock puts the committed bytes back.
-func TestTheLockfileIsHonouredAndPutBack(t *testing.T) {
+// reads it — and a repository without one gets --no-lockfile, so none is
+// created. An in-sync lockfile comes through untouched with nothing to
+// report. A stale one is rewritten, as VS Code would, and Drydock leaves the
+// rewrite in the clone and names the file on the up step instead of putting
+// the old bytes back.
+func TestTheLockfileIsHonouredAndARewriteIsReported(t *testing.T) {
 	for _, c := range []struct {
 		name, lock string
 		honour     bool
-		note       string
+		note       string // on resolve_config
+		upNote     string // on up
+		status     string // the clone's git status afterwards
+		after      string // the lockfile's bytes afterwards, when committed
 	}{
 		{name: "no lockfile"},
-		{name: "committed lockfile", lock: lockfile, honour: true,
-			note: "pinned Feature versions are the ones installed"},
+		{name: "in-sync lockfile", lock: lockfile, honour: true,
+			note: "pinned Feature versions are the ones installed", after: lockfile},
+		{name: "stale lockfile", lock: staleLockfile, honour: true,
+			note:   "pinned Feature versions are the ones installed",
+			upNote: `rewrote ".devcontainer/devcontainer-lock.json" in the clone`,
+			status: " M .devcontainer/devcontainer-lock.json\n", after: refreshed + "\n"},
 		// A blank lockfile asks the CLI to fill it in: nothing to honour.
-		{name: "blank lockfile", lock: "\n"},
+		{name: "blank lockfile", lock: "\n", after: "\n"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			var setup []func(*githubtest.Fake)
@@ -93,30 +113,108 @@ func TestTheLockfileIsHonouredAndPutBack(t *testing.T) {
 			if d := v.Steps[workspace.StepResolveConfig].Detail; (c.note == "") != (d == "") || !strings.Contains(d, c.note) {
 				t.Errorf("resolve_config says %q; want %q", d, c.note)
 			}
-			repo := filepath.Join(e.root, v.ID, "repo")
-			if out := gitOut(t, repo, "status", "--porcelain", "--ignored"); out != "" {
-				t.Errorf("the clone has changes:\n%s", out)
+			up := v.Steps[workspace.StepUp]
+			if up.Status != "done" || (c.upNote == "") != (up.Detail == "") || !strings.Contains(up.Detail, c.upNote) {
+				t.Errorf("up is %s, saying %q; want done, saying %q", up.Status, up.Detail, c.upNote)
 			}
-			if _, err := os.Stat(savePath(filepath.Join(e.root, v.ID))); err == nil {
-				t.Error("the save outlived a restore")
+			repo := filepath.Join(e.root, v.ID, "repo")
+			if out := gitOut(t, repo, "status", "--porcelain", "--ignored"); out != c.status {
+				t.Errorf("the clone's status is %q; want %q", out, c.status)
+			}
+			if c.lock != "" {
+				if b, _ := os.ReadFile(filepath.Join(repo, ".devcontainer", "devcontainer-lock.json")); string(b) != c.after {
+					t.Errorf("the lockfile is %q; want %q", b, c.after)
+				}
+			}
+			if _, err := os.Stat(filepath.Join(e.root, v.ID, ".drydock", "lockfile.json")); err == nil {
+				t.Error("a lockfile was saved beside the clone")
 			}
 		})
 	}
 }
 
-// The control for the test above: the fake up really does dirty the clone
-// when nothing puts the lockfile back. Without this, a fake that never wrote
-// would pass it.
-func TestTheFakeUpDirtiesAnUnrestoredClone(t *testing.T) {
-	dir := t.TempDir()
-	os.MkdirAll(filepath.Join(dir, ".devcontainer"), 0o755)
-	cmd := exec.Command("sh", "-c", upWrites, "up", "up", "--workspace-folder", dir)
-	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("%v: %s", err, out)
+// The control for the test above: the fake up does what the recording says
+// the real one does — leaves an in-sync lockfile, rewrites a stale one,
+// creates a missing one — so the "untouched" rows mean something, and the
+// --no-lockfile rows are clean because of the flag, not because the fake
+// never writes.
+func TestTheFakeUpBehavesAsRecorded(t *testing.T) {
+	for _, c := range []struct {
+		name, lock, flag string
+		want             string // "" for no file
+	}{
+		{name: "in sync", lock: lockfile, want: lockfile},
+		{name: "stale", lock: staleLockfile, want: refreshed + "\n"},
+		{name: "none", want: refreshed + "\n"},
+		{name: "none, --no-lockfile", flag: "--no-lockfile"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			dir := t.TempDir()
+			l := filepath.Join(dir, ".devcontainer", "devcontainer-lock.json")
+			os.MkdirAll(filepath.Dir(l), 0o755)
+			if c.lock != "" {
+				os.WriteFile(l, []byte(c.lock), 0o644)
+			}
+			args := []string{"-c", upWrites, "up", "up", "--workspace-folder", dir}
+			if c.flag != "" {
+				args = append(args, c.flag)
+			}
+			if out, err := exec.Command("sh", args...).CombinedOutput(); err != nil {
+				t.Fatalf("%v: %s", err, out)
+			}
+			b, err := os.ReadFile(l)
+			if c.want == "" {
+				if err == nil {
+					t.Errorf("the fake up wrote %q", b)
+				}
+			} else if string(b) != c.want {
+				t.Errorf("the fake up left %q, %v; want %q", b, err, c.want)
+			}
+		})
 	}
-	if b, err := os.ReadFile(filepath.Join(dir, ".devcontainer", "devcontainer-lock.json")); err != nil || !strings.Contains(string(b), "rewritten") {
-		t.Errorf("the fake up wrote %q, %v", b, err)
+}
+
+// lockfileChange compares bytes, so what was in the clone before up — an
+// agent's uncommitted edit to the lockfile, say — is not blamed on up; and
+// every way up can change the file is named. The unchanged case is the
+// control for the rest.
+func TestLockfileChangeNamesOnlyWhatUpChanged(t *testing.T) {
+	for _, c := range []struct {
+		name   string
+		before func(l string) // the clone before up
+		up     func(l string) // what up does
+		want   string         // in the note; "" for none
+	}{
+		{name: "unchanged", before: write(lockfile), up: func(string) {}},
+		{name: "edited before up, unchanged by it", before: write(staleLockfile), up: func(string) {}},
+		{name: "rewritten", before: write(staleLockfile), up: write(refreshed), want: `rewrote ".devcontainer/devcontainer-lock.json"`},
+		{name: "created", before: func(string) {}, up: write(refreshed), want: `created ".devcontainer/devcontainer-lock.json"`},
+		{name: "removed", before: write(lockfile), up: func(l string) { os.Remove(l) }, want: "something other than the lockfile"},
+		{name: "replaced by a directory", before: write(lockfile),
+			up: func(l string) { os.Remove(l); os.MkdirAll(l, 0o755) }, want: "something other than the lockfile"},
+		{name: "absent throughout", before: func(string) {}, up: func(string) {}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			clone := t.TempDir()
+			l := filepath.Join(clone, ".devcontainer", "devcontainer-lock.json")
+			os.MkdirAll(filepath.Dir(l), 0o755)
+			c.before(l)
+			s := snapshotLockfile(l)
+			c.up(l)
+			err := lockfileChange(s, clone)
+			if (c.want == "") != (err == nil) || (err != nil && !strings.Contains(err.Error(), c.want)) {
+				t.Errorf("got %v; want %q", err, c.want)
+			}
+		})
 	}
+	// Drydock's minimal config has no lockfile path: nothing to compare.
+	if err := lockfileChange(snapshotLockfile(""), t.TempDir()); err != nil {
+		t.Errorf("no path: %v", err)
+	}
+}
+
+func write(body string) func(string) {
+	return func(path string) { os.WriteFile(path, []byte(body), 0o644) }
 }
 
 // Drydock's minimal config is used only when the repository has no
@@ -143,97 +241,6 @@ func TestTheMinimalConfigNeverHonoursALockfile(t *testing.T) {
 	}
 }
 
-// The crash: Drydock dies after up rewrote the lockfile and before the
-// restore. The fake up rewrites it and then hangs; the test copies the
-// workspace directory as it stands on disk at that moment — what a crash
-// would leave — and then recovers the copy the way the next boot does. The
-// save must already be on disk when up runs, and recovery must leave the
-// copied clone exactly as cloned.
-func TestACrashDuringUpIsRecovered(t *testing.T) {
-	e := newEnv(t, withLockfile(lockfile))
-	e.cli.up = `wsdir=$(dirname "$3")
-[ -f "$wsdir/.drydock/lockfile.json" ] || { echo 'no save before up' >&2; exit 3; }
-` + upWrites + `touch "$wsdir/up-wrote"; exec sleep 60`
-	e.wire(t)
-	w, err := e.p.Create(context.Background(), alpha, "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	wsDir := filepath.Join(e.root, w.ID)
-	deadline := time.Now().Add(30 * time.Second)
-	for {
-		if _, err := os.Stat(filepath.Join(wsDir, "up-wrote")); err == nil {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("up never wrote; steps %+v", e.view(t, w.ID).Steps)
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	crashed := filepath.Join(t.TempDir(), "ws")
-	os.MkdirAll(crashed, 0o700)
-	if out, err := exec.Command("cp", "-a", wsDir, crashed).CombinedOutput(); err != nil {
-		t.Fatalf("cp: %v: %s", err, out)
-	}
-	e.p.Shutdown(10 * time.Second)
-
-	repo := filepath.Join(crashed, w.ID, "repo")
-	// Control: the crash really left the clone modified.
-	if out := gitOut(t, repo, "status", "--porcelain", "--ignored"); !strings.Contains(out, "devcontainer-lock.json") {
-		t.Fatalf("the crash left the clone clean, so recovery would prove nothing:\n%s", out)
-	}
-	// The saved path names the original root; a boot finds it in its own.
-	// Rewrite it as the copy's, which is where this "boot" runs.
-	save := savePath(filepath.Join(crashed, w.ID))
-	b, err := os.ReadFile(save)
-	if err != nil {
-		t.Fatal(err)
-	}
-	os.WriteFile(save, []byte(strings.ReplaceAll(string(b), e.root, crashed)), 0o600)
-
-	boot := &Provisioner{Workspaces: &workspace.Store{Root: crashed}}
-	if err := boot.RecoverLockfiles(); err != nil {
-		t.Fatal(err)
-	}
-	if out := gitOut(t, repo, "status", "--porcelain", "--ignored"); out != "" {
-		t.Errorf("after recovery the clone has changes:\n%s", out)
-	}
-	if _, err := os.Stat(save); err == nil {
-		t.Error("the save outlived the recovery")
-	}
-
-	// And the original, which Shutdown cancelled rather than killed, was put
-	// back by the run itself.
-	if out := gitOut(t, filepath.Join(wsDir, "repo"), "status", "--porcelain", "--ignored"); out != "" {
-		t.Errorf("after a cancelled up the clone has changes:\n%s", out)
-	}
-}
-
-// A save left by a crash is restored by the next run of that workspace too,
-// before it reads the clone — so a boot pass that failed is not the only
-// chance.
-func TestARunRestoresALeftoverSave(t *testing.T) {
-	e := newEnv(t, withLockfile(lockfile))
-	e.cli.up = upWrites + upOK(t)
-	e.wire(t)
-	v := e.create(t, alpha, "")
-	if v.State != workspace.Running {
-		t.Fatalf("state %s (%s)", v.State, deref(v.StateDetail))
-	}
-	wsDir := filepath.Join(e.root, v.ID)
-	lock := filepath.Join(wsDir, "repo", ".devcontainer", "devcontainer-lock.json")
-	if _, err := saveLockfile(wsDir, lock); err != nil {
-		t.Fatal(err)
-	}
-	os.WriteFile(lock, []byte("{}\n"), 0o644)
-	if err := (&runState{p: e.p}).recoverLockfile(workspace.Workspace{ID: v.ID, HostPath: filepath.Join(wsDir, "repo")}); err != nil {
-		t.Fatal(err)
-	}
-	if b, _ := os.ReadFile(lock); string(b) != lockfile {
-		t.Errorf("the lockfile is %q after a run's recovery", b)
-	}
-}
-
 // up runs with a TMPDIR of the workspace's own, beside the clone: the CLI
 // stages Features in a folder under $TMPDIR named by the millisecond, which
 // two concurrent creates otherwise share (measured, see
@@ -249,29 +256,5 @@ func TestUpGetsTheWorkspacesOwnTempDir(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(e.root, v.ID, ".drydock", "tmp")); err == nil {
 		t.Error("the temporary directory outlived up")
-	}
-}
-
-// A save naming a path outside the clone is refused, not written through:
-// the save is Drydock's own file, but a refusal costs nothing.
-func TestARestoreStaysInsideTheClone(t *testing.T) {
-	wsDir := t.TempDir()
-	clone := filepath.Join(wsDir, "repo")
-	os.MkdirAll(filepath.Join(clone, ".devcontainer"), 0o755)
-	inside := filepath.Join(clone, ".devcontainer", "devcontainer-lock.json")
-	os.WriteFile(inside, []byte(lockfile), 0o644)
-	if _, err := saveLockfile(wsDir, inside); err != nil {
-		t.Fatal(err)
-	}
-	if err := restoreLockfile(wsDir, clone); err != nil {
-		t.Fatalf("control: a save inside the clone: %v", err)
-	}
-	outside := filepath.Join(wsDir, "elsewhere.json")
-	os.WriteFile(outside, []byte(lockfile), 0o644)
-	if _, err := saveLockfile(wsDir, outside); err != nil {
-		t.Fatal(err)
-	}
-	if err := restoreLockfile(wsDir, clone); err == nil {
-		t.Error("a save naming a path outside the clone was restored")
 	}
 }

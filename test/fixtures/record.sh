@@ -553,7 +553,7 @@ leak_guard() {
 # ---------------------------------------------------------------------------
 # devcontainer-lock.json (design §6, "Step 6, in full"). What `up` reads, what
 # it writes, and where, under each lockfile flag -- the measurements behind
-# Drydock passing --frozen-lockfile when a repository commits a lockfile and
+# Drydock passing no lockfile flag when a repository commits a lockfile and
 # --no-lockfile when it does not.
 #
 # A published Feature does not reveal which version a container got, so this
@@ -563,7 +563,7 @@ leak_guard() {
 # The major tag "1" resolves to 1.1.0; a lockfile pins 1.0.0. A second
 # Feature, "inject", stands in for Drydock's own --additional-features, and a
 # third, "dependent", stands in for it as it really is: a Feature that
-# dependsOn another (Drydock's dependsOn github-cli:1).
+# dependsOn another (as Drydock's did, on github-cli:1, until Feature 0.3.0).
 #
 # Each scenario is a fresh git repository, so "did up write into the clone" is
 # `git status --porcelain --ignored`, exactly what the container tier asserts.
@@ -581,12 +581,24 @@ record_lockfile() {
 	sleep 2
 
 	local f v
-	for v in 1.0.0 1.1.0; do
+	publish_marker() {
 		f="$WORK/feat/src/marker"; mkdir -p "$f"
-		printf '{"id":"marker","version":"%s","name":"marker"}\n' "$v" > "$f/devcontainer-feature.json"
-		printf '#!/bin/sh\necho %s > /etc/lockspike-marker\n' "$v" > "$f/install.sh"; chmod +x "$f/install.sh"
+		printf '{"id":"marker","version":"%s","name":"marker"}\n' "$1" > "$f/devcontainer-feature.json"
+		printf '#!/bin/sh\necho %s > /etc/lockspike-marker\n' "$1" > "$f/install.sh"; chmod +x "$f/install.sh"
 		devcontainer features publish "$WORK/feat/src" --registry "localhost:$port" --namespace lockspike >/dev/null 2>&1
-	done
+	}
+	publish_marker 1.0.0
+	# What VS Code commits: the lockfile `up` writes with no flag and no
+	# Drydock, for a repository declaring marker:1 and no lockfile — written
+	# while 1.0.0 was the newest, so a container honouring it stays on 1.0.0
+	# after 1.1.0 is published below.
+	local vsc
+	vsc=$(mktemp -d -t ddlock-XXXXXX); mkdir "$vsc/.devcontainer"
+	printf '%s\n' "{\"image\":\"$IMG\",\"features\":{\"$reg/marker:1\":{}}}" > "$vsc/.devcontainer/devcontainer.json"
+	devcontainer up --workspace-folder "$vsc" --id-label "drydock.test.$run.workspace=vscode-write" >/dev/null 2>&1
+	cp "$vsc/.devcontainer/devcontainer-lock.json" "$WORK/vscode-lock.json" || { say "up wrote no lockfile to stand for VS Code's"; exit 4; }
+	rm -rf "$vsc"
+	publish_marker 1.1.0
 	f="$WORK/feat2/src/inject"; mkdir -p "$f"
 	printf '{"id":"inject","version":"1.0.0","name":"inject"}\n' > "$f/devcontainer-feature.json"
 	printf '#!/bin/sh\necho inject > /etc/lockspike-inject\n' > "$f/install.sh"; chmod +x "$f/install.sh"
@@ -595,6 +607,17 @@ record_lockfile() {
 	printf '{"id":"dependent","version":"1.0.0","name":"dependent","dependsOn":{"localhost:%s/lockspike/inject:1":{}}}\n' "$port" > "$f/devcontainer-feature.json"
 	printf '#!/bin/sh\necho dependent > /etc/lockspike-dependent\n' > "$f/install.sh"; chmod +x "$f/install.sh"
 	devcontainer features publish "$WORK/feat3/src" --registry "localhost:$port" --namespace lockspike >/dev/null 2>&1
+	# Drydock's own Feature from this checkout, and the same with the
+	# dependsOn it carried until 0.3.0 put back, under another namespace.
+	mkdir -p "$WORK/dd/src" "$WORK/dddep/src"
+	cp -r "$HERE/../../feature/src/drydock" "$WORK/dd/src/"
+	cp -r "$HERE/../../feature/src/drydock" "$WORK/dddep/src/"
+	jq 'del(.installsAfter) + {dependsOn: {"ghcr.io/devcontainers/features/github-cli:1": {}}}' \
+		"$HERE/../../feature/src/drydock/devcontainer-feature.json" > "$WORK/dddep/src/drydock/devcontainer-feature.json"
+	devcontainer features publish "$WORK/dd/src" --registry "localhost:$port" --namespace lockspike >/dev/null 2>&1
+	devcontainer features publish "$WORK/dddep/src" --registry "localhost:$port" --namespace lockspike-dep >/dev/null 2>&1
+	local ddv
+	ddv=$(jq -r .version "$HERE/../../feature/src/drydock/devcontainer-feature.json")
 
 	local old
 	old=$(curl -fsS -o /dev/null -D - -H 'Accept: application/vnd.oci.image.manifest.v1+json' \
@@ -675,6 +698,70 @@ record_lockfile() {
 	sc default-additional-pinned additional "" "{\"$reg/marker:1\":{}}"
 	sc frozen-additional-pinned  additional "--frozen-lockfile" "{\"$reg/marker:1\":{}}"
 
+	# Drydock's real Feature, injected as Drydock injects it, against a
+	# lockfile VS Code wrote (in sync with the repository's config). One
+	# clone through a workspace's life — create, start after a stop, rebuild
+	# — and "lockfile after" compares bytes with what was committed:
+	# "unchanged", or the rewritten file's sha256. Then a stale lockfile — the
+	# repository has since added inject:1, and the lockfile predates it —
+	# rewritten by `up` with Drydock and by `up` without it, which is what VS
+	# Code runs: equal hashes are the same bytes.
+	local dd="{\"$reg/drydock:0\":{\"requireBroker\":false}}"
+	local dddep="{\"localhost:$port/lockspike-dep/drydock:0\":{\"requireBroker\":false}}"
+	printf '# Drydock Feature %s injected: lockspike/drydock (no dependsOn) and lockspike-dep/drydock (dependsOn github-cli:1)\n' "$ddv" >> "$out"
+	# life <name> <clone> <flags> <additional-features or ''>: one up on an existing clone.
+	life() {
+		local name="$1" ws="$2" flags="$3" add="$4" label="$5"
+		local args=(up --workspace-folder "$ws" --id-label "drydock.test.$run.workspace=$label")
+		# shellcheck disable=SC2206
+		[ -n "$flags" ] && args+=($flags)
+		[ -n "$add" ] && args+=(--additional-features "$add")
+		devcontainer "${args[@]}" > "$WORK/$name.stdout" 2> "$WORK/$name.stderr"
+		local rc=$? cid marker status lock l="$ws/.devcontainer/devcontainer-lock.json"
+		cid=$(jq -r '.containerId // empty' "$WORK/$name.stdout")
+		marker=-
+		[ -n "$cid" ] && marker=$(docker exec "$cid" cat /etc/lockspike-marker 2>/dev/null || echo absent)
+		status=$(git -C "$ws" status --porcelain --ignored | tr '\n' ';')
+		if cmp -s "$l" "$WORK/$name.committed"; then lock=unchanged; else lock="sha256:$(sha256sum < "$l" | cut -c1-16)"; fi
+		local what=${add:+ --additional-features $(printf '%s' "$add" | sed 's#.*localhost:[0-9]*/\([a-z-]*/[a-z]*\):[0-9].*#\1#')}
+		printf '%s | %s | %s | %s | %s | %s | %s\n' "$name" "${flags:-(none)}$what" \
+			"$rc" "$(jq -r '.message // "-"' "$WORK/$name.stdout" | sed "s#$ws#<repo>#g")" "$marker" "${status:-clean}" "$lock" >> "$out"
+		say "  $name: exit $rc"
+	}
+	# clone <config> <lockfile>: a fresh committed repository.
+	clone() {
+		local ws
+		ws=$(mktemp -d -t ddlock-XXXXXX); mkdir "$ws/.devcontainer"
+		printf '%s\n' "$1" > "$ws/.devcontainer/devcontainer.json"
+		cp "$2" "$ws/.devcontainer/devcontainer-lock.json"
+		echo keep > "$ws/README"
+		git -C "$ws" init -q && git -C "$ws" add -A && git -C "$ws" -c user.name=r -c user.email=r@r commit -qm init
+		printf '%s' "$ws"
+	}
+	local ws
+	ws=$(clone "$cfg" "$WORK/vscode-lock.json")
+	for n in vscode-create vscode-start vscode-rebuild; do cp "$WORK/vscode-lock.json" "$WORK/$n.committed"; done
+	life vscode-create "$ws" "" "$dd" vscode
+	docker stop $(docker ps -q --filter "label=drydock.test.$run.workspace=vscode") >/dev/null
+	life vscode-start "$ws" "" "$dd" vscode
+	life vscode-rebuild "$ws" "--remove-existing-container" "$dd" vscode
+	rm -rf "$ws"
+	ws=$(clone "$cfg" "$WORK/vscode-lock.json")
+	cp "$WORK/vscode-lock.json" "$WORK/vscode-create-dependson.committed"
+	life vscode-create-dependson "$ws" "" "$dddep" vscode-dep
+	rm -rf "$ws"
+	local name
+	for name in stale-vscode stale-drydock stale-drydock-dependson; do
+		ws=$(clone "$cfg2" "$WORK/vscode-lock.json")
+		cp "$WORK/vscode-lock.json" "$WORK/$name.committed"
+		case $name in
+			stale-vscode) life "$name" "$ws" "" "" "$name" ;;
+			stale-drydock) life "$name" "$ws" "" "$dd" "$name" ;;
+			stale-drydock-dependson) life "$name" "$ws" "" "$dddep" "$name" ;;
+		esac
+		rm -rf "$ws"
+	done
+
 	local stamp
 	stamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 	cat > "$out.meta" <<-META
@@ -683,7 +770,7 @@ record_lockfile() {
 		recorded_at:          $stamp
 		command:              record.sh lockfile -- one devcontainer up per row, each in a fresh git repository, against a local registry:2
 		provenance:           recorded; evidence for design §6, not classifier input
-		must_yield:           nothing -- read it; internal/container's TestRecordedLockfileBehaviour pins the rows the design rests on: --no-lockfile ignores a committed lockfile (1.1.0) and writes nothing; no flag honours it (1.0.0) but writes into the clone whenever what it resolved differs -- including an injected Feature's dependency -- and --frozen-lockfile refuses exactly that case
+		must_yield:           nothing -- read it; internal/container's TestRecordedLockfileBehaviour pins the rows the design rests on: --no-lockfile ignores a committed lockfile (1.1.0) and writes nothing; no flag honours it (1.0.0) but writes into the clone whenever what it resolved differs -- including an injected Feature's dependency -- and --frozen-lockfile refuses exactly that case; Drydock's Feature with no dependsOn leaves a VS Code lockfile byte for byte through create, start and rebuild, and rewrites a stale one to the bytes VS Code would
 	META
 	docker rm -f $(docker ps -aq --filter "label=drydock.test.$run.workspace") >/dev/null 2>&1
 	docker rm -f ddrec-registry >/dev/null 2>&1

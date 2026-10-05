@@ -76,9 +76,9 @@ type UpSpec struct {
 	// Empty inherits Drydock's.
 	TempDir string
 	// Lockfile is what `up` does with the repository's
-	// devcontainer-lock.json: LockfileHonour reads a committed one and may
-	// rewrite it, so the caller restores it; LockfileIgnore (the zero value),
-	// for a repository without one, never writes. See LockfileMode.
+	// devcontainer-lock.json: LockfileHonour reads a committed one, and
+	// rewrites it if it is stale, as VS Code would; LockfileIgnore (the zero
+	// value), for a repository without one, never writes. See LockfileMode.
 	Lockfile Lockfile
 	// OverrideConfig is --override-config: a devcontainer.json outside the
 	// clone, used in place of the repository's. Drydock writes one only for

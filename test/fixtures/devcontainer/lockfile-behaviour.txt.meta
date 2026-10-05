@@ -1,6 +1,6 @@
 devcontainer_version: 0.89.0
 docker_version:       29.8.2-1 (the devcontainer's inner DinD daemon)
-recorded_at:          2026-10-05T01:28:22Z
+recorded_at:          2026-10-05T02:11:50Z
 command:              record.sh lockfile -- one devcontainer up per row, each in a fresh git repository, against a local registry:2
 provenance:           recorded; evidence for design §6, not classifier input
-must_yield:           nothing -- read it; internal/container's TestRecordedLockfileBehaviour pins the rows the design rests on: --no-lockfile ignores a committed lockfile (1.1.0) and writes nothing; no flag honours it (1.0.0) but writes into the clone whenever what it resolved differs -- including an injected Feature's dependency -- and --frozen-lockfile refuses exactly that case
+must_yield:           nothing -- read it; internal/container's TestRecordedLockfileBehaviour pins the rows the design rests on: --no-lockfile ignores a committed lockfile (1.1.0) and writes nothing; no flag honours it (1.0.0) but writes into the clone whenever what it resolved differs -- including an injected Feature's dependency -- and --frozen-lockfile refuses exactly that case; Drydock's Feature with no dependsOn leaves a VS Code lockfile byte for byte through create, start and rebuild, and rewrites a stale one to the bytes VS Code would
