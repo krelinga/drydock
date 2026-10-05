@@ -32,9 +32,14 @@ password again, and puts the previous binary back if the new one does not start.
 What the installer needs, and what it will not do:
 
 - **A hostname, not an IP**, and a certificate every client device already trusts. Drydock checks
-  `Host` itself to turn away DNS rebinding, so there has to be a name to check. The `caddy` user
-  must be able to read the key (e.g. group `caddy`, mode `0640`). The installer does not obtain
-  certificates.
+  `Host` itself to turn away DNS rebinding, so there has to be a name to check. It is lowercased,
+  since browsers send it that way and the `Origin` check is exact. The `caddy` user must be able
+  to read the key (e.g. group `caddy`, mode `0640`). The installer does not obtain certificates.
+- **`--ca-cert` for a private CA.** The installer ends by fetching the UI through Caddy and
+  verifying its certificate; a server that does not trust your CA cannot, so give it the CA's
+  certificate (never its key) with `--ca-cert /path/ca.pem`. It is used for that check alone and
+  kept for later runs; `--no-ca-cert` forgets it. When the check fails only because the
+  certificate could not be verified, the installer says so, apart from a real failure.
 - **Caddy to itself.** Drydock's Caddyfile has a global options block — it moves Caddy's admin API
   off `localhost:2019` onto a `0600` socket — so it cannot be imported into someone else's. The
   package's placeholder Caddyfile is replaced (and backed up); any other one is refused unless you
@@ -87,13 +92,14 @@ test/install/run.sh                               # the installer, against real 
 test/install/live.sh latest                       # the one-liner, against the published release
 ```
 
-CI runs all but the last on every pull request; the release workflow runs the last against each
-release it publishes.
+CI runs all but the last on every pull request; the release workflow runs the last, as
+`live.sh --dir`, against each release's assets while it is still a draft.
 
 Releases are cut by [release-please](https://github.com/googleapis/release-please) from
 [conventional commit](https://www.conventionalcommits.org/) subjects: `feat:` and `fix:` cut a
 release, everything else (`docs:`, `test:`, `chore:` …) does not. Merging its release PR tags
-`vX.Y.Z` and publishes `drydock_linux_amd64.tar.gz`, `SHA256SUMS`, and the standalone
-`install.sh` — built by `deploy/package.sh`.
+`vX.Y.Z` and creates a draft release; its assets — `drydock_linux_amd64.tar.gz`, `SHA256SUMS`, and
+the standalone `install.sh`, built by `deploy/package.sh` — are uploaded to the draft, installed by
+the one-liner, and only then published as *Latest*.
 
 `CLAUDE.md` and [`docs/design/`](docs/design/) explain why things are the way they are.

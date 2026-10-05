@@ -403,6 +403,39 @@ func TestSecondInstanceLeavesTheFirstAlone(t *testing.T) {
 	}
 }
 
+// TestRefusesAMixedCaseUIOriginAtStartup: a browser sends Origin with its host
+// lowercased, and the Origin check is exact, so a server started with
+// https://Drydock.test would refuse every sign-in as forbidden_origin while
+// the case-insensitive Host check passed the same requests. It must refuse to
+// start instead, naming the fix, before it opens the database or binds a
+// socket. The control is the same configuration in lowercase, which starts and
+// lets the browser's lowercase Origin through.
+func TestRefusesAMixedCaseUIOriginAtStartup(t *testing.T) {
+	for _, mixed := range []struct{ origin, host string }{
+		{"https://Drydock.test", uiHost},
+		{uiOrigin, "DRYDOCK.test"},
+	} {
+		cfg := testConfig(t, t.TempDir())
+		cfg.UIOrigin, cfg.UIHost = mixed.origin, mixed.host
+		_, err := New(context.Background(), cfg, sys.Production())
+		if err == nil || !strings.Contains(err.Error(), "must be lowercase") {
+			t.Fatalf("New(%q, %q) = %v; want a refusal saying it must be lowercase", mixed.origin, mixed.host, err)
+		}
+		if _, err := os.Stat(cfg.DatabasePath); !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("the refused start created the database: %v", err)
+		}
+		if _, err := os.Stat(cfg.APISocket); !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("the refused start bound the socket: %v", err)
+		}
+	}
+
+	r := start(t) // control: lowercase, as the installer now writes it
+	resp := r.do(t, req{method: "POST", path: "/api/auth/session", origin: strings.ToLower(uiOrigin), body: `{}`})
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("control: a lowercase Origin on a sign-in = %d; want 400 (past the Origin check, refused for its body)", resp.StatusCode)
+	}
+}
+
 func TestRefusesToReplaceANonSocketFile(t *testing.T) {
 	cfg := testConfig(t, t.TempDir())
 	os.MkdirAll(filepath.Dir(cfg.APISocket), 0o750)

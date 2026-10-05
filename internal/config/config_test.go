@@ -23,3 +23,40 @@ func TestValidateRefusesAnUnpinnedCleanupImage(t *testing.T) {
 		}
 	}
 }
+
+// TestValidateRefusesUppercaseHosts: a browser sends the Origin's host in
+// lowercase and the Origin check is exact, so a mixed-case UIOrigin refuses
+// every sign-in while the case-insensitive Host check lets the same requests
+// through. Validate refuses it at startup instead, naming the lowercase fix.
+// The control is the same settings in lowercase, which validate.
+func TestValidateRefusesUppercaseHosts(t *testing.T) {
+	base := Default()
+	base.UIOrigin, base.UIHost, base.PreviewDomain = "https://drydock.example.com", "drydock.example.com", "drydock-preview.net"
+	if err := base.Validate(); err != nil {
+		t.Fatalf("control: lowercase settings do not validate: %v", err)
+	}
+	for _, tc := range []struct {
+		name   string
+		mutate func(*Config)
+		want   string
+	}{
+		{"origin", func(c *Config) { c.UIOrigin = "https://Drydock.example.com" }, "--ui-origin https://drydock.example.com"},
+		{"host", func(c *Config) { c.UIHost = "drydock.Example.com" }, "--ui-host drydock.example.com"},
+		{"both", func(c *Config) { c.UIOrigin, c.UIHost = "https://DRYDOCK.EXAMPLE.COM", "DRYDOCK.EXAMPLE.COM" }, "must be lowercase"},
+		// Uppercase would also slip past the suffix match that keeps the
+		// preview domain off the UI's registrable domain.
+		{"preview", func(c *Config) { c.PreviewDomain = "P.DRYDOCK.EXAMPLE.COM" }, "--preview-domain p.drydock.example.com"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := base
+			tc.mutate(&c)
+			err := c.Validate()
+			if err == nil {
+				t.Fatalf("validated %q / %q / %q", c.UIOrigin, c.UIHost, c.PreviewDomain)
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Errorf("error %q does not name the fix %q", err, tc.want)
+			}
+		})
+	}
+}

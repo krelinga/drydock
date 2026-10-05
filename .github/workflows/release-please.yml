@@ -2,6 +2,18 @@
 # subjects merged since the last release; merging it tags vX.Y.Z and creates
 # the GitHub Release. The assets are built here rather than in a tag-triggered
 # workflow because tags pushed with GITHUB_TOKEN do not trigger other workflows.
+#
+# The Release is created as a DRAFT (release-please-config.json: "draft") and
+# stays one until its assets are uploaded and the README's one-liner has
+# installed them: only then does `publish` make it public and "Latest". A
+# failure anywhere before that leaves a draft nobody but the maintainers can
+# see, and releases/latest keeps pointing at the previous, working release —
+# never at a release with no files, or broken ones. Re-running the failed jobs
+# resumes from the draft.
+#
+# Drafts get no tag from GitHub until they are published, and release-please
+# finds its previous release by the tag's commit, so "force-tag-creation" has
+# it push the tag itself when it creates the draft.
 name: release-please
 
 on:
@@ -71,23 +83,74 @@ jobs:
         env:
           TAG: ${{ needs.release-please.outputs.tag }}
 
+      # To the draft: gh finds a draft by its pending tag.
       - run: gh release upload "$TAG" dist/* --clobber
         env:
           TAG: ${{ needs.release-please.outputs.tag }}
           GH_TOKEN: ${{ github.token }}
 
-  # The README's one-liner against what was just uploaded, downloaded from
-  # GitHub as an operator would. A red run here means a published release is
-  # broken: fix forward with a `fix:` commit.
+  # The README's one-liner against what was just uploaded, while the release
+  # is still a draft: the assets are downloaded back from it and served
+  # locally the way GitHub serves a published release (test/install/live.sh
+  # --dir). The bytes installed are the bytes that will be published.
   verify:
     needs: [release-please, assets]
     runs-on: ubuntu-latest
     permissions:
-      contents: read
+      # A draft release is visible only with push access.
+      contents: write
     steps:
       - uses: actions/checkout@v5
         with:
           ref: ${{ needs.release-please.outputs.tag }}
-      - run: test/install/live.sh "$TAG"
+      - name: Download the draft's assets
         env:
           TAG: ${{ needs.release-please.outputs.tag }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          draft=$(gh release view "$TAG" --json isDraft --jq .isDraft)
+          [ "$draft" = true ] || { echo "$TAG is not a draft; refusing to verify a release that is already public" >&2; exit 1; }
+          gh release download "$TAG" --dir "$RUNNER_TEMP/assets"
+          cd "$RUNNER_TEMP/assets"
+          # Exactly the three fixed names the README and the installer use.
+          [ "$(ls | sort | tr '\n' ' ')" = "SHA256SUMS drydock_linux_amd64.tar.gz install.sh " ] ||
+            { echo "unexpected assets: $(ls)" >&2; exit 1; }
+          sha256sum -c SHA256SUMS
+          grep -qx "RELEASE_VERSION=\"$TAG\"" install.sh
+      - run: test/install/live.sh --dir "$RUNNER_TEMP/assets" "$TAG"
+        env:
+          TAG: ${{ needs.release-please.outputs.tag }}
+
+  # Only now does the release become public and "Latest". Then the public URL
+  # the README uses must serve exactly what was verified; if it does not, the
+  # release goes back to being a draft, so releases/latest falls back to the
+  # previous release rather than staying on this one.
+  publish:
+    needs: [release-please, assets, verify]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Publish the release and mark it Latest
+        env:
+          TAG: ${{ needs.release-please.outputs.tag }}
+          GH_TOKEN: ${{ github.token }}
+        run: gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --draft=false --latest
+      - name: Check the README's URL serves it, or withdraw it
+        env:
+          TAG: ${{ needs.release-please.outputs.tag }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern SHA256SUMS --dir want
+          latest="https://github.com/$GITHUB_REPOSITORY/releases/latest/download"
+          for _ in $(seq 1 12); do
+            if curl -fsSL "$latest/install.sh" | grep -qx "RELEASE_VERSION=\"$TAG\"" &&
+              [ "$(curl -fsSL "$latest/SHA256SUMS")" = "$(cat want/SHA256SUMS)" ]; then
+              echo "releases/latest serves $TAG"
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "releases/latest does not serve $TAG; returning it to a draft" >&2
+          gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --draft=true
+          exit 1
