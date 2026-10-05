@@ -26,10 +26,12 @@ import (
 	"github.com/krelinga/drydock/internal/auth"
 	"github.com/krelinga/drydock/internal/broker"
 	"github.com/krelinga/drydock/internal/catalog"
+	"github.com/krelinga/drydock/internal/clone"
 	"github.com/krelinga/drydock/internal/config"
 	"github.com/krelinga/drydock/internal/container"
 	"github.com/krelinga/drydock/internal/events"
 	"github.com/krelinga/drydock/internal/github"
+	"github.com/krelinga/drydock/internal/provision"
 	"github.com/krelinga/drydock/internal/reconcile"
 	"github.com/krelinga/drydock/internal/secrets"
 	"github.com/krelinga/drydock/internal/store"
@@ -54,6 +56,12 @@ type Server struct {
 	// Secrets is nil when no master key is configured. With one, the broker
 	// (when there is an App) answers GET-SECRETS from it.
 	Secrets *secrets.Store
+	// Provisioner runs §6's eight steps behind POST /api/workspaces and
+	// /start. Always present; without an App it refuses with
+	// app_not_configured. Its exported fields are a test's seam — a fake
+	// git remote, a remote env, a minimal config with --network=host — set
+	// between New and Serve.
+	Provisioner *provision.Provisioner
 	// reconciled closes when boot reconciliation has finished, so a test
 	// can set up workspace rows reconciliation would otherwise move.
 	reconciled chan struct{}
@@ -94,8 +102,19 @@ func New(ctx context.Context, cfg config.Config, env sys.Env) (*Server, error) {
 
 	s := &Server{DB: db, Auth: svc, Events: events.New(db.DB, env.Clock), reconciled: make(chan struct{})}
 	s.Workspaces = &workspace.Store{DB: db.DB, Events: s.Events, Env: env, Root: cfg.WorkspaceRoot, Cap: cfg.ContainerCap}
+	containers := container.Manager{Run: subproc.Exec{}, LabelPrefix: cfg.LabelPrefix}
+	feature := map[string]any{}
+	if cfg.BotName != "" {
+		feature["botName"] = cfg.BotName
+	}
+	if cfg.BotEmail != "" {
+		feature["botEmail"] = cfg.BotEmail
+	}
+	s.Provisioner = &provision.Provisioner{Workspaces: s.Workspaces, Events: s.Events, Containers: containers,
+		Feature: cfg.Feature, FeatureOptions: feature, Timeout: cfg.ProvisionTimeout,
+		Logf: func(f string, a ...any) { fmt.Fprintf(os.Stderr, f+"\n", a...) }}
 	s.Reconciler = &reconcile.Reconciler{Workspaces: s.Workspaces, Events: s.Events,
-		Containers: container.Manager{Run: subproc.Exec{}, LabelPrefix: cfg.LabelPrefix}}
+		Containers: containers, Busy: s.Provisioner.Owns}
 	// The App key is read here, once, from its file (§13.5). A configured
 	// key that cannot be read, or that others can read, stops the server:
 	// starting without the repository list it was configured for would be
@@ -131,6 +150,8 @@ func New(ctx context.Context, cfg config.Config, env sys.Env) (*Server, error) {
 			s.Broker.Secrets = s.Secrets
 		}
 		repoCatalog = s.Catalog
+		s.Provisioner.Broker = s.Broker
+		s.Provisioner.Cloner = &clone.Cloner{DB: db.DB, GitHub: gh, Runner: subproc.Exec{}}
 	}
 	handlers := api.SessionRoutes{Auth: svc}.Handlers()
 	for name, h := range (api.RepoRoutes{Catalog: repoCatalog}).Handlers() {
@@ -140,6 +161,9 @@ func New(ctx context.Context, cfg config.Config, env sys.Env) (*Server, error) {
 		handlers[name] = h
 	}
 	for name, h := range (api.SecretRoutes{Store: secretRoutes}).Handlers() {
+		handlers[name] = h
+	}
+	for name, h := range (api.WorkspaceRoutes{Provisioner: s.Provisioner, Workspaces: s.Workspaces, Events: s.Events}).Handlers() {
 		handlers[name] = h
 	}
 	s.api = &http.Server{
@@ -202,6 +226,11 @@ func apiSocketHandler(gate api.Gate, apiMux *http.ServeMux, ui http.Handler) htt
 	return web.SecurityHeaders(root)
 }
 
+// provisionShutdownWait is how long shutdown waits for in-flight runs to
+// write down that they were interrupted — well inside systemd's 90-second
+// stop timeout, so the service is never SIGKILLed for waiting.
+const provisionShutdownWait = 20 * time.Second
+
 // Serve runs both muxes until ctx is cancelled, then shuts down gracefully.
 func (s *Server) Serve(ctx context.Context) error {
 	// Reconcile once at boot, beside serving rather than before it: a slow
@@ -242,6 +271,12 @@ func (s *Server) Serve(ctx context.Context) error {
 	case <-ctx.Done():
 	case serveErr = <-errc:
 	}
+	// Runs first, while the broker, the log and the database are all still
+	// there: each in-flight run fails the step it was on, saying Drydock shut
+	// down, and that has to be written before anything it writes to closes.
+	// One that outlasts the wait is left mid-provision for boot
+	// reconciliation to mark failed.
+	s.Provisioner.Shutdown(provisionShutdownWait)
 	if s.Broker != nil {
 		s.Broker.CloseAll()
 	}

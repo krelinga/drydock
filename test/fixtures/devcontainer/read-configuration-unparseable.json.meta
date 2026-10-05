@@ -1,0 +1,6 @@
+devcontainer_version: 0.89.0
+recorded_at:          2026-10-04T22:11:33Z
+command:              devcontainer read-configuration --workspace-folder <dir>/bad    (stdout only; exit 0)
+config:               {"image": 
+provenance:           recorded; the temp directory is rewritten to /srv/drydock/ws/FIXTURE
+must_yield:           ErrUnbuildable -- the CLI exits 0 with no image, so Drydock must check

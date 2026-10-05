@@ -71,6 +71,18 @@ func (e publicErr) Error() string  { return e.sentence + ": " + e.err.Error() }
 func (e publicErr) Public() string { return e.sentence }
 func (e publicErr) Unwrap() error  { return e.err }
 
+// Note is what a step returns when it succeeded with something the operator
+// should read on the step itself: a step that deliberately does nothing yet,
+// or one that took a path worth naming (a repository with no devcontainer.json
+// getting Drydock's minimal configuration, §6 step 3). Provision records it
+// as "done" with the sentence as its detail. It is an error value only so a
+// StepFunc keeps one return; Provision never treats it as a failure.
+func Note(sentence string) error { return note(sentence) }
+
+type note string
+
+func (n note) Error() string { return string(n) }
+
 // StepError is what Provision returns when a step fails.
 type StepError struct {
 	Step Step
@@ -123,8 +135,9 @@ func (s *Store) Provision(ctx context.Context, id string, first Step, run map[St
 			return err
 		}
 		runErr := run[st](ctx, w)
-		if runErr == nil {
-			if err := s.stepEvent(ctx, id, st, "done", events.Info, ""); err != nil {
+		var n note
+		if runErr == nil || errors.As(runErr, &n) {
+			if err := s.stepEvent(ctx, id, st, "done", events.Info, string(n)); err != nil {
 				return err
 			}
 			continue
@@ -156,6 +169,9 @@ func (s *Store) stepEvent(ctx context.Context, id string, st Step, status string
 	if detail != "" {
 		data["detail"] = detail
 		msg = detail
+		if status == "done" {
+			msg = fmt.Sprintf("%s: done. %s", capitalize(label(st)), detail)
+		}
 	}
 	_, err := s.Events.Emit(ctx, id, level, KindStep, msg, data)
 	return err

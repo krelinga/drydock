@@ -1,0 +1,6 @@
+devcontainer_version: 0.89.0
+recorded_at:          2026-10-04T22:11:33Z
+command:              devcontainer read-configuration --workspace-folder <dir>/plain    (stdout only; exit 1)
+config:               (none -- no devcontainer.json in the folder)
+provenance:           recorded; the temp directory is rewritten to /srv/drydock/ws/FIXTURE
+must_yield:           empty -- exit 1 with no message: absence is decided by looking for the file

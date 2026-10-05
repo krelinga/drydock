@@ -94,7 +94,7 @@ func (c *Cloner) Step(ctx context.Context, w workspace.Workspace) error {
 	case !fullName.MatchString(repo.fullName) || strings.Contains(repo.fullName, ".."):
 		return workspace.Public("The repository's name is not one Drydock can clone.", fmt.Errorf("full_name %q", repo.fullName))
 	}
-	if !validBranch(w.Branch) {
+	if !ValidBranch(w.Branch) {
 		return workspace.Public("The branch name is not one Drydock can clone.", fmt.Errorf("branch %q", w.Branch))
 	}
 	if w.HostPath == "" || !filepath.IsAbs(w.HostPath) {
@@ -215,10 +215,10 @@ func (c *Cloner) env(base, dir, token string) []string {
 	return env
 }
 
-// validBranch is a conservative subset of git's ref-name rules: enough for
+// ValidBranch is a conservative subset of git's ref-name rules: enough for
 // every branch a person names, and nothing that could be an option or walk
 // out of refs/heads.
-func validBranch(b string) bool {
+func ValidBranch(b string) bool {
 	if b == "" || len(b) > 255 || strings.HasPrefix(b, "-") || strings.HasPrefix(b, "/") ||
 		strings.HasSuffix(b, "/") || strings.HasSuffix(b, ".lock") || strings.HasSuffix(b, ".") ||
 		strings.Contains(b, "..") || strings.Contains(b, "//") || strings.Contains(b, "@{") {

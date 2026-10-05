@@ -83,7 +83,11 @@ func (f *Fake) makeRepo(t testing.TB, r Repo) {
 	}
 	for _, p := range files {
 		os.MkdirAll(filepath.Join(work, filepath.Dir(p)), 0o755)
-		os.WriteFile(filepath.Join(work, p), []byte(p+"\n"), 0o644)
+		body, ok := r.Contents[p]
+		if !ok {
+			body = p + "\n"
+		}
+		os.WriteFile(filepath.Join(work, p), []byte(body), 0o644)
 	}
 	git(work, "add", "-A")
 	git(work, "commit", "-q", "-m", "fixture")

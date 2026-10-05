@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Record the fixture corpus from the real Claude Code binary.
 #
-# Usage: ./record.sh [login|discovery|refusals|hangs|devcontainer|identity|credentials|all]
+# Usage: ./record.sh [login|discovery|refusals|hangs|devcontainer|readconfig|identity|credentials|all]
 #
 # This is the tool testing-plan §11.1 step 3 calls for. It exists because a
 # corpus nobody can regenerate is worth very little: the whole point of
@@ -370,6 +370,63 @@ record_devcontainer() {
 need_cmd() { command -v "$1" >/dev/null || { say "missing: $1"; exit 1; }; }
 
 # ---------------------------------------------------------------------------
+# `devcontainer read-configuration` (design §6 step 3). It needs no Docker:
+# it only reads and merges the config. Each case is a folder name -- the
+# result's workspaceFolder is /workspaces/<basename> -- so the names are
+# fixed rather than mktemp's, keeping the fixtures byte-stable across runs.
+# What the cases pin, each measured rather than assumed:
+#   - no devcontainer.json at all is exit 1 with an EMPTY stdout and no
+#     message, so "no config" must be decided by looking for the file;
+#   - an unparseable devcontainer.json is exit 0 with a configuration that
+#     holds nothing but configFilePath -- the CLI does not refuse it;
+#   - --override-config is honoured with no devcontainer.json in the folder,
+#     and configFilePath still names the folder's default path.
+record_readconfig() {
+	say "== devcontainer read-configuration results (design §6 step 3) =="
+	need_cmd devcontainer
+	local dir="$HERE/devcontainer" base dcv
+	base=$(mktemp -d -t ddrc-XXXXXX)
+	dcv=$(devcontainer --version 2>/dev/null)
+
+	# rcrec <fixture> <folder> <config-json-or-empty> <must-yield> [extra args]
+	rcrec() {
+		local name="$1" sub="$2" folder="$base/$2" cfg="$3" yield="$4"
+		shift 4
+		mkdir -p "$folder"
+		if [ -n "$cfg" ]; then
+			mkdir -p "$folder/.devcontainer"
+			printf '%s\n' "$cfg" > "$folder/.devcontainer/devcontainer.json"
+		fi
+		devcontainer read-configuration --workspace-folder "$folder" "$@" 2>/dev/null |
+			sed "s#$base#/srv/drydock/ws/FIXTURE#g" > "$dir/$name"
+		local rc=${PIPESTATUS[0]}
+		cat > "$dir/$name.meta" <<-META
+			devcontainer_version: $dcv
+			recorded_at:          $(date -u +%Y-%m-%dT%H:%M:%SZ)
+			command:              devcontainer read-configuration --workspace-folder <dir>/$sub $*   (stdout only; exit $rc)
+			config:               ${cfg:-(none -- no devcontainer.json in the folder)}
+			provenance:           recorded; the temp directory is rewritten to /srv/drydock/ws/FIXTURE
+			must_yield:           $yield
+		META
+		say "  $name: exit $rc, $(wc -c < "$dir/$name") bytes"
+	}
+
+	rcrec read-configuration-ok.json repo \
+		'{"image":"mcr.microsoft.com/devcontainers/base:debian","runArgs":["--network=host"]}' \
+		"a Configuration with workspaceFolder /workspaces/repo"
+	rcrec read-configuration-noconfig.stdout plain '' \
+		"empty -- exit 1 with no message: absence is decided by looking for the file"
+	rcrec read-configuration-unparseable.json bad '{"image": ' \
+		"ErrUnbuildable -- the CLI exits 0 with no image, so Drydock must check"
+	printf '%s\n' '{"image":"mcr.microsoft.com/devcontainers/base:debian"}' > "$base/override.json"
+	rcrec read-configuration-override.json plain2 '' \
+		"a Configuration -- the override is used, and configFilePath still names the folder's default path" \
+		--override-config "$base/override.json"
+	sed -i "s#$base#/srv/drydock/ws/FIXTURE#g" "$dir/read-configuration-override.json.meta"
+	rm -rf "$base"
+}
+
+# ---------------------------------------------------------------------------
 record_identity() {
 	say "== auth status --json (Spike 01) =="
 	# A SYNTHETIC account, never the operator's. `auth status` validates
@@ -505,6 +562,7 @@ discovery) record_discovery ;;
 refusals) record_refusals ;;
 hangs) record_hangs ;;
 devcontainer) record_devcontainer ;;
+readconfig) record_readconfig ;;
 identity) record_identity ;;
 credentials) record_credentials ;;
 all)
@@ -515,6 +573,7 @@ all)
 	record_refusals
 	record_hangs
 	record_devcontainer
+	record_readconfig
 	;;
 *)
 	say "unknown mode: $MODE"

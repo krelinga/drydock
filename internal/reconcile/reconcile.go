@@ -165,6 +165,14 @@ type Reconciler struct {
 	// workspace then stays in deleting, which is safe: it is persisted
 	// precisely so a later run can resume it.
 	Delete func(ctx context.Context, w workspace.Workspace, containerID string) error
+	// Busy reports a workspace this process has provisioned, or is
+	// provisioning. Its actions are skipped: reconciliation is about what
+	// happened before this process started, and it runs beside serving, so
+	// a create in the first seconds after boot is pending or building
+	// because it is being provisioned, not because a restart interrupted it
+	// — and marking it failed would race the run that owns it, or undo one
+	// that finished between the listing and the action. Nil means none.
+	Busy func(workspaceID string) bool
 }
 
 // Run lists containers, plans, and applies every action, continuing past a
@@ -184,6 +192,11 @@ func (r *Reconciler) Run(ctx context.Context) ([]Action, error) {
 	plan := Plan(rows, found)
 	var errs []error
 	for _, a := range plan {
+		// Asked per action, after the rows were read: a run that started
+		// since is in the plan only if its row was, and is busy by now.
+		if r.Busy != nil && a.WorkspaceID != "" && r.Busy(a.WorkspaceID) {
+			continue
+		}
 		if err := r.apply(ctx, a); err != nil {
 			errs = append(errs, fmt.Errorf("%s %s: %w", a.Kind, a.WorkspaceID, err))
 		}

@@ -396,12 +396,12 @@ func TestTheTokenReachesOnlyItsRepository(t *testing.T) {
 // before git runs.
 func TestRefusesHostileInputBeforeGitRuns(t *testing.T) {
 	for _, b := range []string{"main", "feature/x", "v1.2", "drydock/fix-1"} {
-		if !validBranch(b) {
+		if !ValidBranch(b) {
 			t.Errorf("%q refused", b)
 		}
 	}
 	for _, b := range []string{"", "-u", "--upload-pack=touch /tmp/x", "a..b", "a b", "a\nb", "x.lock", "/x", "x/", "a@{1}", "a:b", "a~1"} {
-		if validBranch(b) {
+		if ValidBranch(b) {
 			t.Errorf("%q accepted", b)
 		}
 	}

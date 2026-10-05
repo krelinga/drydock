@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"time"
 )
 
 // Config is Drydock's runtime configuration. Nothing here is a credential —
@@ -88,7 +89,28 @@ type Config struct {
 	// the file and every stored value is unreadable — there is no recovery
 	// but storing each one again.
 	SecretsKey string
+	// Feature is the devcontainer Feature every workspace gets through
+	// --additional-features (§6 step 6, §11): an OCI reference, by major
+	// tag so a compatible Feature release reaches new containers without a
+	// Drydock release. Configuration rather than a constant so a staging
+	// Drydock can point at a pre-release Feature.
+	Feature string
+	// BotName and BotEmail are the Feature's botName and botEmail options:
+	// the GitHub App's bot identity, which commits made in a workspace carry
+	// (§9.3). The email is built from the bot USER id, not the App ID, and
+	// both depend on which App this is — so they are configuration, with the
+	// production App's values as the default. Empty leaves git's identity
+	// unset in the container.
+	BotName  string
+	BotEmail string
+	// ProvisionTimeout bounds one provisioning run, clone to probe. An image
+	// build is the long part; a run past this is failed and named, never
+	// left building forever (testing §6.5's "slow" fixture).
+	ProvisionTimeout time.Duration
 }
+
+// DefaultFeature is the published Feature, by major tag.
+const DefaultFeature = "ghcr.io/krelinga/drydock/drydock:0"
 
 // WorkspaceLabel is the full label key used for adoption and deletion.
 func (c Config) WorkspaceLabel() string { return c.LabelPrefix + ".workspace" }
@@ -109,6 +131,12 @@ func Default() Config {
 		LabelPrefix:        "drydock",
 		SupervisorCapacity: 4,
 		ContainerCap:       10,
+		Feature:            DefaultFeature,
+		// The production App, krelinga-drydock (App ID 5189455), whose bot
+		// user is 337840004 — measured, §9.3.
+		BotName:          "krelinga-drydock[bot]",
+		BotEmail:         "337840004+krelinga-drydock[bot]@users.noreply.github.com",
+		ProvisionTimeout: 30 * time.Minute,
 	}
 }
 
@@ -151,6 +179,17 @@ func (c Config) Validate() error {
 	}
 	if c.GitHubAppID < 0 {
 		return fmt.Errorf("GitHub App ID %d must be positive", c.GitHubAppID)
+	}
+	// The Feature is what gives a workspace its broker clients; without it
+	// the socket is mounted and nothing in the container can use it.
+	if c.Feature == "" || strings.ContainsAny(c.Feature, " \t\n\"") {
+		return fmt.Errorf("feature %q must be a devcontainer Feature reference", c.Feature)
+	}
+	if strings.ContainsAny(c.BotName+c.BotEmail, "\n\r\x00") {
+		return fmt.Errorf("the bot name and email must be single-line")
+	}
+	if c.ProvisionTimeout < time.Minute {
+		return fmt.Errorf("provision timeout %s is shorter than any image build", c.ProvisionTimeout)
 	}
 	return nil
 }

@@ -39,10 +39,14 @@ const (
 	CodeMethodNotAllowed = "method_not_allowed"
 	CodeNotImplemented   = "not_implemented"
 	CodeInProgress       = "in_progress"
-	CodeBadRequest       = "bad_request"
-	CodeBadPassword      = "bad_password"
-	CodeLockedOut        = "locked_out"
-	CodeNotConfigured    = "not_configured"
+	// CodeAtCapacity: the concurrent-container cap is reached (§6 step 1).
+	// A 409 like in_progress, but a different sentence and a different
+	// action — stop something — so a different code.
+	CodeAtCapacity    = "at_capacity"
+	CodeBadRequest    = "bad_request"
+	CodeBadPassword   = "bad_password"
+	CodeLockedOut     = "locked_out"
+	CodeNotConfigured = "not_configured"
 	// CodeAppNotConfigured: no GitHub App is configured, so there is no
 	// repository list. Distinct from not_configured, which is the password.
 	CodeAppNotConfigured = "app_not_configured"

@@ -272,3 +272,25 @@ func TestResumeDelete(t *testing.T) {
 		t.Errorf("the delete was not resumed")
 	}
 }
+
+// TestRunLeavesThisProcessesRunsAlone: reconciliation runs beside serving,
+// so a workspace this process is provisioning is mid-provision because it
+// is being provisioned. Busy skips it; the control is a row in the same
+// state, not busy, marked interrupted by the same run.
+func TestRunLeavesThisProcessesRunsAlone(t *testing.T) {
+	ctx := context.Background()
+	e := newEnv(t)
+	mine := e.walk(t, workspace.Cloning, workspace.Building)
+	stale := e.walk(t, workspace.Cloning, workspace.Building)
+	r := &Reconciler{Workspaces: e.ws, Events: e.log, Containers: fakeLister{},
+		Busy: func(id string) bool { return id == mine.ID }}
+	if _, err := r.Run(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if w, _ := e.ws.Get(ctx, mine.ID); w.State != workspace.Building {
+		t.Errorf("a workspace this process is provisioning was moved to %s", w.State)
+	}
+	if w, _ := e.ws.Get(ctx, stale.ID); w.State != workspace.Failed {
+		t.Errorf("control: an interrupted workspace is %s, want failed", w.State)
+	}
+}

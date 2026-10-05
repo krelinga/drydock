@@ -192,10 +192,58 @@ func TestCreateRefusesADuplicateAndPastTheCap(t *testing.T) {
 		t.Errorf("a fourth with a cap of three: %v; want ErrAtCap", err)
 	}
 
-	// Controls: a failed workspace frees both its repo and its slot.
+	// A failed workspace frees its slot but not its repository: it still
+	// holds the clone, and its way back is start. Same for stopped and
+	// deleting — one repository, one workspace, until the delete finishes.
 	f.store.Move(ctx, first.ID, Failed, "")
+	if _, err := f.store.Create(ctx, 1, "main"); !errors.Is(err, ErrInProgress) {
+		t.Errorf("repo 1 while its workspace is failed: %v; want ErrInProgress", err)
+	}
+	f.store.Move(ctx, first.ID, Deleting, "")
+	if _, err := f.store.Create(ctx, 1, "main"); !errors.Is(err, ErrInProgress) {
+		t.Errorf("repo 1 while its workspace is deleting: %v; want ErrInProgress", err)
+	}
+	// Controls: the freed slot takes another repository, and once the row
+	// is gone the repository takes a workspace again.
+	if _, err := f.store.Create(ctx, 4, "main"); err != nil {
+		t.Errorf("repo 4 in the slot the failed workspace freed: %v", err)
+	}
+	f.store.Remove(ctx, first.ID)
+	f.store.Cap = 100
 	if _, err := f.store.Create(ctx, 1, "main"); err != nil {
-		t.Errorf("repo 1 after its workspace failed: %v", err)
+		t.Errorf("repo 1 after its workspace was deleted: %v", err)
+	}
+}
+
+// Reaching running carries the container id in the event's data, so the
+// reducer can show it without a refetch; the control is that no other move
+// claims one.
+func TestRunningCarriesTheContainerID(t *testing.T) {
+	ctx := context.Background()
+	f := newFixture(t)
+	w := f.create(t, 1)
+	f.store.Move(ctx, w.ID, Cloning, "")
+	f.store.Move(ctx, w.ID, Building, "")
+	f.store.SetContainer(ctx, w.ID, "c0ffee")
+	f.store.Move(ctx, w.ID, Running, "")
+	f.store.Move(ctx, w.ID, Stopped, "")
+	evs, _ := f.events.ForWorkspace(ctx, w.ID, 10)
+	got := map[string]string{}
+	for _, ev := range evs {
+		var d struct {
+			State       string
+			ContainerID string `json:"container_id"`
+		}
+		json.Unmarshal(ev.Data, &d)
+		if ev.Kind == KindState {
+			got[d.State] = d.ContainerID
+		}
+	}
+	if got["running"] != "c0ffee" {
+		t.Errorf("the move to running carries %q", got["running"])
+	}
+	if got["stopped"] != "" || got["building"] != "" {
+		t.Errorf("other moves carry a container id: %v", got)
 	}
 }
 
@@ -398,5 +446,52 @@ func TestNewID(t *testing.T) {
 	b, _ := NewID(time.UnixMilli(1001), bytes.NewReader(make([]byte, 10)))
 	if a >= b {
 		t.Errorf("%s does not sort before %s", a, b)
+	}
+}
+
+// A Note is a success with a sentence: the step is done, its detail is the
+// sentence, and the run goes on to running. The control is a real failure
+// in the same position, which fails the workspace — so the Note's success
+// is the Note's doing, not a harness that cannot fail.
+func TestANoteIsDoneWithADetail(t *testing.T) {
+	ctx := context.Background()
+	f := newFixture(t)
+	var ran []Step
+	w := f.create(t, 1)
+	steps := allSteps("", nil, &ran)
+	steps[StepCredentialVolume] = func(context.Context, Workspace) error { return Note("Nothing to do yet.") }
+	if err := f.store.Provision(ctx, w.ID, StepAllocate, steps); err != nil {
+		t.Fatal(err)
+	}
+	v, err := f.store.View(ctx, w.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v.State != Running || v.StateDetail != nil {
+		t.Errorf("state %s %v", v.State, v.StateDetail)
+	}
+	if got := v.Steps[StepCredentialVolume]; got.Status != "done" || got.Detail != "Nothing to do yet." {
+		t.Errorf("the noted step: %+v", got)
+	}
+	if got := v.Steps[StepUp]; got.Status != "done" || got.Detail != "" || got.At.IsZero() {
+		t.Errorf("a plain step: %+v", got)
+	}
+	if len(v.Steps) != len(Steps) || v.FullName != "krelinga/repo1" {
+		t.Errorf("view %+v", v)
+	}
+
+	f.store.Env.Clock.(*sys.FakeClock).Advance(time.Millisecond) // ids order by their millisecond
+	w2 := f.create(t, 2)
+	steps[StepCredentialVolume] = func(context.Context, Workspace) error { return errors.New("Nothing to do yet.") }
+	f.store.Provision(ctx, w2.ID, StepAllocate, steps)
+	if v, _ := f.store.View(ctx, w2.ID); v.State != Failed || v.Steps[StepCredentialVolume].Status != "failed" {
+		t.Errorf("control: a plain error is a failure: %s %+v", v.State, v.Steps[StepCredentialVolume])
+	}
+	vs, err := f.store.Views(ctx)
+	if err != nil || len(vs) != 2 || vs[0].ID != w2.ID {
+		t.Errorf("Views is not newest first: %v %+v", err, vs)
+	}
+	if _, err := f.store.View(ctx, "01JABCDEFGHJKMNPQRSTVWXYZ0"); !errors.Is(err, ErrNotFound) {
+		t.Errorf("View of no workspace: %v", err)
 	}
 }

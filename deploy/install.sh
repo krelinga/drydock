@@ -16,7 +16,8 @@
 #     of itself inside.
 #
 # What it does NOT do: build Drydock, obtain certificates (provisioned
-# externally by design, §13.1), install Caddy, or touch the firewall.
+# externally by design, §13.1), install Caddy, Docker or the devcontainer CLI,
+# or touch the firewall.
 #
 # Everything is inside main(), called on the last line, so a download cut off
 # part-way through executes nothing.
@@ -45,6 +46,14 @@ APP_KEY=$CONF_DIR/github-app.pem
 # new one makes them all unreadable. A file, never an environment variable.
 SECRETS_KEY=$CONF_DIR/secrets.key
 API_SOCKET=/run/drydock/http.sock
+# Where clones live (/srv/drydock/ws/<id>/repo): Drydock's alone, mode 0700,
+# because Caddy is in group drydock and has no business reading a clone.
+WS_ROOT=/srv/drydock/ws
+# The service's PATH, written into the unit, and the PATH every check below
+# resolves docker and the devcontainer CLI on — so a CLI that only root's
+# shell can find (nvm, a home directory) is refused here, not at the first
+# clone.
+SERVICE_PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
 # Markers that identify files this installer owns. A Caddyfile without the
 # first is someone else's, and is never overwritten without --take-over-caddy.
@@ -281,6 +290,44 @@ check_prerequisites() {
 		die "Caddy is not installed. Install it from https://caddyserver.com/docs/install (the official package provides the caddy user and service), then re-run."
 	id caddy >/dev/null 2>&1 || die "there is no 'caddy' user; install Caddy from its official package"
 	command -v curl >/dev/null || die "curl is required (for the final end-to-end check)"
+	# Docker and the devcontainer CLI are how a workspace gets a container
+	# (design §6). Neither is installed here: Docker is the host's to choose,
+	# and both are long-lived dependencies an operator should own.
+	PATH=$SERVICE_PATH command -v docker >/dev/null ||
+		die "Docker is not installed. Install Docker Engine from https://docs.docker.com/engine/install/ (or your distribution's docker.io package), then re-run."
+	getent group docker >/dev/null ||
+		die "there is no 'docker' group; Docker's package creates it, and Drydock reaches the daemon through it"
+	PATH=$SERVICE_PATH command -v devcontainer >/dev/null ||
+		die "the devcontainer CLI is not installed where the service can find it ($SERVICE_PATH). Install Node.js 20 or later, then: npm install -g @devcontainers/cli — it must land in /usr/local/bin or /usr/bin, not in a home directory."
+}
+
+# The drydock user reaches Docker through the docker group, which is root on
+# this host by another name: whoever can ask the daemon to run a container
+# can mount / into it. Design §13.4 already counts the Drydock process as
+# "everything, host included", for exactly this reason, so the group grants
+# nothing the design has not already priced in — but it is the line that
+# makes it true, so it is said here as well.
+ensure_docker_access() {
+	if ! id -nG drydock | tr ' ' '\n' | grep -qx docker; then
+		say "adding drydock to the docker group (root-equivalent; see design §13.4)"
+		usermod -aG docker drydock
+		GROUPS_CHANGED=1
+	fi
+	# As the service will run it: as drydock, on the service's PATH. A CLI
+	# that resolves but cannot start (a Node too old for it, say) fails here.
+	runuser -u drydock -- env PATH="$SERVICE_PATH" HOME=/var/lib/drydock devcontainer --version >/dev/null 2>&1 ||
+		die "the devcontainer CLI is installed but does not run as the drydock user; check that Node.js 20 or later is on $SERVICE_PATH"
+	# The daemon may legitimately be down at install time; Drydock serves
+	# without it and says so. So this one is a warning.
+	runuser -u drydock -- env PATH="$SERVICE_PATH" docker info >/dev/null 2>&1 ||
+		warn "the drydock user cannot reach the Docker daemon yet (is it running? systemctl enable --now docker). Workspaces will fail to start until it can."
+}
+
+ensure_workspace_root() {
+	# /srv/drydock is made root's if it is not there, and left alone if it
+	# is; the workspace root inside it is drydock's, 0700, always.
+	[ -d "$(dirname "$WS_ROOT")" ] || install -d -m 0755 -o root -g root "$(dirname "$WS_ROOT")"
+	install -d -m 0700 -o drydock -g drydock "$WS_ROOT"
 }
 
 ensure_account() {
@@ -377,6 +424,13 @@ RuntimeDirectory=drydock
 RuntimeDirectoryMode=0750
 StateDirectory=drydock
 StateDirectoryMode=0700
+# The rest of the filesystem is read-only to Drydock (ProtectSystem=strict)
+# except the clones. The per-workspace broker sockets are in
+# /run/drydock/sock, inside the RuntimeDirectory, so they need no line here.
+ReadWritePaths=$WS_ROOT
+# Docker and the devcontainer CLI resolve on this, and only this; the
+# installer checks both against the same value.
+Environment=PATH=$SERVICE_PATH
 Restart=on-failure
 RestartSec=2
 NoNewPrivileges=yes
@@ -471,8 +525,9 @@ wait_for_drydock() {
 
 start_drydock() {
 	systemctl enable --quiet drydock
+	# A new supplementary group (docker) reaches the process only on a restart.
 	if [ "${BINARY_CHANGED:-0}" = 1 ] || [ "${UNIT_CHANGED:-0}" = 1 ] || [ "${ENV_CHANGED:-0}" = 1 ] || [ "${KEY_CHANGED:-0}" = 1 ] ||
-		! systemctl is-active --quiet drydock; then
+		[ "${GROUPS_CHANGED:-0}" = 1 ] || ! systemctl is-active --quiet drydock; then
 		say "starting drydock"
 		systemctl restart drydock # SIGTERM first: a clean stop
 	fi
@@ -547,6 +602,8 @@ install_bundle() {
 	caddyfile_policy
 
 	ensure_account
+	ensure_docker_access
+	ensure_workspace_root
 	install_binary "$here"
 	install_app_key
 	install_secrets_key
