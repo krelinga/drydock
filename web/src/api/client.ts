@@ -6,7 +6,8 @@
 //     cookie is HttpOnly, so traffic is the only way the app can know.
 //  2. A mutation's response body is discarded (§4.2 step 3). Entity state is
 //     written by the stream's reducer and nothing else; `send` returns void so
-//     there is nothing to be tempted by.
+//     there is nothing to be tempted by. The one exception, `sendForResult`,
+//     returns an operation's result for its own screen, never for the reducer.
 //  3. Requests are same-origin JSON fetches: `credentials: 'same-origin'`,
 //     never `mode: 'no-cors'`, never a native form submission. That is what
 //     makes the browser send the `Origin` header the server's exact-match
@@ -26,6 +27,11 @@ export class ApiError extends Error {
     /** Seconds from a `Retry-After` header, when one was sent as seconds. */
     readonly retryAfter: number | null = null,
     serverMessage = '',
+    /**
+     * The envelope's `detail`: which rule, which character. Shown as text for
+     * the few codes whose sentence needs it (messages.ts), never parsed.
+     */
+    readonly detail = '',
   ) {
     super(serverMessage || `${status} ${code}`)
     this.name = 'ApiError'
@@ -98,7 +104,8 @@ async function toError(resp: Response): Promise<ApiError> {
     if (typeof code !== 'string' || code === '') {
       return new ApiError(resp.status, 'unparseable', retryAfter)
     }
-    return new ApiError(resp.status, code, retryAfter, env.error?.message ?? '')
+    const detail = typeof env.error?.detail === 'string' ? env.error.detail : ''
+    return new ApiError(resp.status, code, retryAfter, env.error?.message ?? '', detail)
   } catch {
     return new ApiError(resp.status, 'unparseable', retryAfter)
   }
@@ -123,4 +130,24 @@ export async function send(method: Exclude<Method, 'GET'>, path: string, body?: 
   const resp = await request(method, path, body)
   // Drain without parsing, so the connection can be reused.
   await resp.body?.cancel()
+}
+
+/**
+ * A mutation whose 2xx body is an operation's *result*, not entity state.
+ *
+ * One route needs it: `PUT /api/secrets/:name`, whose 200 says which running
+ * workspaces a rotation reached (frontend §4.5 #5, §6.4). That list answers
+ * "what did my rotation cost?", which belongs to the screen that asked, and
+ * the server persists it nowhere. The same body carries the secret's
+ * metadata too, and that must not be applied: it has no event id to be
+ * ordered by, so the caller strips it (stores/secrets.ts) and the reducer
+ * learns the secret from its event like everything else (§2.1, §4.1).
+ */
+export async function sendForResult<T>(method: Exclude<Method, 'GET'>, path: string, body?: unknown): Promise<T> {
+  const resp = await request(method, path, body)
+  const type = resp.headers.get('Content-Type') ?? ''
+  if (!type.startsWith('application/json')) {
+    throw new ApiError(resp.status, 'unparseable')
+  }
+  return (await resp.json()) as T
 }

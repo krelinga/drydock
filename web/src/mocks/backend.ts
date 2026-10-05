@@ -1,6 +1,7 @@
 // A pretend Drydock for the MSW harness (frontend §10): the three
 // /api/auth/session routes, GET /api/repos and its refresh, the workspace
-// routes Phase 2 has (list, read, create, start), the event stream with
+// routes Phase 2 has (list, read, create, start), the four /api/secrets
+// routes with every refusal they can answer, the event stream with
 // Last-Event-ID replay and `resync`, and the gate's behaviour for everything
 // else, shaped exactly as internal/api writes them — the same codes, the same
 // statuses, the same Retry-After, the same 401-before-404 ordering for an
@@ -14,9 +15,10 @@
 
 import { http, HttpResponse, sse, type HttpHandler } from 'msw'
 import type {
-  CatalogView, Device, InstallationView, RepoView, SessionInfo, StepView, StreamEvent, WorkspaceDetail,
-  WorkspaceList, WorkspaceState, WorkspaceView,
+  CatalogView, Device, InstallationView, PutSecretResult, RepoView, SecretMeta, SessionInfo, Stale, StaleWorkspace,
+  StepView, StreamEvent, WorkspaceDetail, WorkspaceList, WorkspaceState, WorkspaceView,
 } from '../api/types'
+import { checkDescription, checkName, checkReach, checkValue, type SecretRefusal } from '../lib/secretRules'
 
 export const MOCK_PASSWORD = 'drydock'
 const LOCKOUT_AFTER = 5
@@ -78,6 +80,40 @@ export interface MockBackend {
   failNext: string | null
   /** Hands out increasing ULID-shaped ids. */
   idSeq: number
+
+  /** False: every /api/secrets route answers 503 secrets_not_configured, as with no --secrets-key. */
+  secretsKey: boolean
+  /** The secret table. `value` is the server's own; no route returns it. */
+  secrets: Record<string, MockSecret>
+  /**
+   * The raw body of every write to /api/secrets, for the one spec that must
+   * prove a value *was* sent before proving it is nowhere afterwards.
+   */
+  secretBodies: Array<{ method: string; url: string; body: string }>
+  /**
+   * The next secret write is refused with this envelope, once, whatever it
+   * sent — how a spec (or dev:mock's `refuseSecret`) reaches a server-side
+   * refusal the form would have caught first.
+   */
+  refuseNextSecret: { status: number; code: string; message: string; detail?: string } | null
+  /**
+   * Workspaces internal/secrets' StaleKind hook calls
+   * `needs_supervisor_restart`. Empty until Phase 5, as on the server.
+   */
+  staleRestart: string[]
+}
+
+export interface MockSecret {
+  name: string
+  value: string
+  reach: string
+  description: string
+  all_repos: boolean
+  grants: number[]
+  created_at: string
+  rotated_at: string | null
+  last_access_at: string | null
+  accessed_by: string[]
 }
 
 export interface MockWorkspace {
@@ -193,8 +229,104 @@ function newBackendBare(now: number, overrides: Partial<MockBackend>): MockBacke
     scripts: {},
     failNext: null,
     idSeq: 0,
+    secretsKey: true,
+    secrets: sampleSecrets(now),
+    secretBodies: [],
+    refuseNextSecret: null,
+    staleRestart: [],
     ...overrides,
   }
+}
+
+/**
+ * Three secrets, one per grant shape: one repository (and fetched by its
+ * running workspace), every repository, and nothing at all — default deny.
+ * Seeded as rows without events, as a database from an earlier run would be.
+ */
+function sampleSecrets(now: number): Record<string, MockSecret> {
+  const iso = (msAgo: number) => new Date(now - msAgo).toISOString()
+  const list: MockSecret[] = [
+    {
+      name: 'NPM_READ_TOKEN', value: 'npm_mock_value_not_a_real_token',
+      reach: 'Read packages from the private npm registry. It cannot publish.',
+      description: 'npm automation token, read-only. Rotate at npmjs.com → Access Tokens.',
+      all_repos: true, grants: [], created_at: iso(30 * 86400e3), rotated_at: null,
+      last_access_at: iso(5 * 60e3), accessed_by: [WS_RUNNING],
+    },
+    {
+      name: 'STAGING_DB_URL', value: 'postgres://mock@staging.invalid/app',
+      reach: 'Read and write the staging database, which holds synthetic data only.',
+      description: '', all_repos: false, grants: [], created_at: iso(2 * 86400e3), rotated_at: null,
+      last_access_at: null, accessed_by: [],
+    },
+    {
+      name: 'STRIPE_TEST_KEY', value: 'sk_test_mock_value',
+      reach: 'Create charges and customers in the Stripe test account. Test mode only: no real money moves.',
+      description: 'Stripe dashboard → Developers → API keys (test mode). Roll it there, then paste the new one here.',
+      all_repos: false, grants: [1], created_at: iso(10 * 86400e3), rotated_at: iso(3 * 86400e3),
+      last_access_at: iso(90e3), accessed_by: [WS_RUNNING],
+    },
+  ]
+  return Object.fromEntries(list.map((s) => [s.name, s]))
+}
+
+/** internal/secrets.Meta for a row: everything but the value. */
+export function secretMeta(b: MockBackend, s: MockSecret): SecretMeta {
+  return {
+    name: s.name,
+    reach: s.reach,
+    description: s.description,
+    all_repos: s.all_repos,
+    grants: [...s.grants].sort((x, y) => x - y).map((id) => ({
+      repository_id: id, full_name: b.repos.find((r) => r.id === id)?.full_name ?? '',
+    })),
+    created_at: s.created_at,
+    rotated_at: s.rotated_at,
+    last_access_at: s.last_access_at,
+    accessed_by: [...s.accessed_by],
+  }
+}
+
+/** The running workspaces a secret reaches, by kind — internal/secrets' `stale`. */
+function staleFor(b: MockBackend, s: MockSecret): Stale {
+  const out: Stale = { new_commands: [], needs_supervisor_restart: [] }
+  const running = Object.values(b.workspaces)
+    .filter((w) => w.state === 'running' && (s.all_repos || s.grants.includes(w.repository_id)))
+    .sort((x, y) => x.id.localeCompare(y.id))
+  for (const w of running) {
+    const sw: StaleWorkspace = {
+      workspace_id: w.id, repository_id: w.repository_id,
+      full_name: b.repos.find((r) => r.id === w.repository_id)?.full_name ?? '',
+    }
+    if (b.staleRestart.includes(w.id)) out.needs_supervisor_restart.push(sw)
+    else out.new_commands.push(sw)
+  }
+  return out
+}
+
+/**
+ * A workspace fetched the secrets granted to it, as GET-SECRETS records it:
+ * a `secret_access` row per secret and no event. Only a refetch of the list
+ * shows it.
+ */
+export function recordSecretFetch(b: MockBackend, workspaceId: string): string[] {
+  const w = b.workspaces[workspaceId]
+  if (w === undefined) return []
+  const at = new Date().toISOString()
+  const got = Object.values(b.secrets).filter((s) => s.all_repos || s.grants.includes(w.repository_id))
+  for (const s of got) {
+    s.last_access_at = at
+    s.accessed_by = [workspaceId, ...s.accessed_by.filter((x) => x !== workspaceId)]
+  }
+  return got.map((s) => s.name)
+}
+
+/** The broker found something it cannot deliver (internal/secrets emitLocked). */
+export function secretUndeliverable(b: MockBackend, why = 'secrets: secret 01JA00000000000000000000S1 does not open with the current key'): StreamEvent {
+  return emit(b, 'secret.undeliverable', {
+    level: 'error',
+    message: `Stored secrets cannot be delivered, so every workspace's commands will fail until this is fixed: ${why}`,
+  })
 }
 
 /** A fresh ULID-shaped id that sorts after every sample and every earlier one. */
@@ -451,8 +583,41 @@ export function playScript(b: MockBackend, id: string, n?: number): void {
   for (const play of now) play()
 }
 
-function envelope(status: number, code: string, message: string, headers: Record<string, string> = {}) {
-  return HttpResponse.json({ error: { code, message } }, { status, headers })
+function envelope(status: number, code: string, message: string, headers: Record<string, string> = {}, detail?: string) {
+  return HttpResponse.json({ error: { code, message, ...(detail ? { detail } : {}) } }, { status, headers })
+}
+
+/** internal/secrets.Invalid's messages, by code: the server's prose, which the UI never shows. */
+const INVALID_MESSAGE: Record<string, string> = {
+  secret_name_invalid: "A secret's name is its environment variable name.",
+  secret_value_empty: 'A secret needs a value.',
+  secret_value_too_long: 'That value is too long.',
+  secret_value_control_character: "A secret's value must be a single line with no control characters.",
+  secret_reach_required: 'Say what someone could do with this secret.',
+  secret_description_invalid: 'The description is too long or is not text.',
+}
+
+const refused = (r: SecretRefusal, name: string) =>
+  envelope(400, r.code, r.code === 'secret_name_reserved' ? `${name} is reserved.` : INVALID_MESSAGE[r.code] ?? r.code, {}, r.detail)
+
+/**
+ * Reads a body the way internal/api's `decode` does: a JSON object, every
+ * field of the right type, and no field it does not know.
+ */
+function strictBody(text: string, fields: Record<string, 'string' | 'boolean' | 'ints'>): Record<string, unknown> | null {
+  let body: unknown
+  try {
+    body = JSON.parse(text)
+  } catch {
+    return null
+  }
+  if (body === null || typeof body !== 'object' || Array.isArray(body)) return null
+  for (const [k, v] of Object.entries(body)) {
+    const want = fields[k]
+    if (want === undefined) return null
+    if (want === 'ints' ? !(v === null || (Array.isArray(v) && v.every(Number.isInteger))) : typeof v !== want) return null
+  }
+  return body as Record<string, unknown>
 }
 
 const unauthenticated = () => envelope(401, 'unauthenticated', 'Sign in to continue.')
@@ -470,6 +635,23 @@ export function handlersFor(b: MockBackend): HttpHandler[] {
       contentType: request.headers.get('Content-Type'),
     })
   }
+
+  /** Records a secret write, raw body included, and returns the body for parsing. */
+  const secretWrite = async (request: Request): Promise<string> => {
+    record(request)
+    const body = await request.text()
+    b.secretBodies.push({ method: request.method, url: request.url, body })
+    return body
+  }
+  const takeRefusal = () => {
+    const r = b.refuseNextSecret
+    if (r === null) return null
+    b.refuseNextSecret = null
+    return envelope(r.status, r.code, r.message, {}, r.detail)
+  }
+  const secretsNotConfigured = () => envelope(503, 'secrets_not_configured',
+    'No secrets master key is configured, so secrets cannot be stored.',
+    {}, 'Start drydock serve with --secrets-key; the installer creates the key.')
 
   return [
     http.post('/api/auth/session', async ({ request }) => {
@@ -605,6 +787,101 @@ export function handlersFor(b: MockBackend): HttpHandler[] {
       b.failNext = null
       schedule(b, id, startScript(b, id, failAt))
       return HttpResponse.json({}, { status: 202 })
+    }),
+
+    // /api/secrets (design §10, internal/api/secret_routes.go). 200 and 204,
+    // not 202. No route returns a value: secretMeta has nowhere to put one.
+    http.get('/api/secrets', ({ request }) => {
+      record(request)
+      if (!b.signedIn) return unauthenticated()
+      if (!b.secretsKey) return secretsNotConfigured()
+      const secrets = Object.values(b.secrets).sort((x, y) => x.name.localeCompare(y.name)).map((s) => secretMeta(b, s))
+      return HttpResponse.json({ secrets }, { headers: { 'Cache-Control': 'no-store' } })
+    }),
+
+    http.put('/api/secrets/:name/grants', async ({ request, params }) => {
+      const body = await secretWrite(request)
+      if (!b.signedIn) return unauthenticated()
+      if (!b.secretsKey) return secretsNotConfigured()
+      const forced = takeRefusal()
+      if (forced) return forced
+      const parsed = strictBody(body, { repository_ids: 'ints', all_repos: 'boolean' })
+      if (parsed === null) return envelope(400, 'bad_request', 'Send a JSON object with the documented fields.')
+      const s = b.secrets[String(params.name)]
+      if (s === undefined) return envelope(404, 'not_found', 'There is no secret by that name.')
+      const ids = [...new Set((parsed.repository_ids as number[] | null | undefined) ?? [])]
+      const unknown = ids.find((id) => !b.repos.some((r) => r.id === id))
+      if (unknown !== undefined) {
+        return envelope(400, 'unknown_repository', 'That repository is not in the catalog.', {},
+          `No repository has id ${unknown}. Refresh the repository list and try again.`)
+      }
+      s.grants = ids
+      s.all_repos = parsed.all_repos === true
+      const meta = secretMeta(b, s)
+      emit(b, 'secret.grants', {
+        message: s.all_repos ? `Granted the secret ${s.name} to every repository.` : `Granted the secret ${s.name} to ${ids.length} repositories.`,
+        data: { secret: meta },
+      })
+      return HttpResponse.json({ secret: meta })
+    }),
+
+    http.put('/api/secrets/:name', async ({ request, params }) => {
+      const body = await secretWrite(request)
+      if (!b.signedIn) return unauthenticated()
+      if (!b.secretsKey) return secretsNotConfigured()
+      const forced = takeRefusal()
+      if (forced) return forced
+      const parsed = strictBody(body, { value: 'string', reach: 'string', description: 'string' })
+      if (parsed === null) return envelope(400, 'bad_request', 'Send a JSON object with the documented fields.')
+      const name = String(params.name)
+      const value = String(parsed.value ?? '')
+      const reach = String(parsed.reach ?? '')
+      const description = String(parsed.description ?? '')
+      // internal/secrets Put's order: name, value, reach, description.
+      for (const r of [checkName(name), checkValue(value), checkReach(reach), checkDescription(description)]) {
+        if (r !== null) return refused(r, name)
+      }
+      const now = new Date().toISOString()
+      const cur = b.secrets[name]
+      const res: PutSecretResult = {
+        created: cur === undefined, rotated: false,
+        stale: { new_commands: [], needs_supervisor_restart: [] },
+        secret: undefined as unknown as SecretMeta,
+      }
+      if (cur === undefined) {
+        b.secrets[name] = {
+          name, value, reach, description, all_repos: false, grants: [], created_at: now, rotated_at: null,
+          last_access_at: null, accessed_by: [],
+        }
+      } else {
+        res.rotated = cur.value !== value
+        b.secrets[name] = { ...cur, value, reach, description, rotated_at: res.rotated ? now : cur.rotated_at }
+      }
+      const s = b.secrets[name]!
+      if (res.rotated) res.stale = staleFor(b, s)
+      res.secret = secretMeta(b, s)
+      if (res.created) {
+        emit(b, 'secret.created', { message: `Stored the secret ${name}. It is granted to nothing yet.`, data: { secret: res.secret } })
+      } else if (res.rotated) {
+        const n = res.stale.new_commands.length + res.stale.needs_supervisor_restart.length
+        emit(b, 'secret.rotated', { message: `Rotated the secret ${name}; ${n} running workspaces hold it.`, data: { secret: res.secret, stale: res.stale } })
+      } else {
+        emit(b, 'secret.updated', { message: `Updated the description of the secret ${name}.`, data: { secret: res.secret } })
+      }
+      return HttpResponse.json(res)
+    }),
+
+    http.delete('/api/secrets/:name', async ({ request, params }) => {
+      await secretWrite(request)
+      if (!b.signedIn) return unauthenticated()
+      if (!b.secretsKey) return secretsNotConfigured()
+      const forced = takeRefusal()
+      if (forced) return forced
+      const name = String(params.name)
+      if (b.secrets[name] === undefined) return envelope(404, 'not_found', 'There is no secret by that name.')
+      delete b.secrets[name]
+      emit(b, 'secret.deleted', { message: `Deleted the secret ${name}.`, data: { name } })
+      return new HttpResponse(null, { status: 204 })
     }),
 
     // The stream. The gate first, as internal/api runs it: a 401 here is

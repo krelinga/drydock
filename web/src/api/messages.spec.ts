@@ -17,6 +17,18 @@ describe('describeError', () => {
     expect(nc).not.toContain('XYZZY')
   })
 
+  it('shows the detail only for the codes whose sentence needs it', () => {
+    const detail = 'Drydock refuses it because it disables Remote Control (design §2.1).'
+    expect(describeError(new ApiError(400, 'secret_name_reserved', null, 'GH_TOKEN is reserved.', detail)))
+      .toBe(`That name is reserved. ${detail}`)
+    // Control: a code outside the list never shows a detail, whatever it says.
+    const other = describeError(new ApiError(400, 'secret_name_invalid', null, 'prose', 'XYZZY detail'))
+    expect(other).toContain("A secret's name is its environment variable name")
+    expect(other).not.toContain('XYZZY')
+    // And the server's message is still never shown, even beside a detail.
+    expect(describeError(new ApiError(400, 'secret_name_reserved', null, 'XYZZY message', detail))).not.toContain('XYZZY')
+  })
+
   it('says when a lockout ends, from Retry-After', () => {
     expect(describeError(new ApiError(429, 'locked_out', 90))).toBe('Too many failed sign-ins. Try again in 2 minutes.')
     expect(describeError(new ApiError(429, 'locked_out', 30))).toBe('Too many failed sign-ins. Try again in 30 seconds.')
