@@ -107,17 +107,38 @@ func (b *Broker) Open(ctx context.Context, wsID string) error {
 // Close removes a workspace's socket. A container holding the mount then
 // gets ECONNREFUSED: GitHub access is gone at once, with nothing to revoke
 // (§9.1, Fig 3).
+//
+// A socket file this process is not serving — one left by an earlier
+// process, for a workspace whose delete is being resumed at boot — is
+// removed too, so a closed workspace has no socket on disk whichever process
+// opened it. Only a socket: anything else at the path is not Drydock's.
 func (b *Broker) Close(wsID string) error {
+	if !workspaceID.MatchString(wsID) {
+		return fmt.Errorf("broker: %q is not a workspace id", wsID)
+	}
 	b.mu.Lock()
 	ln, ok := b.listeners[wsID]
 	delete(b.listeners, wsID)
 	b.mu.Unlock()
-	if !ok {
-		return nil
+	var err error
+	if ok {
+		err = ln.Close()
 	}
-	err := ln.Close()
-	os.Remove(b.SocketPath(wsID))
+	path := b.SocketPath(wsID)
+	if fi, lerr := os.Lstat(path); lerr == nil && fi.Mode()&os.ModeSocket != 0 {
+		if rerr := os.Remove(path); rerr != nil && !errors.Is(rerr, os.ErrNotExist) {
+			err = errors.Join(err, rerr)
+		}
+	}
 	return err
+}
+
+// Serving reports whether this process has the workspace's socket open.
+func (b *Broker) Serving(wsID string) bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	_, ok := b.listeners[wsID]
+	return ok
 }
 
 // CloseAll stops every socket and waits for in-flight requests.

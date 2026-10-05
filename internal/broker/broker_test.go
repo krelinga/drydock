@@ -329,6 +329,34 @@ func TestCloseCutsAccess(t *testing.T) {
 	}
 }
 
+// TestCloseRemovesASocketItIsNotServing: a socket file left by an earlier
+// process — a delete resumed at boot, whose workspace this process never
+// opened — is removed by Close; a regular file at the path is not.
+func TestCloseRemovesASocketItIsNotServing(t *testing.T) {
+	e := newEnv(t)
+	e.b.Close(wsA)
+	l, _ := net.Listen("unix", e.b.SocketPath(wsA))
+	l.(*net.UnixListener).SetUnlinkOnClose(false)
+	l.Close()
+	if _, err := os.Lstat(e.b.SocketPath(wsA)); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	if err := e.b.Close(wsA); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Lstat(e.b.SocketPath(wsA)); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("a stale socket survived Close: %v", err)
+	}
+	os.WriteFile(e.b.SocketPath(wsA), []byte("not a socket"), 0o600)
+	e.b.Close(wsA)
+	if _, err := os.Lstat(e.b.SocketPath(wsA)); err != nil {
+		t.Errorf("Close removed something that is not a socket: %v", err)
+	}
+	if err := e.b.Close("../../etc/passwd"); err == nil {
+		t.Error("Close took a non-workspace id")
+	}
+}
+
 func TestOpenReplacesAStaleSocketButNothingElse(t *testing.T) {
 	ctx := context.Background()
 	e := newEnv(t)

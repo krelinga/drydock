@@ -113,8 +113,14 @@ func New(ctx context.Context, cfg config.Config, env sys.Env) (*Server, error) {
 	s.Provisioner = &provision.Provisioner{Workspaces: s.Workspaces, Events: s.Events, Containers: containers,
 		Feature: cfg.Feature, FeatureOptions: feature, Timeout: cfg.ProvisionTimeout,
 		Logf: func(f string, a ...any) { fmt.Fprintf(os.Stderr, f+"\n", a...) }}
+	// A deleting row found at boot is finished by the same delete the route
+	// runs (§6: resume the delete), so a delete is resumable from any
+	// sub-step it was interrupted after.
 	s.Reconciler = &reconcile.Reconciler{Workspaces: s.Workspaces, Events: s.Events,
-		Containers: containers, Busy: s.Provisioner.Owns}
+		Containers: containers, Busy: s.Provisioner.Owns,
+		Delete: func(ctx context.Context, w workspace.Workspace, _ string) error {
+			return s.Provisioner.ResumeDelete(ctx, w.ID)
+		}}
 	// The App key is read here, once, from its file (§13.5). A configured
 	// key that cannot be read, or that others can read, stops the server:
 	// starting without the repository list it was configured for would be
@@ -246,15 +252,17 @@ func (s *Server) Serve(ctx context.Context) error {
 			s.Events.Emit(ctx, "", events.Warn, "system.reconcile",
 				"Could not reconcile workspaces with Docker at startup; nothing was changed. See the service log.", nil)
 		}
-	}()
-	// Every workspace that may hold a container gets its broker socket back
-	// after a restart; a container whose socket is missing has no GitHub
-	// access, which is safe but not what anyone wants.
-	if s.Broker != nil {
-		if err := s.openBrokerSockets(ctx); err != nil {
-			fmt.Fprintf(os.Stderr, "drydock: broker: %v\n", err)
+		// Every running workspace gets its broker socket back after a
+		// restart — after reconciliation, so the set is the one Docker
+		// confirmed: a row it marked stopped gets no socket, as a stop
+		// closes it. A container whose socket is missing has no GitHub
+		// access, which is safe but not what anyone wants.
+		if s.Broker != nil && ctx.Err() == nil {
+			if err := s.openBrokerSockets(ctx); err != nil {
+				fmt.Fprintf(os.Stderr, "drydock: broker: %v\n", err)
+			}
 		}
-	}
+	}()
 	refreshing := make(chan struct{})
 	go func() {
 		defer close(refreshing)
@@ -349,7 +357,11 @@ func lookupGroup(name string) (int, error) {
 	return strconv.Atoi(g.Gid)
 }
 
-// openBrokerSockets opens a socket for every workspace not being deleted.
+// openBrokerSockets opens a socket for every running workspace. A stopped
+// one has no container to mount it into, and stop closed it (§9.1: access
+// follows Drydock's state); start opens it again at step 5. A workspace
+// mid-provision is this process's own run, whose step 5 opens it; a deleting
+// one is having its socket removed.
 func (s *Server) openBrokerSockets(ctx context.Context) error {
 	all, err := s.Workspaces.List(ctx)
 	if err != nil {
@@ -357,7 +369,7 @@ func (s *Server) openBrokerSockets(ctx context.Context) error {
 	}
 	var errs []error
 	for _, w := range all {
-		if w.State == workspace.Deleting {
+		if w.State != workspace.Running {
 			continue
 		}
 		if err := s.Broker.Open(ctx, w.ID); err != nil {

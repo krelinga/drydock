@@ -191,3 +191,13 @@ func capitalize(s string) string {
 	}
 	return string(s[0]-'a'+'A') + s[1:]
 }
+
+// IsNote reports whether err is a Note, and its sentence: a step that
+// succeeded with something to say.
+func IsNote(err error) (string, bool) {
+	var n note
+	if errors.As(err, &n) {
+		return string(n), true
+	}
+	return "", false
+}

@@ -70,9 +70,11 @@ var (
 	ErrShuttingDown = errors.New("provision: Drydock is shutting down")
 )
 
-// Broker is what provisioning needs from internal/broker.
+// Broker is what provisioning needs from internal/broker: step 5 opens the
+// socket, and stop and delete close it.
 type Broker interface {
 	Open(ctx context.Context, workspaceID string) error
+	Close(workspaceID string) error
 	SocketPath(workspaceID string) string
 }
 
@@ -101,10 +103,22 @@ type Provisioner struct {
 	// Logf receives each failed run's full error — the half that never
 	// reaches the event log (§6). Nil discards it.
 	Logf func(format string, args ...any)
+	// StopSupervisor is Phase 5's seam: stop the workspace's
+	// `claude remote-control` server with SIGTERM, escalating to SIGKILL
+	// only on timeout (CLAUDE.md) — before its container is stopped,
+	// rebuilt or removed, because a server killed with its container blocks
+	// the next start for minutes (Spike 02). Nil until the supervisor
+	// exists; the sub-step then records that it had nothing to do.
+	StopSupervisor func(ctx context.Context, w workspace.Workspace) error
+
+	// afterStep, in a test, runs after each stop or delete sub-step
+	// finishes; an error it returns ends the job there, as a crash between
+	// sub-steps would.
+	afterStep func(action, step string) error
 
 	mu     sync.Mutex
-	active map[string]bool // runs in flight
-	owned  map[string]bool // every workspace a run was started for
+	active map[string]*job // jobs in flight: a run, a stop or a delete
+	owned  map[string]bool // every workspace a job was started for
 	base   context.Context
 	stop   context.CancelFunc
 	closed bool
@@ -117,7 +131,20 @@ func (p *Provisioner) logf(format string, args ...any) {
 	}
 }
 
-// Owns reports whether this process has started a run for the workspace,
+// job is one background operation on a workspace. There is at most one per
+// workspace: a run, a stop, or a delete. A delete is the only one that may
+// replace another — it cancels the job in flight and waits for it to end.
+type job struct {
+	kind   string // "run", "stop", "delete"
+	cancel context.CancelCauseFunc
+	done   chan struct{}
+	err    error // set before done closes
+}
+
+// errDeleting is the cause a delete cancels an in-flight job with.
+var errDeleting = errors.New("provision: the workspace is being deleted")
+
+// Owns reports whether this process has started a job for the workspace,
 // finished or not. It is reconciliation's Busy: boot reconciliation is about
 // state left by an earlier process, and a workspace this one provisioned is
 // in whatever state its own run left it — even if it is still pending, or
@@ -166,7 +193,9 @@ func (p *Provisioner) Create(ctx context.Context, repositoryID int64, branch str
 	if err != nil {
 		return workspace.Workspace{}, err
 	}
-	p.launch(w.ID, workspace.StepAllocate)
+	p.launch(w.ID, "run", func(ctx context.Context) error {
+		return p.run(ctx, w.ID, workspace.StepAllocate, false)
+	})
 	return w, nil
 }
 
@@ -175,9 +204,30 @@ func (p *Provisioner) Create(ctx context.Context, repositoryID int64, branch str
 // the clone survives a stop and a failed build — unless the clone never
 // finished, in which case it starts from the clone. Errors:
 // ErrNotConfigured, workspace.ErrNotFound, and workspace.ErrInProgress for a
-// workspace that is running, mid-provision or being deleted, and
+// workspace that is running, mid-provision, busy or being deleted, and
 // workspace.ErrAtCap at the concurrent-container cap.
+//
+// A start from failed passes --remove-existing-container, as a rebuild does:
+// a failed workspace's container, if it has one, is one whose `up` or probe
+// did not succeed — a failed postCreateCommand leaves it running (§6) — and
+// `up` without the flag reattaches to it and reports success. A start from
+// stopped reattaches, which is what makes it cheap.
 func (p *Provisioner) Start(ctx context.Context, id string) error {
+	return p.restart(ctx, id, false)
+}
+
+// Rebuild is POST /api/workspaces/{id}/rebuild: the same run as a start,
+// from the same step, with --remove-existing-container — without it `up`
+// with an existing id-label reattaches and silently is not a rebuild (§6).
+// The clone survives. A running, stopped or failed workspace can be rebuilt;
+// one mid-provision, busy or being deleted is workspace.ErrInProgress. A
+// running workspace already holds a slot, so only a stopped or failed one is
+// refused at the cap.
+func (p *Provisioner) Rebuild(ctx context.Context, id string) error {
+	return p.restart(ctx, id, true)
+}
+
+func (p *Provisioner) restart(ctx context.Context, id string, rebuild bool) error {
 	if p.Cloner == nil || p.Broker == nil {
 		return ErrNotConfigured
 	}
@@ -201,28 +251,36 @@ func (p *Provisioner) Start(ctx context.Context, id string) error {
 	if p.closed {
 		return ErrShuttingDown
 	}
-	if p.active[id] {
+	if p.active[id] != nil {
 		return workspace.ErrInProgress
 	}
 	// Re-read under the lock: the state checked above may have moved.
 	if w, err = p.Workspaces.Get(ctx, id); err != nil {
 		return err
 	}
-	if w.State != workspace.Stopped && w.State != workspace.Failed {
+	switch {
+	case w.State == workspace.Stopped || w.State == workspace.Failed:
+	case rebuild && w.State == workspace.Running:
+	default:
 		return workspace.ErrInProgress
 	}
 	// A start takes a container slot, so the cap applies as it does to a
 	// create. The check and the move into the first step's state happen
 	// here, under the lock Create also holds, so a create right after this
 	// returns already counts this workspace — the run would otherwise make
-	// the move a moment later, after the create had looked.
-	n, err := p.Workspaces.Occupied(ctx)
-	if err != nil {
-		return err
+	// the move a moment later, after the create had looked. A running
+	// workspace being rebuilt holds its slot already.
+	if !workspace.Occupying(w.State) {
+		n, err := p.Workspaces.Occupied(ctx)
+		if err != nil {
+			return err
+		}
+		if p.Workspaces.Cap > 0 && n >= p.Workspaces.Cap {
+			return workspace.ErrAtCap
+		}
 	}
-	if p.Workspaces.Cap > 0 && n >= p.Workspaces.Cap {
-		return workspace.ErrAtCap
-	}
+	removeExisting := rebuild || w.State == workspace.Failed
+	wasRunning := w.State == workspace.Running
 	to := workspace.Building
 	if first == workspace.StepClone {
 		to = workspace.Cloning
@@ -230,7 +288,15 @@ func (p *Provisioner) Start(ctx context.Context, id string) error {
 	if _, err := p.Workspaces.Move(ctx, id, to, ""); err != nil {
 		return err
 	}
-	p.launch(id, first)
+	p.launch(id, "run", func(ctx context.Context) error {
+		if wasRunning && p.StopSupervisor != nil {
+			// Phase 5: the server goes before its container does.
+			if err := p.StopSupervisor(ctx, w); err != nil {
+				p.logf("drydock: workspace %s: stopping the session server before a rebuild: %v", id, err)
+			}
+		}
+		return p.run(ctx, id, first, removeExisting)
+	})
 	return nil
 }
 
@@ -250,24 +316,31 @@ func (p *Provisioner) cloned(ctx context.Context, w workspace.Workspace) (bool, 
 	return exists(w.HostPath)
 }
 
-func (p *Provisioner) launch(id string, first workspace.Step) { // p.mu held
+// launch starts a job for the workspace in the background (p.mu held). Its
+// context ends at Drydock's shutdown, or when a delete cancels it.
+func (p *Provisioner) launch(id, kind string, f func(ctx context.Context) error) *job {
 	if p.active == nil {
-		p.active, p.owned = map[string]bool{}, map[string]bool{}
+		p.active, p.owned = map[string]*job{}, map[string]bool{}
 	}
 	if p.base == nil {
 		p.base, p.stop = context.WithCancel(context.Background())
 	}
-	p.active[id], p.owned[id] = true, true
+	ctx, cancel := context.WithCancelCause(p.base)
+	j := &job{kind: kind, cancel: cancel, done: make(chan struct{})}
+	p.active[id], p.owned[id] = j, true
 	p.wg.Add(1)
 	go func() {
 		defer p.wg.Done()
-		defer func() {
-			p.mu.Lock()
+		defer close(j.done)
+		defer cancel(nil)
+		j.err = f(ctx)
+		p.mu.Lock()
+		if p.active[id] == j { // a delete may have replaced it
 			delete(p.active, id)
-			p.mu.Unlock()
-		}()
-		p.run(id, first)
+		}
+		p.mu.Unlock()
 	}()
+	return j
 }
 
 // Shutdown stops starting runs, cancels the ones in flight — each fails the
@@ -289,18 +362,18 @@ func (p *Provisioner) Shutdown(wait time.Duration) {
 	}
 }
 
-func (p *Provisioner) run(id string, first workspace.Step) {
+func (p *Provisioner) run(parent context.Context, id string, first workspace.Step, removeExisting bool) error {
 	timeout := p.Timeout
 	if timeout <= 0 {
 		timeout = 30 * time.Minute
 	}
-	ctx, cancel := context.WithTimeout(p.base, timeout)
+	ctx, cancel := context.WithTimeout(parent, timeout)
 	defer cancel()
 	// The steps run under ctx; the bookkeeping does not. When a step is
 	// cancelled, the event saying so and the move to failed still have to
 	// be written, and a cancelled context would refuse both.
 	book := context.WithoutCancel(ctx)
-	r := &runState{p: p}
+	r := &runState{p: p, removeExisting: removeExisting}
 	steps := map[workspace.Step]workspace.StepFunc{
 		workspace.StepAllocate:         r.allocate,
 		workspace.StepClone:            p.Cloner.Step,
@@ -314,9 +387,11 @@ func (p *Provisioner) run(id string, first workspace.Step) {
 	for st, f := range steps {
 		steps[st] = guard(ctx, timeout, f)
 	}
-	if err := p.Workspaces.Provision(book, id, first, steps); err != nil {
+	err := p.Workspaces.Provision(book, id, first, steps)
+	if err != nil {
 		p.logf("drydock: workspace %s: %v", id, err)
 	}
+	return err
 }
 
 // guard runs a step under the run's context, and names an interruption as
@@ -339,6 +414,9 @@ func guard(ctx context.Context, timeout time.Duration, f workspace.StepFunc) wor
 func interrupted(ctx context.Context, timeout time.Duration, err error) error {
 	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 		return workspace.Public(fmt.Sprintf("Provisioning did not finish within %s, so Drydock stopped it.", timeout), err)
+	}
+	if errors.Is(context.Cause(ctx), errDeleting) {
+		return workspace.Public("The workspace is being deleted, so Drydock stopped this step.", err)
 	}
 	return workspace.Public("Drydock shut down while this step was running.", err)
 }

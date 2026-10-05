@@ -19,6 +19,21 @@ type stubProvisioner struct {
 	err     error
 	created []string // "repo|branch"
 	started []string
+	acted   []string // "stop W1", "rebuild W1", "delete W1 confirm"
+}
+
+func (s *stubProvisioner) act(what string) error {
+	if s.err != nil {
+		return s.err
+	}
+	s.acted = append(s.acted, what)
+	return nil
+}
+
+func (s *stubProvisioner) Stop(_ context.Context, id string) error    { return s.act("stop " + id) }
+func (s *stubProvisioner) Rebuild(_ context.Context, id string) error { return s.act("rebuild " + id) }
+func (s *stubProvisioner) Delete(_ context.Context, id, confirm string) error {
+	return s.act("delete " + id + " " + confirm)
 }
 
 func (s *stubProvisioner) Create(_ context.Context, repo int64, branch string) (workspace.Workspace, error) {
@@ -145,6 +160,49 @@ func TestStartMapsEachRefusalToItsCode(t *testing.T) {
 		p.err = c.err
 		if rec := call(mux, "POST", "/api/workspaces/W1/start", ``); rec.Code != c.status || errCode(t, rec) != c.code {
 			t.Errorf("%v: %d %s", c.err, rec.Code, rec.Body)
+		}
+	}
+}
+
+// TestLifecycleRoutesMapEachRefusalToItsCode: stop, rebuild and delete
+// answer 202 {} and pass the id — and for delete the confirm, untrimmed and
+// unfolded — and each refusal reaches the client as its own code. The
+// confirm's mismatch is confirm_mismatch, not bad_request: the UI's answer to
+// it is specific.
+func TestLifecycleRoutesMapEachRefusalToItsCode(t *testing.T) {
+	p := &stubProvisioner{}
+	mux := workspaceMux(p, stubReader{})
+	for _, c := range []struct{ method, path, want string }{
+		{"POST", "/api/workspaces/W1/stop", "stop W1"},
+		{"POST", "/api/workspaces/W1/rebuild", "rebuild W1"},
+		{"DELETE", "/api/workspaces/W1?confirm=krelinga/alpha", "delete W1 krelinga/alpha"},
+		{"DELETE", "/api/workspaces/W1?confirm=%20krelinga/Alpha", "delete W1  krelinga/Alpha"},
+		{"DELETE", "/api/workspaces/W1", "delete W1 "},
+	} {
+		p.acted = nil
+		rec := call(mux, c.method, c.path, ``)
+		if rec.Code != 202 || strings.TrimSpace(rec.Body.String()) != `{}` || len(p.acted) != 1 || p.acted[0] != c.want {
+			t.Errorf("%s %s: %d %s %q; want 202 {} and %q", c.method, c.path, rec.Code, rec.Body, p.acted, c.want)
+		}
+	}
+	for _, c := range []struct {
+		err    error
+		status int
+		code   string
+	}{
+		{workspace.ErrNotFound, 404, CodeNotFound},
+		{workspace.ErrInProgress, 409, CodeInProgress},
+		{workspace.ErrAtCap, 409, CodeAtCapacity},
+		{provision.ErrNotConfigured, 503, CodeAppNotConfigured},
+		{provision.ErrConfirmMismatch, 400, CodeConfirmMismatch},
+		{provision.ErrShuttingDown, 503, CodeInternal},
+	} {
+		p.err = c.err
+		for _, r := range [][2]string{{"POST", "/api/workspaces/W1/stop"}, {"POST", "/api/workspaces/W1/rebuild"},
+			{"DELETE", "/api/workspaces/W1?confirm=krelinga/alpha"}} {
+			if rec := call(mux, r[0], r[1], ``); rec.Code != c.status || errCode(t, rec) != c.code {
+				t.Errorf("%s %s with %v: %d %s; want %d %s", r[0], r[1], c.err, rec.Code, rec.Body, c.status, c.code)
+			}
 		}
 	}
 }
