@@ -55,6 +55,16 @@
 //                                           level error; sent when delivery
 //                                           breaks or the broken set changes
 //   secret.deliverable    {}                the condition cleared
+//   auth.identity      {identity}           internal/identity: the stored verdict
+//                                           changed, or a failing check recovered
+//   auth.identity_check_failed {check_error: {at, problem, message}}
+//                                           the stored state stands
+//
+// The Claude identity has its own snapshot, `identity` — a GET
+// /api/auth/claude body — and is written by it and the two auth.identity*
+// events, versioned by one id like every field. It is one fleet-wide value,
+// not a per-workspace one: the banner and the card overlay read the same
+// field, which is the whole of frontend §6.6.
 //
 // Secrets have a sixth input, `secrets` — a GET /api/secrets body — and are
 // written by it and by the secret.* events, and by nothing else. The same
@@ -77,10 +87,28 @@
 // branch rather than vanishing (events_routes.go).
 
 import {
-  WORKSPACE_STATES, WORKSPACE_STEPS, type CatalogView, type InstallationView, type RepoView, type SecretList,
+  IDENTITY_STATES, WORKSPACE_STATES, WORKSPACE_STEPS, type CatalogView, type ClaudeIdentityBody,
+  type IdentityCheckError, type IdentityState, type InstallationView, type RepoView, type SecretList,
   type SecretMeta, type StepStatus, type StreamEvent, type WorkspaceDetail, type WorkspaceList, type WorkspaceState,
   type WorkspaceView,
 } from '../api/types'
+
+/**
+ * The shared Claude login as the watch last stored it (design §7.3). Named
+ * fields only: nothing about the credential is in the API, and nothing here
+ * could hold it.
+ */
+export interface ClaudeIdentity {
+  /** Null: no check has ever succeeded — not yet known, never "absent". */
+  state: IdentityState | null
+  accountEmail: string | null
+  expiresAt: string | null
+  loggedInAt: string | null
+  lastCheckedAt: string | null
+  volume: string
+  /** The last check's failure, null when it succeeded. */
+  checkError: IdentityCheckError | null
+}
 
 export interface StepInfo {
   name: string
@@ -290,6 +318,10 @@ export interface Entities {
    * reopens the stream, and the reopen refetches the list.
    */
   cap: number | null
+  /** Null until GET /api/auth/claude or an auth.identity event has been applied. */
+  identity: ClaudeIdentity | null
+  /** The event id (or snapshot position) that last wrote `identity`. */
+  identityAt: number
 }
 
 export type Action =
@@ -299,6 +331,7 @@ export type Action =
   | { type: 'workspaces'; at: number; view: WorkspaceList }
   | { type: 'workspace'; at: number; view: WorkspaceDetail }
   | { type: 'secrets'; at: number; view: SecretList }
+  | { type: 'identity'; at: number; view: ClaudeIdentityBody }
 
 export function emptyEntities(): Entities {
   return {
@@ -320,6 +353,8 @@ export function emptyEntities(): Entities {
     secretFault: null,
     secretFaultAt: 0,
     cap: null,
+    identity: null,
+    identityAt: 0,
   }
 }
 
@@ -345,7 +380,62 @@ export function reduce(prev: Entities, action: Action): Entities {
       return applyWorkspaceDetail(prev, action.at, action.view)
     case 'secrets':
       return applySecretList(prev, action.at, action.view)
+    case 'identity': {
+      // The body stands unless an identity event newer than it was applied.
+      const lastEventId = Math.max(prev.lastEventId, action.at)
+      const identity = prev.identityAt <= action.at ? toIdentity(action.view?.identity) : null
+      if (identity === null) return lastEventId === prev.lastEventId ? prev : { ...prev, lastEventId }
+      return { ...prev, lastEventId, identity, identityAt: action.at }
+    }
   }
+}
+
+/**
+ * The identity, field by named field. A state outside the five is not
+ * guessed at: it is "not known" (null), so an unknown verdict can never be
+ * rendered as ok. Returns null for a body that is not an identity at all.
+ */
+function toIdentity(v: unknown): ClaudeIdentity | null {
+  if (v === null || typeof v !== 'object') return null
+  const x = v as Record<string, unknown>
+  const state = (IDENTITY_STATES as readonly unknown[]).includes(x.state) ? x.state as IdentityState : null
+  return {
+    state,
+    accountEmail: str(x.account_email),
+    expiresAt: str(x.expires_at),
+    loggedInAt: str(x.logged_in_at),
+    lastCheckedAt: str(x.last_checked_at),
+    volume: typeof x.volume === 'string' ? x.volume : '',
+    checkError: toCheckError(x.check_error),
+  }
+}
+
+function toCheckError(v: unknown): IdentityCheckError | null {
+  if (v === null || typeof v !== 'object') return null
+  const x = v as Record<string, unknown>
+  const message = str(x.message)
+  if (message === null) return null
+  return { at: typeof x.at === 'string' ? x.at : '', problem: typeof x.problem === 'string' ? x.problem : '', message }
+}
+
+/** auth.identity replaces the identity; auth.identity_check_failed sets only its failure. */
+function applyIdentityEvent(base: Entities, ev: StreamEvent): Entities {
+  if (ev.id <= base.identityAt) return base
+  const data = ev.data ?? {}
+  if (ev.kind === 'auth.identity') {
+    const identity = toIdentity(data.identity)
+    return identity === null ? base : { ...base, identity, identityAt: ev.id }
+  }
+  if (ev.kind === 'auth.identity_check_failed') {
+    // A failure the body cannot describe is still a failure: the kind is the
+    // fact, and the event's own sentence says it.
+    const checkError = toCheckError(data.check_error) ?? { at: ev.at, problem: '', message: ev.message }
+    const cur: ClaudeIdentity = base.identity ?? {
+      state: null, accountEmail: null, expiresAt: null, loggedInAt: null, lastCheckedAt: null, volume: '', checkError: null,
+    }
+    return { ...base, identity: { ...cur, checkError, lastCheckedAt: checkError.at || cur.lastCheckedAt }, identityAt: ev.id }
+  }
+  return base // an auth.* kind from a later phase
 }
 
 /** Folds a recorded sequence; the specs' and the store's shared entry point. */
@@ -398,6 +488,7 @@ function applyEvent(prev: Entities, ev: StreamEvent): Entities {
   }
 
   if (ev.kind.startsWith('secret.')) return applySecretEvent(base, ev)
+  if (ev.kind.startsWith('auth.identity')) return applyIdentityEvent(base, ev)
 
   const wsId = str(ev.workspace_id)
   if (wsId === null) return base

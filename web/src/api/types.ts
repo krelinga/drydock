@@ -283,3 +283,41 @@ export interface PutSecretResult {
   rotated: boolean
   stale: Stale
 }
+
+/** `claude_identity.state` (design §4, §7.3): the five-way verdict, stored once by the watch. */
+export type IdentityState = 'ok' | 'expiring' | 'expired' | 'blanked' | 'absent'
+
+export const IDENTITY_STATES: readonly IdentityState[] = ['ok', 'expiring', 'expired', 'blanked', 'absent']
+
+/** The last identity check's failure (internal/identity.CheckError). Drydock's own sentence. */
+export interface IdentityCheckError {
+  at: string
+  /** docker | image | credentials | auth_status | disagree | unknown */
+  problem: string
+  message: string
+}
+
+/**
+ * The stored identity (internal/identity.View), from `GET /api/auth/claude`
+ * and the `auth.identity` event. `state` is null until a check has ever
+ * succeeded — "not yet known", never one of the five.
+ */
+export interface IdentityView {
+  state: IdentityState | null
+  /** Only beside a login (ok, expiring, expired). */
+  account_email: string | null
+  expires_at: string | null
+  /** When Drydock first saw this login. */
+  logged_in_at: string | null
+  last_checked_at: string | null
+  /** The shared credential volume's name. */
+  volume: string
+  /** Null when the last check succeeded. The stored state stands either way. */
+  check_error: IdentityCheckError | null
+}
+
+/** `GET /api/auth/claude`. `login` is the in-flight handshake: always null until it is built. */
+export interface ClaudeIdentityBody {
+  identity: IdentityView
+  login: null
+}
