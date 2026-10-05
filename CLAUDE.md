@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **Mostly design, with the first code in.** The repository contains the overall design
 document (`docs/design/overall/drydock-design.md`, draft v24), supplemental ones on port forwarding
-(`docs/design/port-forwarding/`, draft v5), testing (`docs/design/testing/`, draft v12) and the Vue
+(`docs/design/port-forwarding/`, draft v5), testing (`docs/design/testing/`, draft v13) and the Vue
 frontend (`docs/design/frontend/`, draft v9), a settled brand mark (`docs/design/brand/`, v1.1,
 with the shipping icon assets), an adversarial security review
 (`docs/design/security-review.md`), their SVG diagrams, a devcontainer definition, and **five
@@ -37,6 +37,7 @@ printf "%s\n" "$PW" | ./drydock passwd --db x.db  # set the operator password (n
 | `internal/config` | Settings that must not be constants, `LabelPrefix` chief among them, plus a `Validate` that refuses configurations which silently undo a design property. |
 | `internal/store` | SQLite in WAL mode, the single-instance lock, and §4's schema with its enumerations as `CHECK` constraints. A golden snapshot pins the schema. |
 | `internal/classify` | The five classifiers, implemented and tested against the corpus: login, identity, refusal, discovery, container. Built in parallel by four agents, one file each. |
+| `internal/claudetest`, `internal/pty` | `fakeclaude` (testing §6.4): a stand-in `claude` that replays the corpus onto a real PTY of a chosen width, scripted by a JSON file beside the binary (not an env var, which `subproc` replaces), and logs what it received — each code as a SHA-256 with its framing judged, anything typed at a gate or a serving server, a missing PTY. Every file it replays is pinned by SHA-256 in `claudetest.Pinned`, so a re-record stops it until it is re-derived. `Install` builds and scripts it; `Start` runs it on a PTY; `Events`/`NoViolations` read its log. `internal/pty` is the PTY itself, on `x/sys/unix`, usable by the supervisor too. |
 | `internal/auth` | argon2id with a floor and rehash-on-sign-in, sessions stored only as SHA-256, and a lockout that is per-IP backoff plus a global cap, kept in `auth_attempt` so a restart does not reset it. |
 | `internal/events` | The append-only event log and its live fan-out. Append writes and publishes under one lock so subscribers see id order; a subscriber that lags 256 events is cut off rather than allowed to block writers, and recovers by replay. `data` is a JSON object for the reducer; `message` is prose nothing may parse. |
 | `internal/workspace` | The workspace state machine — a transition table where `deleting` is a sink and nothing reaches `running` except from a build — and design §6's eight steps, each writing `workspace.step` started/done/failed so a failure names its step. A step's raw error never reaches an event (a subprocess's stderr can carry anything, git's quoting the URL); only a `workspace.Public` sentence does. Creates check the duplicate and the cap inside one transaction, which is why the store opens every transaction `IMMEDIATE`. `Remove` (only from `deleting`) takes the `supervisor` row with it and keeps the event log, `token_grant` and `secret_access` — the "which workspaces ever held this secret?" history outlives the workspace. |
@@ -63,7 +64,7 @@ printf "%s\n" "$PW" | ./drydock passwd --db x.db  # set the operator password (n
 | `test/container/` | The container tier: real Docker (the devcontainer's DinD, or the CI runner's) and the real `devcontainer` CLI. Adopt-an-orphan and died-unobserved against real containers, and Phase 3's deliverable end to end. That is a real `devcontainer up` with the Feature from this checkout and the broker socket bind-mounted. Inside, git pushes a `drydock/` branch through the helper; a push to `main` is refused, the other repository is unreachable, and there is no socket but its own and no Docker socket. Then Phase 4's: a suite run through the Feature's `CLAUDE_ENV_FILE` passes while a secret is granted and fails on the next command once it is not; a hostile value runs nothing; no value is in any `/proc/*/cmdline` or `docker inspect`. And Phase 2's: `POST /api/workspaces` through the real server, signed in, for a repository with a config and one without, both reaching `running` with the published Feature, the clones untouched and no token anywhere in the tree or the database; a secret granted to one reaches its `CLAUDE_ENV_FILE` prelude and not the other's. Each test runs under its own random label prefix. Skips without Docker unless `DRYDOCK_REQUIRE_DOCKER` is set, which CI does. |
 | `test/browser/` | The browser tier (testing §10, §10.4): Playwright's Chromium against the real `drydock serve` and real Caddy on the shipped Caddyfile, with a throwaway CA trusted through NSS in a per-run `HOME` — never `ignoreHTTPSErrors`. A tap between Caddy and each socket records what arrived, so "no cookie" is asserted at the server. Covers the `__Host-` cookie and its illegal variants, the `SameSite=Lax` split, the `Origin` belt, cross-origin reads, framing both ways, the CSP as served, SSE through Caddy's `encode`, the browser's own `Last-Event-ID` replay, sign-in with `return`, the mid-session `401`, and a wrong-host certificate refused. Mutation-checked. Run by `run.sh`, which resolves `@playwright/test` from `web/node_modules` via `NODE_PATH` and type-checks first. |
 | `test/component/` | Real binaries, nothing mocked. Today: the Caddyfile conformance test (testing §3.2), mutation-checked against the Caddyfile itself. |
-| `test/fixtures/` | The corpus: 40 fixtures from `2.1.289` and devcontainer CLI `0.89.0`, plus `record.sh`, which is testing §11.1 step 3. Some are hand-written or synthetic, and their `.meta` says which. |
+| `test/fixtures/` | The corpus: 42 fixtures from `2.1.289` and devcontainer CLI `0.89.0`, plus `record.sh`, which is testing §11.1 step 3. Some are hand-written or synthetic, and their `.meta` says which. |
 
 Three things about that code worth knowing before extending it:
 
@@ -324,7 +325,7 @@ These come from §2 (Claude Code constraints) and §13.5 (non-negotiables). Most
   reproduced in full — the lock is still a directory in the shared volume, 16,335 reads across a
   live write with zero torn, and the tombstone is byte-identical to the recorded fixture.
   **Re-run all four Claude Code harnesses (`00`–`03`) on every bump** and update the version here,
-  in the Feature, in `internal/classify`, and in each spike report. Spike `04` is about browser
+  in the Feature, in `internal/classify`, in `internal/claudetest` (with its pins), and in each spike report. Spike `04` is about browser
   behaviour and has its own trigger (testing §11.6).
 - **The shared credential volume must be a local Docker volume — never NFS or CIFS.** Claude Code's
   cross-container refresh lock is a `mkdir(2)`-based lockfile at

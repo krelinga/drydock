@@ -1,0 +1,6 @@
+claude_version: 2.1.289
+recorded_at:    2026-10-05T00:00:00Z
+command:        SYNTHETIC — the first 256 bytes of env-status-block (recorded): the header through the `Connecting` line, after which fakeclaude's crash mode exits 1 with no refusal message
+pty_width:      200
+provenance:     synthetic
+must_yield:     RefusalNone from the refusal classifier and the environment id from discovery — an ordinary crash, which spends the restart budget, as a refusal must not

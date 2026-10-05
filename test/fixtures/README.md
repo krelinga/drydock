@@ -69,6 +69,8 @@ fixture if you get them wrong:
   hand-written expectation proves only that the regex matches itself. Replace
   them with `docs/design/spikes/harness-01-login/run.sh login`.
 - **`login-timeout`** needs the five-minute deadline to elapse; not recorded.
+  `fakeclaude`'s timeout mode needs no bytes of its own: the prompt, then
+  silence whatever is submitted.
 
 ## Known defects in the committed files
 
@@ -91,3 +93,19 @@ over escape-stripped text), `session-ids-delayed` (a recorded prefix plus a late
 announcement), `login-success-after-prompt` (success on the paste prompt's own
 line, which the hand-written success fixtures cannot exercise), and the six
 `credentials/` shapes, which are classifier inputs rather than recordings.
+
+Two more exist for `fakeclaude` (`internal/claudetest`), which replays this
+corpus onto a PTY: `hang-remote-dialog-tty` (the `Enable Remote Control? (y/n)`
+prompt Spike 02 quoted but never captured, framed exactly as the recorded trust
+prompt is) and `crash-after-start` (the recorded header through `Connecting`,
+after which the fake exits 1 with no message — an ordinary crash).
+
+## fakeclaude pins what it replays
+
+Every file `fakeclaude` replays has its SHA-256 in `claudetest.Pinned`, and the
+fake refuses (exit 3) to replay one that has changed. So re-recording this
+corpus — under a new version directory or the same one — fails the fake's
+contract test and every test that uses it until someone re-derives the fake's
+modes from the new bytes and updates the pin. That is deliberate: a fake that
+silently absorbed a re-record would keep passing while the modes built by
+splitting one recording at another's length quietly stopped meaning anything.

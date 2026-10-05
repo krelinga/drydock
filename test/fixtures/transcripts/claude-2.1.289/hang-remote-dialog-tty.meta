@@ -1,0 +1,6 @@
+claude_version: 2.1.289
+recorded_at:    2026-10-05T00:00:00Z
+command:        SYNTHETIC — claude remote-control on a PTY with remoteDialogSeen missing; the prompt text is Spike 02's, framed as hang-untrusted-tty frames its prompt (ESC[1G ESC[0J <prompt> ESC[<len+1>G). The preamble the real one prints before it is not recorded
+pty_width:      200
+provenance:     synthetic
+must_yield:     a TIMEOUT, not a message -- the start hangs on `Enable Remote Control? (y/n)` rather than failing
