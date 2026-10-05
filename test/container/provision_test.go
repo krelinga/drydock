@@ -34,6 +34,14 @@ import (
 // repositories at once — one with a devcontainer.json, one without — and
 // both reach running, with the container found again by its label.
 //
+// Two more exercise the repository's devcontainer-lock.json (design §6),
+// with a Feature from a local registry whose versions are told apart inside
+// the container: one commits a lockfile pinning the older version and gets
+// it; the control, the same config with no lockfile, gets the newer. `up`
+// rewrites the committed lockfile — the published Feature's dependency on
+// github-cli is written in — and Drydock puts it back, so all four clones
+// are left as cloned.
+//
 // Two test-only settings, both because the fake GitHub listens on the
 // host's loopback: the containers run with --network=host (in the repository's
 // config and in the minimal one), and DRYDOCK_GITHUB_HOST is set through the
@@ -47,12 +55,26 @@ func TestCreateWorkspaceThroughTheServer(t *testing.T) {
 
 	f := githubtest.New(t, 4242, time.Now)
 	hostNetConfig := `{"image":"` + provision.DefaultImage + `","runArgs":["--network=host"]}`
+	reg := newFeatureRegistry(t, "1.0.0", "1.1.0")
+	markerConfig := `{"image":"` + provision.DefaultImage + `","runArgs":["--network=host"],"features":{"` + reg.Ref + `":{}}}`
+	locked := func(id int64, name, lock string) githubtest.Repo {
+		r := githubtest.Repo{ID: id, FullName: name, DefaultBranch: "main", PushedAt: time.Now(),
+			Files:    []string{"README.md", ".devcontainer/devcontainer.json"},
+			Contents: map[string]string{".devcontainer/devcontainer.json": markerConfig}}
+		if lock != "" {
+			r.Files = append(r.Files, ".devcontainer/devcontainer-lock.json")
+			r.Contents[".devcontainer/devcontainer-lock.json"] = lock
+		}
+		return r
+	}
 	f.Installations = []githubtest.Installation{{ID: 77, Account: "krelinga", Repos: []githubtest.Repo{
 		{ID: 101, FullName: "krelinga/alpha", DefaultBranch: "main", PushedAt: time.Now(),
 			Files:    []string{"README.md", ".devcontainer/devcontainer.json"},
 			Contents: map[string]string{".devcontainer/devcontainer.json": hostNetConfig}},
 		{ID: 102, FullName: "krelinga/plain", DefaultBranch: "main", PushedAt: time.Now(),
 			Files: []string{"README.md"}},
+		locked(103, "krelinga/pinned", reg.lockfile("1.0.0")),
+		locked(104, "krelinga/unpinned", ""),
 	}}}
 	f.EnableGit(t)
 
@@ -103,7 +125,7 @@ func TestCreateWorkspaceThroughTheServer(t *testing.T) {
 	for {
 		var repos struct{ Repos []struct{ ID int64 } }
 		c.get("/api/repos", &repos)
-		if len(repos.Repos) == 2 {
+		if len(repos.Repos) == 4 {
 			break
 		}
 		if time.Now().After(deadline) {
@@ -123,7 +145,7 @@ func TestCreateWorkspaceThroughTheServer(t *testing.T) {
 	}
 
 	ids := map[string]string{}
-	for _, repo := range []string{"101", "102"} {
+	for _, repo := range []string{"101", "102", "103", "104"} {
 		status, body := c.post("/api/workspaces", `{"repository_id":`+repo+`}`)
 		var created struct{ ID string }
 		if status != 202 || json.Unmarshal([]byte(body), &created) != nil || created.ID == "" {
@@ -140,9 +162,9 @@ func TestCreateWorkspaceThroughTheServer(t *testing.T) {
 	}
 	views := map[string]view{}
 	deadline = time.Now().Add(15 * time.Minute)
-	for len(views) < 2 {
+	for len(views) < len(ids) {
 		if time.Now().After(deadline) {
-			t.Fatalf("not both settled in time: %+v", views)
+			t.Fatalf("not all settled in time: %+v", views)
 		}
 		time.Sleep(time.Second)
 		for repo, id := range ids {
@@ -186,7 +208,7 @@ func TestCreateWorkspaceThroughTheServer(t *testing.T) {
 		out, err := exec.Command("devcontainer", append(args, "--", "sh", "-c", script)...).Output()
 		return string(out), err
 	}
-	for repo := range ids {
+	for repo := range views {
 		out, err := execIn(repo, "whoami; git log -1 --format=%s; git config user.email")
 		if err != nil || !strings.Contains(out, "vscode\nfixture\n"+botEmail) {
 			t.Errorf("repository %s: exec %v:\n%s", repo, err, out)
@@ -205,10 +227,23 @@ func TestCreateWorkspaceThroughTheServer(t *testing.T) {
 		t.Errorf("the ungranted workspace: exec %v, got %q", err, out)
 	}
 
-	// Neither clone was touched. For the plain repository the minimal config
-	// is beside the clone, never in it; for both, `up` wrote no
-	// devcontainer-lock.json into .devcontainer/ (it does without
-	// --no-lockfile, measured).
+	// The committed lockfile was honoured: the pinned version is installed,
+	// where the same configuration without a lockfile gets the newest. The
+	// control is what makes the pin's assertion mean something — a registry
+	// whose major tag served 1.0.0 would pass it vacuously.
+	for repo, want := range map[string]string{"103": "1.0.0", "104": "1.1.0"} {
+		if out, err := execIn(repo, "cat "+markerPath); err != nil || strings.TrimSpace(out) != want {
+			t.Errorf("repository %s: the Feature installed %q (%v); want %s", repo, strings.TrimSpace(out), err, want)
+		}
+	}
+	if d := views["103"].Steps["resolve_config"].Detail; !strings.Contains(d, "lockfile") {
+		t.Errorf("the pinned repository's resolve_config says %q", d)
+	}
+
+	// No clone was touched. For the plain repository the minimal config
+	// is beside the clone, never in it; where no lockfile is committed `up`
+	// created none (it does with no lockfile flag, measured), and where one
+	// is, it is byte for byte as cloned although `up` rewrote it.
 	for repo, id := range ids {
 		clone := filepath.Join(cfg.WorkspaceRoot, id, "repo")
 		if out, err := exec.Command("git", "-C", clone, "status", "--porcelain", "--ignored").CombinedOutput(); err != nil || len(out) != 0 {

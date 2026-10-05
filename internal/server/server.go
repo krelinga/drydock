@@ -238,6 +238,16 @@ func (s *Server) Serve(ctx context.Context) error {
 	// (reconcile refuses to act on a list it could not read), is written to
 	// the journal in full, and reaches the event log as Drydock's sentence
 	// only — docker's stderr is not ours to publish.
+	//
+	// Before either, and before serving: put back any repository lockfile a
+	// run saved and did not get to restore because Drydock died during
+	// `devcontainer up` (design §6). Nothing is in flight yet, and it is
+	// only files.
+	if err := s.Provisioner.RecoverLockfiles(); err != nil {
+		fmt.Fprintf(os.Stderr, "drydock: recovering lockfiles: %v\n", err)
+		s.Events.Emit(ctx, "", events.Warn, "system.lockfile",
+			"Could not restore a repository's devcontainer lockfile left by an interrupted run; its clone may show it modified. See the service log.", nil)
+	}
 	reconciled := s.reconciled
 	go func() {
 		defer close(reconciled)

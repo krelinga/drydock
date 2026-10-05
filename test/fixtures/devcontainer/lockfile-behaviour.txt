@@ -1,0 +1,20 @@
+# devcontainer CLI 0.89.0. "marker:1" resolves to 1.1.0; a committed lockfile pins 1.0.0.
+# scenario | up flags | exit | stdout message | marker installed | git status --porcelain --ignored | lockfile after
+default-pinned | (none) --additional-features inject:1 | 0 | - | 1.0.0 | clean | unchanged
+nolockfile-pinned | --no-lockfile --additional-features inject:1 | 0 | - | 1.1.0 | clean | unchanged
+frozen-pinned | --frozen-lockfile --additional-features inject:1 | 0 | - | 1.0.0 | clean | unchanged
+default-pinned-dependent | (none) --additional-features dependent:1 | 0 | - | 1.0.0 |  M .devcontainer/devcontainer-lock.json; | + "localhost:5077/lockspike/inject:1": {
+frozen-pinned-dependent | --frozen-lockfile --additional-features dependent:1 | 1 | Lockfile does not match. | - | clean | unchanged
+default-none | (none) --additional-features inject:1 | 0 | - | 1.1.0 | ?? .devcontainer/devcontainer-lock.json; | (new file)
+nolockfile-none | --no-lockfile --additional-features inject:1 | 0 | - | 1.1.0 | clean | unchanged
+frozen-none | --frozen-lockfile --additional-features inject:1 | 1 | Lockfile does not exist. | - | clean | unchanged
+default-empty | (none) --additional-features inject:1 | 0 | - | 1.1.0 |  M .devcontainer/devcontainer-lock.json; | + "features": { + "localhost:5077/lockspike/marker:1": {
+frozen-empty | --frozen-lockfile --additional-features inject:1 | 1 | Lockfile does not match. | - | clean | unchanged
+default-stale | (none) | 0 | - | 1.0.0 |  M .devcontainer/devcontainer-lock.json; | + "localhost:5077/lockspike/inject:1": {
+frozen-stale | --frozen-lockfile | 1 | Lockfile does not match. | - | clean | unchanged
+default-override-noconfig | (none) --additional-features inject:1 --override-config outside the repo | 1 | ENOENT: no such file or directory, open '<repo>/.devcontainer/devcontainer-lock.json' | - | clean | unchanged
+nolockfile-override-noconfig | --no-lockfile --additional-features inject:1 --override-config outside the repo | 0 | - | 1.1.0 | clean | unchanged
+default-override-repo-pinned | (none) --additional-features inject:1 --override-config outside the repo | 0 | - | 1.0.0 | clean | unchanged
+default-override-beside | (none) --additional-features inject:1 --override-config outside the repo | 0 | - | 1.1.0 | ?? .devcontainer/devcontainer-lock.json; | (new file)
+default-additional-pinned | (none) --additional-features marker:1 | 0 | - | 1.0.0 |  M .devcontainer/devcontainer-lock.json; | - "localhost:5077/lockspike/marker:1": { + "localhost:5077/lockspike/inject:1": {
+frozen-additional-pinned | --frozen-lockfile --additional-features marker:1 | 1 | Lockfile does not match. | - | clean | unchanged

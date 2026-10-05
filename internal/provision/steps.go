@@ -26,6 +26,11 @@ type runState struct {
 	override string
 	// folder is the clone's path inside the container.
 	folder string
+	// lockfile is what up does with the repository's devcontainer-lock.json:
+	// honoured when the repository commits one, ignored when it does not.
+	// lockPath is the file, when honoured.
+	lockfile container.Lockfile
+	lockPath string
 }
 
 // dir is the workspace's directory: /srv/drydock/ws/<id>.
@@ -64,6 +69,9 @@ func (r *runState) allocate(_ context.Context, w workspace.Workspace) error {
 // .devcontainer/ is one the CLI would not pick without --config, so it gets
 // the minimal config as well, and the step says so.
 func (r *runState) resolveConfig(ctx context.Context, w workspace.Workspace) error {
+	if err := r.recoverLockfile(w); err != nil {
+		return err
+	}
 	has := false
 	for _, rel := range []string{".devcontainer/devcontainer.json", ".devcontainer.json"} {
 		ok, err := exists(filepath.Join(w.HostPath, rel))
@@ -98,8 +106,45 @@ func (r *runState) resolveConfig(ctx context.Context, w workspace.Workspace) err
 		return workspace.Public("Drydock could not read devcontainer's answer about the configuration.", err)
 	}
 	r.folder = c.WorkspaceFolder
+	r.lockfile, r.lockPath = container.LockfileIgnore, ""
 	if r.override != "" {
 		return workspace.Note("The repository has no devcontainer.json, so it gets Drydock's minimal configuration.")
+	}
+	return r.resolveLockfile(w, c.ConfigFile)
+}
+
+// resolveLockfile decides how up treats the repository's
+// devcontainer-lock.json (design §6, "The repository's lockfile"). A committed lockfile
+// is honoured — its pinned Feature versions are what the container gets, as
+// in VS Code — and a repository without one gets --no-lockfile, which never
+// writes. The path comes from what read-configuration says it read, and it
+// must be inside the clone after symbolic links are resolved: Drydock saves
+// and restores this file with its own uid, and so does the CLI write it.
+func (r *runState) resolveLockfile(w workspace.Workspace, configFile string) error {
+	if !strings.HasPrefix(configFile, w.HostPath+"/") {
+		return workspace.Public("devcontainer reported a configuration file outside the clone.",
+			fmt.Errorf("config file %q, clone %q", configFile, w.HostPath))
+	}
+	path := container.LockfilePath(configFile)
+	clone, err1 := filepath.EvalSymlinks(w.HostPath)
+	dir, err2 := filepath.EvalSymlinks(filepath.Dir(path))
+	if err := errors.Join(err1, err2); err != nil || !strings.HasPrefix(dir+"/", clone+"/") {
+		return workspace.Public("The repository's dev container configuration is not inside the clone.",
+			fmt.Errorf("lockfile directory %q resolves to %q, clone %q: %v", filepath.Dir(path), dir, clone, err))
+	}
+	mode, err := container.LockfileMode(configFile, []string{r.p.Feature})
+	switch {
+	case errors.Is(err, container.ErrLockfilePinsInjected):
+		return workspace.Public("The repository's devcontainer lockfile pins Drydock's own Feature, which only Drydock's configuration may pin. Remove that entry and commit the lockfile.", err)
+	case errors.Is(err, container.ErrLockfileUnreadable):
+		return workspace.Public("The repository's devcontainer lockfile is not a lockfile the dev container CLI could use.", err)
+	case err != nil:
+		return workspace.Public("Drydock could not read the repository's devcontainer lockfile.", err)
+	}
+	r.lockfile = mode
+	if mode == container.LockfileHonour {
+		r.lockPath = path
+		return workspace.Note("The repository commits a devcontainer lockfile, so its pinned Feature versions are the ones installed.")
 	}
 	return nil
 }
@@ -124,11 +169,46 @@ func (r *runState) brokerSocket(ctx context.Context, w workspace.Workspace) erro
 // up is §6 step 6. A failed up can still own a container — a failing
 // postCreateCommand leaves it created and running (§6) — so the id is
 // recorded whatever the outcome, for teardown and reconciliation to find.
-func (r *runState) up(ctx context.Context, w workspace.Workspace) error {
+//
+// Honouring a committed lockfile lets `up` rewrite it (container.Lockfile),
+// so its bytes are saved outside the clone first and put back after, whatever
+// the outcome; a restore that fails fails the step, and leaves the save for
+// the next run or boot to finish (see lockfile.go).
+func (r *runState) up(ctx context.Context, w workspace.Workspace) (err error) {
 	fullName, err := r.fullName(ctx, w)
 	if err != nil {
 		return err
 	}
+	if err := r.recoverLockfile(w); err != nil {
+		return err
+	}
+	lock := r.lockfile
+	if lock == container.LockfileHonour {
+		saved, serr := saveLockfile(r.dir(w), r.lockPath)
+		if serr != nil {
+			return workspace.Public("Drydock could not save the repository's devcontainer lockfile before devcontainer up.", serr)
+		}
+		if !saved {
+			lock = container.LockfileIgnore // gone since resolve_config: nothing to honour
+		} else {
+			defer func() {
+				if rerr := restoreLockfile(r.dir(w), w.HostPath); rerr != nil {
+					r.p.logf("drydock: workspace %s: restoring the lockfile: %v", w.ID, rerr)
+					if err == nil {
+						err = workspace.Public("Drydock could not restore the repository's devcontainer lockfile after devcontainer up.", rerr)
+					}
+				}
+			}()
+		}
+	}
+	// A TMPDIR of the workspace's own, beside the clone: the CLI stages
+	// Features under $TMPDIR in a folder named by the millisecond, which
+	// concurrent creates otherwise share (container.UpSpec.TempDir).
+	tmp := filepath.Join(r.dir(w), ".drydock", "tmp")
+	if err := os.MkdirAll(tmp, 0o700); err != nil {
+		return workspace.Public("Drydock could not create the workspace's temporary directory.", err)
+	}
+	defer os.RemoveAll(tmp)
 	res, stderr, err := r.p.Containers.Up(ctx, container.UpSpec{
 		WorkspaceID: w.ID, RepositoryID: w.RepositoryID, FullName: fullName, Branch: w.Branch,
 		Folder:         w.HostPath,
@@ -136,6 +216,8 @@ func (r *runState) up(ctx context.Context, w workspace.Workspace) error {
 		Features:       map[string]map[string]any{r.p.Feature: r.p.FeatureOptions},
 		RemoteEnv:      r.remoteEnv(w, fullName),
 		OverrideConfig: r.override,
+		Lockfile:       lock,
+		TempDir:        tmp,
 	})
 	if res.ContainerID != "" {
 		if err := r.p.Workspaces.SetContainer(context.WithoutCancel(ctx), w.ID, res.ContainerID); err != nil {

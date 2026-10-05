@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Record the fixture corpus from the real Claude Code binary.
 #
-# Usage: ./record.sh [login|discovery|refusals|hangs|devcontainer|readconfig|identity|credentials|all]
+# Usage: ./record.sh [login|discovery|refusals|hangs|devcontainer|readconfig|lockfile|identity|credentials|all]
 #
 # This is the tool testing-plan §11.1 step 3 calls for. It exists because a
 # corpus nobody can regenerate is worth very little: the whole point of
@@ -28,7 +28,7 @@ WORK="$(mktemp -d -t drydock-record-XXXXXX)"
 IMG=debian:bookworm-slim
 BIN="$(readlink -f "$CLAUDE")"
 
-trap 'tmux kill-session -t ddrec 2>/dev/null; docker rm -f ddrec-ct >/dev/null 2>&1' EXIT
+trap 'tmux kill-session -t ddrec 2>/dev/null; docker rm -f ddrec-ct ddrec-registry >/dev/null 2>&1' EXIT
 
 mkdir -p "$TDIR" "$HERE/authstatus" "$HERE/credentials" "$HERE/devcontainer"
 
@@ -551,6 +551,149 @@ leak_guard() {
 }
 
 # ---------------------------------------------------------------------------
+# devcontainer-lock.json (design §6, "Step 6, in full"). What `up` reads, what
+# it writes, and where, under each lockfile flag -- the measurements behind
+# Drydock passing --frozen-lockfile when a repository commits a lockfile and
+# --no-lockfile when it does not.
+#
+# A published Feature does not reveal which version a container got, so this
+# step publishes its own: a throwaway `registry:2` on localhost (the CLI talks
+# plain HTTP only to a registry named "localhost"), and a Feature "marker" at
+# 1.0.0 and 1.1.0 whose install.sh writes its version to /etc/lockspike-marker.
+# The major tag "1" resolves to 1.1.0; a lockfile pins 1.0.0. A second
+# Feature, "inject", stands in for Drydock's own --additional-features, and a
+# third, "dependent", stands in for it as it really is: a Feature that
+# dependsOn another (Drydock's dependsOn github-cli:1).
+#
+# Each scenario is a fresh git repository, so "did up write into the clone" is
+# `git status --porcelain --ignored`, exactly what the container tier asserts.
+record_lockfile() {
+	say "== devcontainer-lock.json behaviour (design §6) =="
+	need_cmd devcontainer
+	need_cmd jq
+	local run dir="$HERE/devcontainer" port=5077
+	run=$(head -c4 /dev/urandom | od -An -tx1 | tr -d ' \n')
+	local dcv dkv reg="localhost:$port/lockspike"
+	dcv=$(devcontainer --version 2>/dev/null)
+	dkv=$(docker info --format '{{.ServerVersion}}' 2>/dev/null)
+	docker rm -f ddrec-registry >/dev/null 2>&1
+	docker run -d --name ddrec-registry -p "127.0.0.1:$port:5000" registry:2 >/dev/null || { say "registry:2 did not start"; exit 4; }
+	sleep 2
+
+	local f v
+	for v in 1.0.0 1.1.0; do
+		f="$WORK/feat/src/marker"; mkdir -p "$f"
+		printf '{"id":"marker","version":"%s","name":"marker"}\n' "$v" > "$f/devcontainer-feature.json"
+		printf '#!/bin/sh\necho %s > /etc/lockspike-marker\n' "$v" > "$f/install.sh"; chmod +x "$f/install.sh"
+		devcontainer features publish "$WORK/feat/src" --registry "localhost:$port" --namespace lockspike >/dev/null 2>&1
+	done
+	f="$WORK/feat2/src/inject"; mkdir -p "$f"
+	printf '{"id":"inject","version":"1.0.0","name":"inject"}\n' > "$f/devcontainer-feature.json"
+	printf '#!/bin/sh\necho inject > /etc/lockspike-inject\n' > "$f/install.sh"; chmod +x "$f/install.sh"
+	devcontainer features publish "$WORK/feat2/src" --registry "localhost:$port" --namespace lockspike >/dev/null 2>&1
+	f="$WORK/feat3/src/dependent"; mkdir -p "$f"
+	printf '{"id":"dependent","version":"1.0.0","name":"dependent","dependsOn":{"localhost:%s/lockspike/inject:1":{}}}\n' "$port" > "$f/devcontainer-feature.json"
+	printf '#!/bin/sh\necho dependent > /etc/lockspike-dependent\n' > "$f/install.sh"; chmod +x "$f/install.sh"
+	devcontainer features publish "$WORK/feat3/src" --registry "localhost:$port" --namespace lockspike >/dev/null 2>&1
+
+	local old
+	old=$(curl -fsS -o /dev/null -D - -H 'Accept: application/vnd.oci.image.manifest.v1+json' \
+		"http://localhost:$port/v2/lockspike/marker/manifests/1.0.0" | tr -d '\r' | awk -F': ' 'tolower($1)=="docker-content-digest"{print $2}')
+	[ -n "$old" ] || { say "could not read marker 1.0.0's digest"; exit 4; }
+	local pin cfg cfg2
+	pin=$(printf '{\n  "features": {\n    "%s/marker:1": {\n      "version": "1.0.0",\n      "resolved": "%s/marker@%s",\n      "integrity": "%s"\n    }\n  }\n}' "$reg" "$reg" "$old" "$old")
+	cfg="{\"image\":\"$IMG\",\"features\":{\"$reg/marker:1\":{}}}"
+	cfg2="{\"image\":\"$IMG\",\"features\":{\"$reg/marker:1\":{},\"$reg/inject:1\":{}}}"
+	local out="$dir/lockfile-behaviour.txt"
+	{
+		printf '# devcontainer CLI %s. "marker:1" resolves to 1.1.0; a committed lockfile pins 1.0.0.\n' "$dcv"
+		printf '# scenario | up flags | exit | stdout message | marker installed | git status --porcelain --ignored | lockfile after\n'
+	} > "$out"
+
+	# sc <name> <layout> <flags> <additional-features-json or ''>
+	#   layout: pinned | none | empty | stale | additional | override-noconfig | override-repo-pinned
+	sc() {
+		local name="$1" layout="$2" flags="$3" add="$4" ws ovr=""
+		ws=$(mktemp -d -t ddlock-XXXXXX)
+		case "$layout" in
+			pinned) mkdir "$ws/.devcontainer"; printf '%s\n' "$cfg" > "$ws/.devcontainer/devcontainer.json"; printf '%s\n' "$pin" > "$ws/.devcontainer/devcontainer-lock.json" ;;
+			none) mkdir "$ws/.devcontainer"; printf '%s\n' "$cfg" > "$ws/.devcontainer/devcontainer.json" ;;
+			empty) mkdir "$ws/.devcontainer"; printf '%s\n' "$cfg" > "$ws/.devcontainer/devcontainer.json"; : > "$ws/.devcontainer/devcontainer-lock.json" ;;
+			stale) mkdir "$ws/.devcontainer"; printf '%s\n' "$cfg2" > "$ws/.devcontainer/devcontainer.json"; printf '%s\n' "$pin" > "$ws/.devcontainer/devcontainer-lock.json" ;;
+			additional) mkdir "$ws/.devcontainer"; printf '%s\n' "{\"image\":\"$IMG\",\"features\":{\"$reg/inject:1\":{}}}" > "$ws/.devcontainer/devcontainer.json"; printf '%s\n' "$pin" > "$ws/.devcontainer/devcontainer-lock.json" ;;
+			override-noconfig) mkdir "$WORK/ovr-$name"; printf '%s\n' "$cfg" > "$WORK/ovr-$name/devcontainer.json"; printf '%s\n' "$pin" > "$WORK/ovr-$name/devcontainer-lock.json"; ovr="$WORK/ovr-$name/devcontainer.json" ;;
+			override-beside) mkdir "$ws/.devcontainer"; printf '%s\n' "$cfg" > "$ws/.devcontainer/devcontainer.json"
+				mkdir "$WORK/ovr-$name"; printf '%s\n' "$cfg" > "$WORK/ovr-$name/devcontainer.json"; printf '%s\n' "$pin" > "$WORK/ovr-$name/devcontainer-lock.json"; ovr="$WORK/ovr-$name/devcontainer.json" ;;
+			override-repo-pinned) mkdir "$ws/.devcontainer"; printf '%s\n' "$cfg" > "$ws/.devcontainer/devcontainer.json"; printf '%s\n' "$pin" > "$ws/.devcontainer/devcontainer-lock.json"
+				mkdir "$WORK/ovr-$name"; printf '%s\n' "$cfg" > "$WORK/ovr-$name/devcontainer.json"; ovr="$WORK/ovr-$name/devcontainer.json" ;;
+		esac
+		echo keep > "$ws/README"
+		git -C "$ws" init -q && git -C "$ws" add -A && git -C "$ws" -c user.name=r -c user.email=r@r commit -qm init
+		local args=(up --workspace-folder "$ws" --id-label "drydock.test.$run.workspace=$name")
+		# shellcheck disable=SC2206
+		[ -n "$flags" ] && args+=($flags)
+		[ -n "$add" ] && args+=(--additional-features "$add")
+		[ -n "$ovr" ] && args+=(--override-config "$ovr")
+		devcontainer "${args[@]}" > "$WORK/$name.stdout" 2> "$WORK/$name.stderr"
+		local rc=$? cid marker status lock
+		cid=$(jq -r '.containerId // empty' "$WORK/$name.stdout")
+		marker=-
+		[ -n "$cid" ] && marker=$(docker exec "$cid" cat /etc/lockspike-marker 2>/dev/null || echo absent)
+		status=$(git -C "$ws" status --porcelain --ignored | tr '\n' ';')
+		lock=unchanged
+		if [ -n "$status" ]; then lock=$(git -C "$ws" diff --no-color -U0 | grep -E '^[+-] *"[^"]+": \{' | tr -s ' ' | tr '\n' ' ' | sed 's/ *$//'); [ -n "$lock" ] || lock="(new file)"; fi
+		printf '%s | %s | %s | %s | %s | %s | %s\n' "$name" "${flags:-(none)}${add:+ --additional-features $(printf '%s' "$add" | sed 's#.*lockspike/\([a-z]*\):1.*#\1:1#')}${ovr:+ --override-config outside the repo}" \
+			"$rc" "$(jq -r '.message // "-"' "$WORK/$name.stdout" | sed "s#$ws#<repo>#g")" "$marker" "${status:-clean}" "$lock" >> "$out"
+		rm -rf "$ws"
+		say "  $name: exit $rc"
+	}
+	local inject="{\"$reg/inject:1\":{}}"
+	sc default-pinned        pinned "" "$inject"
+	sc nolockfile-pinned     pinned "--no-lockfile" "$inject"
+	sc frozen-pinned         pinned "--frozen-lockfile" "$inject"
+	# The injected Feature's own dependency is NOT excluded from the lockfile
+	# --additional-features are: it is written in, so an in-sync committed
+	# lockfile is no longer in sync once Drydock's Feature is added.
+	sc default-pinned-dependent pinned "" "{\"$reg/dependent:1\":{}}"
+	sc frozen-pinned-dependent  pinned "--frozen-lockfile" "{\"$reg/dependent:1\":{}}"
+	sc default-none          none "" "$inject"
+	sc nolockfile-none       none "--no-lockfile" "$inject"
+	sc frozen-none           none "--frozen-lockfile" "$inject"
+	sc default-empty         empty "" "$inject"
+	sc frozen-empty          empty "--frozen-lockfile" "$inject"
+	sc default-stale         stale "" ""
+	sc frozen-stale          stale "--frozen-lockfile" ""
+	sc default-override-noconfig    override-noconfig "" "$inject"
+	sc nolockfile-override-noconfig override-noconfig "--no-lockfile" "$inject"
+	# With --override-config the lockfile is the repository's default path,
+	# read and written there; one beside the override is never looked at.
+	sc default-override-repo-pinned override-repo-pinned "" "$inject"
+	sc default-override-beside      override-beside "" "$inject"
+	# A lockfile entry for a Feature that only --additional-features names is
+	# READ (it pins) but never written; frozen therefore refuses it.
+	# Here the repository declares only inject, and its lockfile pins marker.
+	sc default-additional-pinned additional "" "{\"$reg/marker:1\":{}}"
+	sc frozen-additional-pinned  additional "--frozen-lockfile" "{\"$reg/marker:1\":{}}"
+
+	local stamp
+	stamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+	cat > "$out.meta" <<-META
+		devcontainer_version: $dcv
+		docker_version:       $dkv (the devcontainer's inner DinD daemon)
+		recorded_at:          $stamp
+		command:              record.sh lockfile -- one devcontainer up per row, each in a fresh git repository, against a local registry:2
+		provenance:           recorded; evidence for design §6, not classifier input
+		must_yield:           nothing -- read it; internal/container's TestRecordedLockfileBehaviour pins the rows the design rests on: --no-lockfile ignores a committed lockfile (1.1.0) and writes nothing; no flag honours it (1.0.0) but writes into the clone whenever what it resolved differs -- including an injected Feature's dependency -- and --frozen-lockfile refuses exactly that case
+	META
+	docker rm -f $(docker ps -aq --filter "label=drydock.test.$run.workspace") >/dev/null 2>&1
+	docker rm -f ddrec-registry >/dev/null 2>&1
+	local left
+	left=$(docker ps -aq --filter "label=drydock.test.$run.workspace" | wc -l)
+	say "  containers left with this run's label: $left"
+	[ "$left" = 0 ] || { say "refusing to finish: containers were left behind"; exit 4; }
+}
+
+# ---------------------------------------------------------------------------
 say "claude under test: $VERSION"
 say "corpus: $TDIR"
 say "work:   $WORK"
@@ -563,6 +706,7 @@ refusals) record_refusals ;;
 hangs) record_hangs ;;
 devcontainer) record_devcontainer ;;
 readconfig) record_readconfig ;;
+lockfile) record_lockfile ;;
 identity) record_identity ;;
 credentials) record_credentials ;;
 all)
@@ -574,6 +718,7 @@ all)
 	record_hangs
 	record_devcontainer
 	record_readconfig
+	record_lockfile
 	;;
 *)
 	say "unknown mode: $MODE"
