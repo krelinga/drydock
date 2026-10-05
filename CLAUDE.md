@@ -168,7 +168,11 @@ change one and you must change `githubtest.Testbed()` too. Both must stay privat
 tests test nothing.
 
 The README's one-liner is the contract: change an asset name, a flag, or `/etc/drydock/drydock.env`
-and an existing install's re-run is what breaks. `test/install/run.sh` installs from a local copy of
+and an existing install's re-run is what breaks. `docs/deploy/first-deployment.md` is the operator's
+runbook for a first real deployment: every command, path and message in it is taken from
+`deploy/install.sh` and the server as built, so a change to either — a flag, a file the installer
+writes, a journal line, a UI label it tells the operator to press — updates it in the same change.
+Its *Known issues* list is installer gaps found while writing it; fixing one means deleting its entry. `test/install/run.sh` installs from a local copy of
 the release assets via `DRYDOCK_DOWNLOAD_BASE`, so it exercises the one-liner's path.
 
 ## What Drydock is
