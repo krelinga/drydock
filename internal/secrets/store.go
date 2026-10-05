@@ -10,6 +10,7 @@ import (
 	"io"
 	"slices"
 	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -63,6 +64,11 @@ type Store struct {
 
 	mu   sync.Mutex
 	snap *snapshot // nil: rebuild on the next Resolve
+	// undeliverable is the delivery condition the last non-transient build
+	// found, nil when every row can be delivered; deliveryKnown is false
+	// until a build has looked. Guarded by mu, like snap.
+	undeliverable *Undeliverable
+	deliveryKnown bool
 
 	decrypts atomic.Int64
 }
@@ -81,6 +87,9 @@ type snapshot struct {
 	all    []Entry           // all_repos
 	byRepo map[int64][]Entry // granted
 	err    error
+	// bad is every row that fails delivery, by name; non-empty exactly
+	// when err is set and not transient.
+	bad []UndeliverableSecret
 	// transient marks a failed read, which is retried on the next call
 	// rather than cached until the next write.
 	transient bool
@@ -295,7 +304,27 @@ type StaleWorkspace struct {
 // Every field is validated before anything is written; a refused write
 // changes nothing.
 func (s *Store) Put(ctx context.Context, name, value, reach, description string) (PutResult, error) {
-	for _, err := range []error{ValidateName(name), ValidateValue(value), ValidateReach(reach), validateDescription(description)} {
+	return s.put(ctx, name, &value, reach, description)
+}
+
+// PutProse replaces an existing secret's reach and description and keeps its
+// stored value — the PUT with no `value` (frontend §4.5 #13). Rewriting what
+// a secret reaches is the §10.4 control, and asking for the value again to do
+// it would handle a credential for no reason. It is never a rotation. A name
+// with no secret is refused with CodeValueRequired: a new secret has no value
+// to keep.
+func (s *Store) PutProse(ctx context.Context, name, reach, description string) (PutResult, error) {
+	return s.put(ctx, name, nil, reach, description)
+}
+
+// put is both: value nil keeps the stored one, and is not the same as "",
+// which ValidateValue refuses.
+func (s *Store) put(ctx context.Context, name string, value *string, reach, description string) (PutResult, error) {
+	checks := []error{ValidateName(name), nil, ValidateReach(reach), ValidateDescription(description)}
+	if value != nil {
+		checks[1] = ValidateValue(*value)
+	}
+	for _, err := range checks {
 		if err != nil {
 			return PutResult{}, err
 		}
@@ -312,10 +341,14 @@ func (s *Store) Put(ctx context.Context, name, value, reach, description string)
 	var oldCT, oldNonce []byte
 	switch err := tx.QueryRowContext(ctx, `SELECT id, ciphertext, nonce FROM secret WHERE name = ?`, name).Scan(&id, &oldCT, &oldNonce); {
 	case errors.Is(err, sql.ErrNoRows):
+		if value == nil {
+			return PutResult{}, &Invalid{Code: CodeValueRequired, Message: "A new secret needs a value.",
+				Detail: "There is no secret by this name, so there is no stored value to keep."}
+		}
 		if id, err = workspace.NewID(now, s.Env.Random); err != nil {
 			return PutResult{}, err
 		}
-		ct, nonce, err := s.seal(id, value)
+		ct, nonce, err := s.seal(id, *value)
 		if err != nil {
 			return PutResult{}, err
 		}
@@ -327,16 +360,21 @@ func (s *Store) Put(ctx context.Context, name, value, reach, description string)
 	case err != nil:
 		return PutResult{}, err
 	default:
-		// Unchanged value: only the prose moves, and nothing is stale. A
-		// row that no longer opens (a replaced master key) is overwritten:
-		// putting the value again is exactly how that is repaired.
-		old, oerr := s.open(id, oldCT, oldNonce)
-		same := oerr == nil && subtle.ConstantTimeCompare([]byte(old), []byte(value)) == 1
-		old = ""
+		// No value, or an unchanged one: only the prose moves, and nothing
+		// is stale. A row that no longer opens (a replaced master key) is
+		// overwritten by a value: putting it again is exactly how that is
+		// repaired. With no value nothing is opened at all — the row keeps
+		// its ciphertext, whether or not it opens.
+		same := value == nil
+		if !same {
+			old, oerr := s.open(id, oldCT, oldNonce)
+			same = oerr == nil && subtle.ConstantTimeCompare([]byte(old), []byte(*value)) == 1
+			old = ""
+		}
 		if same {
 			_, err = tx.ExecContext(ctx, `UPDATE secret SET reach = ?, description = ? WHERE id = ?`, reach, description, id)
 		} else {
-			ct, nonce, serr := s.seal(id, value)
+			ct, nonce, serr := s.seal(id, *value)
 			if serr != nil {
 				return PutResult{}, serr
 			}
@@ -370,8 +408,9 @@ func (s *Store) Put(ctx context.Context, name, value, reach, description string)
 			name, len(res.Stale.NewCommands)+len(res.Stale.NeedsSupervisorRestart)),
 			map[string]any{"secret": res.Secret, "stale": res.Stale})
 	default:
-		s.emit(ctx, "secret.updated", "Updated the description of the secret "+name+".", map[string]any{"secret": res.Secret})
+		s.emit(ctx, "secret.updated", "Updated the reach and description of the secret "+name+"; its value is unchanged.", map[string]any{"secret": res.Secret})
 	}
+	s.recheck(ctx)
 	return res, nil
 }
 
@@ -428,6 +467,7 @@ func (s *Store) Delete(ctx context.Context, name string) error {
 	}
 	s.invalidate()
 	s.emit(ctx, "secret.deleted", "Deleted the secret "+name+".", map[string]any{"name": name})
+	s.recheck(ctx)
 	return nil
 }
 
@@ -505,6 +545,7 @@ func (s *Store) SetGrants(ctx context.Context, name string, repoIDs []int64, all
 		msg = "Granted the secret " + name + " to every repository."
 	}
 	s.emit(ctx, "secret.grants", msg, map[string]any{"secret": m})
+	s.recheck(ctx)
 	return m, nil
 }
 
@@ -529,12 +570,7 @@ func (s *Store) emit(ctx context.Context, kind, msg string, data any) {
 func (s *Store) Resolve(ctx context.Context, repositoryID int64) ([]Entry, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.snap == nil {
-		s.snap = s.build(ctx)
-		if s.snap.err != nil && !s.snap.transient {
-			s.emitLocked(ctx, s.snap.err)
-		}
-	}
+	s.ensureLocked(ctx)
 	if err := s.snap.err; err != nil {
 		if s.snap.transient {
 			s.snap = nil
@@ -555,22 +591,143 @@ func (s *Store) Resolve(ctx context.Context, repositoryID int64) ([]Entry, error
 	return out, nil
 }
 
-func (s *Store) emitLocked(ctx context.Context, err error) {
-	// The error names a secret by id or by rule, never by value.
-	if s.Events != nil {
-		s.Events.Emit(ctx, "", events.Error, "secret.undeliverable",
-			"Stored secrets cannot be delivered, so every workspace's commands will fail until this is fixed: "+err.Error(), nil)
+// Undeliverable is why stored secrets cannot be delivered right now: the
+// rows that fail delivery, by name, and since when. While it holds, Resolve
+// refuses every repository (frontend §4.5 #12). It carries names and reasons
+// and nothing else — no value, no ciphertext, no id a caller could act on.
+type Undeliverable struct {
+	// Since is when this process first found the condition. A restart
+	// finds it again and starts the clock again.
+	Since   time.Time             `json:"since"`
+	Secrets []UndeliverableSecret `json:"secrets"`
+}
+
+// UndeliverableSecret is one row that fails delivery.
+type UndeliverableSecret struct {
+	Name string `json:"name"`
+	// Reason is ReasonDoesNotOpen or ReasonBreaksRules.
+	Reason string `json:"reason"`
+}
+
+const (
+	// ReasonDoesNotOpen: the row does not decrypt under this master key —
+	// a replaced key, or ciphertext moved from another row. Storing the
+	// value again (a PUT with a value) repairs it.
+	ReasonDoesNotOpen = "does_not_open"
+	// ReasonBreaksRules: it opens, but its name or value is one the
+	// write-time rules refuse (§10.1), which only a database edit can
+	// produce. Deleting it is the repair; a PUT of a name the rules refuse
+	// is refused too.
+	ReasonBreaksRules = "breaks_write_rules"
+)
+
+// Undeliverable reports whether every stored secret can be delivered: nil
+// when they can, and the condition when they cannot. It reads the same
+// snapshot the broker does, building it if a write invalidated it, so what
+// GET /api/secrets says is what the next GET-SECRETS will do. The error is a
+// failed read, which says nothing either way.
+func (s *Store) Undeliverable(ctx context.Context) (*Undeliverable, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.ensureLocked(ctx)
+	if s.snap.transient {
+		err := s.snap.err
+		s.snap = nil
+		return nil, err
 	}
+	if s.undeliverable == nil {
+		return nil, nil
+	}
+	u := *s.undeliverable
+	u.Secrets = slices.Clone(u.Secrets)
+	return &u, nil
+}
+
+// recheck rebuilds the snapshot after a write, rather than on the next
+// fetch, so a write that repairs the last undeliverable row announces it at
+// once (secret.deliverable) instead of whenever a workspace next runs a
+// command. A write can only repair: every write is validated, and the key
+// does not change while the process runs.
+func (s *Store) recheck(ctx context.Context) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.ensureLocked(ctx)
+	if s.snap.transient {
+		s.snap = nil
+	}
+}
+
+// ensureLocked builds the snapshot if there is none, and records what it
+// found about delivery. A transient failure (a failed read) records nothing:
+// it is not evidence about the rows.
+func (s *Store) ensureLocked(ctx context.Context) {
+	if s.snap != nil {
+		return
+	}
+	s.snap = s.build(ctx)
+	if !s.snap.transient {
+		s.noteLocked(ctx, s.snap.bad)
+	}
+}
+
+// noteLocked moves the delivery state and announces each change on the
+// stream — secret.undeliverable when it breaks or the set of broken rows
+// changes, secret.deliverable when it is fixed — so a client that saw one
+// learns of the other (frontend §4.5 #12). Unchanged, it says nothing: a
+// grant edit while broken is not a new report.
+//
+// A process that has not yet looked starts from the event log, not from
+// "fine": a restart that finds the rows repaired (the old key restored)
+// announces the repair to clients that saw the last process's report.
+func (s *Store) noteLocked(ctx context.Context, bad []UndeliverableSecret) {
+	wasBad := s.undeliverable != nil
+	if !s.deliveryKnown {
+		wasBad = s.lastReportedUndeliverable(ctx)
+		s.deliveryKnown = true
+	}
+	if len(bad) > 0 {
+		if s.undeliverable != nil && slices.Equal(s.undeliverable.Secrets, bad) {
+			return
+		}
+		since := s.now()
+		if s.undeliverable != nil {
+			since = s.undeliverable.Since
+		}
+		s.undeliverable = &Undeliverable{Since: since, Secrets: bad}
+		if s.Events != nil {
+			// The message names secrets and rules, never a value.
+			s.Events.Emit(ctx, "", events.Error, "secret.undeliverable",
+				"Stored secrets cannot be delivered, so every workspace's commands will fail until this is fixed: "+s.snap.err.Error(),
+				map[string]any{"undeliverable": s.undeliverable})
+		}
+		return
+	}
+	s.undeliverable = nil
+	if wasBad && s.Events != nil {
+		s.Events.Emit(ctx, "", events.Info, "secret.deliverable",
+			"Stored secrets can be delivered again.", map[string]any{})
+	}
+}
+
+// lastReportedUndeliverable is whether the newest delivery event in the log
+// is a secret.undeliverable — by this process or an earlier one.
+func (s *Store) lastReportedUndeliverable(ctx context.Context) bool {
+	var kind string
+	err := s.DB.QueryRowContext(ctx, `SELECT kind FROM event WHERE kind IN ('secret.undeliverable', 'secret.deliverable')
+		ORDER BY id DESC LIMIT 1`).Scan(&kind)
+	return err == nil && kind == "secret.undeliverable"
 }
 
 func (s *Store) build(ctx context.Context) *snapshot {
 	snap := &snapshot{byRepo: map[int64][]Entry{}}
-	rows, err := s.DB.QueryContext(ctx, `SELECT id, name, ciphertext, nonce, all_repos FROM secret`)
+	rows, err := s.DB.QueryContext(ctx, `SELECT id, name, ciphertext, nonce, all_repos FROM secret ORDER BY name`)
 	if err != nil {
 		return &snapshot{err: fmt.Errorf("secrets: read: %w", err), transient: true}
 	}
 	byID := map[string]Entry{}
 	var all []string
+	var bad []UndeliverableSecret
+	var why []string
 	for rows.Next() {
 		var id, name string
 		var ct, nonce []byte
@@ -579,16 +736,20 @@ func (s *Store) build(ctx context.Context) *snapshot {
 			rows.Close()
 			return &snapshot{err: err, transient: true}
 		}
+		// Every row is checked, not just the first that fails, so the
+		// report names every secret that needs repairing.
 		v, err := s.open(id, ct, nonce)
 		if err != nil {
-			rows.Close()
-			return &snapshot{err: err}
+			bad = append(bad, UndeliverableSecret{Name: name, Reason: ReasonDoesNotOpen})
+			why = append(why, err.Error())
+			continue
 		}
 		// Write-time rules, again, at the one place a value leaves. Only a
 		// row written around Put can fail them; such a row is never sent.
 		if ValidateName(name) != nil || ValidateValue(v) != nil {
-			rows.Close()
-			return &snapshot{err: fmt.Errorf("secrets: secret %s fails the write-time rules; delete it and store it again", id)}
+			bad = append(bad, UndeliverableSecret{Name: name, Reason: ReasonBreaksRules})
+			why = append(why, fmt.Sprintf("secrets: secret %s fails the write-time rules; delete it and store it again", id))
+			continue
 		}
 		byID[id] = Entry{ID: id, Name: name, Value: v}
 		if allRepos {
@@ -598,6 +759,10 @@ func (s *Store) build(ctx context.Context) *snapshot {
 	rows.Close()
 	if err := rows.Err(); err != nil {
 		return &snapshot{err: err, transient: true}
+	}
+	if len(bad) > 0 {
+		// Nothing decrypted is kept: the snapshot that refuses holds no value.
+		return &snapshot{err: errors.New(strings.Join(why, "; ")), bad: bad}
 	}
 	for _, id := range all {
 		snap.all = append(snap.all, byID[id])

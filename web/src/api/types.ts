@@ -61,10 +61,13 @@ export type ErrorCode =
   | 'secrets_not_configured'
   | 'secret_name_invalid'
   | 'secret_name_reserved'
+  | 'secret_value_required'
   | 'secret_value_empty'
   | 'secret_value_control_character'
   | 'secret_value_too_long'
   | 'secret_reach_required'
+  | 'secret_reach_too_long'
+  | 'secret_description_too_long'
   | 'secret_description_invalid'
   | 'unknown_repository'
   | 'internal'
@@ -200,9 +203,32 @@ export interface SecretMeta {
   accessed_by: string[]
 }
 
+/**
+ * One stored secret that cannot be delivered (internal/secrets.UndeliverableSecret).
+ * `does_not_open`: the master key cannot decrypt it — storing the value again
+ * repairs it. `breaks_write_rules`: only a database edit makes one; deleting it
+ * is the repair.
+ */
+export interface UndeliverableSecret {
+  name: string
+  reason: 'does_not_open' | 'breaks_write_rules' | (string & {})
+}
+
+/**
+ * Why stored secrets cannot be delivered (internal/secrets.Undeliverable):
+ * while it holds, every workspace's commands fail (design §10.3). Names and
+ * reasons only — never a value.
+ */
+export interface Undeliverable {
+  since: string
+  secrets: UndeliverableSecret[]
+}
+
 /** `GET /api/secrets`. */
 export interface SecretList {
   secrets: SecretMeta[]
+  /** Null when every stored secret can be delivered (frontend §4.5 #12). */
+  undeliverable?: Undeliverable | null
 }
 
 /** A running workspace a rotation reached (internal/secrets.StaleWorkspace). */

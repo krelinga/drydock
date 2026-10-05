@@ -16,7 +16,7 @@
 import { http, HttpResponse, sse, type HttpHandler } from 'msw'
 import type {
   CatalogView, Device, InstallationView, PutSecretResult, RepoView, SecretMeta, SessionInfo, Stale, StaleWorkspace,
-  StepView, StreamEvent, WorkspaceDetail, WorkspaceList, WorkspaceState, WorkspaceView,
+  StepView, StreamEvent, Undeliverable, UndeliverableSecret, WorkspaceDetail, WorkspaceList, WorkspaceState, WorkspaceView,
 } from '../api/types'
 import { checkDescription, checkName, checkReach, checkValue, type SecretRefusal } from '../lib/secretRules'
 
@@ -101,6 +101,11 @@ export interface MockBackend {
    * `needs_supervisor_restart`. Empty until Phase 5, as on the server.
    */
   staleRestart: string[]
+  /**
+   * The delivery condition internal/secrets' snapshot holds: null while every
+   * stored secret can be delivered. GET /api/secrets reports it as is.
+   */
+  undeliverable: Undeliverable | null
 }
 
 export interface MockSecret {
@@ -234,6 +239,7 @@ function newBackendBare(now: number, overrides: Partial<MockBackend>): MockBacke
     secretBodies: [],
     refuseNextSecret: null,
     staleRestart: [],
+    undeliverable: null,
     ...overrides,
   }
 }
@@ -321,12 +327,44 @@ export function recordSecretFetch(b: MockBackend, workspaceId: string): string[]
   return got.map((s) => s.name)
 }
 
-/** The broker found something it cannot deliver (internal/secrets emitLocked). */
-export function secretUndeliverable(b: MockBackend, why = 'secrets: secret 01JA00000000000000000000S1 does not open with the current key'): StreamEvent {
+/**
+ * Stored secrets stop being deliverable (internal/secrets noteLocked): the
+ * named rows join the condition GET /api/secrets reports, and the change is
+ * announced. By default the master key no longer opens STRIPE_TEST_KEY — what
+ * a replaced key does — so storing its value again repairs it.
+ */
+export function secretUndeliverable(
+  b: MockBackend,
+  rows: UndeliverableSecret[] = [{ name: 'STRIPE_TEST_KEY', reason: 'does_not_open' }],
+): StreamEvent {
+  const known = b.undeliverable?.secrets ?? []
+  const secrets = [...known, ...rows.filter((r) => !known.some((k) => k.name === r.name))]
+    .sort((x, y) => x.name.localeCompare(y.name))
+  b.undeliverable = { since: b.undeliverable?.since ?? new Date().toISOString(), secrets }
   return emit(b, 'secret.undeliverable', {
     level: 'error',
-    message: `Stored secrets cannot be delivered, so every workspace's commands will fail until this is fixed: ${why}`,
+    message: `Stored secrets cannot be delivered, so every workspace's commands will fail until this is fixed: ${
+      secrets.map((s) => `secrets: secret ${s.name} ${s.reason === 'does_not_open' ? 'does not decrypt under this master key' : 'fails the write-time rules'}`).join('; ')}`,
+    data: { undeliverable: b.undeliverable },
   })
+}
+
+/**
+ * A write that repairs a row: a PUT with a value repairs one the key could
+ * not open, a delete repairs either kind. The last repair is
+ * secret.deliverable; one that leaves others broken is a new report.
+ */
+function repairDelivery(b: MockBackend, name: string, onlyReason?: string): void {
+  const u = b.undeliverable
+  if (u === null || !u.secrets.some((s) => s.name === name && (onlyReason === undefined || s.reason === onlyReason))) return
+  const rest = u.secrets.filter((s) => s.name !== name)
+  if (rest.length === 0) {
+    b.undeliverable = null
+    emit(b, 'secret.deliverable', { message: 'Stored secrets can be delivered again.', data: {} })
+    return
+  }
+  b.undeliverable = { since: u.since, secrets: [] }
+  secretUndeliverable(b, rest)
 }
 
 /** A fresh ULID-shaped id that sorts after every sample and every earlier one. */
@@ -594,7 +632,9 @@ const INVALID_MESSAGE: Record<string, string> = {
   secret_value_too_long: 'That value is too long.',
   secret_value_control_character: "A secret's value must be a single line with no control characters.",
   secret_reach_required: 'Say what someone could do with this secret.',
-  secret_description_invalid: 'The description is too long or is not text.',
+  secret_reach_too_long: 'The reach is too long.',
+  secret_description_too_long: 'The description is too long.',
+  secret_description_invalid: 'The description must be text.',
 }
 
 const refused = (r: SecretRefusal, name: string) =>
@@ -796,7 +836,7 @@ export function handlersFor(b: MockBackend): HttpHandler[] {
       if (!b.signedIn) return unauthenticated()
       if (!b.secretsKey) return secretsNotConfigured()
       const secrets = Object.values(b.secrets).sort((x, y) => x.name.localeCompare(y.name)).map((s) => secretMeta(b, s))
-      return HttpResponse.json({ secrets }, { headers: { 'Cache-Control': 'no-store' } })
+      return HttpResponse.json({ secrets, undeliverable: b.undeliverable }, { headers: { 'Cache-Control': 'no-store' } })
     }),
 
     http.put('/api/secrets/:name/grants', async ({ request, params }) => {
@@ -834,15 +874,23 @@ export function handlersFor(b: MockBackend): HttpHandler[] {
       const parsed = strictBody(body, { value: 'string', reach: 'string', description: 'string' })
       if (parsed === null) return envelope(400, 'bad_request', 'Send a JSON object with the documented fields.')
       const name = String(params.name)
-      const value = String(parsed.value ?? '')
+      // An absent value keeps the stored one; "" is a value, and refused
+      // (internal/api optionalValue). A null fails strictBody's type check
+      // above, as the server's decoder refuses it.
+      const kept = !('value' in parsed)
       const reach = String(parsed.reach ?? '')
       const description = String(parsed.description ?? '')
       // internal/secrets Put's order: name, value, reach, description.
-      for (const r of [checkName(name), checkValue(value), checkReach(reach), checkDescription(description)]) {
+      for (const r of [checkName(name), kept ? null : checkValue(String(parsed.value)), checkReach(reach), checkDescription(description)]) {
         if (r !== null) return refused(r, name)
       }
       const now = new Date().toISOString()
       const cur = b.secrets[name]
+      if (kept && cur === undefined) {
+        return envelope(400, 'secret_value_required', 'A new secret needs a value.', {},
+          'There is no secret by this name, so there is no stored value to keep.')
+      }
+      const value = kept ? cur!.value : String(parsed.value)
       const res: PutSecretResult = {
         created: cur === undefined, rotated: false,
         stale: { new_commands: [], needs_supervisor_restart: [] },
@@ -866,8 +914,10 @@ export function handlersFor(b: MockBackend): HttpHandler[] {
         const n = res.stale.new_commands.length + res.stale.needs_supervisor_restart.length
         emit(b, 'secret.rotated', { message: `Rotated the secret ${name}; ${n} running workspaces hold it.`, data: { secret: res.secret, stale: res.stale } })
       } else {
-        emit(b, 'secret.updated', { message: `Updated the description of the secret ${name}.`, data: { secret: res.secret } })
+        emit(b, 'secret.updated', { message: `Updated the reach and description of the secret ${name}; its value is unchanged.`, data: { secret: res.secret } })
       }
+      // Storing a value again is how a row the key cannot open is repaired.
+      if (!kept) repairDelivery(b, name, 'does_not_open')
       return HttpResponse.json(res)
     }),
 
@@ -881,6 +931,7 @@ export function handlersFor(b: MockBackend): HttpHandler[] {
       if (b.secrets[name] === undefined) return envelope(404, 'not_found', 'There is no secret by that name.')
       delete b.secrets[name]
       emit(b, 'secret.deleted', { message: `Deleted the secret ${name}.`, data: { name } })
+      repairDelivery(b, name)
       return new HttpResponse(null, { status: 204 })
     }),
 

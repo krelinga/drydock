@@ -14,7 +14,10 @@ import (
 // (§13.5, frontend §2.5).
 type SecretStore interface {
 	List(ctx context.Context) ([]secrets.Meta, error)
+	// Undeliverable is nil when every stored secret can be delivered.
+	Undeliverable(ctx context.Context) (*secrets.Undeliverable, error)
 	Put(ctx context.Context, name, value, reach, description string) (secrets.PutResult, error)
+	PutProse(ctx context.Context, name, reach, description string) (secrets.PutResult, error)
 	Delete(ctx context.Context, name string) error
 	SetGrants(ctx context.Context, name string, repoIDs []int64, allRepos bool) (secrets.Meta, error)
 }
@@ -68,9 +71,18 @@ func (sr SecretRoutes) list(w http.ResponseWriter, r *http.Request) {
 	if ms == nil {
 		ms = []secrets.Meta{}
 	}
+	// Whether the broker can deliver what is stored, from the snapshot it
+	// reads: a page loaded after secret.undeliverable still learns of it,
+	// and one loaded after the repair learns that too (frontend §4.5 #12).
+	u, err := sr.Store.Undeliverable(r.Context())
+	if err != nil {
+		WriteError(w, http.StatusInternalServerError, CodeInternal, "Could not read the secrets.", "")
+		return
+	}
 	writeJSON(w, http.StatusOK, struct {
-		Secrets []secrets.Meta `json:"secrets"`
-	}{ms})
+		Secrets       []secrets.Meta         `json:"secrets"`
+		Undeliverable *secrets.Undeliverable `json:"undeliverable"`
+	}{ms, u})
 }
 
 // decode reads a strict JSON body: an unknown field is refused rather than
@@ -89,20 +101,51 @@ func decode(w http.ResponseWriter, r *http.Request, limit int64, v any) bool {
 	return true
 }
 
+// optionalValue is PUT's `value`, which is three cases, not two, and each is
+// decided here rather than left to a zero value (frontend §4.5 #13):
+//
+//   - absent: keep the stored value. Only the reach and description change,
+//     which is never a rotation; for a name with no secret it is refused as
+//     secret_value_required.
+//   - a string: store it, after §10.1's rules. "" is a value that was sent,
+//     and ValidateValue refuses it as secret_value_empty — an empty string is
+//     never read as "keep".
+//   - null: neither, so a bad request. Reading it as absent would make a
+//     client's `value: undefined → null` bug silently keep a value the
+//     operator meant to replace.
+type optionalValue struct {
+	set bool
+	v   string
+}
+
+func (o *optionalValue) UnmarshalJSON(b []byte) error {
+	if string(b) == "null" {
+		return errors.New("value: null is neither a value nor absent")
+	}
+	o.set = true
+	return json.Unmarshal(b, &o.v)
+}
+
 func (sr SecretRoutes) put(w http.ResponseWriter, r *http.Request) {
 	if !sr.ready(w) {
 		return
 	}
 	var body struct {
-		Value       string `json:"value"`
-		Reach       string `json:"reach"`
-		Description string `json:"description"`
+		Value       optionalValue `json:"value"`
+		Reach       string        `json:"reach"`
+		Description string        `json:"description"`
 	}
 	if !decode(w, r, maxSecretBody, &body) {
 		return
 	}
-	res, err := sr.Store.Put(r.Context(), r.PathValue("name"), body.Value, body.Reach, body.Description)
-	body.Value = ""
+	var res secrets.PutResult
+	var err error
+	if body.Value.set {
+		res, err = sr.Store.Put(r.Context(), r.PathValue("name"), body.Value.v, body.Reach, body.Description)
+	} else {
+		res, err = sr.Store.PutProse(r.Context(), r.PathValue("name"), body.Reach, body.Description)
+	}
+	body.Value = optionalValue{}
 	if writeSecretError(w, err) {
 		return
 	}

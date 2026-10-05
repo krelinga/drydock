@@ -1,7 +1,14 @@
 <script setup lang="ts">
-// The secret form (frontend §6.4): create, or replace a value. Where `reach`
-// is the feature — design §10.4: "Drydock will not store a secret until you
-// have written down what someone could do with it."
+// The secret form (frontend §6.4): create one, or edit one — its reach, its
+// description, its value, or any of them. Where `reach` is the feature —
+// design §10.4: "Drydock will not store a secret until you have written down
+// what someone could do with it."
+//
+// Editing leaves the value alone unless one is typed. An empty value field
+// sends no `value` key, which the server reads as "keep the stored one"
+// (frontend §4.5 #13), so narrowing what a secret reaches never asks for the
+// credential. That is the only meaning an empty field has here: the request
+// never carries `"value": ""`, which the server refuses as a different thing.
 //
 // The value is the one thing in the app that must never be kept, so where it
 // lives is the design:
@@ -12,7 +19,7 @@
 //    into", and nothing more). It is cleared on a successful save and on
 //    unmount, so navigating away drops it and coming back finds it empty.
 //  - It is never pre-filled. There is nothing to fill it from — no route
-//    returns a value — and on rotate it opens empty and says so (§2.5).
+//    returns a value — and on edit it opens empty and says so (§2.5).
 //  - A `<textarea>`, not an `<input>`. An input's value sanitization strips
 //    newlines silently, so a pasted PEM would be stored joined into one line
 //    and look like it worked. A textarea keeps the newline, and the check
@@ -40,8 +47,8 @@ import { useStreamStore } from '../../stores/stream'
 import { useSessionStore } from '../../stores/session'
 
 const props = defineProps<{
-  mode: 'create' | 'rotate'
-  /** On rotate: the secret's name and its current prose. Never a value: there is none to give. */
+  mode: 'create' | 'edit'
+  /** On edit: the secret's name and its current prose. Never a value: there is none to give. */
   initial?: { name: string; reach: string; description: string }
 }>()
 
@@ -98,11 +105,14 @@ const liveValue = computed(() => {
 
 const flight = computed(() => stream.inFlight[putKey(name.value)] ?? null)
 
+/** Editing with the value field empty: keep the stored value, send no `value`. */
+const keepValue = computed(() => props.mode === 'edit' && value.value === '')
+
 function fieldFor(code: string): Field {
   if (code.startsWith('secret_name_')) return 'name'
   if (code.startsWith('secret_value_')) return 'value'
-  if (code === 'secret_reach_required') return 'reach'
-  if (code === 'secret_description_invalid') return 'description'
+  if (code.startsWith('secret_reach_')) return 'reach'
+  if (code.startsWith('secret_description_')) return 'description'
   return 'form'
 }
 
@@ -114,7 +124,7 @@ async function save(): Promise<void> {
   const found: Partial<Record<Field, string>> = {}
   const checks: Array<[Field, SecretRefusal | null]> = [
     ['name', checkName(name.value)],
-    ['value', checkValue(value.value)],
+    ['value', keepValue.value ? null : checkValue(value.value)],
     ['reach', checkReach(reach.value)],
     ['description', checkDescription(description.value)],
   ]
@@ -123,7 +133,7 @@ async function save(): Promise<void> {
   if (Object.keys(found).length > 0) return
 
   try {
-    const outcome = await secrets.put(name.value, value.value, reach.value, description.value)
+    const outcome = await secrets.put(name.value, keepValue.value ? null : value.value, reach.value, description.value)
     value.value = ''
     emit('saved', name.value, outcome)
   } catch (e) {
@@ -139,8 +149,8 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div class="form" role="group" :aria-label="mode === 'create' ? 'New secret' : 'Replace the value'" data-test="secret-form">
-    <h2 v-if="mode === 'rotate'">Replace the value</h2>
+  <div class="form" role="group" :aria-label="mode === 'create' ? 'New secret' : 'Edit the secret'" data-test="secret-form">
+    <h2 v-if="mode === 'edit'">Edit {{ name }}</h2>
 
     <div v-if="mode === 'create'" class="field" :class="{ err: errors.name || liveName }">
       <label for="secret-name">Name</label>
@@ -158,16 +168,16 @@ onBeforeUnmount(() => {
     </div>
 
     <div class="field" :class="{ err: errors.value || liveValue }">
-      <label for="secret-value">{{ mode === 'create' ? 'Value' : 'New value' }}</label>
+      <label for="secret-value">{{ mode === 'create' ? 'Value' : 'New value (optional)' }}</label>
       <textarea
         id="secret-value" v-model="value" rows="2" class="value" data-test="value"
         autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false"
         data-1p-ignore data-lpignore="true" aria-describedby="secret-value-help"
       />
       <p id="secret-value-help" class="help" data-test="value-help">
-        <template v-if="mode === 'rotate'">
-          The current value is not shown. Saving replaces it. To change only what is written below, enter the
-          current value again: the same value is not a rotation.
+        <template v-if="mode === 'edit'">
+          The current value is not shown. Leave this empty to keep it and change only what is written below;
+          a value entered here replaces it.
         </template>
         <template v-else>
           Write-only: once saved, Drydock never shows it again, here or anywhere. One line; a multi-line
@@ -226,7 +236,7 @@ onBeforeUnmount(() => {
         :disabled="flight !== null" :aria-busy="flight !== null" @click="save"
       >
         <span v-if="flight" class="spinner" aria-hidden="true" />
-        {{ mode === 'create' ? 'Save secret' : 'Replace value' }}
+        {{ mode === 'create' ? 'Save secret' : keepValue ? 'Save changes' : 'Replace value' }}
       </button>
       <button type="button" class="btn ghost" data-test="cancel" :disabled="flight !== null" @click="emit('cancel')">
         Cancel

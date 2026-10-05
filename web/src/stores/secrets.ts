@@ -27,6 +27,8 @@ export type SecretsStatus = 'idle' | 'loading' | 'ready' | 'not_configured' | 'e
 export interface PutOutcome {
   created: boolean
   rotated: boolean
+  /** Whether this save sent a value. False: the stored one was kept, and only the prose changed. */
+  valueSent: boolean
   stale: Stale
 }
 
@@ -103,18 +105,26 @@ export const useSecretsStore = defineStore('secrets', {
     /**
      * PUT /api/secrets/:name: create, rotate, or change the reach and
      * description. Returns what the operation did; throws the refusal.
+     *
+     * `value` null sends no `value` key at all, which the server reads as
+     * "keep the stored one" (frontend §4.5 #13): changing the prose never
+     * handles the credential. That is not the same request as an empty
+     * string, which the server refuses — so null is the only spelling of
+     * "keep", and the key is absent rather than null or "".
      */
-    async put(name: string, value: string, reach: string, description: string): Promise<PutOutcome> {
+    async put(name: string, value: string | null, reach: string, description: string): Promise<PutOutcome> {
       const stream = useStreamStore()
       const key = putKey(name)
       if (key in stream.inFlight) throw new api.ApiError(409, 'in_progress')
       stream.begin(key, () => false)
       try {
-        const res = await api.sendForResult<PutSecretResult>('PUT', path(name), { value, reach, description })
+        const body = value === null ? { reach, description } : { value, reach, description }
+        const res = await api.sendForResult<PutSecretResult>('PUT', path(name), body)
         // The metadata in `res.secret` is not applied: its event is.
         return {
           created: res.created === true,
           rotated: res.rotated === true,
+          valueSent: value !== null,
           stale: {
             new_commands: res.stale?.new_commands ?? [],
             needs_supervisor_restart: res.stale?.needs_supervisor_restart ?? [],

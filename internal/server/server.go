@@ -263,6 +263,15 @@ func (s *Server) Serve(ctx context.Context) error {
 			}
 		}
 	}()
+	// Look at the stored secrets once at boot, so a condition that would fail
+	// every workspace's commands — a replaced master key, above all — is on
+	// the stream now rather than at the first command, and one the last run
+	// reported is announced as fixed if it is (frontend §4.5 #12).
+	if s.Secrets != nil {
+		if _, err := s.Secrets.Undeliverable(ctx); err != nil {
+			fmt.Fprintf(os.Stderr, "drydock: secrets: %v\n", err)
+		}
+	}
 	refreshing := make(chan struct{})
 	go func() {
 		defer close(refreshing)

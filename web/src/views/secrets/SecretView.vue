@@ -1,9 +1,9 @@
 <script setup lang="ts">
 // /secrets/:name (frontend §5, §6.4, §6.5): one secret — what it reaches,
 // where it is granted, who fetched it — and the three things to do with it:
-// change its grants, replace its value, delete it.
+// edit what it reaches or replace its value, change its grants, delete it.
 //
-// Everything about the secret itself is read from the entity. The replace
+// Everything about the secret itself is read from the entity. The edit
 // form and the delete sheet are local and transient; the save's result (the
 // two kinds of stale) is held here only until it is dismissed or the view
 // unmounts, because it is what *that* save did, not what the secret is.
@@ -40,20 +40,20 @@ onMounted(() => {
 })
 useStreamRefetch({ refetch: () => secrets.load() })
 
-const replacing = ref(false)
+const editing = ref(false)
 const result = ref<PutOutcome | null>(null)
 const confirmingDelete = ref(false)
 const deleteError = ref<string | null>(null)
 const deleteFlight = computed(() => stream.inFlight[deleteKey(name.value)] ?? null)
 
 function saved(_name: string, outcome: PutOutcome): void {
-  replacing.value = false
+  editing.value = false
   result.value = outcome
 }
 
-function startReplace(): void {
+function startEdit(): void {
   result.value = null
-  replacing.value = true
+  editing.value = true
 }
 
 async function remove(): Promise<void> {
@@ -99,8 +99,6 @@ const fetchedBy = computed(() => (secret.value?.accessedBy ?? []).map((id) => ({
         </template>
       </section>
 
-      <GrantsEditor :secret="secret" />
-
       <section class="block" aria-labelledby="value-h">
         <div class="sec-label"><span id="value-h">Value</span></div>
         <p class="meta" data-test="detail-rotated">
@@ -109,15 +107,18 @@ const fetchedBy = computed(() => (secret.value?.accessedBy ?? []).map((id) => ({
           <template v-else-if="secret.createdAt">Unchanged since it was stored {{ relativeTime(secret.createdAt) }}.</template>
         </p>
         <SaveResult v-if="result" :name="secret.name" :outcome="result" @dismiss="result = null" />
+        <!-- One form for the prose and the value: an empty value keeps the stored one (§4.5 #13). -->
         <SecretForm
-          v-if="replacing" mode="rotate"
+          v-if="editing" mode="edit"
           :initial="{ name: secret.name, reach: secret.reach, description: secret.description }"
-          @saved="saved" @cancel="replacing = false"
+          @saved="saved" @cancel="editing = false"
         />
         <div v-else-if="!result">
-          <button type="button" class="btn" data-test="replace" @click="startReplace">Replace the value…</button>
+          <button type="button" class="btn" data-test="edit" @click="startEdit">Edit what it reaches, or replace the value…</button>
         </div>
       </section>
+
+      <GrantsEditor :secret="secret" />
 
       <section class="block" aria-labelledby="access-h">
         <div class="sec-label"><span id="access-h">Fetched by</span></div>

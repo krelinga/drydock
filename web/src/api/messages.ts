@@ -33,12 +33,15 @@ const SENTENCES: Record<string, string> = {
   secret_name_invalid:
     "A secret's name is its environment variable name: capital letters, digits and underscores, not starting with a digit, at most 128 characters.",
   secret_name_reserved: 'That name is reserved.',
+  secret_value_required: 'A new secret needs a value. There is no stored value to keep.',
   secret_value_empty: 'A secret needs a value. An empty value cannot be told apart from an unset variable.',
   secret_value_control_character: "A secret's value must be a single line with no control characters.",
   secret_value_too_long:
     'That value is too long: at most 32768 bytes. Encode a large or multi-line credential, such as a PEM, as base64.',
-  secret_reach_required: 'Say what someone could do with this secret. The answer is required, in at most 2000 bytes.',
-  secret_description_invalid: 'The description is too long: at most 4000 bytes of text.',
+  secret_reach_required: 'Say what someone could do with this secret. The answer is required.',
+  secret_reach_too_long: 'The answer to "what can someone do with this?" is too long: at most 2000 bytes.',
+  secret_description_too_long: 'The description is too long: at most 4000 bytes.',
+  secret_description_invalid: 'The description must be text.',
   unknown_repository: 'That repository is not in the catalog.',
   internal: 'Drydock hit an internal error. The host’s log has the detail.',
   network: 'Could not reach Drydock. Check the connection and try again.',

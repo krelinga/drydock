@@ -11,14 +11,28 @@ import (
 // Codes for a refused write. They are the error envelope's `code` (api
 // re-exports them), so they are stable: the UI turns each into one sentence.
 const (
-	CodeNameInvalid    = "secret_name_invalid"
-	CodeNameReserved   = "secret_name_reserved"
-	CodeValueEmpty     = "secret_value_empty"
-	CodeValueControl   = "secret_value_control_character"
-	CodeValueTooLong   = "secret_value_too_long"
-	CodeReachRequired  = "secret_reach_required"
-	CodeUnknownRepo    = "unknown_repository"
-	CodeDescriptionBad = "secret_description_invalid"
+	CodeNameInvalid  = "secret_name_invalid"
+	CodeNameReserved = "secret_name_reserved"
+	// CodeValueRequired is a PUT with no `value` for a name that has no
+	// secret. An absent value means "keep the stored one", and a new secret
+	// has none to keep. It is distinct from CodeValueEmpty, which is a value
+	// that was sent and is "": the two are different requests (frontend
+	// §4.5 #13), and neither is ever read as the other.
+	CodeValueRequired = "secret_value_required"
+	CodeValueEmpty    = "secret_value_empty"
+	CodeValueControl  = "secret_value_control_character"
+	CodeValueTooLong  = "secret_value_too_long"
+	// CodeReachRequired is a blank reach and CodeReachTooLong one over
+	// MaxReachLen: two faults, two sentences (frontend §4.5 #14).
+	CodeReachRequired = "secret_reach_required"
+	CodeReachTooLong  = "secret_reach_too_long"
+	CodeUnknownRepo   = "unknown_repository"
+	// CodeDescriptionTooLong is a description over MaxDescriptionLen, and
+	// CodeDescriptionBad one that is not UTF-8 — which a JSON body cannot
+	// carry, so only a caller other than the API reaches it. A blank
+	// description is fine: it is optional.
+	CodeDescriptionTooLong = "secret_description_too_long"
+	CodeDescriptionBad     = "secret_description_invalid"
 )
 
 // Invalid is a refused write: a code for the UI, a sentence for a human, and
@@ -224,16 +238,23 @@ func ValidateReach(reach string) error {
 			Detail: "The reach field is required: it is the decision to grant, written down."}
 	}
 	if len(reach) > MaxReachLen {
-		return &Invalid{Code: CodeReachRequired, Message: "The reach is too long.",
+		return &Invalid{Code: CodeReachTooLong, Message: "The reach is too long.",
 			Detail: fmt.Sprintf("At most %d bytes.", MaxReachLen)}
 	}
 	return nil
 }
 
-func validateDescription(d string) error {
-	if len(d) > MaxDescriptionLen || !utf8.ValidString(d) {
-		return &Invalid{Code: CodeDescriptionBad, Message: "The description is too long or is not text.",
-			Detail: fmt.Sprintf("At most %d bytes of UTF-8.", MaxDescriptionLen)}
+// ValidateDescription bounds the optional prose: where the secret came from
+// and how to rotate it. It may be blank and it may span lines — it is never
+// delivered, so §10.3's single-line rule does not reach it.
+func ValidateDescription(d string) error {
+	if len(d) > MaxDescriptionLen {
+		return &Invalid{Code: CodeDescriptionTooLong, Message: "The description is too long.",
+			Detail: fmt.Sprintf("At most %d bytes.", MaxDescriptionLen)}
+	}
+	if !utf8.ValidString(d) {
+		return &Invalid{Code: CodeDescriptionBad, Message: "The description must be text.",
+			Detail: "It is not valid UTF-8."}
 	}
 	return nil
 }
