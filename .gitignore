@@ -9,3 +9,6 @@
 # is committed so that `go build` never needs Node (frontend §3).
 /web/node_modules/
 /web/coverage/
+
+# The browser tier's Playwright output: traces of failed tests, uploaded by CI.
+/test/browser/test-results/
