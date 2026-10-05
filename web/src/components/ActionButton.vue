@@ -22,6 +22,13 @@ const props = defineProps<{
   flightKey: string
   run: () => Promise<void>
   primary?: boolean
+  danger?: boolean
+  /**
+   * Not yet sendable: a form's own precondition, such as the delete sheet's
+   * typed name (§6.5). Never "this action cannot work here" — that action is
+   * not rendered at all, and the one that can work is (§6.6).
+   */
+  blocked?: boolean
 }>()
 
 const stream = useStreamStore()
@@ -31,7 +38,7 @@ const flight = computed(() => stream.inFlight[props.flightKey] ?? null)
 const refusal = ref<{ text: string; note: boolean } | null>(null)
 
 async function click(): Promise<void> {
-  if (flight.value !== null) return
+  if (flight.value !== null || props.blocked === true) return
   refusal.value = null
   try {
     await props.run()
@@ -47,8 +54,8 @@ async function click(): Promise<void> {
 <template>
   <div class="action">
     <button
-      type="button" class="btn" :class="{ primary }" data-test="action"
-      :disabled="flight !== null" :aria-busy="flight !== null" @click="click"
+      type="button" class="btn" :class="{ primary, danger }" data-test="action"
+      :disabled="flight !== null || blocked" :aria-busy="flight !== null" @click="click"
     >
       <span v-if="flight" class="spinner" aria-hidden="true" />
       {{ label }}

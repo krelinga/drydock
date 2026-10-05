@@ -12,6 +12,7 @@ const steps = (w: Wrapper) => w.findAll('[data-test="step"]').map((s) => [s.attr
 const reads = (b: ReturnType<typeof freshBackend>, id: string) =>
   b.log.filter((r) => r.method === 'GET' && new URL(r.url).pathname === `/api/workspaces/${id}`).length
 const startBtn = (w: Wrapper) => w.find('[data-test="start"] [data-test="action"]')
+const rebuildBtn = (w: Wrapper) => w.find('[data-test="ws-card"] [data-test="rebuild"] [data-test="action"]')
 
 describe('the workspace detail', () => {
   it('fetches on entry and shows the state, the eight steps, and the failed one named', async () => {
@@ -55,19 +56,19 @@ describe('the workspace detail', () => {
     expect(events.find('b').exists()).toBe(false)
   })
 
-  it('lives off the stream: a start plays through with no reload', async () => {
+  it('lives off the stream: a rebuild plays through with no reload', async () => {
     const b = freshBackend({ signedIn: true, scriptMode: 'manual' })
     // A 202 that claims more than it means (§4.2 step 3).
-    server.use(http.post(`/api/workspaces/${WS_FAILED}/start`, ({ request }) => {
+    server.use(http.post(`/api/workspaces/${WS_FAILED}/rebuild`, ({ request }) => {
       b.log.push({ method: request.method, url: request.url, credentials: request.credentials, mode: request.mode, contentType: null })
       b.scripts[WS_FAILED] = []
       return HttpResponse.json({ state: 'running', container_id: 'deadbeef' }, { status: 202 })
     }))
     const { wrapper, pinia } = await mountApp(`/ws/${WS_FAILED}`)
     FakeEventSource.latest().open().pipe(b)
-    await startBtn(wrapper).trigger('click')
+    await rebuildBtn(wrapper).trigger('click')
     await settle()
-    expect(startBtn(wrapper).attributes('disabled')).toBeDefined()
+    expect(rebuildBtn(wrapper).attributes('disabled')).toBeDefined()
     expect(wrapper.find('[data-test="ws-state"]').text()).toBe('Failed while starting the container')
     expect(wrapper.text()).not.toContain('deadbeef')
     expect(useStreamStore(pinia).entities.workspaces[WS_FAILED]?.state).toBe('failed')
@@ -78,7 +79,7 @@ describe('the workspace detail', () => {
     await settle()
     expect(wrapper.find('[data-test="ws-state"]').text()).toBe('Building · starting the container…')
     expect(wrapper.find('[data-step="up"] [data-test="step-status"]').text()).toBe('running')
-    expect(wrapper.find('[data-test="start"]').exists()).toBe(false)
+    expect(wrapper.find('[data-test="rebuild"]').exists()).toBe(false)
     const before = reads(b, WS_FAILED)
     emit(b, 'workspace.step', { workspace_id: WS_FAILED, data: { step: 'up', status: 'done' } })
     expect(wrapper.text()).not.toContain('Container')
@@ -94,15 +95,15 @@ describe('the workspace detail', () => {
     expect(wrapper.text()).toContain('feedfacecafe')
   })
 
-  it('after a start, shows only the current run\'s steps — live, and after a reload', async () => {
+  it('after a rebuild, shows only the current run\'s steps — live, and after a reload', async () => {
     const b = freshBackend({ signedIn: true, scriptMode: 'manual' })
     const { wrapper } = await mountApp(`/ws/${WS_FAILED}`)
     FakeEventSource.latest().open().pipe(b)
-    // Control: before the start, the failed run's `up` is the timeline's.
+    // Control: before the rebuild, the failed run's `up` is the timeline's.
     expect(steps(wrapper)).toContainEqual(['up', 'failed'])
-    await startBtn(wrapper).trigger('click')
+    await rebuildBtn(wrapper).trigger('click')
     await settle()
-    // building, resolve_config started: the start resumes at step 3.
+    // building, resolve_config started: the rebuild resumes at step 3.
     playScript(b, WS_FAILED, 2)
     await settle()
     const live = [

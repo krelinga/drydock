@@ -13,17 +13,20 @@
 // missing from it.
 //
 // Every card's status line and action come from lib/workspaceCard.ts (§6.1);
-// every button's lifecycle from ActionButton (§4.2).
+// every button's lifecycle from ActionButton (§4.2), and a workspace's
+// action from WorkspaceAction, so a card and a row cannot send different
+// things for the same word.
 import { computed, onMounted } from 'vue'
 import { RouterLink } from 'vue-router'
 import { describeError } from '../api/messages'
 import ActionButton from '../components/ActionButton.vue'
+import WorkspaceAction from '../components/WorkspaceAction.vue'
 import { catalogEvent, useCatalogStore, type CatalogRow } from '../stores/catalog'
 import type { Workspace } from '../stores/reducer'
-import { cloneKey, startKey, useWorkspacesStore } from '../stores/workspaces'
+import { cloneKey, useWorkspacesStore } from '../stores/workspaces'
 import { useStreamRefetch } from '../lib/refetch'
 import { relativeTime } from '../lib/time'
-import { cardStatus, rowAction } from '../lib/workspaceCard'
+import { cardStatus, rowAction, type CardAction } from '../lib/workspaceCard'
 
 const catalog = useCatalogStore()
 const workspaces = useWorkspacesStore()
@@ -65,11 +68,7 @@ function rowNote(r: CatalogRow): string | null {
             </span>
           </div>
           <p v-if="status(r.workspace).note" class="detail">{{ status(r.workspace).note }}</p>
-          <ActionButton
-            v-if="status(r.workspace).action === 'start'" label="Start"
-            :flight-key="startKey(r.workspace.id)" :run="() => workspaces.start(r.workspace.id)"
-            data-test="start"
-          />
+          <WorkspaceAction :workspace="r.workspace" :action="status(r.workspace).action" />
         </li>
       </ul>
       <div v-else class="empty">
@@ -144,19 +143,15 @@ function rowNote(r: CatalogRow): string | null {
             </div>
             <!--
               One action per row (§6.1), from lib/workspaceCard.ts rowAction:
-              Clone only when no workspace holds the repo in any state, Start
-              when its workspace is stopped or failed.
+              Clone only when no workspace holds the repo in any state;
+              otherwise its workspace's own card action.
             -->
             <ActionButton
               v-if="rowAction(r) === 'clone'" label="Clone"
               :flight-key="cloneKey(r.repo.id)" :run="() => workspaces.create(r.repo.id)"
               data-test="clone"
             />
-            <ActionButton
-              v-else-if="r.workspace && rowAction(r) === 'start'" label="Start"
-              :flight-key="startKey(r.workspace.id)" :run="() => workspaces.start(r.workspace!.id)"
-              data-test="start"
-            />
+            <WorkspaceAction v-else-if="r.workspace" :workspace="r.workspace" :action="rowAction(r) as CardAction" />
             <p v-if="rowNote(r)" class="detail" data-test="removed-note">
               {{ rowNote(r) }}
               <a

@@ -27,6 +27,7 @@
 // `disconnect()` is what tears them down; registry.ts calls it before reset.
 
 import { defineStore } from 'pinia'
+import { toRaw } from 'vue'
 import * as api from '../api/client'
 import type { StreamEvent } from '../api/types'
 import { emptyEntities, hasStubs, reduce, type Action } from './reducer'
@@ -83,7 +84,13 @@ interface Runtime {
 
 const runtimes = new WeakMap<object, Runtime>()
 
-function rt(store: object): Runtime {
+function rt(proxy: object): Runtime {
+  // Keyed by the raw store, not by `this`: Pinia's devtools plugin (dev
+  // builds, so `npm run dev:mock`) calls every action with `this` set to a
+  // fresh `new Proxy(store, …)`. Keyed by `this`, `begin` and `receive` got
+  // different runtimes, no settler was ever found, and every in-flight button
+  // in the browser spun until a reload.
+  const store = toRaw(proxy)
   let r = runtimes.get(store)
   if (r === undefined) {
     r = {

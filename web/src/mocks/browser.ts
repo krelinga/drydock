@@ -10,14 +10,19 @@
 //   drydockMock.clone(3)          play a clone of repo 3 on the stream, ~1 event/s
 //                                 (as another device would: no click involved)
 //   drydockMock.clone(3, 'up')    the same, failing at the `up` step
-//   drydockMock.failNext('up')    the next Clone or Start button fails at that step
+//   drydockMock.failNext('up')    the next Clone, Start or Rebuild fails at that step
+//   drydockMock.failAction('files')  the next Stop or Delete fails at that sub-step:
+//                                 a stop leaves the workspace running; a delete
+//                                 sticks in deleting, and Delete again resumes it
+//                                 (sub-steps: session_server, container, containers,
+//                                 broker_socket, files)
 //   drydockMock.capacity(1)       set the cap; the next Clone over it is at_capacity
 //   drydockMock.elsewhere(3)      another device created a workspace for repo 3 and
 //                                 its event has not arrived: the next Clone of repo 3
 //                                 is answered in_progress
-//   drydockMock.stop(id)          stop a running workspace (no Stop button until Phase 6)
+//   drydockMock.stop(id)          another device stops a running workspace
 //   drydockMock.slow(ms)          the gap between a script's events (default 900)
-//   drydockMock.gone(id)          delete a workspace
+//   drydockMock.gone(id)          another device deletes a workspace (or resumes a stuck delete)
 //   drydockMock.dropStream()      cut the stream; the browser retries (CONNECTING)
 //   drydockMock.refreshFails()    the next catalog refresh reports a failure
 //   drydockMock.noApp()           GET /api/repos answers app_not_configured
@@ -44,6 +49,7 @@
 import { setupWorker } from 'msw/browser'
 import {
   cloneScript, completeRefresh, emit, handlersFor, MOCK_PASSWORD, newBackend, nextWorkspaceId, recordSecretFetch,
+  scheduleDelete, scheduleStop,
   secretMeta, secretUndeliverable,
 } from './backend'
 
@@ -83,6 +89,7 @@ export async function startMockWorker(): Promise<void> {
       return id
     },
     failNext(step: string) { backend.failNext = step },
+    failAction(step: string) { backend.failAction = step },
     capacity(n: number) { backend.capacity = n },
     elsewhere(repositoryId: number) {
       // A row with no event: what a create on another device looks like in
@@ -94,14 +101,9 @@ export async function startMockWorker(): Promise<void> {
       }
       return id
     },
-    stop(id: string) {
-      emit(backend, 'workspace.state', { workspace_id: id, message: 'Stopped.', data: { state: 'stopped', from: backend.workspaces[id]?.state } })
-    },
+    stop(id: string) { scheduleStop(backend, id) },
     slow(ms: number) { backend.scriptIntervalMs = ms },
-    gone(id: string) {
-      emit(backend, 'workspace.state', { workspace_id: id, data: { state: 'deleting', from: backend.workspaces[id]?.state } })
-      setTimeout(() => emit(backend, 'workspace.gone', { workspace_id: id, data: {} }), 800)
-    },
+    gone(id: string) { scheduleDelete(backend, id) },
     dropStream() { for (const s of backend.streams) s.error() },
     refreshFails() {
       backend.refreshMode = 'manual'

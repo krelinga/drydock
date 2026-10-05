@@ -6,12 +6,14 @@
 import { describe, expect, it } from 'vitest'
 import type { StreamEvent } from '../api/types'
 import {
-  FEED_LIMIT, currentStep, emptyEntities, failedStep, hasStubs, reduce, reduceAll, runSteps, workspaceForRepo,
+  FEED_LIMIT, currentStep, deleteStuck, emptyEntities, failedStep, hasStubs, liveAction, reduce, reduceAll, runSteps,
+  workspaceForRepo,
   type Action, type Entities,
 } from './reducer'
 import {
   CLONE_FAILS_AT_UP, CLONE_OK, DELETE, ORPHAN, RECONCILE, REFRESH_FAILED, REFRESHED, RESTART_FAILS_EARLY,
   START_AFTER_FAIL, WS, WS2, catalogBody, detailBody, listBody, stateEvent, step, stepEvent, tokenIssued, ws2View, wsView,
+  DELETE_OK, DELETE_RESUMED, DELETE_STUCK, STOP_FAILS, STOP_OK, STUCK_DETAIL, actionEvent,
 } from './reducer.fixtures'
 
 const events = (evs: StreamEvent[]): Action[] => evs.map((event) => ({ type: 'event', event }))
@@ -571,5 +573,117 @@ describe('the workspace detail snapshot and the feed', () => {
   it('an adoption records the container id', () => {
     const e = play([...CLONE_OK, RECONCILE[1]!])
     expect(e.workspaces[WS]).toMatchObject({ adopted: true, containerId: 'c0ffee' })
+  })
+})
+
+describe('workspace.action: a stop\'s and a delete\'s sub-steps (Phase 6)', () => {
+  const ws = (e: Entities, id = WS) => e.workspaces[id]!
+  const statuses = (e: Entities, id = WS) =>
+    Object.fromEntries(Object.entries(ws(e, id).action?.steps ?? {}).map(([k, r]) => [k, r.status]))
+
+  it('a stop is live while it runs, and over at the move to stopped', () => {
+    const mid = play([...CLONE_OK, ...STOP_OK.slice(0, 3)])
+    expect(ws(mid).state).toBe('running')
+    expect(liveAction(ws(mid))).toMatchObject({ name: 'stop', last: { name: 'container', status: 'started' } })
+    expect(statuses(mid)).toEqual({ session_server: 'done', container: 'started' })
+    expect(ws(mid).action!.steps.session_server!.detail).toContain('Nothing to do yet')
+    const done = play([...CLONE_OK, ...STOP_OK])
+    expect(ws(done).state).toBe('stopped')
+    expect(liveAction(ws(done))).toBeNull()
+    // Control: the run itself is kept — over, not forgotten.
+    expect(statuses(done)).toEqual({ session_server: 'done', container: 'done', broker_socket: 'done' })
+  })
+
+  it('a failed stop stays live — no state event ends it — and the workspace stays running', () => {
+    const e = play([...CLONE_OK, ...STOP_FAILS])
+    expect(ws(e).state).toBe('running')
+    expect(liveAction(ws(e))?.last).toEqual({ name: 'container', status: 'failed', detail: "docker could not stop the workspace's container." })
+    // Asking again starts a new run: the old failure is not part of it.
+    const again = play([actionEvent(84, WS, 'stop', 'session_server', 'started')], e)
+    expect(statuses(again)).toEqual({ session_server: 'started' })
+    expect(ws(again).action!.startId).toBe(84)
+  })
+
+  it('a stuck delete keeps its failed sub-step and its annotation; nothing is live', () => {
+    const e = play([...CLONE_OK, ...DELETE_STUCK])
+    expect(ws(e)).toMatchObject({ state: 'deleting', detail: STUCK_DETAIL })
+    expect(statuses(e)).toEqual({ session_server: 'done', containers: 'done', broker_socket: 'done', files: 'failed' })
+    expect(liveAction(ws(e))).toBeNull()
+    expect(deleteStuck(ws(e))).toBe(true)
+    // Control: one event earlier — failed, not yet annotated — it is neither stuck nor without detail.
+    const before = play([...CLONE_OK, ...DELETE_STUCK.slice(0, 9)])
+    expect(deleteStuck(ws(before))).toBe(false)
+    expect(liveAction(ws(before))?.last.status).toBe('failed')
+  })
+
+  it('a resumed delete is a new run, live again over the stale annotation, until the gone', () => {
+    const resuming = play([...CLONE_OK, ...DELETE_STUCK, ...DELETE_RESUMED.slice(0, 3)])
+    // state_detail still carries the stuck sentence (the server does not clear it), but a newer sub-step overrides it.
+    expect(ws(resuming).detail).toBe(STUCK_DETAIL)
+    expect(deleteStuck(ws(resuming))).toBe(false)
+    expect(statuses(resuming)).toEqual({ session_server: 'done', containers: 'started' })
+    const gone = play([...CLONE_OK, ...DELETE_STUCK, ...DELETE_RESUMED])
+    expect(gone.workspaces[WS]).toBeUndefined()
+    expect(gone.gone[WS]).toBe(108)
+  })
+
+  it('a delete in one go reaches workspace.gone, and a late sub-step cannot bring it back', () => {
+    const e = play([...CLONE_FAILS_AT_UP, ...DELETE_OK])
+    expect(e.workspaces[WS2]).toBeUndefined()
+    expect(e.gone[WS2]).toBe(119)
+    const late = play([DELETE_OK[7]!], e)
+    expect(late.workspaces[WS2]).toBeUndefined()
+    // Control: just before the gone, the whole run was there and live.
+    const before = play([...CLONE_FAILS_AT_UP, ...DELETE_OK.slice(0, 9)])
+    expect(liveAction(ws(before, WS2))?.name).toBe('delete')
+    expect(Object.keys(ws(before, WS2).action!.steps)).toEqual(['session_server', 'containers', 'broker_socket', 'files'])
+  })
+
+  it('is versioned: replay is idempotent, a late sub-step lands in its own row, an older run\'s event is dropped', () => {
+    const e = play([...CLONE_OK, ...DELETE_STUCK])
+    expect(play(DELETE_STUCK, e)).toBe(e)
+    // A late `started` for containers (older than its `done`) changes nothing.
+    expect(ws(play([actionEvent(93, WS, 'delete', 'containers', 'started')], e)).action).toBe(ws(e).action)
+    // Out of order within a run: the row takes the newer, the line the newest.
+    const shuffledRun = play([...CLONE_OK, DELETE_STUCK[0]!, DELETE_STUCK[2]!, DELETE_STUCK[1]!])
+    expect(ws(shuffledRun).action!.steps.session_server!.status).toBe('done')
+    // An event from before the resume's start is not merged into the resume.
+    const resumed = play(DELETE_RESUMED.slice(0, 2), e)
+    expect(ws(play([actionEvent(97, WS, 'delete', 'files', 'started')], resumed)).action!.steps.files).toBeUndefined()
+    // Control: the resume's own `files` does land.
+    expect(ws(play([DELETE_RESUMED[6]!], resumed)).action!.steps.files!.status).toBe('started')
+  })
+
+  it('every action event joins the feed, and a malformed one changes no run', () => {
+    const e = play([...CLONE_OK, ...STOP_OK.slice(0, 2)])
+    expect(e.feeds[WS]![0]!.kind).toBe('workspace.action')
+    const bad = play([{ ...actionEvent(72, WS, 'stop', 'container', 'started'), data: { action: 'stop', status: 'started' } }], e)
+    expect(ws(bad).action).toBe(ws(e).action)
+    expect(bad.feeds[WS]![0]!.id).toBe(72)
+  })
+
+  it('a detail body folds its action events in, so a reload still shows a stuck delete or a failed stop', () => {
+    // A cold load of a stuck delete: only the snapshot, no live events.
+    const stuckEvents = [...CLONE_OK, ...DELETE_STUCK]
+    const view = detailBody({ state: 'deleting', state_detail: STUCK_DETAIL }, stuckEvents)
+    const cold = reduce(emptyEntities(), { type: 'workspace', at: 99, view })
+    expect(statuses(cold)).toEqual({ session_server: 'done', containers: 'done', broker_socket: 'done', files: 'failed' })
+    expect(deleteStuck(ws(cold))).toBe(true)
+    // A failed stop on reload: the body's state events end before the stop's, so it is live.
+    const stopCold = reduce(emptyEntities(), { type: 'workspace', at: 83, view: detailBody({}, [...CLONE_OK, ...STOP_FAILS]) })
+    expect(liveAction(ws(stopCold))?.last.status).toBe('failed')
+    // Control: a finished stop on reload is not live — its move to stopped is in the body.
+    const stoppedCold = reduce(emptyEntities(), { type: 'workspace', at: 76, view: detailBody({ state: 'stopped' }, [...CLONE_OK, ...STOP_OK]) })
+    expect(liveAction(ws(stoppedCold))).toBeNull()
+  })
+
+  it('a list snapshot that moved the state past a half-seen run drops it', () => {
+    const e = play([...CLONE_OK, ...STOP_OK.slice(0, 3)])
+    // The rest of the stop fell in a gap; the list says stopped.
+    const after = reduce(e, { type: 'workspaces', at: 80, view: listBody(wsView({ state: 'stopped' })) })
+    expect(ws(after).action).toBeNull()
+    // Control: a list that agrees with the state keeps the run live.
+    const same = reduce(e, { type: 'workspaces', at: 80, view: listBody(wsView()) })
+    expect(liveAction(ws(same))?.name).toBe('stop')
   })
 })

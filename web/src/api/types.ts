@@ -53,6 +53,7 @@ export type ErrorCode =
   | 'not_implemented'
   | 'in_progress'
   | 'at_capacity'
+  | 'confirm_mismatch'
   | 'bad_request'
   | 'bad_password'
   | 'locked_out'
