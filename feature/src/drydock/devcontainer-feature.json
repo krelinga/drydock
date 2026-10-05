@@ -1,6 +1,6 @@
 {
   "id": "drydock",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "name": "Drydock",
   "description": "What a Drydock workspace needs inside its container: GitHub access through the per-workspace token broker (a git credential helper and a gh shim), the agent's commit identity, and the drydock/ branch guard; and the repository secrets granted to it, delivered before every command through CLAUDE_ENV_FILE.",
   "documentationURL": "https://github.com/krelinga/drydock/blob/main/docs/design/overall/drydock-design.md#11-the-devcontainer-feature",
