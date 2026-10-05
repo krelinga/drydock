@@ -7,6 +7,9 @@ CREATE INDEX auth_attempt_ip_at ON auth_attempt (source_ip, at);
 -- index event_workspace
 CREATE INDEX event_workspace ON event (workspace_id, id);
 
+-- index secret_access_secret
+CREATE INDEX secret_access_secret ON secret_access (secret_id, workspace_id, at);
+
 -- table auth_attempt
 CREATE TABLE auth_attempt (
   id        INTEGER PRIMARY KEY AUTOINCREMENT,

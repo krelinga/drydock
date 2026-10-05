@@ -40,6 +40,10 @@ DB=/var/lib/drydock/drydock.db
 # The GitHub App's private key: the one credential Drydock stores (design §4).
 # A file Drydock alone can read, never an environment variable (§13.5).
 APP_KEY=$CONF_DIR/github-app.pem
+# The secrets master key (design §10.2): 32 random bytes, created on the first
+# install and never replaced — every stored secret is sealed under it, so a
+# new one makes them all unreadable. A file, never an environment variable.
+SECRETS_KEY=$CONF_DIR/secrets.key
 API_SOCKET=/run/drydock/http.sock
 
 # Markers that identify files this installer owns. A Caddyfile without the
@@ -79,6 +83,8 @@ Install or upgrade Drydock. Run as root.
   -h, --help            this text
 
 Settings from earlier runs are kept in /etc/drydock/drydock.env; flags override them.
+The first install creates the secrets master key, /etc/drydock/secrets.key, and
+later runs keep it. Back it up: without it no stored secret can be read.
 EOF
 }
 
@@ -237,6 +243,36 @@ install_app_key() {
 	say "installed the GitHub App key at $APP_KEY (mode 0400, owner drydock)"
 }
 
+# install_secrets_key creates the master key once, from /dev/urandom, straight
+# into a file only drydock can read; it is never printed. A key already there
+# is kept — and one that is not a key is refused rather than replaced, because
+# replacing it is how every stored secret is lost. That decision belongs to a
+# person: restore the file from a backup, or move it aside knowingly.
+install_secrets_key() {
+	install -d -m 0755 "$CONF_DIR"
+	if [ -e "$SECRETS_KEY" ] || [ -L "$SECRETS_KEY" ]; then
+		if [ ! -f "$SECRETS_KEY" ] || [ -L "$SECRETS_KEY" ] || [ "$(stat -c %s "$SECRETS_KEY")" != 32 ]; then
+			die "$SECRETS_KEY is not a 32-byte key file. It is never replaced automatically: every stored secret is sealed under it, and a new key makes them all unreadable. Restore it from your backup — or, accepting that every stored secret is lost, move it aside and re-run."
+		fi
+		# Kept as it is; only its ownership and mode are put right.
+		chown drydock:drydock "$SECRETS_KEY"
+		chmod 0400 "$SECRETS_KEY"
+		return 0
+	fi
+	local tmp
+	tmp=$(mktemp "$CONF_DIR/.secrets-key.XXXXXX") # 0600, root's, until the chown
+	head -c 32 /dev/urandom >"$tmp"
+	[ "$(stat -c %s "$tmp")" = 32 ] || {
+		rm -f "$tmp"
+		die "could not read 32 bytes from /dev/urandom"
+	}
+	chown drydock:drydock "$tmp"
+	chmod 0400 "$tmp"
+	mv -f "$tmp" "$SECRETS_KEY"
+	KEY_CHANGED=1
+	say "created the secrets master key at $SECRETS_KEY (mode 0400, owner drydock); back it up — without it no stored secret can be read"
+}
+
 check_prerequisites() {
 	[ "$(id -u)" = 0 ] || die "run as root (sudo)"
 	[ "$(uname -s)" = Linux ] || die "Drydock runs on Linux"
@@ -314,6 +350,9 @@ write_unit() {
   --github-app-id=\${DRYDOCK_GITHUB_APP_ID} \\
   --github-app-key=$APP_KEY"
 	fi
+	# The unit it replaces is kept for a rollback (see start_drydock).
+	rm -f "$UNIT.previous"
+	[ -f "$UNIT" ] && cp -p "$UNIT" "$UNIT.previous"
 	write_if_changed "$UNIT" 0644 UNIT_CHANGED <<EOF
 # Written by the Drydock installer; re-running it overwrites this file.
 [Unit]
@@ -329,7 +368,8 @@ ExecStart=/usr/local/bin/drydock serve \\
   --ui-origin=https://\${DRYDOCK_UI_HOST} \\
   --ui-host=\${DRYDOCK_UI_HOST} \\
   --preview-domain=\${DRYDOCK_PREVIEW_DOMAIN} \\
-  --socket-group=drydock$app_flags
+  --socket-group=drydock \\
+  --secrets-key=$SECRETS_KEY$app_flags
 # /run/drydock holds the sockets: group drydock, so Caddy (a supplementary
 # member) can reach them and nothing else can. /var/lib/drydock holds the
 # database, readable by Drydock alone.
@@ -443,6 +483,13 @@ start_drydock() {
 	if [ "${BINARY_CHANGED:-0}" = 1 ] && [ -x "$BIN.previous" ]; then
 		warn "drydock $NEW_VERSION did not start; rolling back to $OLD_VERSION"
 		mv -f "$BIN.previous" "$BIN"
+		# The unit goes back too: a new one can pass a flag the old binary
+		# does not know (--secrets-key did), and then the rollback would
+		# not start either.
+		if [ "${UNIT_CHANGED:-0}" = 1 ] && [ -f "$UNIT.previous" ]; then
+			mv -f "$UNIT.previous" "$UNIT"
+			systemctl daemon-reload
+		fi
 		systemctl restart drydock
 		wait_for_drydock && die "the upgrade failed and was rolled back to $OLD_VERSION; see the log above"
 	fi
@@ -502,6 +549,7 @@ install_bundle() {
 	ensure_account
 	install_binary "$here"
 	install_app_key
+	install_secrets_key
 	write_env_file
 	write_unit
 	write_caddy_dropin

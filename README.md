@@ -52,6 +52,14 @@ curl -fsSL https://github.com/krelinga/drydock/releases/latest/download/install.
 The installer copies the key to `/etc/drydock/github-app.pem`, readable by the `drydock` user alone,
 and re-runs keep it. Use the numeric **App ID** from the App's settings page, not its Client ID.
 
+**Back up the secrets master key.** The first install creates `/etc/drydock/secrets.key` — 32 random
+bytes, readable by the `drydock` user alone — and every repository secret you store is encrypted
+under it. **Lose it and every stored secret is unreadable**: there is no recovery but entering each
+value again. Re-runs and upgrades keep it, and the installer refuses to replace one that is damaged
+rather than quietly making a new one; restore it from your backup instead. Copy it somewhere safe
+that is not the database's backup (`sudo cp /etc/drydock/secrets.key …`), since a backup holding
+both is a backup holding every secret.
+
 To change the password later: `sudo -u drydock drydock passwd --db /var/lib/drydock/drydock.db`.
 It signs out every device.
 

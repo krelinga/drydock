@@ -62,6 +62,24 @@ code=$("${CURL[@]}" -o /dev/null -w '%{http_code}' -c "$jar" -H "Origin: https:/
 check "sign-in through Caddy works (204)" [ "$code" = 204 ]
 check "and the session cookie works" [ "$(status -b "$jar" "https://$UI/api/auth/session")" = 200 ]
 
+section "the secrets master key"
+SK=/etc/drydock/secrets.key
+check "it was created, drydock's alone, mode 0400" [ "$(stat -c '%U %G %a %s' "$SK")" = "drydock drydock 400 32" ]
+check "the installer said to back it up" grep -q "back it up" <<<"$out"
+skb64=$(base64 -w0 "$SK") skhex=$(od -An -tx1 "$SK" | tr -d ' \n')
+check "it was never printed" bash -c "! grep -qF -- '$skb64' <<<\"\$1\" && ! grep -qF -- '$skhex' <<<\"\$1\"" _ "$out"
+check "drydock is given it as a path" bash -c "tr '\\0' ' ' </proc/$(mainpid drydock)/cmdline | grep -q -- '--secrets-key=$SK'"
+check "it is not in drydock's environment" bash -c "! base64 -w0 /proc/$(mainpid drydock)/environ | grep -qF -- '$skb64' && ! grep -qF -- '$skb64' /etc/drydock/drydock.env"
+# put NAME VALUE: PUT a secret through Caddy; prints the response body.
+put() {
+	"${CURL[@]}" -b "$jar" -X PUT -H "Origin: https://$UI" -H 'Content-Type: application/json' \
+		-d "{\"value\":\"$2\",\"reach\":\"reads a scratch bucket\"}" "https://$UI/api/secrets/$1"
+}
+check "a secret can be stored through Caddy" grep -q '"created":true' <<<"$(put TEST_KEY install-test-value)"
+check "the list never carries the value" bash -c "! grep -q install-test-value <<<\"\$(\"\$@\")\"" _ "${CURL[@]}" -b "$jar" "https://$UI/api/secrets"
+check "a reserved name is refused" grep -q secret_name_reserved <<<"$(put GH_TOKEN x)"
+key_sum=$(sha256sum "$SK")
+
 section "re-run, nothing new"
 pid_d=$(mainpid drydock) pid_c=$(mainpid caddy)
 install v0.0.1
@@ -71,6 +89,7 @@ check "drydock was not restarted" [ "$(mainpid drydock)" = "$pid_d" ]
 check "caddy was not restarted" [ "$(mainpid caddy)" = "$pid_c" ]
 # passwd would end every session, so a live one is the proof it was not run.
 check "the password was left alone" [ "$(status -b "$jar" "https://$UI/api/auth/session")" = 200 ]
+check "the master key was kept" [ "$(sha256sum "$SK")" = "$key_sum" ]
 
 section "upgrade"
 install v0.0.2
@@ -79,6 +98,10 @@ check "it reports the move" grep -q "upgraded Drydock v0.0.1 -> v0.0.2" <<<"$out
 check "the binary is v0.0.2" [ "$(drydock version)" = v0.0.2 ]
 check "drydock was restarted" [ "$(mainpid drydock)" != "$pid_d" ]
 check "the session survived the upgrade" [ "$(status -b "$jar" "https://$UI/api/auth/session")" = 200 ]
+check "the master key survived it" [ "$(sha256sum "$SK")" = "$key_sum" ]
+# The same value again is not a rotation only if the stored one still opens:
+# under a different key it would not, and the PUT would report a rotation.
+check "and the stored secret still decrypts under it" grep -q '"rotated":false' <<<"$(put TEST_KEY install-test-value)"
 
 section "an upgrade that cannot start is rolled back"
 install v0.0.3
@@ -144,6 +167,19 @@ install v0.0.2 --take-over-caddy
 check "--take-over-caddy succeeds" [ "$rc" = 0 ] || printf '%s\n' "$out"
 check "it is ours now" grep -q "Drydock's entire LAN-facing surface" /etc/caddy/Caddyfile
 check "the foreign one was backed up" grep -lq "not drydock" /etc/caddy/Caddyfile.before-drydock.*
+
+section "a master key that is not a key is refused, never replaced"
+cp -p "$SK" /root/secrets.key.good
+head -c 31 /dev/urandom >"$SK"
+damaged=$(sha256sum "$SK")
+install v0.0.2
+check "it fails" [ "$rc" != 0 ]
+check "it says why, and what replacing it costs" grep -q "never replaced automatically" <<<"$out"
+check "the file is untouched" [ "$(sha256sum "$SK")" = "$damaged" ]
+cp -p /root/secrets.key.good "$SK"
+install v0.0.2
+check "control: with the key restored, the re-run succeeds" [ "$rc" = 0 ] || printf '%s\n' "$out"
+check "and the secret still decrypts" grep -q '"rotated":false' <<<"$(put TEST_KEY install-test-value)"
 
 printf '\n%s\n' "$([ $fails = 0 ] && echo PASS || echo "$fails FAILED")"
 [ $fails = 0 ]

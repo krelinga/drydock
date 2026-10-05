@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"os/exec"
@@ -18,6 +20,7 @@ import (
 	"github.com/krelinga/drydock/internal/events"
 	"github.com/krelinga/drydock/internal/github"
 	"github.com/krelinga/drydock/internal/github/githubtest"
+	"github.com/krelinga/drydock/internal/secrets"
 	"github.com/krelinga/drydock/internal/store"
 	"github.com/krelinga/drydock/internal/subproc"
 	"github.com/krelinga/drydock/internal/sys"
@@ -77,9 +80,14 @@ func TestWorkspaceContainerReachesOnlyItsOwnRepository(t *testing.T) {
 	key, _ := github.ParseKey(githubtest.KeyPEM(t))
 	sockDir, _ := os.MkdirTemp("", "dd")
 	t.Cleanup(func() { os.RemoveAll(sockDir) })
+	rawKey := make([]byte, secrets.KeySize)
+	rand.Read(rawKey)
+	masterKey, _ := secrets.NewKey(rawKey)
+	sec := &secrets.Store{DB: db.DB, Key: masterKey, Env: sys.Env{Clock: sys.RealClock{}, Random: sys.CryptoRandom{}}}
 	b := &broker.Broker{Dir: filepath.Join(sockDir, "sock"), DB: db.DB, Events: events.New(db.DB, sys.RealClock{}),
-		Env:    sys.Env{Clock: sys.RealClock{}, Random: sys.CryptoRandom{}},
-		GitHub: &github.Client{AppID: 4242, Key: key, BaseURL: f.URL, Clock: sys.RealClock{}}}
+		Env:     sys.Env{Clock: sys.RealClock{}, Random: sys.CryptoRandom{}},
+		GitHub:  &github.Client{AppID: 4242, Key: key, BaseURL: f.URL, Clock: sys.RealClock{}},
+		Secrets: sec}
 	if err := b.Open(ctx, ws); err != nil {
 		t.Fatal(err)
 	}
@@ -173,6 +181,72 @@ func TestWorkspaceContainerReachesOnlyItsOwnRepository(t *testing.T) {
 	}
 	if out, code := run("gh auth token"); code != 0 || !strings.HasPrefix(strings.TrimSpace(out), "ghs_") {
 		t.Errorf("gh did not get a token through the shim (exit %d):\n%s", code, out)
+	}
+
+	secretsInContainer(t, ctx, sec, res.ContainerID, run)
+}
+
+// secretsInContainer is Phase 4's deliverable in the container tier (design
+// §14, testing §8.2): a granted secret reaches a command through the
+// Feature's CLAUDE_ENV_FILE exactly as Claude Code runs it, so a "test
+// suite" that needs it passes — and fails once the grant is taken away, with
+// nothing restarted. A hostile value is held verbatim and runs nothing, and
+// no value is in argv or in docker inspect.
+func secretsInContainer(t *testing.T, ctx context.Context, sec *secrets.Store, containerID string, run func(string) (string, int)) {
+	t.Helper()
+	canary := fmt.Sprintf("Cn%x", time.Now().UnixNano())
+	dbURL := "postgres://drydock:" + canary + "@db.internal:5432/test"
+	hostile := `'; touch /tmp/pwned; '`
+	for name, v := range map[string]string{"TEST_DATABASE_URL": dbURL, "HOSTILE": hostile} {
+		if _, err := sec.Put(ctx, name, v, "a scratch database nobody else uses", ""); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := sec.SetGrants(ctx, name, []int64{101}, false); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if out, code := run(`cat "$CLAUDE_ENV_FILE"`); code != 0 || out != "eval \"$(drydock-secrets export)\"\n" {
+		t.Fatalf("CLAUDE_ENV_FILE (exit %d) holds %q", code, out)
+	}
+	// A command as Claude Code issues it: the env file's text, trimmed, then
+	// the command (Spike 03) — here a one-line test suite that needs the
+	// secret, followed by a sweep of every process's argv while it runs. The
+	// suite compares a digest, so the value is not in its own command line.
+	sum := sha256.Sum256([]byte(dbURL))
+	suite := `bash -c "$(cat "$CLAUDE_ENV_FILE") && ` +
+		`test \"\$(printf %s \"\$TEST_DATABASE_URL\" | sha256sum | cut -d' ' -f1)\" = ` + hex.EncodeToString(sum[:]) + ` && ` +
+		`for p in /proc/[0-9]*; do tr '\0' ' ' <\$p/cmdline; echo; done >/tmp/argv"`
+	if out, code := run(suite); code != 0 {
+		t.Fatalf("the granted workspace's suite failed (exit %d):\n%s", code, out)
+	}
+	if out, _ := run("cat /tmp/argv"); strings.Contains(out, canary) || !strings.Contains(out, "drydock-secrets export") {
+		t.Errorf("argv sweep: the canary is there (%v), or the sweep missed the prelude's own text:\n%s", strings.Contains(out, canary), out)
+	}
+	if out, code := run(`bash -c "$(cat "$CLAUDE_ENV_FILE") && printf %s \"\$HOSTILE\"; test ! -e /tmp/pwned"`); code != 0 || out != hostile {
+		t.Errorf("the hostile value: exit %d, held %q", code, out)
+	}
+	// Not in the container's configuration either. Control: inspect does
+	// carry the Feature's environment, so it is the right container.
+	b, err := exec.Command("docker", "inspect", containerID).Output()
+	if err != nil {
+		t.Fatalf("docker inspect: %v", err)
+	}
+	if strings.Contains(string(b), canary) || !strings.Contains(string(b), "CLAUDE_ENV_FILE") {
+		t.Errorf("docker inspect: holds the canary (%v), or lacks CLAUDE_ENV_FILE", strings.Contains(string(b), canary))
+	}
+
+	// Take the grant away: the same suite fails on its next run, with
+	// nothing restarted — and the prelude still runs cleanly, because an
+	// empty grant set is an answer, not an outage.
+	for _, name := range []string{"TEST_DATABASE_URL", "HOSTILE"} {
+		sec.SetGrants(ctx, name, nil, false)
+	}
+	if out, code := run(suite); code == 0 {
+		t.Errorf("the suite passed with the secret ungranted:\n%s", out)
+	}
+	if out, code := run(`bash -c "$(cat "$CLAUDE_ENV_FILE") && echo ran"`); code != 0 || out != "ran\n" {
+		t.Errorf("with nothing granted the prelude should be silent and succeed: exit %d, %q", code, out)
 	}
 }
 

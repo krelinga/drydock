@@ -57,7 +57,7 @@ func (s Scope) requestedBy() string {
 
 // Request is one parsed request line.
 type Request struct {
-	Verb  string // GET-TOKEN or PING
+	Verb  string // GET-TOKEN, GET-SECRETS or PING
 	Scope Scope  // GET-TOKEN only
 }
 
@@ -82,6 +82,10 @@ func Parse(line string) (Request, error) {
 	switch {
 	case len(f) == 1 && f[0] == "PING":
 		return Request{Verb: "PING"}, nil
+	case len(f) == 1 && f[0] == "GET-SECRETS":
+		// No arguments at all (§10.3): which secrets, like which
+		// repository, is decided by the socket the line arrived on.
+		return Request{Verb: "GET-SECRETS"}, nil
 	case len(f) == 2 && f[0] == "GET-TOKEN":
 		switch f[1] {
 		case "scope=git":
@@ -109,3 +113,26 @@ func okToken(token string, expires time.Time) string {
 }
 
 func errLine(reason string) string { return "ERR reason=" + reason + "\n" }
+
+// secretsAnswer frames a GET-SECRETS answer (§10.3):
+//
+//	OK count=N
+//	NAME value      (N lines)
+//	END
+//
+// The framing is only sound because a value is one line — refused at write
+// if it holds any control character (§10.1), checked again by the store
+// before delivery — and the client fails the fetch when count= disagrees
+// with the lines it received.
+func secretsAnswer(names, values []string) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "OK count=%d\n", len(names))
+	for i := range names {
+		b.WriteString(names[i])
+		b.WriteByte(' ')
+		b.WriteString(values[i])
+		b.WriteByte('\n')
+	}
+	b.WriteString("END\n")
+	return b.String()
+}

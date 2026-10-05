@@ -7,14 +7,19 @@
 # the broker refuses a line that tries to carry one.
 #
 # Exit 0 with the answer on stdout when the broker answered OK; otherwise one
-# line on stderr naming the reason, and exit 69 (EX_UNAVAILABLE). Callers
-# print "GitHub access unavailable" rather than letting git or gh report a
-# confusing authentication error (design §12).
+# line on stderr naming the reason, and exit 69 (EX_UNAVAILABLE). The line
+# says "GitHub access unavailable" rather than letting git or gh report a
+# confusing authentication error (design §12), or "secrets unavailable" for
+# drydock-secrets. The answer may be several lines: GET-SECRETS's is.
 set -u
+
+# What is unavailable when the broker is: GitHub access for the credential
+# helper and the gh shim, "secrets" for drydock-secrets.
+what=${DRYDOCK_BROKER_FOR:-GitHub access}
 
 sock=${DRYDOCK_BROKER_SOCK:-/run/drydock/broker.sock}
 if [ ! -S "$sock" ]; then
-	echo "drydock: GitHub access unavailable: no broker socket at $sock" >&2
+	echo "drydock: $what unavailable: no broker socket at $sock" >&2
 	exit 69
 fi
 
@@ -38,11 +43,11 @@ OK | "OK "*)
 	printf '%s\n' "$answer"
 	;;
 "ERR reason="*)
-	echo "drydock: GitHub access unavailable (${answer#ERR reason=})" >&2
+	echo "drydock: $what unavailable (${answer#ERR reason=})" >&2
 	exit 69
 	;;
 *)
-	echo "drydock: GitHub access unavailable: the broker did not answer" >&2
+	echo "drydock: $what unavailable: the broker did not answer" >&2
 	exit 69
 	;;
 esac

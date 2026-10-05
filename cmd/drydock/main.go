@@ -81,6 +81,7 @@ func serve(args []string) int {
 	fs.StringVar(&cfg.LabelPrefix, "label-prefix", cfg.LabelPrefix, "workspace container label prefix (never shared with another Drydock)")
 	fs.Int64Var(&cfg.GitHubAppID, "github-app-id", 0, "the GitHub App's numeric App ID (not its Client ID)")
 	fs.StringVar(&cfg.GitHubAppKey, "github-app-key", "", "path of the GitHub App's private key, mode 0400 (never the key itself)")
+	fs.StringVar(&cfg.SecretsKey, "secrets-key", "", "path of the secrets master key, 32 raw bytes, mode 0400 (never the key itself)")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}

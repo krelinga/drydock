@@ -80,6 +80,14 @@ type Config struct {
 	GitHubAppKey string
 	// GitHubAPI is the REST API's base URL; a test points it at a fake.
 	GitHubAPI string
+
+	// SecretsKey is the path of the secrets master key (§10.2): 32 raw
+	// bytes in a file readable by Drydock alone (mode 0400, §13.5), read
+	// once at startup. Never the key and never an environment variable.
+	// Empty means no secrets can be stored; the secret routes say so. Lose
+	// the file and every stored value is unreadable — there is no recovery
+	// but storing each one again.
+	SecretsKey string
 }
 
 // WorkspaceLabel is the full label key used for adoption and deletion.

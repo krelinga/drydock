@@ -189,4 +189,13 @@ CREATE TABLE installation (
 );
 ALTER TABLE repository ADD COLUMN removed_at TEXT;
 `,
+
+	// 5 — secrets as built (§10). GET-SECRETS writes a secret_access row per
+	// secret per fetch, and the prelude fetches before every Bash command
+	// (Spike 03), so this table grows with use; GET /api/secrets reads each
+	// secret's last access and the workspaces that ever held it, which
+	// without an index is a scan of every row ever written.
+	`
+CREATE INDEX secret_access_secret ON secret_access (secret_id, workspace_id, at);
+`,
 }

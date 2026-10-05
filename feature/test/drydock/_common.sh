@@ -19,13 +19,42 @@ check "no socket: the gh shim says so" bash -c \
 check "no socket, not required: the probe warns and passes" bash -c \
 	'out=$(drydock-probe 2>&1) && echo "$out" | grep -q "broker not required"'
 
+# Secrets (design §10.3): CLAUDE_ENV_FILE names the Feature's one-line script,
+# and with no broker that line ends the command shell with 69 — the command
+# after it never runs — and says why on one line. requireBroker does not
+# soften this: a command without its secrets must not run.
+check "CLAUDE_ENV_FILE is the one constant line" bash -c \
+	'[ "$CLAUDE_ENV_FILE" = /usr/local/drydock/etc/claude-env.sh ] && [ "$(cat "$CLAUDE_ENV_FILE")" = "eval \"\$(drydock-secrets export)\"" ] && [ "$(wc -l <"$CLAUDE_ENV_FILE")" = 1 ]'
+check "drydock-secrets is found first, in a login shell too" bash -lc \
+	'[ "$(readlink -f "$(command -v drydock-secrets)")" = /usr/local/drydock/bin/drydock-secrets ]'
+check "no socket: the prelude aborts the command, on one line" bash -c \
+	'out=$(bash -c "$(cat "$CLAUDE_ENV_FILE") && echo ran" 2>&1); rc=$?; [ $rc = 69 ] && ! echo "$out" | grep -q ran && [ "$(echo "$out" | wc -l)" = 1 ] && echo "$out" | grep -q "secrets unavailable"'
+
 # A stand-in broker, so the clients get past the token fetch to what they do
 # with it. Without one, a gh shim that execs itself forever still "fails
-# fast" at the fetch, and the loop check below would be vacuous.
-socat UNIX-LISTEN:/tmp/fake-broker.sock,fork,mode=666 \
-	SYSTEM:'read l; echo "OK token=ghs_FakeTokenForFeatureTests expires_at=2030-01-01T00:00:00Z"' &
+# fast" at the fetch, and the loop check below would be vacuous. It answers
+# GET-SECRETS with two secrets, one of them hostile: a value that would run
+# a command if export did not quote it.
+cat >/tmp/fake-broker.sh <<'BROKER'
+#!/bin/sh
+read -r l
+case $l in
+GET-SECRETS)
+	printf '%s\n' 'OK count=2' 'TEST_DATABASE_URL postgres://u:p@db:5432/test' \
+		"TRICKY it's \$(touch /tmp/pwned); \`touch /tmp/pwned\`; '; touch /tmp/pwned; '" 'END'
+	;;
+*) echo "OK token=ghs_FakeTokenForFeatureTests expires_at=2030-01-01T00:00:00Z" ;;
+esac
+BROKER
+chmod +x /tmp/fake-broker.sh
+socat UNIX-LISTEN:/tmp/fake-broker.sock,fork,mode=666 EXEC:/tmp/fake-broker.sh &
 for _ in $(seq 50); do [ -S /tmp/fake-broker.sock ] && break; sleep 0.1; done
 export DRYDOCK_BROKER_SOCK=/tmp/fake-broker.sock
+
+check "with a broker, the prelude is silent and the command sees the secrets" bash -c \
+	'out=$(bash -c "$(cat "$CLAUDE_ENV_FILE") && printf %s \"\$TEST_DATABASE_URL\"" 2>&1) && [ "$out" = postgres://u:p@db:5432/test ]'
+check "a hostile value is held verbatim and runs nothing" bash -c \
+	'v=$(bash -c "$(cat "$CLAUDE_ENV_FILE") && printf %s \"\$TRICKY\"") && [ "$v" = "it'"'"'s \$(touch /tmp/pwned); \`touch /tmp/pwned\`; '"'"'; touch /tmp/pwned; '"'"'" ] && [ ! -e /tmp/pwned ]'
 
 check "with a broker, the helper gives git the token" bash -c \
 	'printf "protocol=https\nhost=github.com\n\n" | git credential fill | grep -qx "password=ghs_FakeTokenForFeatureTests"'
