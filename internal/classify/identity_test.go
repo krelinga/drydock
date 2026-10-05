@@ -327,6 +327,31 @@ func TestClassifyIdentityBoundaries(t *testing.T) {
 	}
 }
 
+// TestClassifyIdentityWithinMovesOnlyTheBoundary: the configured window moves
+// the expiring/ok line and nothing else. One day out is expiring under the
+// default window (the control) and ok under a twelve-hour one; the expired
+// boundary does not move; and a window that is not positive is refused.
+func TestClassifyIdentityWithinMovesOnlyTheBoundary(t *testing.T) {
+	auth, _ := loadIdentityFixture(t, "authstatus", "valid")
+	_, now := loadIdentityFixture(t, "credentials", "ok")
+	day := synthCreds(fakeAccess, fakeRefresh, now.Add(24*time.Hour))
+	if got, err := ClassifyIdentity(auth, day, now); err != nil || got.State != IdentityExpiring {
+		t.Fatalf("control: one day out under the default window = %v, %v; want expiring", got.State.testString(), err)
+	}
+	if got, err := ClassifyIdentityWithin(auth, day, now, 12*time.Hour); err != nil || got.State != IdentityOK {
+		t.Errorf("one day out under a 12h window = %v, %v; want ok", got.State.testString(), err)
+	}
+	past := synthCreds(fakeAccess, fakeRefresh, now.Add(-time.Millisecond))
+	if got, err := ClassifyIdentityWithin(auth, past, now, time.Hour); err != nil || got.State != IdentityExpired {
+		t.Errorf("past expiry under a 1h window = %v, %v; want expired", got.State.testString(), err)
+	}
+	for _, w := range []time.Duration{0, -time.Hour} {
+		if _, err := ClassifyIdentityWithin(auth, day, now, w); err == nil {
+			t.Errorf("window %s was accepted", w)
+		}
+	}
+}
+
 // TestClassifyIdentityRefusesWhatItCannotRead: every input that cannot be
 // classified honestly is an error, never a plausible Absent or OK.
 func TestClassifyIdentityRefusesWhatItCannotRead(t *testing.T) {

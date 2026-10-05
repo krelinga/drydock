@@ -3,7 +3,42 @@ package config
 import (
 	"strings"
 	"testing"
+	"time"
 )
+
+// TestValidateRefusesABrokenIdentityWatch: the Claude image reads the shared
+// login, so it is pinned by digest like the cleanup helper; the volume must be
+// a name Docker accepts; and a zero expiring window would make `expiring`
+// unreachable. The control is the defaults, which validate, and each case
+// changes one field from them.
+func TestValidateRefusesABrokenIdentityWatch(t *testing.T) {
+	base := Default()
+	base.UIOrigin, base.UIHost = "https://drydock.example.com", "drydock.example.com"
+	if err := base.Validate(); err != nil {
+		t.Fatalf("control: the defaults do not validate: %v", err)
+	}
+	if base.ClaudeVolume != "drydock-claude-config" || base.IdentityInterval != 6*time.Hour ||
+		base.IdentityExpiringWindow != 72*time.Hour {
+		t.Errorf("defaults moved from the design's values (§6, §7.3): %q %s %s",
+			base.ClaudeVolume, base.IdentityInterval, base.IdentityExpiringWindow)
+	}
+	for name, mut := range map[string]func(*Config){
+		"unpinned image":  func(c *Config) { c.ClaudeBaseImage = "node:22-bookworm-slim" },
+		"empty image":     func(c *Config) { c.ClaudeBaseImage = "" },
+		"empty volume":    func(c *Config) { c.ClaudeVolume = "" },
+		"volume as path":  func(c *Config) { c.ClaudeVolume = "/var/lib/x" },
+		"volume as flag":  func(c *Config) { c.ClaudeVolume = "-v" },
+		"volume w/ comma": func(c *Config) { c.ClaudeVolume = "a,readonly=false" },
+		"zero window":     func(c *Config) { c.IdentityExpiringWindow = 0 },
+		"tiny interval":   func(c *Config) { c.IdentityInterval = time.Second },
+	} {
+		c := base
+		mut(&c)
+		if err := c.Validate(); err == nil {
+			t.Errorf("%s validated", name)
+		}
+	}
+}
 
 // TestValidateRefusesAnUnpinnedCleanupImage: the cleanup helper runs as root
 // with a host directory mounted, so its image must be pinned by digest. The

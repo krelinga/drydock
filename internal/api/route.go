@@ -252,6 +252,14 @@ var Table = []Route{
 		Name: "claude.identity.read", Doc: "GET /api/auth/claude",
 	},
 	{
+		Method: "POST", Pattern: "/api/auth/claude/check", Mux: MuxAPI,
+		// Check the login now rather than at the next six-hourly poll
+		// (§7.3): after fixing something from a shell, or to see a login
+		// made in a workspace's terminal. Joins a check already running.
+		Auth: AuthRequired, Mutating: true,
+		Name: "claude.identity.check", Doc: "POST /api/auth/claude/check",
+	},
+	{
 		Method: "POST", Pattern: "/api/auth/claude/login", Mux: MuxAPI,
 		Auth: AuthRequired, Mutating: true,
 		Name: "claude.login.begin", Doc: "POST /api/auth/claude/login",

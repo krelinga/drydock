@@ -58,6 +58,9 @@ func testConfig(t *testing.T, dir string) config.Config {
 	c.BrokerDir = filepath.Join(dir, "run", "sock")
 	c.LabelPrefix = "drydock.test.server"
 	c.WorkspaceRoot = filepath.Join(dir, "ws") // never the real /srv/drydock
+	// Never the real login: a volume nobody creates, so the watch reports
+	// absent without building the Claude image.
+	c.ClaudeVolume = "drydock-test-server-no-volume"
 	return c
 }
 

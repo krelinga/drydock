@@ -105,6 +105,17 @@ const ExpiringWindow = 72 * time.Hour
 // likewise set only under rule 8 — an email beside "Signed out" or "No one has
 // signed in" would name an account that is not the one on the volume.
 func ClassifyIdentity(authStatusJSON, credentialsJSON []byte, now time.Time) (Identity, error) {
+	return ClassifyIdentityWithin(authStatusJSON, credentialsJSON, now, ExpiringWindow)
+}
+
+// ClassifyIdentityWithin is ClassifyIdentity with rule 8's warning window as
+// a parameter: the watch takes it from configuration (§7.3), and every other
+// rule is the same code. A window <= 0 is an error rather than a classifier
+// that can never say expiring.
+func ClassifyIdentityWithin(authStatusJSON, credentialsJSON []byte, now time.Time, window time.Duration) (Identity, error) {
+	if window <= 0 {
+		return Identity{}, fmt.Errorf("classify identity: expiring window %s must be positive", window)
+	}
 	if credentialsJSON == nil {
 		return Identity{State: IdentityAbsent}, nil
 	}
@@ -159,7 +170,7 @@ func ClassifyIdentity(authStatusJSON, credentialsJSON []byte, now time.Time) (Id
 	switch left := id.ExpiresAt.Sub(now); {
 	case left <= 0:
 		id.State = IdentityExpired
-	case left <= ExpiringWindow:
+	case left <= window:
 		id.State = IdentityExpiring
 	default:
 		id.State = IdentityOK
