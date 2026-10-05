@@ -3,11 +3,17 @@
 A single Go binary for one dev server that turns a GitHub repository into a running dev container
 with a supervised `claude remote-control` session inside it, driven from a web UI on the LAN.
 
-> **Status: early.** What ships today is the front door: the sign-in, the session and device
-> handling, and the route table every later phase plugs into. Workspaces are not implemented yet.
-> See [the design](docs/design/overall/drydock-design.md) §14 for the build order.
+> **Status: early.** What works today: the sign-in, the repository list from the GitHub App,
+> cloning a repository into a running dev container, GitHub access scoped to that one repository
+> inside it, repository secrets, and stop, rebuild and delete. Claude Code sessions (Phase 5) and
+> previews are not built yet. See [the design](docs/design/overall/drydock-design.md) §14 for the
+> build order.
 
 ## Install
+
+**Deploying for the first time? Follow [the first-deployment runbook](docs/deploy/first-deployment.md)**:
+a step-by-step checklist from cutting the release to your first workspace, including the
+certificate options, getting the keys onto the server safely, and troubleshooting.
 
 On a Linux server with systemd and [Caddy](https://caddyserver.com/docs/install) installed from its
 official package, with a hostname for the UI and a certificate for it:
@@ -36,7 +42,7 @@ What the installer needs, and what it will not do:
 - **No TCP port of its own.** Drydock listens only on Unix sockets under `/run/drydock`, readable by
   the `drydock` group, of which Caddy is the only other member.
 - **Docker and the devcontainer CLI, installed by you.** [Docker Engine](https://docs.docker.com/engine/install/)
-  (or your distribution's `docker.io`), and `npm install -g @devcontainers/cli` with Node.js 20 or
+  (or your distribution's `docker.io`), and `npm install -g @devcontainers/cli@0.89.0` with Node.js 20 or
   later, landing in `/usr/local/bin` or `/usr/bin` — the service's `PATH` has nothing else. The
   installer refuses to run without them, and adds the `drydock` user to the `docker` group, which is
   root-equivalent on the host: Drydock builds whatever a repository's `devcontainer.json` asks for.
