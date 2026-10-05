@@ -29,6 +29,21 @@ type View struct {
 	ContainerID *string              `json:"container_id"`
 	CreatedAt   time.Time            `json:"created_at"`
 	Steps       map[Step]StepOutcome `json:"steps"`
+	// LastAction is the latest workspace.action event — a stop's or a
+	// delete's newest sub-step — or null when there has been none. It is
+	// what lets a card loaded from this list alone say which sub-step a
+	// failed stop stopped at, beside the state_detail that says it in prose
+	// (frontend §4.5 #15): the client reads structure, never the sentence.
+	LastAction *ActionOutcome `json:"last_action"`
+}
+
+// ActionOutcome is one workspace.action event, as the view reports it.
+type ActionOutcome struct {
+	Action string    `json:"action"` // stop | delete
+	Step   string    `json:"step"`
+	Status string    `json:"status"` // started | done | failed
+	Detail string    `json:"detail,omitempty"`
+	At     time.Time `json:"at"`
 }
 
 // StepOutcome is the latest workspace.step event for one step.
@@ -103,15 +118,16 @@ func (s *Store) views(ctx context.Context, q string, args ...any) ([]View, error
 	return out, s.fillSteps(ctx, out, index, args...)
 }
 
-// fillSteps reads the step events oldest first and keeps the last per step,
-// which is the latest. Read in Go rather than with a GROUP BY over
-// json_extract: data is the reducer's contract, and the API parses it the
-// same way the reducer does rather than through a second dialect.
+// fillSteps reads the step and action events oldest first and keeps the last
+// per step, and the last action, which are the latest. Read in Go rather than
+// with a GROUP BY over json_extract: data is the reducer's contract, and the
+// API parses it the same way the reducer does rather than through a second
+// dialect.
 func (s *Store) fillSteps(ctx context.Context, out []View, index map[string]int, args ...any) error {
-	q := `SELECT workspace_id, data, at FROM event WHERE kind = ? AND workspace_id IS NOT NULL ORDER BY id`
-	qargs := []any{KindStep}
+	q := `SELECT workspace_id, kind, data, at FROM event WHERE kind IN (?, ?) AND workspace_id IS NOT NULL ORDER BY id`
+	qargs := []any{KindStep, KindAction}
 	if len(args) == 1 { // one workspace
-		q = `SELECT workspace_id, data, at FROM event WHERE kind = ? AND workspace_id = ? ORDER BY id`
+		q = `SELECT workspace_id, kind, data, at FROM event WHERE kind IN (?, ?) AND workspace_id = ? ORDER BY id`
 		qargs = append(qargs, args[0])
 	}
 	rows, err := s.DB.QueryContext(ctx, q, qargs...)
@@ -120,9 +136,9 @@ func (s *Store) fillSteps(ctx context.Context, out []View, index map[string]int,
 	}
 	defer rows.Close()
 	for rows.Next() {
-		var ws, at string
+		var ws, kind, at string
 		var data sql.NullString
-		if err := rows.Scan(&ws, &data, &at); err != nil {
+		if err := rows.Scan(&ws, &kind, &data, &at); err != nil {
 			return err
 		}
 		i, ok := index[ws]
@@ -130,16 +146,22 @@ func (s *Store) fillSteps(ctx context.Context, out []View, index map[string]int,
 			continue
 		}
 		var d struct {
+			Action string `json:"action"`
 			Step   Step   `json:"step"`
 			Status string `json:"status"`
 			Detail string `json:"detail"`
 		}
-		if err := json.Unmarshal([]byte(data.String), &d); err != nil || d.Step == "" {
-			return errors.Join(fmt.Errorf("workspace %s: a %s event has unreadable data", ws, KindStep), err)
+		if err := json.Unmarshal([]byte(data.String), &d); err != nil || d.Step == "" ||
+			(kind == KindAction && d.Action == "") {
+			return errors.Join(fmt.Errorf("workspace %s: a %s event has unreadable data", ws, kind), err)
 		}
 		t, err := time.Parse(time.RFC3339Nano, at)
 		if err != nil {
-			return fmt.Errorf("workspace %s: step event time: %w", ws, err)
+			return fmt.Errorf("workspace %s: %s event time: %w", ws, kind, err)
+		}
+		if kind == KindAction {
+			out[i].LastAction = &ActionOutcome{Action: d.Action, Step: string(d.Step), Status: d.Status, Detail: d.Detail, At: t}
+			continue
 		}
 		out[i].Steps[d.Step] = StepOutcome{Status: d.Status, Detail: d.Detail, At: t}
 	}

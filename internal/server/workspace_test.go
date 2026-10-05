@@ -84,7 +84,7 @@ func TestWorkspaceRoutesEndToEnd(t *testing.T) {
 		t.Errorf("create with no App: %d", resp.StatusCode)
 	}
 	if resp := plain.do(t, req{method: "GET", path: "/api/workspaces", cookie: pc}); resp.StatusCode != 200 ||
-		readBody(t, resp) != `{"workspaces":[]}`+"\n" {
+		readBody(t, resp) != `{"workspaces":[],"capacity":{"cap":10,"occupied":0}}`+"\n" {
 		t.Errorf("list with no workspaces: %d", resp.StatusCode)
 	}
 

@@ -24,8 +24,10 @@ import ActionButton from '../components/ActionButton.vue'
 import WorkspaceAction from '../components/WorkspaceAction.vue'
 import { useStreamRefetch } from '../lib/refetch'
 import { relativeTime } from '../lib/time'
-import { actionStepTitle, cardStatus, stepTitle } from '../lib/workspaceCard'
-import { ACTION_STEPS, failedStep, liveAction, runSteps } from '../stores/reducer'
+import MakeRoom from '../components/MakeRoom.vue'
+import { capacity } from '../lib/capacity'
+import { actionStepTitle, cardStatus, stepTitle, withRoom } from '../lib/workspaceCard'
+import { ACTION_STEPS, failedStep, liveAction, runSteps, stopFailed } from '../stores/reducer'
 import { useStreamStore } from '../stores/stream'
 import { deleteKey, rebuildKey, useWorkspacesStore } from '../stores/workspaces'
 
@@ -91,12 +93,16 @@ const shortId = (c: string) => c.slice(0, 12)
 
 // A stop's or a delete's sub-steps: while one runs, where a stop failed, and
 // for as long as a delete has not finished — a stuck one names its sub-step.
+// A failed stop and a stuck delete are each ended by the server's annotation,
+// so neither is live by then; each keeps its run here until something moves
+// the workspace on or a retry clears the annotation.
 const run = computed(() => {
   const w = ws.value
   if (w === null) return null
   const live = liveAction(w)
   if (live !== null) return live
-  return w.state === 'deleting' && w.action?.name === 'delete' ? w.action : null
+  if (w.state === 'deleting' && w.action?.name === 'delete') return w.action
+  return stopFailed(w) && w.action?.name === 'stop' ? w.action : null
 })
 const runRows = computed(() => {
   const r = run.value
@@ -217,8 +223,9 @@ watch(id, () => {
         <div class="sec-label"><span>Actions</span></div>
         <div v-if="canRebuild" class="more" data-test="rebuild-block">
           <p class="sub">Rebuild replaces the container with a new one from the dev container configuration. The clone, and everything in it, stays.</p>
+          <MakeRoom v-if="withRoom('rebuild', ws, capacity(stream.entities).full) === 'make_room'" />
           <ActionButton
-            label="Rebuild" :flight-key="rebuildKey(ws.id)" :run="() => workspaces.rebuild(ws!.id)"
+            v-else label="Rebuild" :flight-key="rebuildKey(ws.id)" :run="() => workspaces.rebuild(ws!.id)"
             data-test="rebuild"
           />
         </div>

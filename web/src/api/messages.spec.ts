@@ -58,6 +58,21 @@ describe('describeError', () => {
     expect(describeError(new ApiError(409, 'in_progress'))).toBe('Already in progress.')
   })
 
+  it('at_capacity names the cap from the detail the server sends', () => {
+    expect(describeError(new ApiError(409, 'at_capacity', null, 'prose', 'The cap is 10.')))
+      .toMatch(/Start brings it back\. The cap is 10\.$/)
+    // Control: with no detail (an older server, or no cap), no number is invented.
+    expect(describeError(new ApiError(409, 'at_capacity', null, 'prose'))).not.toMatch(/\d/)
+  })
+
+  it('app_not_configured reads true on every route that answers it, not only the catalog', () => {
+    const s = describeError(new ApiError(503, 'app_not_configured', null, 'prose'))
+    // The catalog, a clone, a start and a rebuild all answer it (internal/api).
+    for (const what of ['list repositories', 'clone', 'start', 'rebuild']) expect(s).toContain(what)
+    expect(s).not.toContain('to show')
+    expect(s).not.toContain('prose')
+  })
+
   it('has a sentence for every code internal/secrets can refuse with, and the split codes say different things', () => {
     const go = readFileSync(resolve(process.cwd(), '../internal/secrets/validate.go'), 'utf8')
     const codes = [...go.matchAll(/^\s*Code\w+\s+= "([a-z_]+)"$/gm)].map((m) => m[1]!)

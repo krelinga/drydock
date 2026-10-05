@@ -4,7 +4,8 @@
 // contract has one source. No generator exists yet, so they are written by
 // hand and mirrored field for field from internal/api/session_routes.go
 // (deviceJSON), internal/api/problem.go (Error), internal/catalog/view.go
-// (View), internal/events/events.go (Event) and internal/secrets/store.go
+// (View), internal/events/events.go (Event), internal/workspace/view.go and
+// internal/api/workspace_routes.go (View, WorkspaceList) and internal/secrets/store.go
 // (Meta, PutResult), with each event kind's `data`
 // read off the Emit call that writes it (see stores/reducer.ts). This file is
 // the one to replace with generated output rather than extend much further.
@@ -112,11 +113,38 @@ export interface WorkspaceView {
   created_at: string
   /** Keyed by step name; each step's latest status across runs. */
   steps: Record<string, StepView>
+  /**
+   * The latest `workspace.action` event — a stop's or a delete's newest
+   * sub-step — or null when there has been none (frontend §4.5 #15). Absent
+   * from a server older than it.
+   */
+  last_action?: ActionView | null
+}
+
+/** One `workspace.action` event as the view reports it (internal/workspace ActionOutcome). */
+export interface ActionView {
+  action: string
+  step: string
+  status: StepStatus
+  detail?: string
+  at: string
+}
+
+/**
+ * The concurrent-container cap and how many workspaces count against it
+ * (frontend §4.5 #17): occupied is the list's own rows counted by
+ * `workspace.Occupying`. `cap` is null when there is none.
+ */
+export interface CapacityView {
+  cap: number | null
+  occupied: number
 }
 
 /** `GET /api/workspaces`: every workspace with a row, newest first, `deleting` included. */
 export interface WorkspaceList {
   workspaces: WorkspaceView[]
+  /** Absent from a server older than §4.5 #17. */
+  capacity?: CapacityView
 }
 
 /** `GET /api/workspaces/:id`: the view plus its latest 50 events, newest first. */

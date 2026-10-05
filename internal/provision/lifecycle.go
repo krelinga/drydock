@@ -21,7 +21,7 @@ import (
 
 // KindAction is the event a stop or delete sub-step writes.
 // data: {action: "stop"|"delete", step, status: started|done|failed, detail?}
-const KindAction = "workspace.action"
+const KindAction = workspace.KindAction
 
 // Sub-steps, in order.
 const (
@@ -72,6 +72,13 @@ func (p *Provisioner) Stop(ctx context.Context, id string) error {
 	if p.active[id] != nil || w.State != workspace.Running {
 		return workspace.ErrInProgress
 	}
+	// A stop asked for again after one failed: the failure's annotation goes
+	// as this one starts, on the stream, so nothing reading the list alone
+	// still says the stop failed while it is running again (frontend §4.5
+	// #15). Under p.mu, so the clear lands before the job's first event.
+	if _, err := p.Workspaces.ClearDetail(ctx, id, workspace.Running); err != nil {
+		return err
+	}
 	p.launch(id, "stop", func(ctx context.Context) error {
 		err := p.stopJob(ctx, w)
 		if err != nil {
@@ -106,10 +113,38 @@ func (p *Provisioner) stopJob(ctx context.Context, w workspace.Workspace) error 
 		{SubBrokerSocket, func(context.Context) error { return p.closeSocket(w.ID) }},
 	}
 	if err := p.subSteps(ctx, ActStop, w.ID, steps); err != nil {
+		// The workspace stays running, and the row says why (frontend §4.5
+		// #15): in state_detail, where every reader of the row finds it —
+		// the list a reloaded home page reads included — rather than only
+		// in the action events a detail body carries. The sentence names
+		// the sub-step in Drydock's words; the next move replaces it (a
+		// stop that works, a rebuild, a delete), and a stop asked for again
+		// clears it as it starts. A stop a delete cut off is not annotated:
+		// the workspace is deleting, and Annotate refuses it, which is the
+		// answer wanted.
+		var pub workspace.PublicError
+		detail := StopFailedDetail("")
+		if errors.As(err, &pub) {
+			detail = StopFailedDetail(pub.Public())
+		}
+		var ill workspace.ErrIllegalMove
+		if aerr := p.Workspaces.Annotate(book, w.ID, workspace.Running, detail); aerr != nil && !errors.As(aerr, &ill) {
+			err = errors.Join(err, aerr)
+		}
 		return err
 	}
 	_, err := p.Workspaces.Move(book, w.ID, workspace.Stopped, "")
 	return err
+}
+
+// StopFailedDetail is the state_detail a failed stop leaves on its running
+// workspace: the sub-step's own sentence, framed. Exported so a test can name
+// the exact sentence the UI shows live and after a reload.
+func StopFailedDetail(public string) string {
+	if public == "" {
+		return "The stop did not finish; stop again to retry."
+	}
+	return "The stop did not finish: " + public + " Stop again to retry."
 }
 
 // Delete is DELETE /api/workspaces/{id}?confirm=<full_name>. The workspace
@@ -169,7 +204,16 @@ func (p *Provisioner) startDelete(ctx context.Context, id string) (*job, error) 
 		if !errors.As(err, &ill) || ill.From != workspace.Deleting {
 			return nil, err
 		}
-		// Already deleting, with nothing in flight here: resume it.
+		// Already deleting, with nothing in flight here: resume it — asked
+		// again, or at boot. A delete that stuck says so in state_detail
+		// ("…Delete again to retry."); that stops being true as the resume
+		// starts, so it goes now, on the stream, before the first sub-step
+		// (frontend §4.5 #16). A page that reads only the list then shows a
+		// delete in progress rather than offering Delete again. If this one
+		// sticks too, deleteJob writes a new annotation.
+		if _, err := p.Workspaces.ClearDetail(ctx, id, workspace.Deleting); err != nil {
+			return nil, err
+		}
 	}
 	if prev != nil {
 		prev.cancel(errDeleting)
@@ -224,6 +268,13 @@ func (p *Provisioner) deleteJob(ctx context.Context, id string) error {
 			switch {
 			case errors.Is(err, ErrUnsafePath):
 				return workspace.Public("Drydock refused to remove the workspace's directory: it is not the workspace's own directory under the workspace root.", err)
+			// The helper was asked for but never ran: say so, rather than
+			// claim it was tried. A misconfigured image is the operator's to
+			// fix, so it gets its own sentence naming the flag.
+			case errors.Is(err, container.ErrCleanupImage):
+				return workspace.Public("Drydock could not remove the workspace's directory: some files belong to another user, and the helper container that removes those cannot run, because --cleanup-image is not pinned by digest.", err)
+			case errors.Is(err, container.ErrCleanupNotRun):
+				return workspace.Public("Drydock could not remove the workspace's directory: some files belong to another user, and Drydock could not start the helper container that removes those.", err)
 			case err != nil && helped:
 				return workspace.Public("Drydock could not remove the workspace's directory, even with a helper container for the files it does not own.", err)
 			case err != nil:
@@ -246,6 +297,56 @@ func (p *Provisioner) deleteJob(ctx context.Context, id string) error {
 		return err
 	}
 	return p.Workspaces.Remove(book, id)
+}
+
+// KindHelpersSwept is the system event the boot sweep writes when it removed
+// anything. data: {count}
+const KindHelpersSwept = "container.helpers_swept"
+
+// SweepHelpers removes every cleanup helper a delete left behind — Drydock
+// killed while one ran, and the daemon never reaching --rm — found by this
+// instance's <prefix>.cleanup label (design §6). RemoveContents already
+// clears a stray before running a new helper for the same workspace, but
+// only for a workspace whose delete needs the helper again; a delete
+// resumed at boot whose host removal then succeeds, or a workspace whose
+// row is gone, would leave one for good. So boot sweeps, after
+// reconciliation has resumed and finished every interrupted delete.
+//
+// It never touches a workspace's container: ListHelpers lists by the cleanup
+// label alone and drops anything carrying the workspace label too. And it
+// skips a helper whose workspace has a job in flight here — a delete the
+// operator started since boot may be running that helper right now. p.mu is
+// held throughout, so no job can start between that check and the removal;
+// the routes wait for a docker listing and a remove, once, at boot.
+func (p *Provisioner) SweepHelpers(ctx context.Context) (int, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.closed {
+		return 0, ErrShuttingDown
+	}
+	found, err := p.Containers.ListHelpers(ctx)
+	if err != nil {
+		return 0, err
+	}
+	var ids []string
+	for _, h := range found {
+		if p.active[h.WorkspaceID] != nil {
+			continue
+		}
+		ids = append(ids, h.ContainerID)
+	}
+	if len(ids) == 0 {
+		return 0, nil
+	}
+	if err := p.Containers.Remove(ctx, ids); err != nil {
+		return 0, err
+	}
+	msg := "Removed a cleanup helper container an interrupted delete left behind."
+	if len(ids) > 1 {
+		msg = fmt.Sprintf("Removed %d cleanup helper containers interrupted deletes left behind.", len(ids))
+	}
+	_, err = p.Events.Emit(ctx, "", events.Info, KindHelpersSwept, msg, map[string]any{"count": len(ids)})
+	return len(ids), err
 }
 
 func (p *Provisioner) stopSupervisor(ctx context.Context, w workspace.Workspace) error {

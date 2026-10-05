@@ -135,12 +135,30 @@ export const STOP_OK: StreamEvent[] = [
   ev(76, 'workspace.state', WS, { state: 'stopped', from: 'running' }, 'Stopped.'),
 ]
 
-/** WS after CLONE_OK: a stop whose `docker stop` fails. No state event follows — it stays running. */
+/** internal/provision StopFailedDetail for `docker stop` failing. */
+export const STOP_FAILED_DETAIL = "The stop did not finish: docker could not stop the workspace's container. Stop again to retry."
+
+/**
+ * WS after CLONE_OK: a stop whose `docker stop` fails. It stays running, and
+ * Annotate writes a running → running state event whose detail names the
+ * sub-step (frontend §4.5 #15).
+ */
 export const STOP_FAILS: StreamEvent[] = [
   actionEvent(80, WS, 'stop', 'session_server', 'started'),
   actionEvent(81, WS, 'stop', 'session_server', 'done', NO_SUPERVISOR),
   actionEvent(82, WS, 'stop', 'container', 'started'),
   actionEvent(83, WS, 'stop', 'container', 'failed', "docker could not stop the workspace's container."),
+  ev(84, 'workspace.state', WS, { state: 'running', from: 'running', detail: STOP_FAILED_DETAIL },
+    `Running. ${STOP_FAILED_DETAIL}`, 'warn'),
+]
+
+/** STOP_FAILS asked again: ClearDetail as it starts, then the sub-steps, then stopped. */
+export const STOP_RETRIED: StreamEvent[] = [
+  ev(85, 'workspace.state', WS, { state: 'running', from: 'running' }, 'Running.'),
+  actionEvent(86, WS, 'stop', 'session_server', 'started'),
+  actionEvent(87, WS, 'stop', 'session_server', 'done', NO_SUPERVISOR),
+  actionEvent(88, WS, 'stop', 'container', 'started'),
+  actionEvent(89, WS, 'stop', 'container', 'done'),
 ]
 
 export const STUCK_DETAIL = "The delete stopped part-way: Drydock could not remove the workspace's directory; files inside may belong to another user. Delete again to retry."
@@ -165,19 +183,21 @@ export const DELETE_STUCK: StreamEvent[] = [
 ]
 
 /**
- * DELETE_STUCK asked again: no state move (it is deleting already), every
- * sub-step rerun — each is idempotent — and then the row goes.
+ * DELETE_STUCK asked again: no move (it is deleting already) but ClearDetail's
+ * deleting → deleting state event with no detail as it starts (frontend §4.5
+ * #16), every sub-step rerun — each is idempotent — and then the row goes.
  */
 export const DELETE_RESUMED: StreamEvent[] = [
-  actionEvent(100, WS, 'delete', 'session_server', 'started'),
-  actionEvent(101, WS, 'delete', 'session_server', 'done', NO_SUPERVISOR),
-  actionEvent(102, WS, 'delete', 'containers', 'started'),
-  actionEvent(103, WS, 'delete', 'containers', 'done', 'No container to remove.'),
-  actionEvent(104, WS, 'delete', 'broker_socket', 'started'),
-  actionEvent(105, WS, 'delete', 'broker_socket', 'done'),
-  actionEvent(106, WS, 'delete', 'files', 'started'),
-  actionEvent(107, WS, 'delete', 'files', 'done'),
-  ev(108, 'workspace.gone', WS, {}, 'Workspace deleted.'),
+  ev(100, 'workspace.state', WS, { state: 'deleting', from: 'deleting' }, 'Deleting.'),
+  actionEvent(101, WS, 'delete', 'session_server', 'started'),
+  actionEvent(102, WS, 'delete', 'session_server', 'done', NO_SUPERVISOR),
+  actionEvent(103, WS, 'delete', 'containers', 'started'),
+  actionEvent(104, WS, 'delete', 'containers', 'done', 'No container to remove.'),
+  actionEvent(105, WS, 'delete', 'broker_socket', 'started'),
+  actionEvent(106, WS, 'delete', 'broker_socket', 'done'),
+  actionEvent(107, WS, 'delete', 'files', 'started'),
+  actionEvent(108, WS, 'delete', 'files', 'done'),
+  ev(109, 'workspace.gone', WS, {}, 'Workspace deleted.'),
 ]
 
 /** WS2 after CLONE_FAILS_AT_UP, deleted in one go: the move, four sub-steps, the gone. */
@@ -219,9 +239,16 @@ export function ws2View(over: Partial<WorkspaceView> = {}): WorkspaceView {
   }
 }
 
-/** GET /api/workspaces: newest first. */
+/** GET /api/workspaces: newest first, without `capacity` (as before §4.5 #17) unless given. */
 export function listBody(...views: WorkspaceView[]): WorkspaceList {
   return { workspaces: views.length > 0 ? views : [ws2View(), wsView()] }
+}
+
+/** GET /api/workspaces with the cap, occupied counted as internal/workspace CapacityOf counts it. */
+export function listWithCap(cap: number | null, ...views: WorkspaceView[]): WorkspaceList {
+  const body = listBody(...views)
+  const occupied = body.workspaces.filter((v) => ['pending', 'cloning', 'building', 'running'].includes(v.state)).length
+  return { ...body, capacity: { cap, occupied } }
 }
 
 /** GET /api/workspaces/:id for WS, with the events it names, newest first. */

@@ -20,13 +20,14 @@ import { computed, onMounted } from 'vue'
 import { RouterLink } from 'vue-router'
 import { describeError } from '../api/messages'
 import ActionButton from '../components/ActionButton.vue'
+import MakeRoom from '../components/MakeRoom.vue'
 import WorkspaceAction from '../components/WorkspaceAction.vue'
 import { catalogEvent, useCatalogStore, type CatalogRow } from '../stores/catalog'
 import type { Workspace } from '../stores/reducer'
 import { cloneKey, useWorkspacesStore } from '../stores/workspaces'
 import { useStreamRefetch } from '../lib/refetch'
 import { relativeTime } from '../lib/time'
-import { cardStatus, rowAction, type CardAction } from '../lib/workspaceCard'
+import { cardStatus, rowAction, withRoom, type CardAction } from '../lib/workspaceCard'
 
 const catalog = useCatalogStore()
 const workspaces = useWorkspacesStore()
@@ -39,6 +40,11 @@ useStreamRefetch({ refetch: () => catalog.load(), when: catalogEvent })
 useStreamRefetch({ refetch: () => workspaces.loadList() })
 
 const status = (w: Workspace) => cardStatus(w)
+// A row's action at the cap: Clone (or a Start) becomes the pointer to Stop.
+const shownRowAction = (r: CatalogRow) => {
+  const a = rowAction(r)
+  return a === 'clone' ? withRoom('clone', null, catalog.capacity.full) : a
+}
 const wsLink = (w: Workspace) => ({ name: 'workspace', params: { id: w.id } })
 
 const searching = computed(() => catalog.query.trim() !== '')
@@ -56,7 +62,14 @@ function rowNote(r: CatalogRow): string | null {
     <h1 id="ws-h" tabindex="-1">Workspaces</h1>
 
     <div id="running" class="block" data-test="running">
-      <div class="sec-label"><span>Running</span><span>{{ catalog.running.length }}</span></div>
+      <div class="sec-label">
+        <span>Running</span>
+        <!-- The cap beside the section the slots are in (frontend §9, §4.5 #17). -->
+        <span v-if="catalog.capacity.cap !== null" data-test="capacity">
+          {{ catalog.capacity.occupied }} of {{ catalog.capacity.cap }} slots
+        </span>
+        <span v-else>{{ catalog.running.length }}</span>
+      </div>
       <ul v-if="catalog.running.length > 0" class="list">
         <li v-for="r in catalog.running" :key="r.workspace.id" class="row" data-test="running-row">
           <div class="head">
@@ -144,13 +157,15 @@ function rowNote(r: CatalogRow): string | null {
             <!--
               One action per row (§6.1), from lib/workspaceCard.ts rowAction:
               Clone only when no workspace holds the repo in any state;
-              otherwise its workspace's own card action.
+              otherwise its workspace's own card action. At the cap, Clone is
+              replaced by the pointer to Stop, never shown disabled (§9).
             -->
             <ActionButton
-              v-if="rowAction(r) === 'clone'" label="Clone"
+              v-if="shownRowAction(r) === 'clone'" label="Clone"
               :flight-key="cloneKey(r.repo.id)" :run="() => workspaces.create(r.repo.id)"
               data-test="clone"
             />
+            <MakeRoom v-else-if="shownRowAction(r) === 'make_room'" />
             <WorkspaceAction v-else-if="r.workspace" :workspace="r.workspace" :action="rowAction(r) as CardAction" />
             <p v-if="rowNote(r)" class="detail" data-test="removed-note">
               {{ rowNote(r) }}

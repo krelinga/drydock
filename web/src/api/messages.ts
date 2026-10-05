@@ -12,7 +12,11 @@ const SENTENCES: Record<string, string> = {
   unauthenticated: 'Your session has ended. Sign in again.',
   bad_password: 'That password is not right.',
   not_configured: 'Drydock has no password yet. Run `drydock passwd` on the host.',
-  app_not_configured: 'No GitHub App is set up yet, so there are no repositories to show.',
+  // One sentence for every route that answers it — the catalog and its
+  // refresh, and a clone, start or rebuild — so it names what the App is for
+  // rather than what this screen was about to show.
+  app_not_configured:
+    'No GitHub App is set up yet, and Drydock needs one to list repositories and to clone, start or rebuild a workspace.',
   forbidden_origin: "This request did not come from Drydock's own page. Reload and try again.",
   forbidden_host: 'This page was not reached at Drydock’s own address.',
   not_found: 'Drydock has no such thing.',
@@ -22,7 +26,9 @@ const SENTENCES: Record<string, string> = {
   // Design §1: capacity is managed by hand, so the refusal says where the
   // workspaces holding the slots are and what frees one (frontend §9): Stop,
   // on the cards under Running, and that stopping costs nothing it cannot
-  // bring back.
+  // bring back. The server's detail names the cap ("The cap is 10."), so it
+  // is in DETAILED. The page replaces the buttons that would get this at the
+  // cap it knows of, so this is reached when its count was behind.
   at_capacity:
     'Drydock is at its cap: as many workspaces as it allows are already building or running. Stop one under Running to make room — its clone survives, and Start brings it back.',
   // Design §5: a delete's ?confirm= is compared exactly. The sheet keeps its
@@ -56,10 +62,11 @@ const SENTENCES: Record<string, string> = {
 /**
  * Codes whose sentence is completed by the envelope's `detail`. The detail is
  * the one piece of server text the UI shows, and only for these: it names the
- * rule or the character (internal/secrets.Invalid — "never the value"), which
- * is what makes the sentence worth reading. It is rendered as text (§8).
+ * rule or the character (internal/secrets.Invalid — "never the value"), or the
+ * cap (internal/api writeProvisionError), which is what makes the sentence
+ * worth reading. It is rendered as text (§8).
  */
-const DETAILED = new Set(['secret_name_reserved', 'secret_value_control_character', 'unknown_repository'])
+const DETAILED = new Set(['secret_name_reserved', 'secret_value_control_character', 'unknown_repository', 'at_capacity'])
 
 /**
  * The sentence for a code and its detail. A refusal the form caught before

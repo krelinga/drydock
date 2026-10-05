@@ -5,7 +5,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { FakeEventSource } from '../test/fakeEventSource'
 import { freshBackend, mountApp, settle, useMockApi } from '../test/setup'
-import { playScript, WS_FAILED, WS_REMOVED, WS_RUNNING } from '../mocks/backend'
+import { emit, playScript, stopFailedDetail, WS_FAILED, WS_REMOVED, WS_RUNNING } from '../mocks/backend'
 import { SLOW_AFTER_MS, useStreamStore } from '../stores/stream'
 import { deleteKey, rebuildKey, stopKey } from '../stores/workspaces'
 
@@ -69,7 +69,8 @@ describe('Stop', () => {
     await settle()
     expect(stopKey(WS_RUNNING) in useStreamStore(pinia).inFlight).toBe(false)
     expect(wrapper.find('[data-test="ws-state"]').text()).toBe('Stop failed while stopping the container')
-    expect(wrapper.find('[data-test="ws-note"]').text()).toBe("docker could not stop the workspace's container.")
+    // The server's annotation (§4.5 #15), which is also what a reload reads.
+    expect(wrapper.find('[data-test="ws-note"]').text()).toBe(stopFailedDetail("docker could not stop the workspace's container."))
     expect(wrapper.find('[data-test="action-run"] [data-step="container"] [data-test="step-status"]').text()).toBe('failed')
     // Control: the button is back and works — the second stop is accepted.
     expect(btn(wrapper.find('[data-test="ws-card"]'), 'stop').attributes('disabled')).toBeUndefined()
@@ -77,6 +78,69 @@ describe('Stop', () => {
     await settle()
     expect(sent(b, 'POST', `/api/workspaces/${WS_RUNNING}/stop`).length).toBe(2)
     expect(wrapper.find('[data-test="action-error"]').exists()).toBe(false)
+  })
+
+  it('a failed stop reads the same after a reload, from the list alone (§4.5 #15)', async () => {
+    const b = freshBackend({ signedIn: true, scriptMode: 'manual', failAction: 'container' })
+    const first = await mountApp('/')
+    FakeEventSource.latest().open().pipe(b)
+    await btn(runningCard(first.wrapper, WS_RUNNING), 'stop').trigger('click')
+    await settle()
+    playScript(b, WS_RUNNING)
+    await settle()
+    const live = runningCard(first.wrapper, WS_RUNNING)
+    const line = 'Stop failed while stopping the container'
+    const note = stopFailedDetail("docker could not stop the workspace's container.")
+    expect(live.find('[data-test="running-state"]').text()).toBe(line)
+    expect(live.find('.detail').text()).toBe(note)
+    // A different page, loaded cold: GET /api/repos and GET /api/workspaces only.
+    const { wrapper } = await mountApp('/')
+    const paths = b.log.slice(-3).map((r) => new URL(r.url).pathname)
+    expect(paths.some((p) => p.startsWith('/api/workspaces/'))).toBe(false)
+    const card = runningCard(wrapper, WS_RUNNING)
+    expect(card.find('[data-test="running-state"]').text()).toBe(line)
+    expect(card.find('[data-test="running-state"]').classes()).toContain('bad')
+    expect(card.find('.detail').text()).toBe(note)
+    expect(btn(card, 'stop').exists()).toBe(true)
+  })
+
+  it('a running workspace with a detail that is not a failed stop still reads Running (control)', async () => {
+    const b = freshBackend({ signedIn: true })
+    // An orphan adopted at boot: running, with the server's adoption note.
+    b.workspaces[WS_RUNNING] = { ...b.workspaces[WS_RUNNING]!, state_detail: 'Found with no record; adopted from its labels.' }
+    const { wrapper } = await mountApp('/')
+    const card = runningCard(wrapper, WS_RUNNING)
+    expect(card.find('[data-test="running-state"]').text()).toBe('Running')
+    expect(card.find('[data-test="running-state"]').classes()).toContain('ok')
+    expect(card.find('.detail').text()).toBe('Found with no record; adopted from its labels.')
+  })
+
+  it('a stop asked for again clears the failure as it starts, and a stop that works leaves none', async () => {
+    const b = freshBackend({ signedIn: true, scriptMode: 'manual', failAction: 'container' })
+    const { wrapper } = await mountApp('/')
+    FakeEventSource.latest().open().pipe(b)
+    await btn(runningCard(wrapper, WS_RUNNING), 'stop').trigger('click')
+    await settle()
+    playScript(b, WS_RUNNING)
+    await settle()
+    expect(runningCard(wrapper, WS_RUNNING).find('[data-test="running-state"]').text()).toBe('Stop failed while stopping the container')
+    await btn(runningCard(wrapper, WS_RUNNING), 'stop').trigger('click')
+    await settle()
+    // The clear arrived before the 202, before any sub-step: the failure is gone.
+    expect(b.workspaces[WS_RUNNING]!.state_detail).toBeNull()
+    const card = () => runningCard(wrapper, WS_RUNNING)
+    expect(card().find('[data-test="running-state"]').text()).toBe('Running')
+    expect(card().find('.detail').exists()).toBe(false)
+    playScript(b, WS_RUNNING, 1)
+    await settle()
+    expect(card().find('[data-test="running-state"]').text()).toBe('Stopping · stopping the session server…')
+    playScript(b, WS_RUNNING)
+    await settle()
+    // A list-only reload agrees: stopped, nothing about the failure.
+    const reload = await mountApp('/')
+    const row = reload.wrapper.findAll('[data-test="repo"]').find((r) => r.find('.name').text() === 'krelinga/drydock')!
+    expect(row.find('[data-test="repo-state"]').text()).toBe('Stopped')
+    expect(reload.wrapper.text()).not.toContain('Stop failed')
   })
 
   it('says "no response yet" after ten seconds, and never turns it into a failure', async () => {
@@ -121,14 +185,33 @@ describe('Rebuild', () => {
     expect(wrapper.find('[data-test="ws-state"]').text()).toBe('Running')
   })
 
+  it('at a cap the page knows of, a stopped workspace offers where to make room instead of Rebuild', async () => {
+    const b = freshBackend({ signedIn: true, scriptMode: 'manual', capacity: 1 })
+    const { wrapper, router } = await mountApp('/')
+    await router.push(`/ws/${WS_REMOVED}`)
+    await settle()
+    const block = () => wrapper.find('[data-test="rebuild-block"]')
+    expect(block().find('[data-test="rebuild"]').exists()).toBe(false)
+    expect(block().find('[data-test="make-room"]').text()).toContain('1 of 1 workspaces are building or running')
+    // Control: the running one stops (from another device), and Rebuild is back.
+    FakeEventSource.latest().open().pipe(b)
+    emit(b, 'workspace.state', { workspace_id: WS_RUNNING, data: { state: 'stopped', from: 'running' } })
+    await settle()
+    expect(btn(block(), 'rebuild').exists()).toBe(true)
+    expect(block().find('[data-test="make-room"]').exists()).toBe(false)
+  })
+
   it('at the cap a stopped workspace\'s rebuild is refused with the cap sentence; with room it is accepted', async () => {
+    // Loaded cold at the detail: the page has not read the list, so it does
+    // not know the cap, offers Rebuild, and the server's refusal says it.
     const b = freshBackend({ signedIn: true, scriptMode: 'manual', capacity: 1 })
     const { wrapper } = await mountApp(`/ws/${WS_REMOVED}`)
     const rebuild = () => btn(wrapper.find('[data-test="rebuild-block"]'), 'rebuild')
     await rebuild().trigger('click')
     await settle()
     expect(wrapper.find('[data-test="rebuild-block"] [data-test="action-error"]').text())
-      .toContain('Stop one under Running to make room — its clone survives, and Start brings it back.')
+      .toContain('Drydock is at its cap: as many workspaces as it allows are already building or running. ' +
+        'Stop one under Running to make room — its clone survives, and Start brings it back. The cap is 1.')
     b.capacity = 4
     await rebuild().trigger('click')
     await settle()
@@ -254,6 +337,34 @@ describe('Delete and its confirm (§6.5)', () => {
     playScript(b, WS_RUNNING)
     await settle()
     expect(wrapper.find('[data-test="ws-deleted"]').exists()).toBe(true)
+  })
+
+  it('on a page with only the list, a resumed delete stops offering Delete again as it starts (§4.5 #16)', async () => {
+    const b = freshBackend({ signedIn: true, scriptMode: 'manual', failAction: 'containers' })
+    const first = await mountApp(`/ws/${WS_RUNNING}`)
+    await open(first.wrapper)
+    await first.wrapper.find('[data-test="delete-input"]').setValue('krelinga/drydock')
+    await confirmBtn(first.wrapper).trigger('click')
+    await settle()
+    playScript(b, WS_RUNNING)
+    // Another device, loaded cold, sees it stuck.
+    const other = await mountApp('/')
+    FakeEventSource.latest().open().pipe(b)
+    const card = () => runningCard(other.wrapper, WS_RUNNING)
+    expect(btn(card(), 'delete-again').exists()).toBe(true)
+    // Asked again from yet another page: the resume clears the note before
+    // its first sub-step. This page, which never read a detail body and has
+    // no action events for this run yet, stops offering Delete again.
+    const third = await mountApp(`/ws/${WS_RUNNING}`)
+    await btn(third.wrapper.find('[data-test="ws-card"]'), 'delete-again').trigger('click')
+    await settle()
+    expect(card().find('[data-test="delete-again"]').exists()).toBe(false)
+    expect(card().find('[data-test="running-state"]').text()).toBe('Deleting…')
+    // And a page loaded cold now, from the list alone, agrees.
+    const cold = await mountApp('/')
+    const coldCard = runningCard(cold.wrapper, WS_RUNNING)
+    expect(coldCard.find('[data-test="delete-again"]').exists()).toBe(false)
+    expect(coldCard.find('[data-test="running-state"]').text()).toBe('Deleting…')
   })
 
   it('a stuck delete is shown under Running, with Delete again, after a reload', async () => {

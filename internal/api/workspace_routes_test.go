@@ -52,7 +52,15 @@ func (s *stubProvisioner) Start(_ context.Context, id string) error {
 	return nil
 }
 
-type stubReader struct{ views []workspace.View }
+type stubReader struct {
+	views []workspace.View
+	cap   int
+}
+
+// CapacityOf is the store's own, over a store with this cap.
+func (s stubReader) CapacityOf(vs []workspace.View) workspace.Capacity {
+	return (&workspace.Store{Cap: s.cap}).CapacityOf(vs)
+}
 
 func (s stubReader) Views(context.Context) ([]workspace.View, error) { return s.views, nil }
 func (s stubReader) View(_ context.Context, id string) (workspace.View, error) {
@@ -164,6 +172,28 @@ func TestStartMapsEachRefusalToItsCode(t *testing.T) {
 	}
 }
 
+// TestAtCapacityNamesTheCap: the refusal's detail names the configured cap,
+// so the UI's sentence can say the number (frontend §9), on every route that
+// can refuse at the cap. The control is a store with no cap, whose refusal
+// carries no detail rather than a made-up number.
+func TestAtCapacityNamesTheCap(t *testing.T) {
+	for _, c := range []struct {
+		cap  int
+		want string
+	}{{7, "The cap is 7."}, {0, ""}} {
+		mux := workspaceMux(&stubProvisioner{err: workspace.ErrAtCap}, stubReader{cap: c.cap})
+		for _, r := range [][3]string{{"POST", "/api/workspaces", `{"repository_id":1}`},
+			{"POST", "/api/workspaces/W1/start", ``}, {"POST", "/api/workspaces/W1/rebuild", ``}} {
+			rec := call(mux, r[0], r[1], r[2])
+			var e errorEnvelope
+			if err := json.Unmarshal(rec.Body.Bytes(), &e); err != nil || rec.Code != 409 ||
+				e.Error.Code != CodeAtCapacity || e.Error.Detail != c.want {
+				t.Errorf("cap %d, %s %s: %d %s; want detail %q", c.cap, r[0], r[1], rec.Code, rec.Body, c.want)
+			}
+		}
+	}
+}
+
 // TestLifecycleRoutesMapEachRefusalToItsCode: stop, rebuild and delete
 // answer 202 {} and pass the id — and for delete the confirm, untrimmed and
 // unfolded — and each refusal reaches the client as its own code. The
@@ -220,20 +250,24 @@ func TestWorkspaceViewsHaveTheContractShape(t *testing.T) {
 			Steps: map[workspace.Step]workspace.StepOutcome{
 				workspace.StepUp:            {Status: "done", At: at},
 				workspace.StepSessionServer: {Status: "done", Detail: "Nothing to do yet.", At: at},
-			}},
+			},
+			LastAction: &workspace.ActionOutcome{Action: "stop", Step: "container", Status: "failed",
+				Detail: "docker could not stop it.", At: at}},
 		{ID: "W1", RepositoryID: 101, FullName: "krelinga/a", Branch: "dev", State: workspace.Pending,
 			CreatedAt: at, Steps: map[workspace.Step]workspace.StepOutcome{}},
 	}
-	mux := workspaceMux(&stubProvisioner{}, stubReader{views})
+	mux := workspaceMux(&stubProvisioner{}, stubReader{views: views, cap: 3})
 
 	rec := call(mux, "GET", "/api/workspaces", ``)
 	want := `{"workspaces":[` +
 		`{"id":"W2","repository_id":102,"full_name":"krelinga/b","branch":"main","state":"running","state_detail":null,` +
 		`"container_id":"c0ffee","created_at":"2026-10-04T12:00:00Z","steps":{` +
 		`"session_server":{"status":"done","detail":"Nothing to do yet.","at":"2026-10-04T12:00:00Z"},` +
-		`"up":{"status":"done","at":"2026-10-04T12:00:00Z"}}},` +
+		`"up":{"status":"done","at":"2026-10-04T12:00:00Z"}},` +
+		`"last_action":{"action":"stop","step":"container","status":"failed","detail":"docker could not stop it.","at":"2026-10-04T12:00:00Z"}},` +
 		`{"id":"W1","repository_id":101,"full_name":"krelinga/a","branch":"dev","state":"pending","state_detail":null,` +
-		`"container_id":null,"created_at":"2026-10-04T12:00:00Z","steps":{}}]}`
+		`"container_id":null,"created_at":"2026-10-04T12:00:00Z","steps":{},"last_action":null}],` +
+		`"capacity":{"cap":3,"occupied":2}}`
 	if rec.Code != 200 || strings.TrimSpace(rec.Body.String()) != want {
 		t.Errorf("GET /api/workspaces = %d\n got %s\nwant %s", rec.Code, rec.Body, want)
 	}

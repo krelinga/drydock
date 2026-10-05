@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 
@@ -25,6 +26,9 @@ type Provisioner interface {
 type WorkspaceReader interface {
 	Views(ctx context.Context) ([]workspace.View, error)
 	View(ctx context.Context, id string) (workspace.View, error)
+	// CapacityOf counts the views that hold a container slot against the
+	// cap (workspace.Store.CapacityOf).
+	CapacityOf(vs []workspace.View) workspace.Capacity
 }
 
 // EventReader is a workspace's recent events.
@@ -74,9 +78,19 @@ func (wr WorkspaceRoutes) list(w http.ResponseWriter, r *http.Request) {
 		WriteError(w, http.StatusInternalServerError, CodeInternal, "Could not read the workspaces.", "")
 		return
 	}
-	writeJSON(w, http.StatusOK, struct {
-		Workspaces []workspace.View `json:"workspaces"`
-	}{vs})
+	writeJSON(w, http.StatusOK, WorkspaceList{Workspaces: vs, Capacity: wr.Workspaces.CapacityOf(vs)})
+}
+
+// WorkspaceList is GET /api/workspaces: every workspace with a row, and the
+// concurrent-container cap with how many of them count against it (frontend
+// §4.5 #17). Occupied is counted from exactly these rows, by
+// workspace.Occupying — the rule create, start and rebuild enforce — so the
+// list and the number are one snapshot, and a client counting the list by the
+// same rule gets the same number. That is what lets the UI keep it live from
+// workspace.state events without a capacity event of its own.
+type WorkspaceList struct {
+	Workspaces []workspace.View   `json:"workspaces"`
+	Capacity   workspace.Capacity `json:"capacity"`
 }
 
 func (wr WorkspaceRoutes) read(w http.ResponseWriter, r *http.Request) {
@@ -117,7 +131,7 @@ func (wr WorkspaceRoutes) create(w http.ResponseWriter, r *http.Request) {
 	}
 	ws, err := wr.Provisioner.Create(r.Context(), *body.RepositoryID, body.Branch)
 	if err != nil {
-		writeProvisionError(w, err)
+		wr.writeProvisionError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusAccepted, struct {
@@ -127,7 +141,7 @@ func (wr WorkspaceRoutes) create(w http.ResponseWriter, r *http.Request) {
 
 func (wr WorkspaceRoutes) start(w http.ResponseWriter, r *http.Request) {
 	if err := wr.Provisioner.Start(r.Context(), r.PathValue("id")); err != nil {
-		writeProvisionError(w, err)
+		wr.writeProvisionError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusAccepted, struct{}{})
@@ -140,7 +154,7 @@ func (wr WorkspaceRoutes) start(w http.ResponseWriter, r *http.Request) {
 // and workspace.gone when a delete has removed the row.
 func (wr WorkspaceRoutes) stop(w http.ResponseWriter, r *http.Request) {
 	if err := wr.Provisioner.Stop(r.Context(), r.PathValue("id")); err != nil {
-		writeProvisionError(w, err)
+		wr.writeProvisionError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusAccepted, struct{}{})
@@ -148,7 +162,7 @@ func (wr WorkspaceRoutes) stop(w http.ResponseWriter, r *http.Request) {
 
 func (wr WorkspaceRoutes) rebuild(w http.ResponseWriter, r *http.Request) {
 	if err := wr.Provisioner.Rebuild(r.Context(), r.PathValue("id")); err != nil {
-		writeProvisionError(w, err)
+		wr.writeProvisionError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusAccepted, struct{}{})
@@ -160,7 +174,7 @@ func (wr WorkspaceRoutes) rebuild(w http.ResponseWriter, r *http.Request) {
 // case folding — because a near miss is the signal the friction exists for.
 func (wr WorkspaceRoutes) remove(w http.ResponseWriter, r *http.Request) {
 	if err := wr.Provisioner.Delete(r.Context(), r.PathValue("id"), r.URL.Query().Get("confirm")); err != nil {
-		writeProvisionError(w, err)
+		wr.writeProvisionError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusAccepted, struct{}{})
@@ -169,11 +183,11 @@ func (wr WorkspaceRoutes) remove(w http.ResponseWriter, r *http.Request) {
 // writeProvisionError maps create's and start's refusals to the envelope.
 // Each code is one the UI can turn into a sentence and, for at_capacity, an
 // action (frontend §4.5): which workspace to stop.
-func writeProvisionError(w http.ResponseWriter, err error) {
+func (wr WorkspaceRoutes) writeProvisionError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, provision.ErrNotConfigured):
 		WriteError(w, http.StatusServiceUnavailable, CodeAppNotConfigured,
-			"No GitHub App is configured, so Drydock cannot clone anything.",
+			"No GitHub App is configured, so Drydock cannot clone, start or rebuild a workspace.",
 			"Start drydock serve with --github-app-id and --github-app-key.")
 	case errors.Is(err, provision.ErrUnknownRepository):
 		WriteError(w, http.StatusNotFound, CodeNotFound,
@@ -189,8 +203,14 @@ func writeProvisionError(w http.ResponseWriter, err error) {
 		WriteError(w, http.StatusConflict, CodeInProgress,
 			"This repository already has a workspace, or this workspace is busy or not in a state that allows this.", "")
 	case errors.Is(err, workspace.ErrAtCap):
+		// The detail names the cap, so the refusal can say the number
+		// (frontend §9); it is the configured value, true whenever this is.
+		detail := ""
+		if c := wr.Workspaces.CapacityOf(nil).Cap; c != nil {
+			detail = fmt.Sprintf("The cap is %d.", *c)
+		}
 		WriteError(w, http.StatusConflict, CodeAtCapacity,
-			"Drydock is at its concurrent-container cap. Stop a workspace to make room.", "")
+			"Drydock is at its concurrent-container cap. Stop a workspace to make room.", detail)
 	case errors.Is(err, provision.ErrShuttingDown):
 		WriteError(w, http.StatusServiceUnavailable, CodeInternal, "Drydock is shutting down.", "")
 	default:

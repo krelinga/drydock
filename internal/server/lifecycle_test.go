@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net"
 	"net/url"
 	"os"
@@ -15,6 +16,7 @@ import (
 	"github.com/krelinga/drydock/internal/api"
 	"github.com/krelinga/drydock/internal/container"
 	"github.com/krelinga/drydock/internal/github/githubtest"
+	"github.com/krelinga/drydock/internal/provision"
 	"github.com/krelinga/drydock/internal/subproc"
 	"github.com/krelinga/drydock/internal/sys"
 	"github.com/krelinga/drydock/internal/workspace"
@@ -114,6 +116,17 @@ func TestWorkspaceLifecycleThroughTheServer(t *testing.T) {
 	var id struct{ ID string }
 	body(t, resp.Body, &id)
 	await(id.ID, "running")
+	// The cap and the occupied count (frontend §4.5 #17), from the list
+	// itself: a running workspace counts, a stopped one does not, and a
+	// start counts it again.
+	occupied := func() string {
+		var l struct{ Capacity struct{ Cap, Occupied int } }
+		body(t, r.do(t, req{method: "GET", path: "/api/workspaces", cookie: cookie}).Body, &l)
+		return fmt.Sprintf("%d of %d", l.Capacity.Occupied, l.Capacity.Cap)
+	}
+	if got := occupied(); got != fmt.Sprintf("1 of %d", r.cfg.ContainerCap) {
+		t.Errorf("running: %s", got)
+	}
 	sock := srv.Broker.SocketPath(id.ID)
 	if _, err := os.Stat(sock); err != nil {
 		t.Fatalf("control: a running workspace has no socket: %v", err)
@@ -133,6 +146,9 @@ func TestWorkspaceLifecycleThroughTheServer(t *testing.T) {
 		t.Fatalf("stop: %+v", got)
 	}
 	await(id.ID, "stopped")
+	if got := occupied(); got != fmt.Sprintf("0 of %d", r.cfg.ContainerCap) {
+		t.Errorf("stopped: %s", got)
+	}
 	if _, err := os.Stat(sock); !errors.Is(err, os.ErrNotExist) {
 		t.Errorf("a stopped workspace kept its socket: %v", err)
 	}
@@ -149,6 +165,9 @@ func TestWorkspaceLifecycleThroughTheServer(t *testing.T) {
 	await(id.ID, "running")
 	if _, err := os.Stat(sock); err != nil {
 		t.Errorf("start did not reopen the socket: %v", err)
+	}
+	if got := occupied(); got != fmt.Sprintf("1 of %d", r.cfg.ContainerCap) {
+		t.Errorf("started again: %s", got)
 	}
 
 	if got := call("POST", "/api/workspaces/"+id.ID+"/rebuild"); got.status != 202 || strings.TrimSpace(got.body) != `{}` {
@@ -206,6 +225,7 @@ func TestDeleteResumesAtBoot(t *testing.T) {
 		`INSERT INTO repository (id, installation_id, full_name, default_branch) VALUES (2, 77, 'krelinga/beta', 'main')`,
 		`INSERT INTO workspace (id, repository_id, host_path, branch, state) VALUES ('` + deleting + `', 1, '` +
 			filepath.Join(cfg.Root, deleting, "repo") + `', 'main', 'deleting')`,
+		`UPDATE workspace SET state_detail = 'The delete stopped part-way: docker could not remove the workspace''s containers. Delete again to retry.' WHERE id = '` + deleting + `'`,
 		`INSERT INTO workspace (id, repository_id, host_path, branch, state) VALUES ('` + stopped + `', 2, '` +
 			filepath.Join(cfg.Root, stopped, "repo") + `', 'main', 'stopped')`,
 	} {
@@ -245,6 +265,13 @@ func TestDeleteResumesAtBoot(t *testing.T) {
 	if len(evs) == 0 || evs[0].Kind != workspace.KindGone {
 		b, _ := json.Marshal(evs)
 		t.Errorf("the last event is not workspace.gone: %s", b)
+	}
+	// The row came in stuck, annotated; the resume cleared that first, on
+	// the stream, before its first sub-step (frontend §4.5 #16).
+	if n := len(evs); n < 2 || evs[n-1].Kind != workspace.KindState ||
+		string(evs[n-1].Data) != `{"from":"deleting","state":"deleting"}` || evs[n-2].Kind != provision.KindAction {
+		b, _ := json.Marshal(evs)
+		t.Errorf("the resume did not begin by clearing the stuck note: %s", b)
 	}
 	// The control: reconciliation is not deleting everything.
 	if w, err := srv.Workspaces.Get(ctx, stopped); err != nil || w.State != workspace.Stopped {

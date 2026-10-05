@@ -5,10 +5,10 @@ import { describe, expect, it } from 'vitest'
 import { emptyEntities, reduce, reduceAll, type Repo, type Workspace } from '../stores/reducer'
 import type { StreamEvent } from '../api/types'
 import {
-  CLONE_FAILS_AT_UP, CLONE_OK, DELETE_RESUMED, DELETE_STUCK, STOP_FAILS, STOP_OK, STUCK_DETAIL, WS, WS2, listBody,
-  stateEvent, ws2View,
+  CLONE_FAILS_AT_UP, CLONE_OK, DELETE_RESUMED, DELETE_STUCK, STOP_FAILED_DETAIL, STOP_FAILS, STOP_OK, STUCK_DETAIL, WS,
+  WS2, listBody, stateEvent, ws2View, wsView,
 } from '../stores/reducer.fixtures'
-import { cardStatus, rowAction } from './workspaceCard'
+import { cardStatus, rowAction, stoppable, withRoom } from './workspaceCard'
 
 const at = (n: number) => reduceAll(emptyEntities(), CLONE_OK.slice(0, n).map((event) => ({ type: 'event' as const, event }))).workspaces[WS]!
 
@@ -77,10 +77,23 @@ describe('the card while a stop or a delete runs (Phase 6)', () => {
   it('a stop that failed says where, keeps the workspace running, and offers Stop again', () => {
     const s = cardStatus(wsAfter(STOP_FAILS))
     expect(s).toMatchObject({
+      line: 'Stop failed while stopping the container', tone: 'bad', action: 'stop', note: STOP_FAILED_DETAIL,
+    })
+    expect(wsAfter(STOP_FAILS).state).toBe('running')
+    // Between the failed sub-step and its annotation the run says the same line.
+    expect(cardStatus(wsAfter(STOP_FAILS.slice(0, 4)))).toMatchObject({
       line: 'Stop failed while stopping the container', tone: 'bad', action: 'stop',
       note: "docker could not stop the workspace's container.",
     })
-    expect(wsAfter(STOP_FAILS).state).toBe('running')
+  })
+
+  it('a stop that failed reads the same from the list alone, after a reload (§4.5 #15)', () => {
+    const last_action = { action: 'stop', step: 'container', status: 'failed' as const, at: '2026-10-04T12:01:23Z' }
+    const cold = reduce(emptyEntities(), { type: 'workspaces', at: 84, view: listBody(wsView({ state_detail: STOP_FAILED_DETAIL, last_action })) }).workspaces[WS]!
+    expect(cardStatus(cold)).toEqual(cardStatus(wsAfter(STOP_FAILS)))
+    // Control: running with a detail that is not a failed stop (an adoption) is Running.
+    const adopted = reduce(emptyEntities(), { type: 'workspaces', at: 5, view: listBody(wsView({ state_detail: 'Found with no record; adopted from its labels.', last_action: null })) }).workspaces[WS]!
+    expect(cardStatus(adopted)).toMatchObject({ line: 'Running', tone: 'ok', action: 'stop', note: 'Found with no record; adopted from its labels.' })
   })
 
   it('a running delete names its sub-step; a stuck one says so and offers Delete again', () => {
@@ -92,7 +105,7 @@ describe('the card while a stop or a delete runs (Phase 6)', () => {
     const stuck = cardStatus(listed(wsAfter(DELETE_STUCK)))
     expect(stuck).toMatchObject({ line: 'Delete stopped part-way', tone: 'bad', action: 'delete', note: STUCK_DETAIL })
     // A resume running — here or elsewhere — is Deleting again, nothing to press.
-    expect(cardStatus(listed(wsAfter([...DELETE_STUCK, ...DELETE_RESUMED.slice(0, 3)])))).toMatchObject({
+    expect(cardStatus(listed(wsAfter([...DELETE_STUCK, ...DELETE_RESUMED.slice(0, 4)])))).toMatchObject({
       line: 'Deleting · removing the containers…', action: null,
     })
     // Control: a plain deleting with no annotation is just Deleting….
@@ -130,5 +143,36 @@ describe('the catalog row action: one repository, one workspace (design §5)', (
     // A workspace whose state is not yet known (a stub) still holds it.
     expect(rowAction({ repo: repo(), workspace: null, held: true })).toBeNull()
     expect(rowAction({ repo: repo({ removed: true }), workspace: null, held: false })).toBeNull()
+  })
+})
+
+describe('at the cap (design §1, frontend §9)', () => {
+  it('an action that would take a slot becomes make_room; one that would not is kept', () => {
+    const stopped = withState('stopped')
+    const running = withState('running')
+    const failed = reduceAll(emptyEntities(), CLONE_FAILS_AT_UP.map((event) => ({ type: 'event' as const, event }))).workspaces[WS2]!
+    expect(withRoom('clone', null, true)).toBe('make_room')
+    expect(withRoom('start', stopped, true)).toBe('make_room')
+    expect(withRoom('rebuild', failed, true)).toBe('make_room')
+    expect(withRoom('rebuild', stopped, true)).toBe('make_room')
+    // A running workspace's rebuild keeps its own slot; stop and delete free one.
+    expect(withRoom('rebuild', running, true)).toBe('rebuild')
+    expect(withRoom('stop', running, true)).toBe('stop')
+    expect(withRoom('delete', running, true)).toBe('delete')
+    expect(withRoom(null, running, true)).toBeNull()
+    // Control: under the cap, everything is itself.
+    for (const [a, w] of [['clone', null], ['start', stopped], ['rebuild', failed]] as const) {
+      expect(withRoom(a, w, false)).toBe(a)
+    }
+  })
+
+  it('stoppable is exactly the cards whose action is Stop', () => {
+    expect(stoppable(withState('running'))).toBe(true)
+    const ev = (evs: StreamEvent[]) => evs.map((event) => ({ type: 'event' as const, event }))
+    // A failed stop still offers Stop, so it is still one to stop.
+    expect(stoppable(reduceAll(emptyEntities(), ev([...CLONE_OK, ...STOP_FAILS])).workspaces[WS]!)).toBe(true)
+    // Control: stopping, building, failed and deleting are not.
+    expect(stoppable(reduceAll(emptyEntities(), ev([...CLONE_OK, ...STOP_OK.slice(0, 3)])).workspaces[WS]!)).toBe(false)
+    for (const state of ['building', 'failed', 'deleting', 'stopped']) expect(stoppable(withState(state))).toBe(false)
   })
 })
