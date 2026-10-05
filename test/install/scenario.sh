@@ -16,8 +16,10 @@ section() { printf '\n--- %s\n' "$*"; }
 UI=drydock.test
 PREVIEW=preview-drydock.example
 PW="correct horse battery staple"
-export DRYDOCK_VERIFY_CACERT=/etc/ssl/drydock/ca.pem
-CURL=(curl -s --cacert "$DRYDOCK_VERIFY_CACERT" --resolve "$UI:443:127.0.0.1" --max-time 5)
+# The test CA (certs.sh). This host does not trust it — exactly an operator's
+# private CA — so the installer's own check passes only through --ca-cert.
+CA=/etc/ssl/drydock/ca.pem
+CURL=(curl -s --cacert "$CA" --resolve "$UI:443:127.0.0.1" --max-time 5)
 
 # install VERSION ARGS...: the README's one-liner, with the download pointed at
 # a local copy of that release instead of GitHub. Output goes to $out.
@@ -57,9 +59,12 @@ check "it names the missing flags" grep -q -- "--ui-host, --cert and --key" <<<"
 check "it installed nothing" [ ! -e /usr/local/bin/drydock ]
 
 section "first install"
-install v0.0.1 --ui-host "$UI" --cert /etc/ssl/drydock/ui.pem --key /etc/ssl/drydock/ui.key
+install v0.0.1 --ui-host "$UI" --cert /etc/ssl/drydock/ui.pem --key /etc/ssl/drydock/ui.key --ca-cert "$CA"
 check "it succeeds (and its own end-to-end 401 check passed)" [ "$rc" = 0 ] || printf '%s\n' "$out"
 check "it reports a fresh install" grep -q "installed Drydock v0.0.1" <<<"$out"
+# The re-run below passes no flags and still passes its check: that is the
+# proof this is read back, since this host does not trust the test CA.
+check "the CA certificate's path is kept for later runs" grep -qx "DRYDOCK_CA_CERT=$CA" /etc/drydock/drydock.env
 check "the binary is v0.0.1" [ "$(drydock version)" = v0.0.1 ]
 check "with no terminal it says how to set the password" grep -q "drydock passwd" <<<"$out"
 check "the stock Caddyfile was backed up" compgen -G "/etc/caddy/Caddyfile.before-drydock.*" >/dev/null
@@ -210,6 +215,75 @@ install v0.0.2 --take-over-caddy
 check "--take-over-caddy succeeds" [ "$rc" = 0 ] || printf '%s\n' "$out"
 check "it is ours now" grep -q "Drydock's entire LAN-facing surface" /etc/caddy/Caddyfile
 check "the foreign one was backed up" grep -lq "not drydock" /etc/caddy/Caddyfile.before-drydock.*
+
+section "a private CA this host does not trust"
+check "control: this host's own trust store does not trust the test CA" \
+	[ "$(curl -s -o /dev/null -w '%{http_code}' --resolve "$UI:443:127.0.0.1" "https://$UI/api/auth/session")" = 000 ]
+install v0.0.2 --no-ca-cert
+check "without --ca-cert the final check fails" [ "$rc" != 0 ]
+check "it says everything is running, and that only the certificate is unverified" \
+	grep -q "Drydock is installed and running, and answers through Caddy, but this host could not verify" <<<"$out"
+check "it gives curl's reason" grep -q "unable to get local issuer certificate" <<<"$out"
+check "it says to pass --ca-cert" grep -q -- "re-run with --ca-cert" <<<"$out"
+check "and it is right: drydock is running" systemctl is-active --quiet drydock
+check "and the session answers, to a client that trusts the CA" [ "$(status -b "$jar" "https://$UI/api/auth/session")" = 200 ]
+check "--no-ca-cert forgot the CA" grep -qx "DRYDOCK_CA_CERT=" /etc/drydock/drydock.env
+install v0.0.2 --ca-cert /etc/ssl/drydock/ui.key
+check "a private key is refused as --ca-cert" [ "$rc" != 0 ]
+check "and it says so" grep -q "never its key" <<<"$out"
+install v0.0.2 --ca-cert /etc/ssl/drydock/../drydock/missing.pem
+check "a missing --ca-cert is refused" [ "$rc" != 0 ]
+check "and it says so" grep -q "no such file" <<<"$out"
+install v0.0.2 --ca-cert ca.pem
+check "a relative --ca-cert is refused" [ "$rc" != 0 ]
+check "and it says so" grep -q -- "--ca-cert must be an absolute path" <<<"$out"
+check "the refusals left the setting alone" grep -qx "DRYDOCK_CA_CERT=" /etc/drydock/drydock.env
+install v0.0.2 --ca-cert "$CA"
+check "control: with --ca-cert the same install passes its check" [ "$rc" = 0 ] || printf '%s\n' "$out"
+check "and keeps it" grep -qx "DRYDOCK_CA_CERT=$CA" /etc/drydock/drydock.env
+
+# A trusted certificate in front of a broken chain must still fail the check,
+# and must not be reported as only a trust problem. Caddy loses the drydock
+# group, so it cannot reach the socket: a 502 behind good TLS.
+printf '[Service]\nSupplementaryGroups=\n' >/etc/systemd/system/caddy.service.d/zz-test-break.conf
+systemctl daemon-reload && systemctl restart caddy
+check "control: caddy can no longer reach drydock" [ "$(status "https://$UI/api/auth/session")" = 502 ]
+install v0.0.2
+check "with --ca-cert and drydock unreachable, the check fails" [ "$rc" != 0 ]
+check "as a failure, naming the 502" grep -q "answered '502' through Caddy" <<<"$out"
+check "not as a trust problem" bash -c '! grep -q "installed and running" <<<"$1"' _ "$out"
+install v0.0.2 --no-ca-cert
+check "without --ca-cert and drydock unreachable, it fails" [ "$rc" != 0 ]
+check "and is not reported as only a trust problem" bash -c '! grep -q "installed and running" <<<"$1"' _ "$out"
+check "though it gives the TLS reason too" grep -q "unable to get local issuer certificate" <<<"$out"
+rm -f /etc/systemd/system/caddy.service.d/zz-test-break.conf
+systemctl daemon-reload && systemctl restart caddy
+install v0.0.2 --ca-cert "$CA"
+check "control: repaired, the same install passes" [ "$rc" = 0 ] || printf '%s\n' "$out"
+
+section "a mixed-case --ui-host is lowercased"
+upper=$(tr 'a-z' 'A-Z' <<<"$UI")
+install v0.0.2 --ui-host "$upper"
+check "it succeeds" [ "$rc" = 0 ] || printf '%s\n' "$out"
+check "it says it lowercased it" grep -q -- "using --ui-host $UI" <<<"$out"
+check "the setting is lowercase" grep -qx "DRYDOCK_UI_HOST=$UI" /etc/drydock/drydock.env
+check "drydock was given the lowercase origin" bash -c "tr '\\0' ' ' </proc/$(mainpid drydock)/cmdline | grep -q -- '--ui-origin=https://$UI '"
+# The browser's half: it sends Origin lowercased whatever was typed. This sign-in
+# is what was refused as forbidden_origin when the origin kept its capitals.
+code=$("${CURL[@]}" -o /dev/null -w '%{http_code}' -H "Origin: https://$UI" \
+	-H 'Content-Type: application/json' -d "{\"password\":\"$PW\"}" "https://$UI/api/auth/session")
+check "a sign-in with the browser's lowercase Origin works (204)" [ "$code" = 204 ]
+sed -i "s/^DRYDOCK_UI_HOST=.*/DRYDOCK_UI_HOST=$upper/" /etc/drydock/drydock.env
+install v0.0.2
+check "a drydock.env from an older installer is repaired by a re-run" grep -qx "DRYDOCK_UI_HOST=$UI" /etc/drydock/drydock.env
+check "and the re-run passes" [ "$rc" = 0 ] || printf '%s\n' "$out"
+# Drydock itself refuses to start on one: the installer is not the only guard.
+# (The control is the service above, running on the same binary in lowercase.)
+srvout=$(timeout 5 runuser -u drydock -- drydock serve --db /tmp/never.db --ui-origin "https://$upper" --ui-host "$upper" \
+	--api-socket /tmp/never-http.sock --preview-socket /tmp/never-preview.sock 2>&1)
+check "drydock serve refuses a mixed-case origin at startup" grep -q "must be lowercase" <<<"$srvout"
+check "before it opens a database" [ ! -e /tmp/never.db ]
+check "control: the installed service is serving" [ "$(status "https://$UI/api/auth/session")" = 401 ]
 
 section "a master key that is not a key is refused, never replaced"
 cp -p "$SK" /root/secrets.key.good

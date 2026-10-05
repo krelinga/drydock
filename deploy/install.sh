@@ -23,6 +23,9 @@
 # part-way through executes nothing.
 
 set -euo pipefail
+# Bracket ranges such as [a-z] in the hostname checks below mean ASCII only in
+# the C locale; in others they can match more than they say.
+export LC_ALL=C
 
 REPO="krelinga/drydock"
 # The standalone copy of this script published with each release has this
@@ -77,6 +80,10 @@ Install or upgrade Drydock. Run as root.
   --ui-host HOST        the hostname the UI is served at (required on first install)
   --cert PATH           its certificate, PEM          (required on first install)
   --key PATH            its private key, PEM          (required on first install)
+  --ca-cert PATH        the CA certificate (PEM) that issued --cert, when it is a
+                        private CA this host does not trust; only the installer's
+                        final check uses it. Kept for later runs.
+  --no-ca-cert          forget a --ca-cert given earlier
   --preview-domain D    previews' separate registrable domain   } optional, all
   --preview-cert PATH   a wildcard certificate for *.D          } three or none
   --preview-key PATH    its private key                         }
@@ -176,10 +183,32 @@ load_config() {
 		DRYDOCK_PREVIEW_CERT) : "${PREVIEW_CERT:=$value}" ;;
 		DRYDOCK_PREVIEW_KEY) : "${PREVIEW_KEY:=$value}" ;;
 		DRYDOCK_GITHUB_APP_ID) : "${APP_ID:=$value}" ;;
+		DRYDOCK_CA_CERT) : "${CA_CERT:=$value}" ;;
 		esac
 	done <"$CONF"
 	if [ "${NO_PREVIEW:-0}" = 1 ]; then
 		PREVIEW_DOMAIN="" PREVIEW_CERT="" PREVIEW_KEY=""
+	fi
+	if [ "${NO_CA_CERT:-0}" = 1 ]; then
+		CA_CERT=""
+	fi
+}
+
+# lowercase NAME FLAG: lowercases the named variable in place, and says so if
+# that changed it. Hostnames are case-insensitive to DNS, to certificate
+# matching and to Caddy — but a browser sends the Origin header's host in
+# lowercase, and Drydock compares Origin as an exact string, so a mixed-case
+# --ui-host would refuse every sign-in. Lowercasing loses nothing anyone meant,
+# and the one value goes to both Caddy and Drydock, so they cannot disagree. It
+# also repairs a drydock.env written by an installer that did not lowercase
+# (Drydock itself now refuses to start on one).
+lowercase() {
+	local name="$1" flag="$2" value lower
+	value="${!name:-}"
+	lower=$(printf '%s' "$value" | tr 'A-Z' 'a-z')
+	if [ "$lower" != "$value" ]; then
+		say "using $flag $lower: hostnames are case-insensitive, and browsers send them lowercased"
+		printf -v "$name" '%s' "$lower"
 	fi
 }
 
@@ -188,7 +217,9 @@ validate_config() {
 		usage >&2
 		die "a first install needs --ui-host, --cert and --key"
 	fi
-	[[ "$UI_HOST" =~ ^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$ ]] ||
+	lowercase UI_HOST --ui-host
+	lowercase PREVIEW_DOMAIN --preview-domain
+	[[ "$UI_HOST" =~ ^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$ ]] ||
 		die "--ui-host must be a bare hostname such as drydock.example.com, not \"$UI_HOST\""
 	[[ "$UI_HOST" == *.* ]] || die "--ui-host must be a fully qualified name; the Host check needs one (§13.1)"
 	local f
@@ -217,6 +248,18 @@ validate_config() {
 		;;
 	*) die "--preview-domain, --preview-cert and --preview-key go together: give all three or none" ;;
 	esac
+
+	if [ -n "${CA_CERT:-}" ]; then
+		[[ "$CA_CERT" == /* ]] || die "--ca-cert must be an absolute path: $CA_CERT"
+		[ -f "$CA_CERT" ] && [ -r "$CA_CERT" ] ||
+			die "no such file: $CA_CERT (--ca-cert is kept from run to run; give its new path, or --no-ca-cert)"
+		# Only the CA's certificate belongs here: its path is written to
+		# drydock.env, which is world-readable, and nothing needs the key.
+		! grep -q -- 'PRIVATE KEY-----' "$CA_CERT" ||
+			die "$CA_CERT holds a private key; --ca-cert takes the CA's certificate, never its key"
+		grep -q -- '-----BEGIN CERTIFICATE-----' "$CA_CERT" ||
+			die "$CA_CERT is not a PEM certificate (--ca-cert takes the CA's certificate, the file that begins -----BEGIN CERTIFICATE-----)"
+	fi
 
 	if [ -n "${APP_ID:-}" ]; then
 		[[ "$APP_ID" =~ ^[1-9][0-9]*$ ]] || die "--github-app-id must be the numeric App ID, not \"$APP_ID\" (the Client ID starts with Iv)"
@@ -384,6 +427,7 @@ DRYDOCK_PREVIEW_DOMAIN=${PREVIEW_DOMAIN:-}
 DRYDOCK_PREVIEW_CERT=${PREVIEW_CERT:-}
 DRYDOCK_PREVIEW_KEY=${PREVIEW_KEY:-}
 DRYDOCK_GITHUB_APP_ID=${APP_ID:-}
+DRYDOCK_CA_CERT=${CA_CERT:-}
 EOF
 }
 
@@ -580,16 +624,35 @@ set_password() {
 }
 
 # The whole chain — Caddy, TLS, the socket, the gate — answering the way it
-# should: an unauthenticated API request is refused with 401.
+# should: an unauthenticated API request is refused with 401, over a TLS
+# connection this host verified. Against --ca-cert alone when one was given (a
+# private CA), otherwise against the system's trust store.
 verify() {
-	local code ca=()
-	# For a private CA; a publicly trusted certificate needs nothing here.
-	[ -n "${DRYDOCK_VERIFY_CACERT:-}" ] && ca=(--cacert "$DRYDOCK_VERIFY_CACERT")
-	code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "${ca[@]}" \
-		--resolve "$UI_HOST:443:127.0.0.1" "https://$UI_HOST/api/auth/session" || true)
-	if [ "$code" != 401 ]; then
-		die "end-to-end check failed: https://$UI_HOST/api/auth/session answered '$code' through Caddy, want 401. Check the certificate matches $UI_HOST and is trusted, and see: journalctl -u caddy -u drydock"
+	local url="https://$UI_HOST/api/auth/session" code rc=0 err reason trust="this host's trust store" ca=()
+	if [ -n "${CA_CERT:-}" ]; then
+		ca=(--cacert "$CA_CERT")
+		trust="$CA_CERT"
 	fi
+	err=$(mktemp)
+	code=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 10 "${ca[@]}" \
+		--resolve "$UI_HOST:443:127.0.0.1" "$url" 2>"$err") || rc=$?
+	reason=$(tr '\n' ' ' <"$err" | sed 's/^curl: ([0-9]*) //; s/ *$//')
+	rm -f "$err"
+	[ "$rc" = 0 ] && [ "$code" = 401 ] && return 0
+
+	# 60 is curl's "the certificate was not verified": an unknown CA, a name
+	# the certificate does not carry, or a chain missing its intermediates.
+	# The check has failed either way. A second request without verification
+	# only decides which sentence to print — whether everything behind TLS
+	# works, or something else is broken too. It never turns a failure into a
+	# pass.
+	if [ "$rc" = 60 ] && [ "$(curl -sk -o /dev/null -w '%{http_code}' --max-time 10 \
+		--resolve "$UI_HOST:443:127.0.0.1" "$url" 2>/dev/null)" = 401 ]; then
+		local hint="If the certificate is from a private CA, re-run with --ca-cert <the CA's certificate, PEM> (it is kept for later runs)."
+		[ -n "${CA_CERT:-}" ] && hint="Check that $CA_CERT is the certificate of the CA that issued --cert (re-run with the right one, or --no-ca-cert for a publicly trusted certificate)."
+		die "Drydock is installed and running, and answers through Caddy, but this host could not verify the certificate Caddy serves for $UI_HOST against $trust: $reason. $hint Also check that its names include $UI_HOST and that --cert is the full chain, leaf first, then the intermediates: a phone needs them too."
+	fi
+	die "end-to-end check failed: $url answered '$code' through Caddy, want 401${reason:+ ($reason)}. See: journalctl -u caddy -u drydock"
 }
 
 install_bundle() {
@@ -639,6 +702,8 @@ main() {
 		--preview-cert) PREVIEW_CERT="${2:?--preview-cert needs a value}"; shift 2 ;;
 		--preview-key) PREVIEW_KEY="${2:?--preview-key needs a value}"; shift 2 ;;
 		--no-preview) NO_PREVIEW=1; shift ;;
+		--ca-cert) CA_CERT="${2:?--ca-cert needs a value}"; shift 2 ;;
+		--no-ca-cert) NO_CA_CERT=1; shift ;;
 		--github-app-id) APP_ID="${2:?--github-app-id needs a value}"; shift 2 ;;
 		--github-app-key) APP_KEY_SRC="${2:?--github-app-key needs a value}"; shift 2 ;;
 		--version) version="${2:?--version needs a value}"; shift 2 ;;
@@ -674,6 +739,8 @@ main() {
 	[ -n "${PREVIEW_CERT:-}" ] && args+=(--preview-cert "$PREVIEW_CERT")
 	[ -n "${PREVIEW_KEY:-}" ] && args+=(--preview-key "$PREVIEW_KEY")
 	[ "${NO_PREVIEW:-0}" = 1 ] && args+=(--no-preview)
+	[ -n "${CA_CERT:-}" ] && args+=(--ca-cert "$CA_CERT")
+	[ "${NO_CA_CERT:-0}" = 1 ] && args+=(--no-ca-cert)
 	[ -n "${APP_ID:-}" ] && args+=(--github-app-id "$APP_ID")
 	[ -n "${APP_KEY_SRC:-}" ] && args+=(--github-app-key "$APP_KEY_SRC")
 	[ "${TAKE_OVER_CADDY:-0}" = 1 ] && args+=(--take-over-caddy)

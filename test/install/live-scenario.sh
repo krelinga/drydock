@@ -9,20 +9,37 @@ check() { local d="$1"; shift; if "$@"; then pass "$d"; else fail "$d"; fi; }
 
 UI=drydock.test
 PW="correct horse battery staple"
-export DRYDOCK_VERIFY_CACERT=/etc/ssl/drydock/ca.pem
-CURL=(curl -s --cacert "$DRYDOCK_VERIFY_CACERT" --resolve "$UI:443:127.0.0.1" --max-time 5)
-if [ "$RELEASE" = latest ]; then
+# The test CA (certs.sh), which this host does not trust: an operator's
+# private CA.
+CA=/etc/ssl/drydock/ca.pem
+CURL=(curl -s --cacert "$CA" --resolve "$UI:443:127.0.0.1" --max-time 5)
+if [ -n "${ASSETS:-}" ]; then
+	# A release's assets on local disk (a draft's, before it is published),
+	# served the way GitHub serves a published release's downloads.
+	(cd "$ASSETS" && exec python3 -m http.server 8000 --bind 127.0.0.1 >/dev/null 2>&1) &
+	sleep 0.5
+	export DRYDOCK_DOWNLOAD_BASE="http://127.0.0.1:8000/$RELEASE"
+	url="$DRYDOCK_DOWNLOAD_BASE/install.sh"
+elif [ "$RELEASE" = latest ]; then
 	url="https://github.com/$REPO/releases/latest/download/install.sh"
 else
 	url="https://github.com/$REPO/releases/download/$RELEASE/install.sh"
 fi
 oneliner() { out=$(curl -fsSL "$url" | bash -s -- "$@" 2>&1); rc=$?; printf '%s\n' "$out" | sed 's/^/    /'; }
 
-oneliner --ui-host "$UI" --cert /etc/ssl/drydock/ui.pem --key /etc/ssl/drydock/ui.key
+# Releases before --ca-cert existed read the CA from a variable instead.
+ca_args=(--ca-cert "$CA")
+if ! curl -fsSL "$url" | grep -q -- '--ca-cert)'; then
+	ca_args=()
+	export DRYDOCK_VERIFY_CACERT="$CA"
+fi
+
+oneliner --ui-host "$UI" --cert /etc/ssl/drydock/ui.pem --key /etc/ssl/drydock/ui.key "${ca_args[@]}"
 check "the one-liner installs (its end-to-end 401 check included)" [ "$rc" = 0 ]
 v=$(drydock version 2>/dev/null)
 if [ "$RELEASE" = latest ]; then
-	check "it installed a release build, not dev" [[ "$v" =~ ^v[0-9]+\.[0-9]+\.[0-9]+ ]]
+	# grep, not [[ ]]: check runs its arguments as a command, and [[ is syntax.
+	check "it installed a release build, not dev ($v)" grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+' <<<"$v"
 else
 	check "it installed $RELEASE" [ "$v" = "$RELEASE" ]
 fi

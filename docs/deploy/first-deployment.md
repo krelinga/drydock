@@ -9,7 +9,8 @@ section that argues it. If you want the argument, follow the link; to deploy, yo
 
 > [!IMPORTANT]
 > **Replace `drydock.example.com` everywhere below with your own UI hostname**, in lowercase.
-> It shows up in commands, paths and URLs. A few other placeholders appear in `<angle brackets>`.
+> It shows up in commands, paths and URLs. (The installer lowercases `--ui-host` anyway, but the
+> URL you type and the name on the certificate are easier to compare in one spelling.) A few other placeholders appear in `<angle brackets>`.
 
 - [0. Known issues](#0-known-issues--read-these-first)
 - [1. Before you start](#1-before-you-start)
@@ -37,32 +38,31 @@ them. Each one is also mentioned at the step where it bites.
    report and the PR shows as *blocked*. Repository admins may bypass the ruleset. Merging with the
    bypass is safe because the release workflow runs the full suite again before it uploads anything.
    See [step 2](#2-cut-a-release).
-2. **With a private CA, the installer's final check fails unless the server trusts that CA.** The
-   installer ends by fetching `https://<ui-host>/api/auth/session` with the server's own `curl`,
-   and it expects a `401`. With a certificate from your own CA, that request fails certificate
-   validation. Then the installer exits with `end-to-end check failed … answered '000'`, even
-   though everything is installed and running. The fix is to install the CA on the server too, or
-   to pass the undocumented `DRYDOCK_VERIFY_CACERT=<ca.pem>`. See [step 5](#5-install).
-3. **Use a lowercase `--ui-host`.** The installer accepts uppercase letters, and the `Host` check is
-   case-insensitive. But the `Origin` check compares `https://<ui-host>` exactly against what the
-   browser sends, and browsers always send lowercase. With `Drydock.Example.com`, every sign-in is
-   refused with `forbidden_origin`.
-4. **An automatic rollback cannot undo a database migration.** If an upgrade's new binary migrates
+2. **An automatic rollback cannot undo a database migration.** If an upgrade's new binary migrates
    the database and then fails to start, the installer puts the old binary back. The old binary
    then refuses the newer database (`refusing to run an older Drydock against a newer database`),
    so the rollback does not start either. The same applies to a manual downgrade with `--version`.
    Back up the database before every upgrade ([step 10](#10-upgrade-roll-back-uninstall-logs)).
-5. **A release whose `assets` job fails becomes "Latest" with no files.** release-please creates
-   the GitHub Release before the `assets` job builds and uploads the files. If that job fails, the
-   one-liner returns a 404 for every user until a `fix:` release replaces it. This is why
-   [step 2](#2-cut-a-release) waits for the whole workflow.
-6. **The installer has no flag for the bot identity, the container cap or the label prefix.** The
+3. **The installer has no flag for the bot identity, the container cap or the label prefix.** The
    unit runs `drydock serve` with the built-in defaults: the bot identity of the **production** App
    (`krelinga-drydock[bot]`), at most 10 workspaces, and the label prefix `drydock`. Those
    defaults are right for this deployment. A hand edit to the unit is overwritten by the next
    installer run.
-7. **There is no `uninstall`.** [Step 10](#10-upgrade-roll-back-uninstall-logs) lists what to remove
+4. **There is no `uninstall`.** [Step 10](#10-upgrade-roll-back-uninstall-logs) lists what to remove
    by hand. The list is derived from what `deploy/install.sh` creates.
+
+Three issues listed here earlier are fixed from the release that carries this runbook's
+`--ca-cert` flag (v0.2.0, if it is cut after that fix merged — check with
+`curl -fsSL https://github.com/krelinga/drydock/releases/latest/download/install.sh | grep -c -- '--ca-cert)'`,
+which prints `1`):
+
+- A private CA no longer fails the installer's final check: pass `--ca-cert` ([step 5](#5-install)).
+  A certificate the server cannot verify is now reported as exactly that, apart from a real failure.
+- A mixed-case `--ui-host` is lowercased by the installer, and Drydock refuses to start on one, rather
+  than refusing every sign-in with `forbidden_origin`.
+- A release is created as a draft and becomes public and *Latest* only after its assets are uploaded
+  and installed by the README one-liner, so a failed release never leaves *Latest* without files
+  ([step 2](#2-cut-a-release)).
 
 ---
 
@@ -145,7 +145,7 @@ Whichever you pick:
 - [ ] **Renewal ends with `sudo systemctl reload caddy`.** Caddy reads the files when it loads its
   config and does not watch them.
 - [ ] **For option A**, keep the CA certificate (`ca.pem`, *not* its key) handy. The server needs
-  it in [step 5](#5-install) ([Known issue 2](#0-known-issues--read-these-first)).
+  it in [step 4.2](#42-the-tls-certificate-and-key), for the installer's final check.
 
 Where the files go on the server, and with what ownership, is
 [step 4.2](#42-the-tls-certificate-and-key).
@@ -154,7 +154,7 @@ Where the files go on the server, and with what ownership, is
 
 Drydock uses the **production** App, `krelinga-drydock`, with **App ID `5189455`**. The CI uses
 the dev App, `krelinga-drydock-dev` (5189839). Do not use the dev App here: the bot identity
-baked into the unit is the production App's ([Known issue 6](#0-known-issues--read-these-first)).
+baked into the unit is the production App's ([Known issue 3](#0-known-issues--read-these-first)).
 
 - [ ] **Check the App's permissions** at <https://github.com/settings/apps/krelinga-drydock/permissions>.
   They must be a superset of
@@ -215,16 +215,23 @@ Run these from any machine with `gh` signed in as a repository admin:
   gh pr merge <number> --repo krelinga/drydock --squash --admin
   ```
   On the web, this is *Merge without waiting for requirements to be met (bypass rules)*.
-- [ ] **Watch the release workflow to the end.** It has three jobs: `release-please` tags `vX.Y.Z`
-  and creates the Release, `assets` runs the whole Go suite and then uploads the files, and
-  `verify` runs the README one-liner against what was just uploaded.
+- [ ] **Watch the release workflow to the end.** It has four jobs: `release-please` tags `vX.Y.Z`
+  and creates the Release **as a draft**, `assets` runs the whole Go suite and then uploads the
+  files to the draft, `verify` downloads them back and runs the README one-liner against them, and
+  `publish` makes the release public and *Latest*, then checks that
+  `releases/latest/download/install.sh` serves it.
   ```sh
   gh run list --repo krelinga/drydock --workflow release-please.yml --limit 1
   gh run watch <run-id> --repo krelinga/drydock --exit-status
   ```
-  **Wait until all three jobs are green.** If `assets` fails, the release is public with no files
-  ([Known issue 5](#0-known-issues--read-these-first)). If `verify` fails, a broken release is
-  public. In either case, fix forward with a `fix:` commit and a new release. **Do not install.**
+  **Wait until all four jobs are green.** If any job fails, nothing is public: the release stays a
+  draft that only repository admins can see, and the one-liner keeps installing the previous
+  release. *Why:* a release that became *Latest* before its files were uploaded would make the
+  one-liner 404 for everyone. A transient failure (a flaky download, a runner hiccup) can be
+  retried with `gh run rerun <run-id> --repo krelinga/drydock --failed`, which resumes from the
+  draft. A real one is fixed forward with a `fix:` commit and a new release; the failed draft can
+  stay, or be removed with `gh release delete vX.Y.Z --repo krelinga/drydock --yes` (which keeps the
+  tag). **Do not install until `publish` is green.**
 - [ ] **Confirm it published.** Both of these should print the new tag:
   ```sh
   gh release view --repo krelinga/drydock --json tagName,assets --jq '.tagName, [.assets[].name]'
@@ -418,14 +425,18 @@ not in `ssl-cert`.
   sudo runuser -u caddy -- test -r /etc/caddy/certs/drydock.crt && echo cert-ok
   sudo runuser -u caddy -- test -r /etc/caddy/certs/drydock.key && echo key-ok
   ```
-- [ ] **Option A (private CA) only**: make the server trust your CA too, so the installer's final
-  check can pass ([Known issue 2](#0-known-issues--read-these-first)):
+- [ ] **Option A (private CA) only**: put the CA's **certificate** beside them, for the installer's
+  final check ([step 5](#5-install) passes it as `--ca-cert`). Copy it the same way; it is public,
+  so `0644` is fine:
   ```sh
-  sudo install -m 0644 ~/ca.pem /usr/local/share/ca-certificates/drydock-ca.crt   # the CA cert, never its key
-  sudo update-ca-certificates
+  sudo install -m 0644 -o root -g caddy ~/drydock-drop/ca.pem /etc/caddy/certs/drydock-ca.pem   # the CA cert, never its key
   ```
-  The file must end in `.crt`. The alternative, which needs no system change, is the
-  `DRYDOCK_VERIFY_CACERT` variable in [step 5](#5-install).
+  *Why:* the installer ends by fetching `https://drydock.example.com/api/auth/session` through
+  Caddy with the server's own `curl`, and it verifies the certificate. The server does not trust
+  your CA, so without `--ca-cert` that check cannot pass. The installer keeps the path in
+  `/etc/drydock/drydock.env` for later runs, so keep the file there. It refuses a file that holds a
+  private key. (Adding the CA to the system store with `update-ca-certificates` also works, but it
+  makes every program on the server trust your CA, which the check does not need.)
 
 ---
 
@@ -446,9 +457,8 @@ not in `ssl-cert`.
         --github-app-id 5189455 \
         --github-app-key /root/drydock-app.pem
   ```
-  **Option A (private CA) without system trust:** replace `| sudo bash -s --` with
-  `| sudo DRYDOCK_VERIFY_CACERT=/home/<you>/ca.pem bash -s --`. The variable has to be given to
-  `sudo` itself, because `sudo` drops your environment.
+  **Option A (private CA):** add one more flag, `--ca-cert /etc/caddy/certs/drydock-ca.pem`. With a
+  publicly trusted certificate (options B and C), leave it out.
 
   Do **not** pass `--preview-domain`. Previews are not built yet ([step 9](#9-what-does-not-work-yet)).
 
@@ -460,7 +470,8 @@ changed:
    with `==> downloading drydock_linux_amd64.tar.gz (v0.2.0)`.
 2. It checks prerequisites: root, Linux, systemd, `caddy` and the `caddy` user, `curl`, `docker`,
    the `docker` group, and `devcontainer` on the service `PATH`.
-3. It validates flags: the hostname must contain a dot; certificate paths must be absolute files;
+3. It validates flags: the hostname must contain a dot, and is lowercased (it says so if that
+   changed it); certificate paths must be absolute files; `--ca-cert` must be a certificate, not a key;
    the App ID must be numeric (the Client ID starts with `Iv` and is refused); the key must look
    like a PEM private key.
 4. It checks that the `caddy` user can read the certificate and key.
@@ -484,7 +495,11 @@ changed:
 14. **It asks for the operator password**: `New password:` and `Again:`, without echo. Then
     `Password set. Every existing session has been signed out.`
 15. It runs the end-to-end check: `https://drydock.example.com/api/auth/session` through Caddy,
-    resolved to `127.0.0.1`, must answer `401`. It prints nothing when the check passes.
+    resolved to `127.0.0.1`, must answer `401` over a certificate it verified, against
+    `--ca-cert` if you gave one and the system's trust store otherwise. It prints nothing when the
+    check passes. If everything is running and only the certificate could not be verified, it says
+    exactly that, `Drydock is installed and running, and answers through Caddy, but this host could
+    not verify the certificate …`, with `curl`'s reason; see [§11](#11-troubleshooting).
 16. `==> installed Drydock v0.2.0` and `==> open https://drydock.example.com`.
 
 - [ ] **Delete the temporary App key**:
@@ -506,7 +521,7 @@ sudo -u drydock drydock passwd --db /var/lib/drydock/drydock.db
 | user and group `drydock` | system | The service account. Member of `docker`. No login shell. |
 | `caddy` user | (from the package) | Gains supplementary group `drydock` through the drop-in, so it can reach the socket. |
 | `/usr/local/bin/drydock` | root `0755` | The binary. `drydock.previous` appears after an upgrade. |
-| `/etc/drydock/drydock.env` | root `0644` | Settings: hostnames, cert paths, App ID. Nothing secret. Parsed by the installer, never `source`d. |
+| `/etc/drydock/drydock.env` | root `0644` | Settings: hostnames, cert paths, the `--ca-cert` path, App ID. Nothing secret. Parsed by the installer, never `source`d. |
 | `/etc/drydock/github-app.pem` | drydock `0400` | The App key. Passed to Drydock as a path. |
 | `/etc/drydock/secrets.key` | drydock `0400` | The secrets master key: 32 random bytes. **[Back it up](#6-back-up-the-secrets-master-key-now).** |
 | `/etc/systemd/system/drydock.service` | root `0644` | `drydock serve …` as `drydock`, `ProtectSystem=strict`, the fixed `PATH`. `.previous` is kept for rollback. |
@@ -578,7 +593,7 @@ secret in plaintext-equivalent form.
   curl -s -o /dev/null -w '%{http_code}\n' --resolve drydock.example.com:443:127.0.0.1 \
     https://drydock.example.com/api/auth/session
   ```
-  Add `--cacert <ca.pem>` for option A if the CA is not in the system store. `000` means the TLS
+  For option A, add `--cacert /etc/caddy/certs/drydock-ca.pem`. `000` means the TLS
   handshake failed or nothing answered ([§11](#11-troubleshooting)).
 - [ ] **Drydock's journal is quiet**:
   ```sh
@@ -785,7 +800,7 @@ None of the following is a deployment fault. These are the phases still being bu
   messages from §12.
 - **Secret staleness is always *"applies to new commands"*.** It is truthful until Phase 5 adds a
   process that holds a frozen environment.
-- **The container cap (10) is fixed** by the installer ([Known issue 6](#0-known-issues--read-these-first)).
+- **The container cap (10) is fixed** by the installer ([Known issue 3](#0-known-issues--read-these-first)).
   A create beyond the cap is refused, and you choose what to stop.
 
 ---
@@ -795,7 +810,7 @@ None of the following is a deployment fault. These are the phases still being bu
 ### 10.1 Upgrade
 
 - [ ] Wait for a release to finish publishing ([step 2](#2-cut-a-release)).
-- [ ] **Back up the database first** ([Known issue 4](#0-known-issues--read-these-first)). Stopping
+- [ ] **Back up the database first** ([Known issue 2](#0-known-issues--read-these-first)). Stopping
   the service briefly gives a clean, checkpointed file:
   ```sh
   sudo systemctl stop drydock
@@ -808,13 +823,14 @@ None of the following is a deployment fault. These are the phases still being bu
   sudo -v
   curl -fsSL https://github.com/krelinga/drydock/releases/latest/download/install.sh | sudo bash
   ```
-  Add `DRYDOCK_VERIFY_CACERT` as in [step 5](#5-install) if you need it. The run ends with
+  A `--ca-cert` given before is kept, so the line needs no flags. The run ends with
   `==> upgraded Drydock vA -> vB`, or `==> Drydock vX is installed and current` when there was
   nothing to do. A re-run restarts only what changed. It never asks for the password again
   (`--if-unset`), so no one is signed out. It keeps the App key and the master key.
 - [ ] **To change a setting**, re-run with only that flag, for example
   `… | sudo bash -s -- --cert /new/path.crt --key /new/path.key`. To replace the App key, pass
-  `--github-app-id 5189455 --github-app-key <new.pem>`, then revoke the old key on GitHub.
+  `--github-app-id 5189455 --github-app-key <new.pem>`, then revoke the old key on GitHub. Moving
+  from a private CA to a public certificate: `--no-ca-cert` with the new `--cert` and `--key`.
 - [ ] **A specific release:** `… | sudo bash -s -- --version vX.Y.Z`.
 
 ### 10.2 Roll back
@@ -823,7 +839,7 @@ None of the following is a deployment fault. These are the phases still being bu
   `/usr/local/bin/drydock.previous`, and `drydock.service.previous` if the unit changed. It then
   restarts the service and exits with `the upgrade failed and was rolled back to vA; see the log
   above`. That works **unless the new binary already migrated the database**
-  ([Known issue 4](#0-known-issues--read-these-first)).
+  ([Known issue 2](#0-known-issues--read-these-first)).
 - **Manual**, to an older release:
   ```sh
   sudo systemctl stop drydock
@@ -892,7 +908,9 @@ and Caddy stay installed, because you installed them.
 | Installer: `/etc/caddy/Caddyfile was not written by this installer` | Caddy already serves other sites | Move them elsewhere, or `--take-over-caddy` (a backup is kept) |
 | Installer: `the new Caddy configuration does not validate` | Bad certificate or key file, or a path typo | Read the five lines above the error. Nothing under `/etc/caddy` was changed. |
 | Installer: `--github-app-id must be the numeric App ID` | The Client ID (`Iv…`) was given | `--github-app-id 5189455` |
-| Installer: `end-to-end check failed … answered '000'` | The server does not trust the certificate (private CA), or the cert does not match the hostname | [Known issue 2](#0-known-issues--read-these-first). Check the SAN and the cert/key pair ([1.3](#13-a-tls-certificate-every-client-trusts-for-that-hostname)). `journalctl -u caddy -u drydock`. Everything else is installed, so re-run when fixed. |
+| Installer: `Drydock is installed and running, and answers through Caddy, but this host could not verify the certificate …` | Everything works except certificate verification. `unable to get local issuer certificate`: a private CA without `--ca-cert`, or the wrong CA file, or a public certificate whose `--cert` file lacks the intermediates. `no alternative certificate subject name matches`: the certificate is for another name | Option A: re-run with `--ca-cert /etc/caddy/certs/drydock-ca.pem` ([4.2](#42-the-tls-certificate-and-key)). Otherwise check the SAN and the full chain ([1.3](#13-a-tls-certificate-every-client-trusts-for-that-hostname)). Everything else is installed, so a re-run with the fix is all it takes. |
+| Installer: `end-to-end check failed … answered '000'` | Nothing answered over TLS: Caddy is not serving this name, or the handshake failed (`curl`'s reason is in the message) | `journalctl -u caddy -u drydock`. Check the cert/key pair ([1.3](#13-a-tls-certificate-every-client-trusts-for-that-hostname)). |
+| Installer: `--ca-cert … holds a private key` | The CA's key was given instead of its certificate | Pass the CA's certificate. Never copy the CA key to the server. |
 | Installer: `… answered '502'` | Caddy is up, Drydock is not | `journalctl -u drydock -n 50`. Check the socket with `ls -l /run/drydock/http.sock`. |
 | Installer: `the upgrade failed and was rolled back` | The new release would not start | The log above the message. Open an issue, and fix forward. |
 | Installer: `secrets.key is not a 32-byte key file` | The master key is damaged or truncated | Restore it from your backup ([6](#6-back-up-the-secrets-master-key-now)). Never move it aside unless you accept losing every secret. |
@@ -900,7 +918,8 @@ and Caddy stay installed, because you installed them.
 | Browser: `ERR_SSL_PROTOCOL_ERROR` / `SSL_ERROR_INTERNAL_ERROR_ALERT` | **Host mismatch**: you used an IP, a short name or another alias. Caddy has no site for that name, so there is no certificate to offer | Use exactly `https://drydock.example.com`. This is the DNS-rebinding defence working ([§13.3](../design/overall/drydock-design.md#133--what-a-browser-can-be-talked-into)). |
 | Browser: cannot connect / times out | DNS points elsewhere, or a firewall blocks the port | `nslookup` from that device. Check `sudo ss -ltnp \| grep :443` and the firewall rules. |
 | JSON `forbidden_host` | Drydock's own `Host` check, behind Caddy | Should not happen with the installer's config. Compare `systemctl cat drydock` with `/etc/drydock/drydock.env`. |
-| Sign-in fails with `forbidden_origin` | `--ui-host` has uppercase letters | Re-run with `--ui-host` in lowercase ([Known issue 3](#0-known-issues--read-these-first)) |
+| Sign-in fails with `forbidden_origin` | The browser is on a page that is not `https://drydock.example.com` (another name for the server, or an old tab) | Open exactly `https://drydock.example.com`. The installer lowercases `--ui-host`, so case is no longer a cause. |
+| Journal: `drydock serve: config: UIOrigin … must be lowercase` | The unit was hand-edited, or written by an installer older than `--ca-cert` | Re-run the installer: it lowercases the setting in `/etc/drydock/drydock.env`. |
 | Sign-in: *too many failed sign-ins; retry after …* | Lockout: per-IP exponential backoff (up to 15 min), and a global cap of 50 failures in 15 min | Wait it out. The lockout survives a restart on purpose. |
 | Forgot the password | — | `sudo -u drydock drydock passwd --db /var/lib/drydock/drydock.db` (this signs out every device) |
 | UI: *No GitHub App is set up yet* / API `503 app_not_configured` | The unit has no `--github-app-id` | `systemctl cat drydock \| grep github`. Re-run the installer with `--github-app-id 5189455 --github-app-key <pem>`. |
