@@ -206,6 +206,34 @@ describe('the clone button (§4.2)', () => {
     expect(cloneBtn(wrapper, 'krelinga/scratch').exists()).toBe(false)
   })
 
+  it('a failed or stopped workspace holds its repository: Start, never Clone, until the delete is done', async () => {
+    const b = freshBackend({ signedIn: true, scriptMode: 'manual' })
+    const { wrapper } = await mountApp('/')
+    FakeEventSource.latest().open().pipe(b)
+    const startIn = (name: string) => row(wrapper, name).find('[data-test="start"] [data-test="action"]')
+    // homelab's workspace failed at `up`: the server refuses a create (409
+    // in_progress) until it is deleted, so the row offers its Start.
+    expect(cloneBtn(wrapper, 'krelinga/homelab').exists()).toBe(false)
+    expect(startIn('krelinga/homelab').exists()).toBe(true)
+    emit(b, 'workspace.state', { workspace_id: WS_FAILED, data: { state: 'stopped', from: 'failed' } })
+    await settle()
+    expect(cloneBtn(wrapper, 'krelinga/homelab').exists()).toBe(false)
+    expect(startIn('krelinga/homelab').exists()).toBe(true)
+    // Deleting still holds it, and offers nothing.
+    emit(b, 'workspace.state', { workspace_id: WS_FAILED, data: { state: 'deleting', from: 'stopped' } })
+    await settle()
+    expect(cloneBtn(wrapper, 'krelinga/homelab').exists()).toBe(false)
+    expect(startIn('krelinga/homelab').exists()).toBe(false)
+    // Control: once the row is gone, Clone is back, and the server takes it.
+    emit(b, 'workspace.gone', { workspace_id: WS_FAILED, data: {} })
+    await settle()
+    expect(cloneBtn(wrapper, 'krelinga/homelab').exists()).toBe(true)
+    await cloneBtn(wrapper, 'krelinga/homelab').trigger('click')
+    await settle()
+    expect(row(wrapper, 'krelinga/homelab').find('[data-test="action-error"]').exists()).toBe(false)
+    expect(posts(b).length).toBe(1)
+  })
+
   it('marks in flight, discards a misleading 202, and clears only on the workspace\'s event', async () => {
     const b = freshBackend({ signedIn: true, scriptMode: 'manual' })
     let sent: unknown = null
@@ -300,14 +328,14 @@ describe('the clone button (§4.2)', () => {
     expect(cloneBtn(wrapper, 'krelinga/notes').attributes('disabled')).toBeUndefined()
   })
 
-  it('at_capacity says to stop one in the Running section; under the cap it is accepted', async () => {
+  it('at_capacity says where the running workspaces are; under the cap it is accepted', async () => {
     const b = freshBackend({ signedIn: true, scriptMode: 'manual', capacity: 1 })
     const { wrapper, pinia } = await mountApp('/')
     await cloneBtn(wrapper, 'krelinga/notes').trigger('click')
     await settle()
     const err = row(wrapper, 'krelinga/notes').find('[data-test="action-error"]')
     expect(err.attributes('role')).toBe('alert')
-    expect(err.text()).toContain('Stop one in the Running section')
+    expect(err.text()).toContain('They are listed under Running')
     expect(cloneBtn(wrapper, 'krelinga/notes').attributes('disabled')).toBeUndefined()
     expect('repo:3:clone' in useStreamStore(pinia).inFlight).toBe(false)
     // Control: with room, the same tap is accepted and in flight.

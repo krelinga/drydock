@@ -52,6 +52,30 @@ describe('the workspaces store', () => {
     expect(cloneKey(3) in useStreamStore().inFlight).toBe(true)
   })
 
+  it('the mock refuses a second create for a repository whose workspace failed, as the server does', async () => {
+    // homelab (repo 2) holds WS_FAILED, failed at `up`: one repository, one
+    // workspace, in any state, until the delete (design §5).
+    const b = freshBackend({ signedIn: true, scriptMode: 'manual' })
+    const ws = useWorkspacesStore()
+    await expect(ws.create(2)).rejects.toMatchObject({ status: 409, code: 'in_progress' })
+    b.workspaces[WS_FAILED] = { ...b.workspaces[WS_FAILED]!, state: 'stopped' }
+    await expect(ws.create(2)).rejects.toMatchObject({ status: 409, code: 'in_progress' })
+    // Control: with the row gone, the same create is accepted.
+    delete b.workspaces[WS_FAILED]
+    await ws.create(2)
+    expect(cloneKey(2) in useStreamStore().inFlight).toBe(true)
+  })
+
+  it('a start is refused at the cap, as a create is', async () => {
+    const b = freshBackend({ signedIn: true, scriptMode: 'manual', capacity: 1 })
+    const ws = useWorkspacesStore()
+    await expect(ws.start(WS_FAILED)).rejects.toMatchObject({ status: 409, code: 'at_capacity' })
+    // Control: with room, it is accepted.
+    b.capacity = 2
+    await ws.start(WS_FAILED)
+    expect(startKey(WS_FAILED) in useStreamStore().inFlight).toBe(true)
+  })
+
   it('loads the list and a detail into the reducer, and remembers a 404', async () => {
     freshBackend({ signedIn: true })
     const ws = useWorkspacesStore()

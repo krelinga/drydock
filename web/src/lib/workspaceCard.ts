@@ -7,7 +7,7 @@
 // seam, not a guess — see `supervisorHalf` — and until it is filled a
 // running workspace says exactly what is known, that its container is up.
 
-import { currentStep, failedStep, type Workspace } from '../stores/reducer'
+import { currentStep, failedStep, type Repo, type Workspace } from '../stores/reducer'
 
 export type Tone = 'ok' | 'bad' | 'busy' | 'idle'
 
@@ -92,4 +92,21 @@ export function cardStatus(w: Workspace): CardStatus {
     default:
       return { line: 'Unknown', tone: 'idle', note: null, action: null }
   }
+}
+
+/** The one action a catalog row offers. */
+export type RowAction = 'clone' | 'start' | null
+
+/**
+ * A catalog row's action (§6.1: one per row). Clone only where no workspace
+ * holds the repository at all: the server answers a create `409 in_progress`
+ * while the repository has a workspace in *any* state — a failed or stopped
+ * one still holds the clone and comes back by Start, and a deleting one is
+ * still removing it (design §5). So a held repository offers its workspace's
+ * own action, and a removed one is read-only (a create would be `404`).
+ */
+export function rowAction(row: { repo: Repo; workspace: Workspace | null; held: boolean }): RowAction {
+  if (row.workspace !== null) return cardStatus(row.workspace).action
+  if (row.held || row.repo.removed) return null
+  return 'clone'
 }

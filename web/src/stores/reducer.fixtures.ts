@@ -35,7 +35,7 @@ export const CLONE_OK: StreamEvent[] = [
   ev(10, 'workspace.step', WS, { step: 'up', status: 'started' }),
   ev(11, 'token.issued', WS, { scope: 'git', expires_at: at(3600) }, 'Issued a git token.'),
   ev(12, 'workspace.step', WS, { step: 'up', status: 'done' }),
-  ev(13, 'workspace.state', WS, { state: 'running', from: 'building' }, 'Running.'),
+  ev(13, 'workspace.state', WS, { state: 'running', from: 'building', container_id: 'c0ffee0123456789' }, 'Running.'),
 ]
 
 /** A clone of repo 2 that fails at `up`: the step names itself, then the move to failed. */
@@ -91,10 +91,25 @@ export const START_AFTER_FAIL: StreamEvent[] = [
   ev(50, 'workspace.state', WS2, { state: 'building', from: 'failed' }, 'Building the container.'),
   ev(51, 'workspace.step', WS2, { step: 'up', status: 'started' }),
   ev(52, 'workspace.step', WS2, { step: 'up', status: 'done' }),
-  ev(53, 'workspace.state', WS2, { state: 'running', from: 'building' }, 'Running.'),
+  ev(53, 'workspace.state', WS2, { state: 'running', from: 'building', container_id: 'feed0123456789ab' }, 'Running.'),
 ]
 
-const step = (status: StepView['status'], n: number, detail?: string): StepView =>
+/**
+ * WS after CLONE_OK: stopped, then a start that resumes at step 3 and fails
+ * there. `up` keeps its `done` from the first run (event 12) — the server's
+ * `steps` is the latest per step — and is not part of this run.
+ */
+export const RESTART_FAILS_EARLY: StreamEvent[] = [
+  ev(60, 'workspace.state', WS, { state: 'stopped', from: 'running' }, 'Stopped.'),
+  ev(61, 'workspace.state', WS, { state: 'building', from: 'stopped' }, 'Building the container.'),
+  ev(62, 'workspace.step', WS, { step: 'resolve_config', status: 'started' }),
+  ev(63, 'workspace.step', WS, { step: 'resolve_config', status: 'failed', detail: 'Could not read the dev container configuration.' },
+    'Could not read the dev container configuration.', 'error'),
+  ev(64, 'workspace.state', WS, { state: 'failed', from: 'building', detail: 'Could not read the dev container configuration.' },
+    'Failed. Could not read the dev container configuration.', 'error'),
+]
+
+export const step = (status: StepView['status'], n: number, detail?: string): StepView =>
   ({ status, at: at(n), ...(detail !== undefined ? { detail } : {}) })
 
 /** WS as GET /api/workspaces writes it after CLONE_OK. */

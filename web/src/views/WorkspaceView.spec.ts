@@ -81,13 +81,44 @@ describe('the workspace detail', () => {
     expect(wrapper.find('[data-test="start"]').exists()).toBe(false)
     const before = reads(b, WS_FAILED)
     emit(b, 'workspace.step', { workspace_id: WS_FAILED, data: { step: 'up', status: 'done' } })
-    emit(b, 'workspace.state', { workspace_id: WS_FAILED, message: 'Running.', data: { state: 'running', from: 'building' } })
+    expect(wrapper.text()).not.toContain('Container')
+    emit(b, 'workspace.state', {
+      workspace_id: WS_FAILED, message: 'Running.', data: { state: 'running', from: 'building', container_id: 'feedfacecafe0123456789' },
+    })
     await settle()
     expect(wrapper.find('[data-test="ws-state"]').text()).toBe('Running')
     expect(wrapper.find('[data-step="up"] [data-test="step-status"]').text()).toBe('done')
-    // Reaching running refetches once, for the container id no event carries.
-    expect(reads(b, WS_FAILED)).toBe(before + 1)
+    // The move to running carries the container id: no refetch to learn it.
+    expect(reads(b, WS_FAILED)).toBe(before)
     expect(wrapper.text()).toContain('Container')
+    expect(wrapper.text()).toContain('feedfacecafe')
+  })
+
+  it('after a start, shows only the current run\'s steps — live, and after a reload', async () => {
+    const b = freshBackend({ signedIn: true, scriptMode: 'manual' })
+    const { wrapper } = await mountApp(`/ws/${WS_FAILED}`)
+    FakeEventSource.latest().open().pipe(b)
+    // Control: before the start, the failed run's `up` is the timeline's.
+    expect(steps(wrapper)).toContainEqual(['up', 'failed'])
+    await startBtn(wrapper).trigger('click')
+    await settle()
+    // building, resolve_config started: the start resumes at step 3.
+    playScript(b, WS_FAILED, 2)
+    await settle()
+    const live = [
+      ['allocate', 'done'], ['clone', 'done'], ['resolve_config', 'running'], ['credential_volume', 'not run'],
+      ['broker_socket', 'not run'], ['up', 'not run'], ['verify', 'not run'], ['session_server', 'not run'],
+    ]
+    expect(steps(wrapper)).toEqual(live)
+    expect(wrapper.find('[data-step="up"]').classes()).not.toContain('failed')
+    expect(wrapper.find('[data-test="ws-state"]').text()).toBe('Building · resolving config…')
+
+    // A cold load mid-run: the server's `steps` still holds `up: failed`
+    // from the earlier run, and the snapshot alone must not show it.
+    const cold = await mountApp(`/ws/${WS_FAILED}`)
+    expect(b.workspaces[WS_FAILED]!.steps.up?.status).toBe('failed')
+    expect(steps(cold.wrapper)).toEqual(live)
+    expect(cold.wrapper.find('[data-test="ws-state"]').text()).toBe('Building · resolving config…')
   })
 
   it('a stopped workspace offers Start, says the clone survived, and a refused start says why', async () => {

@@ -203,8 +203,6 @@ export function nextWorkspaceId(b: MockBackend): string {
   return `01JC${String(b.idSeq).padStart(22, '0')}`
 }
 
-/** States that hold or build a container: what a second create is refused for. */
-const HOLDING = new Set<WorkspaceState>(['pending', 'cloning', 'building', 'running', 'stopped', 'deleting'])
 /** States that count against the cap: what is building or running. */
 const OCCUPYING = new Set<WorkspaceState>(['pending', 'cloning', 'building', 'running'])
 
@@ -294,9 +292,9 @@ export function emit(
         branch: String(d.branch ?? row.branch),
         state,
         state_detail: typeof d.detail === 'string' ? d.detail : null,
-        // The container exists once `up` brought it to running; a create starts clean.
-        container_id: state === 'running' && row.container_id === null
-          ? `c0ffee${id.slice(-10).toLowerCase()}${'0'.repeat(48)}`.slice(0, 64)
+        // The move to running carries the container id, as the server's does
+        // (design §6); a create starts clean.
+        container_id: typeof d.container_id === 'string' ? d.container_id
           : state === 'pending' ? null : row.container_id,
         steps: state === 'pending' ? {} : row.steps,
         created_at: state === 'pending' && cur === undefined ? ev.at : row.created_at,
@@ -357,16 +355,27 @@ export function cloneScript(
 }
 
 /**
- * The events a start emits: stopped or failed back to building, then the
- * steps that bring a container up again — the clone and its config survive,
- * so they are not rerun.
+ * The events a start emits, as internal/provision's Start runs it: from step
+ * 3 (resolve_config) in `building` when the clone's last step said done, and
+ * from step 2 in `cloning` otherwise. Steps before that are not rerun, so
+ * their rows keep the earlier run's events — and a step the earlier run
+ * reached past this run's failure keeps its old status too, which is what
+ * the UI's runSteps exists to leave out.
  */
 export function startScript(b: MockBackend, id: string, failAt?: string): Array<(at?: string) => void> {
-  const from = b.workspaces[id]?.state ?? 'stopped'
+  const w = b.workspaces[id]
+  const from = w?.state ?? 'stopped'
   const steps = new ScriptSteps(b, id)
-  return steps.run([], [
-    ['credential_volume', 'building'], ['broker_socket', null], ['up', null], ['verify', null],
-  ], from, failAt)
+  const rest: Array<[string, WorkspaceState | null]> = [['credential_volume', null], ['broker_socket', null], ['up', null], ['verify', null]]
+  const plan: Array<[string, WorkspaceState | null]> = w?.steps.clone?.status === 'done'
+    ? [['resolve_config', 'building'], ...rest]
+    : [['clone', 'cloning'], ['resolve_config', null], ...rest.map(([n]): [string, WorkspaceState | null] => [n, n === 'up' ? 'building' : null])]
+  return steps.run([], plan, from, failAt)
+}
+
+/** The id `up` reports for a workspace's container: deterministic, so specs can name it. */
+export function mockContainerId(id: string): string {
+  return `c0ffee${id.slice(-10).toLowerCase()}${'0'.repeat(48)}`.slice(0, 64)
 }
 
 /** What a failed step says: a `workspace.Public` sentence, never a raw error. */
@@ -416,7 +425,7 @@ class ScriptSteps {
       }
       out.push(this.step(name, 'done'))
     }
-    out.push(this.state('running', { from }, 'Running.'))
+    out.push(this.state('running', { from, container_id: mockContainerId(this.id) }, 'Running.'))
     return out
   }
 }
@@ -556,7 +565,9 @@ export function handlersFor(b: MockBackend): HttpHandler[] {
       const repo = b.repos.find((r) => r.id === repoId)
       if (repo === undefined || repo.removed) return envelope(404, 'not_found', 'No such repository.')
       const rows = Object.values(b.workspaces)
-      if (rows.some((w) => w.repository_id === repoId && HOLDING.has(w.state))) {
+      // One repository, one workspace, until a delete finishes (design §5):
+      // a row in any state — failed, stopped and deleting included — refuses.
+      if (rows.some((w) => w.repository_id === repoId)) {
         return envelope(409, 'in_progress', 'That repository already has a workspace.')
       }
       if (rows.filter((w) => OCCUPYING.has(w.state)).length >= b.capacity) {
@@ -585,6 +596,10 @@ export function handlersFor(b: MockBackend): HttpHandler[] {
       if (w === undefined) return envelope(404, 'not_found', 'No such workspace.')
       if (w.state !== 'stopped' && w.state !== 'failed') {
         return envelope(409, 'in_progress', 'The workspace is not stopped or failed.')
+      }
+      // A start takes a container slot, so the cap applies as to a create.
+      if (Object.values(b.workspaces).filter((x) => OCCUPYING.has(x.state)).length >= b.capacity) {
+        return envelope(409, 'at_capacity', 'The concurrent-container cap is reached.')
       }
       const failAt = b.failNext ?? undefined
       b.failNext = null
