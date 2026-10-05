@@ -1,0 +1,22 @@
+{
+  // Type-checked by run.sh before the tier runs (Playwright itself only
+  // strips types). The toolchain lives in web/, so module and type lookups
+  // are pointed there.
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "typeRoots": ["../../web/node_modules/@types"],
+    "types": ["node"],
+    "paths": {
+      "@playwright/test": ["../../web/node_modules/@playwright/test"]
+    },
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "isolatedModules": true,
+    "skipLibCheck": true,
+    "noEmit": true
+  },
+  "include": ["*.ts"]
+}

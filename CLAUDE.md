@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **Mostly design, with the first code in.** The repository contains the overall design
 document (`docs/design/overall/drydock-design.md`, draft v24), supplemental ones on port forwarding
-(`docs/design/port-forwarding/`, draft v5), testing (`docs/design/testing/`, draft v11) and the Vue
+(`docs/design/port-forwarding/`, draft v5), testing (`docs/design/testing/`, draft v12) and the Vue
 frontend (`docs/design/frontend/`, draft v9), a settled brand mark (`docs/design/brand/`, v1.1,
 with the shipping icon assets), an adversarial security review
 (`docs/design/security-review.md`), their SVG diagrams, a devcontainer definition, and **five
@@ -22,6 +22,7 @@ go build ./... && go vet ./... && go test ./...   # the whole suite; the Caddy t
 gofmt -l .                                        # must print nothing
 cd web && npm ci && npm run check                 # the UI: types, tests, dist is current, size budget
 test/install/run.sh                               # the installer, in a systemd container
+test/browser/run.sh                               # the browser tier: Chromium, Caddy, drydock (needs web/'s npm ci)
 go build -o drydock ./cmd/drydock                 # the one binary
 printf "%s\n" "$PW" | ./drydock passwd --db x.db  # set the operator password (no HTTP route can)
 ./drydock serve --db x.db --ui-origin https://drydock.example.com --ui-host drydock.example.com \
@@ -60,6 +61,7 @@ printf "%s\n" "$PW" | ./drydock passwd --db x.db  # set the operator password (n
 | `deploy/package.sh` | Builds the release assets — the same script in CI and in the installer test. |
 | `test/install/` | `run.sh` runs the installer against real systemd, the official Caddy package, Debian's Docker (a nested daemon) and the devcontainer CLI in a privileged container: refusal without Docker or the CLI, a real `devcontainer up` inside the running service's own mount namespace, fresh install, no-op re-run, upgrade, rollback, previews on and off, an unreadable key, a foreign Caddyfile, the secrets master key (created, never printed, kept across re-run and upgrade, a damaged one refused). `live.sh vX.Y.Z` runs the README one-liner against a *published* release from GitHub. Neither is part of `go test`; CI runs the first, the release workflow the second. |
 | `test/container/` | The container tier: real Docker (the devcontainer's DinD, or the CI runner's) and the real `devcontainer` CLI. Adopt-an-orphan and died-unobserved against real containers, and Phase 3's deliverable end to end. That is a real `devcontainer up` with the Feature from this checkout and the broker socket bind-mounted. Inside, git pushes a `drydock/` branch through the helper; a push to `main` is refused, the other repository is unreachable, and there is no socket but its own and no Docker socket. Then Phase 4's: a suite run through the Feature's `CLAUDE_ENV_FILE` passes while a secret is granted and fails on the next command once it is not; a hostile value runs nothing; no value is in any `/proc/*/cmdline` or `docker inspect`. And Phase 2's: `POST /api/workspaces` through the real server, signed in, for a repository with a config and one without, both reaching `running` with the published Feature, the clones untouched and no token anywhere in the tree or the database; a secret granted to one reaches its `CLAUDE_ENV_FILE` prelude and not the other's. Each test runs under its own random label prefix. Skips without Docker unless `DRYDOCK_REQUIRE_DOCKER` is set, which CI does. |
+| `test/browser/` | The browser tier (testing §10, §10.4): Playwright's Chromium against the real `drydock serve` and real Caddy on the shipped Caddyfile, with a throwaway CA trusted through NSS in a per-run `HOME` — never `ignoreHTTPSErrors`. A tap between Caddy and each socket records what arrived, so "no cookie" is asserted at the server. Covers the `__Host-` cookie and its illegal variants, the `SameSite=Lax` split, the `Origin` belt, cross-origin reads, framing both ways, the CSP as served, SSE through Caddy's `encode`, the browser's own `Last-Event-ID` replay, sign-in with `return`, the mid-session `401`, and a wrong-host certificate refused. Mutation-checked. Run by `run.sh`, which resolves `@playwright/test` from `web/node_modules` via `NODE_PATH` and type-checks first. |
 | `test/component/` | Real binaries, nothing mocked. Today: the Caddyfile conformance test (testing §3.2), mutation-checked against the Caddyfile itself. |
 | `test/fixtures/` | The corpus: 40 fixtures from `2.1.289` and devcontainer CLI `0.89.0`, plus `record.sh`, which is testing §11.1 step 3. Some are hand-written or synthetic, and their `.meta` says which. |
 
@@ -100,12 +102,15 @@ paid. Node is present for the `devcontainer` CLI, so Vitest needs nothing new.
 Two things the browser tier needs, settled by Spike 04. **`libnss3-tools` is now in the apt feature**
 — `certutil` is how a test CA gets into Chromium's trust store, and that is the only route that
 keeps certificate validation on. **Playwright's browsers are deliberately not installed by the
-devcontainer**: `--with-deps` pulls in some forty transitive system libraries, and enumerating those
-in a package list is how the list goes stale silently. It stays a lifecycle command —
-`npx playwright install --with-deps chromium` — to be added to `postCreate` once `web/package.json`
-exists in Phase 1. A `drydock-playwright-cache` volume on `~/.cache/ms-playwright` is already
-mounted so that ~114 MB download survives rebuilds, the same reasoning as the DinD volume beside it.
-**Both changes need a container rebuild to take effect.**
+devcontainer's features**: `--with-deps` pulls in some forty transitive system libraries, and
+enumerating those in a package list is how the list goes stale silently. It is a lifecycle command
+instead — `postCreateCommand` runs `npm ci` in `web/` and then `npx playwright install --with-deps
+chromium`, which fetches the Chromium build web/'s pinned `@playwright/test` wants. A
+`drydock-playwright-cache` volume on `~/.cache/ms-playwright` keeps that ~114 MB download across
+rebuilds, the same reasoning as the DinD volume beside it. **The `postCreate` step needs a container
+rebuild to take effect**; until then, run the two commands by hand in `web/` (the system libraries
+need `sudo npx playwright install-deps chromium`). Playwright itself is a devDependency of `web/`,
+pinned — bump it with the §11.6 ritual, since a new Chromium is a new set of cookie rules.
 
 A third volume, `drydock-gh-config` on `~/.config/gh`, keeps `gh`'s login across rebuilds. The intended
 login is a **fine-grained token scoped to this repository alone** (`! gh auth login --with-token`),
@@ -152,7 +157,9 @@ just published. A red `verify` means a broken release is already public: fix for
 
 **CI** (`.github/workflows/ci.yml`) runs on every PR and push to `main`: `gofmt`, `go vet`, `go test`
 with Caddy installed and `DRYDOCK_REQUIRE_CADDY=1` — without it a missing `caddy` is a *skip*, which
-in CI is a silent pass of the Caddyfile test — then `npm run check`, then `test/install/run.sh`. Its
+in CI is a silent pass of the Caddyfile test — then `npm run check`, then `test/install/run.sh`, and
+the `browser` job: `test/browser/run.sh` after `npx playwright install --with-deps chromium`,
+`libnss3-tools` and the pinned Caddy, uploading Playwright traces when it fails. Its
 `CADDY_VERSION` is pinned; the devcontainer's Caddy feature is not, so bump the pin when a rebuild
 moves it. Releases are amd64 only, by choice.
 
@@ -377,7 +384,8 @@ These come from §2 (Claude Code constraints) and §13.5 (non-negotiables). Most
    `ignoreHTTPSErrors`: `__Host-` accepted and replayed, its three illegal variants refused, a
    cross-site `POST` and `GET` cookieless, and a cross-site *top-level navigation* carrying the
    cookie — which is the measured justification for `SameSite=Lax` over `Strict`. The browser tier
-   is built as specified and keeps all nine of its assertions.
+   is built as specified, in `test/browser/`: every §10.2 item whose subject exists is built, and what waits on
+   previews or Phase 5 (items 6, 8, 12 and the handshake half of 5) is listed in testing §10.4.
 
    Keep `ignoreHTTPSErrors` banned, but for the right reason: it does **not** break cookie semantics
    (it passes the same fourteen). What it breaks is the tier's ability to notice a *misissued*

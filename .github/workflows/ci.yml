@@ -66,6 +66,45 @@ jobs:
       # internal/web/dist is exactly what these sources build.
       - run: npm run check
 
+  # The browser tier (testing §10): real Chromium, real Caddy on the shipped
+  # Caddyfile, the real `drydock serve`, and a throwaway CA trusted through
+  # NSS — never ignoreHTTPSErrors.
+  browser:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Install Caddy
+        run: |
+          base=https://github.com/caddyserver/caddy/releases/download/v$CADDY_VERSION
+          tarball=caddy_${CADDY_VERSION}_linux_amd64.tar.gz
+          curl -fsSLO "$base/$tarball" -fsSLO "$base/caddy_${CADDY_VERSION}_checksums.txt"
+          grep " $tarball\$" "caddy_${CADDY_VERSION}_checksums.txt" | sha512sum -c -
+          sudo tar -xzf "$tarball" -C /usr/local/bin caddy
+      # certutil: how the test CA gets into Chromium's NSS store (Spike 04).
+      - name: Install certutil
+        run: sudo apt-get update -q && sudo apt-get install -y -q --no-install-recommends libnss3-tools
+      - run: npm ci
+        working-directory: web
+      - run: npx playwright install --with-deps chromium
+        working-directory: web
+      - run: test/browser/run.sh
+      # A failed test leaves a Playwright trace: the page, the network, the
+      # console, step by step. `npx playwright show-trace <zip>` opens one.
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: browser-traces
+          path: test/browser/test-results/
+          retention-days: 14
+
   installer:
     runs-on: ubuntu-latest
     steps:
