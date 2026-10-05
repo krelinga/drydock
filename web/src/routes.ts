@@ -1,5 +1,6 @@
 import { createRouter, type RouteLocationRaw, type Router, type RouterHistory } from 'vue-router'
 import WorkspacesView from './views/WorkspacesView.vue'
+import WorkspaceView from './views/WorkspaceView.vue'
 import SettingsView from './views/SettingsView.vue'
 import SignInView from './views/SignInView.vue'
 import NotFoundView from './views/NotFoundView.vue'
@@ -19,6 +20,9 @@ export function createAppRouter(history: RouterHistory): Router {
     routes: [
       { path: '/signin', name: 'signin', component: SignInView, meta: { public: true, title: 'Sign in' } },
       { path: '/', name: 'workspaces', component: WorkspacesView, meta: { title: 'Workspaces' } },
+      // §5: a route on a phone. (The ≥ 900 px column beside the list is a
+      // layout still to come; the route is what both would render.)
+      { path: '/ws/:id', name: 'workspace', component: WorkspaceView, meta: { title: 'Workspace' } },
       // A lazy chunk, per frontend §3.1: secrets and logs are the two.
       { path: '/secrets', name: 'secrets', component: () => import('./views/SecretsView.vue'), meta: { title: 'Secrets' } },
       { path: '/settings', name: 'settings', component: SettingsView, meta: { title: 'Settings' } },

@@ -19,6 +19,9 @@ const SENTENCES: Record<string, string> = {
   method_not_allowed: 'This page asked Drydock for something the wrong way. Reload and try again.',
   not_implemented: 'That is not built yet.',
   in_progress: 'Already in progress.',
+  // Design §1: capacity is managed by hand, so the refusal points at what to
+  // stop rather than only saying no (frontend §9).
+  at_capacity: 'Drydock is running as many workspaces as it is allowed to. Stop one in the Running section, then try again.',
   bad_request: 'Drydock did not understand that request.',
   internal: 'Drydock hit an internal error. The host’s log has the detail.',
   network: 'Could not reach Drydock. Check the connection and try again.',

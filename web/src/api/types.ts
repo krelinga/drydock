@@ -50,6 +50,7 @@ export type ErrorCode =
   | 'method_not_allowed'
   | 'not_implemented'
   | 'in_progress'
+  | 'at_capacity'
   | 'bad_request'
   | 'bad_password'
   | 'locked_out'
@@ -65,6 +66,48 @@ export type WorkspaceState = 'pending' | 'cloning' | 'building' | 'running' | 's
 export const WORKSPACE_STATES: readonly WorkspaceState[] = [
   'pending', 'cloning', 'building', 'running', 'stopped', 'failed', 'deleting',
 ]
+
+/**
+ * Design §6's eight steps, in the order a clone runs them. A step a run has
+ * not reached is simply absent from a workspace's `steps`.
+ */
+export const WORKSPACE_STEPS = [
+  'allocate', 'clone', 'resolve_config', 'credential_volume', 'broker_socket', 'up', 'verify', 'session_server',
+] as const
+
+export type StepStatus = 'started' | 'done' | 'failed'
+
+/** A step's latest status, as `GET /api/workspaces` reports it. */
+export interface StepView {
+  status: StepStatus
+  /** A `workspace.Public` sentence; never a raw error. */
+  detail?: string
+  at: string
+}
+
+/** One workspace, from `GET /api/workspaces` and `GET /api/workspaces/:id`. */
+export interface WorkspaceView {
+  id: string
+  repository_id: number
+  full_name: string
+  branch: string
+  state: WorkspaceState
+  state_detail: string | null
+  container_id: string | null
+  created_at: string
+  /** Keyed by step name; each step's latest status across runs. */
+  steps: Record<string, StepView>
+}
+
+/** `GET /api/workspaces`: every workspace with a row, newest first, `deleting` included. */
+export interface WorkspaceList {
+  workspaces: WorkspaceView[]
+}
+
+/** `GET /api/workspaces/:id`: the view plus its latest 50 events, newest first. */
+export interface WorkspaceDetail extends WorkspaceView {
+  events: StreamEvent[]
+}
 
 /** One installation of the GitHub App, from `GET /api/repos`. */
 export interface InstallationView {

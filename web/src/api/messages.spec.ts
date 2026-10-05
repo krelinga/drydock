@@ -35,6 +35,13 @@ describe('describeError', () => {
     expect(describeError(new ApiError(0, 'network'))).not.toContain('Something went wrong')
   })
 
+  it('at_capacity points at what to stop, and is not in_progress', () => {
+    const cap = describeError(new ApiError(409, 'at_capacity', null, 'prose'))
+    expect(cap).toContain('Running section')
+    // Control: the other 409 says something else entirely.
+    expect(describeError(new ApiError(409, 'in_progress'))).toBe('Already in progress.')
+  })
+
   it('handles something that is not an ApiError', () => {
     expect(describeError(new TypeError('x is undefined'))).not.toContain('x is undefined')
     expect(describeError(new ApiError(500, 'internal'))).toContain('internal error')

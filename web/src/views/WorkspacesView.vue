@@ -4,60 +4,39 @@
 // different question.
 //
 // Everything rendered here is read from the stream store's entities through
-// the catalog read model. This view fetches (GET /api/repos, handed to the
-// reducer as a snapshot) and registers that fetch as its backstop: refetched
-// when the stream reopens, on `resync`, and on any repo.* event.
+// the catalog read model. This view fetches GET /api/repos and GET
+// /api/workspaces, each handed to the reducer as a snapshot, and registers
+// both as its backstop: refetched when the stream reopens, on `resync`, and —
+// the catalog — on any repo.* event. The workspace list is what makes the
+// `Running` section whole: the catalog joins only each repository's newest
+// workspace, so an older one still holding a container would otherwise be
+// missing from it.
+//
+// Every card's status line and action come from lib/workspaceCard.ts (§6.1);
+// every button's lifecycle from ActionButton (§4.2).
 import { computed, onMounted } from 'vue'
 import { RouterLink } from 'vue-router'
 import { describeError } from '../api/messages'
+import ActionButton from '../components/ActionButton.vue'
 import { catalogEvent, useCatalogStore, type CatalogRow } from '../stores/catalog'
 import type { Workspace } from '../stores/reducer'
+import { cloneKey, startKey, useWorkspacesStore } from '../stores/workspaces'
 import { useStreamRefetch } from '../lib/refetch'
 import { relativeTime } from '../lib/time'
+import { cardStatus } from '../lib/workspaceCard'
 
 const catalog = useCatalogStore()
+const workspaces = useWorkspacesStore()
 
-onMounted(() => void catalog.load())
+onMounted(() => {
+  void catalog.load()
+  void workspaces.loadList()
+})
 useStreamRefetch({ refetch: () => catalog.load(), when: catalogEvent })
+useStreamRefetch({ refetch: () => workspaces.loadList() })
 
-const STATE_LABEL: Record<string, string> = {
-  pending: 'Waiting to start',
-  cloning: 'Cloning',
-  building: 'Building',
-  running: 'Running',
-  stopped: 'Stopped',
-  failed: 'Failed',
-  deleting: 'Deleting',
-}
-
-const STEP_LABEL: Record<string, string> = {
-  allocate: 'allocating', clone: 'cloning', resolve_config: 'resolving config',
-  credential_volume: 'preparing credentials', broker_socket: 'opening the broker socket',
-  up: 'starting the container', verify: 'verifying', session_server: 'starting the session server',
-}
-
-/** One status line, from the state and — while it moves — the current step (§6.1). */
-function statusLine(w: Workspace): string {
-  const label = STATE_LABEL[w.state ?? ''] ?? 'Unknown'
-  if (w.state === 'failed') {
-    // §6.1: `failed` names the step, never "failed" alone.
-    const failed = w.step?.status === 'failed' ? STEP_LABEL[w.step.name] ?? w.step.name : null
-    return failed !== null ? `Failed while ${failed}` : label
-  }
-  if ((w.state === 'pending' || w.state === 'cloning' || w.state === 'building') && w.step?.status === 'started') {
-    const s = STEP_LABEL[w.step.name] ?? w.step.name
-    return `${label} · ${s}…`
-  }
-  return label
-}
-
-function tone(w: Workspace | null): string {
-  if (w === null) return ''
-  if (w.state === 'failed') return 'bad'
-  if (w.state === 'running') return 'ok'
-  if (w.state === 'stopped' || w.state === 'deleting') return 'idle'
-  return 'busy'
-}
+const status = (w: Workspace) => cardStatus(w)
+const wsLink = (w: Workspace) => ({ name: 'workspace', params: { id: w.id } })
 
 const searching = computed(() => catalog.query.trim() !== '')
 const firstLoad = computed(() => catalog.status === 'loading' || catalog.status === 'idle')
@@ -73,15 +52,24 @@ function rowNote(r: CatalogRow): string | null {
   <section class="view" aria-labelledby="ws-h">
     <h1 id="ws-h" tabindex="-1">Workspaces</h1>
 
-    <div class="block" data-test="running">
+    <div id="running" class="block" data-test="running">
       <div class="sec-label"><span>Running</span><span>{{ catalog.running.length }}</span></div>
       <ul v-if="catalog.running.length > 0" class="list">
         <li v-for="r in catalog.running" :key="r.workspace.id" class="row" data-test="running-row">
           <div class="head">
-            <span class="name">{{ r.repo?.fullName ?? r.workspace.id }}</span>
-            <span class="state" :class="tone(r.workspace)">{{ statusLine(r.workspace) }}</span>
+            <RouterLink :to="wsLink(r.workspace)" class="name" data-test="ws-link">
+              {{ r.repo?.fullName ?? r.workspace.fullName ?? r.workspace.id }}
+            </RouterLink>
+            <span class="state" :class="status(r.workspace).tone" data-test="running-state">
+              {{ status(r.workspace).line }}
+            </span>
           </div>
-          <p v-if="r.workspace.detail" class="detail">{{ r.workspace.detail }}</p>
+          <p v-if="status(r.workspace).note" class="detail">{{ status(r.workspace).note }}</p>
+          <ActionButton
+            v-if="status(r.workspace).action === 'start'" label="Start"
+            :flight-key="startKey(r.workspace.id)" :run="() => workspaces.start(r.workspace.id)"
+            data-test="start"
+          />
         </li>
       </ul>
       <div v-else class="empty">
@@ -139,9 +127,10 @@ function rowNote(r: CatalogRow): string | null {
             :class="{ removed: r.repo.removed }" data-test="repo"
           >
             <div class="head">
-              <span class="name">{{ r.repo.fullName }}</span>
-              <span v-if="r.workspace" class="state" :class="tone(r.workspace)" data-test="repo-state">
-                {{ statusLine(r.workspace) }}
+              <RouterLink v-if="r.workspace" :to="wsLink(r.workspace)" class="name">{{ r.repo.fullName }}</RouterLink>
+              <span v-else class="name">{{ r.repo.fullName }}</span>
+              <span v-if="r.workspace" class="state" :class="status(r.workspace).tone" data-test="repo-state">
+                {{ status(r.workspace).line }}
               </span>
             </div>
             <div class="badges">
@@ -153,6 +142,21 @@ function rowNote(r: CatalogRow): string | null {
               <span v-if="r.repo.private" class="badge">private</span>
               <span v-if="r.repo.pushedAt" class="pushed">pushed {{ relativeTime(r.repo.pushedAt) }}</span>
             </div>
+            <!--
+              One action per row (§6.1): Clone when nothing holds the repo,
+              Start when its workspace is stopped or failed. A removed repo is
+              read-only, so it offers no clone (the server would answer 404).
+            -->
+            <ActionButton
+              v-if="r.workspace === null && !r.repo.removed" label="Clone"
+              :flight-key="cloneKey(r.repo.id)" :run="() => workspaces.create(r.repo.id)"
+              data-test="clone"
+            />
+            <ActionButton
+              v-else-if="r.workspace && status(r.workspace).action === 'start'" label="Start"
+              :flight-key="startKey(r.workspace.id)" :run="() => workspaces.start(r.workspace!.id)"
+              data-test="start"
+            />
             <p v-if="rowNote(r)" class="detail" data-test="removed-note">
               {{ rowNote(r) }}
               <a
@@ -208,8 +212,12 @@ function rowNote(r: CatalogRow): string | null {
 .row { padding: 11px 12px; border-bottom: 1px solid var(--line-soft); display: flex; flex-direction: column; gap: 4px; min-width: 0; }
 .row:last-child { border-bottom: 0; }
 .row.removed { border-left: 3px solid var(--warn); padding-left: 9px; }
-.head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; min-width: 0; }
+/* A long status line ("Failed while starting the container") wraps under the
+ * name rather than squeezing it at 360 px. */
+.head { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 2px 8px; min-width: 0; }
+.head .name { flex: 0 1 auto; min-width: 0; }
 .name { font-family: var(--mono); font-size: 13.5px; overflow-wrap: anywhere; }
+a.name { color: var(--ink); text-decoration: underline; text-decoration-color: var(--line); text-underline-offset: 3px; }
 .state { font-size: 12.5px; color: var(--ink-2); flex: none; text-align: right; }
 .state.ok { color: var(--ok); }
 .state.bad { color: var(--bad); }

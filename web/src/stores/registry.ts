@@ -14,8 +14,9 @@ import type { Pinia } from 'pinia'
 import { useCatalogStore } from './catalog'
 import { useSessionStore } from './session'
 import { useStreamStore } from './stream'
+import { useWorkspacesStore } from './workspaces'
 
-const ENTITY_STORES = [useSessionStore, useStreamStore, useCatalogStore] as const
+const ENTITY_STORES = [useSessionStore, useStreamStore, useCatalogStore, useWorkspacesStore] as const
 
 export function clearEntityState(pinia?: Pinia): void {
   useStreamStore(pinia).disconnect()
