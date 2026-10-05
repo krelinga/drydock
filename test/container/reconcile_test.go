@@ -51,9 +51,12 @@ func prefix(t *testing.T) string {
 	rand.Read(b)
 	p := "drydock.test." + hex.EncodeToString(b)
 	t.Cleanup(func() {
-		out, _ := exec.Command("docker", "ps", "-aq", "--filter", "label="+p+".workspace").Output()
-		if ids := strings.Fields(string(out)); len(ids) > 0 {
-			exec.Command("docker", append([]string{"rm", "-f"}, ids...)...).Run()
+		// Workspace containers, and any cleanup helper a failed test left.
+		for _, k := range []string{".workspace", ".cleanup"} {
+			out, _ := exec.Command("docker", "ps", "-aq", "--filter", "label="+p+k).Output()
+			if ids := strings.Fields(string(out)); len(ids) > 0 {
+				exec.Command("docker", append([]string{"rm", "-f"}, ids...)...).Run()
+			}
 		}
 	})
 	return p

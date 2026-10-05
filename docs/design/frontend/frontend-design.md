@@ -99,7 +99,7 @@ The fix is the same rule as 2.1, applied to the handshake: the server owns it, a
 
 ### 2.5  No secret, token, or value ever comes back
 
-§13.5: *"No route returns a secret value. Not for an edit form, not for a 'reveal' button, not behind a re-auth prompt."* This is a frontend constraint as much as an API one, because the pressure to break it comes from the UI side: an edit form naturally wants to prefill, and a rotation naturally wants to show what it is replacing.
+§13.5: *"Nothing returns or pre-fills a stored secret value. No route, response body, SSE event or form carries one back out: not to pre-fill an edit form, not for a 'reveal' button, not behind a re-auth prompt."* An edit form for the metadata, and an empty field that writes a new value, are allowed; the stored value travelling back out is what is not. This is a frontend constraint as much as an API one, because the pressure to break it comes from the UI side: an edit form naturally wants to prefill, and a rotation naturally wants to show what it is replacing.
 
 It does neither. The secret form is write-only, the rotate form opens empty and says so, and there is no component in the app that can render a secret value because none is ever in the store. The same applies to GitHub tokens (there is no route) and to the Claude login code (it goes up, never comes back down).
 

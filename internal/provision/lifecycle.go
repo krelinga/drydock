@@ -219,12 +219,17 @@ func (p *Provisioner) deleteJob(ctx context.Context, id string) error {
 			return workspace.Note(fmt.Sprintf("Removed %d containers.", len(ids)))
 		}},
 		{SubBrokerSocket, func(context.Context) error { return p.closeSocket(id) }},
-		{SubFiles, func(context.Context) error {
-			if err := removeWorkspaceDir(p.Workspaces.Root, w); err != nil {
-				if errors.Is(err, ErrUnsafePath) {
-					return workspace.Public("Drydock refused to remove the workspace's directory: it is not the workspace's own directory under the workspace root.", err)
-				}
+		{SubFiles, func(ctx context.Context) error {
+			helped, err := removeWorkspaceDir(ctx, p.Workspaces.Root, w, p.Containers.RemoveContents)
+			switch {
+			case errors.Is(err, ErrUnsafePath):
+				return workspace.Public("Drydock refused to remove the workspace's directory: it is not the workspace's own directory under the workspace root.", err)
+			case err != nil && helped:
+				return workspace.Public("Drydock could not remove the workspace's directory, even with a helper container for the files it does not own.", err)
+			case err != nil:
 				return workspace.Public("Drydock could not remove the workspace's directory; files inside may belong to another user.", err)
+			case helped:
+				return workspace.Note("Some files belonged to another user (root, inside the container), so a short-lived helper container removed them.")
 			}
 			return nil
 		}},
@@ -346,54 +351,28 @@ var ulidPattern = regexp.MustCompile(`^[0-9A-HJKMNP-TV-Z]{26}$`)
 // removeWorkspaceDir removes <root>/<id> — the clone and .drydock/ — and
 // nothing else. It is the one place Drydock deletes a clone, and a clone can
 // hold unpushed work, so it refuses anything it cannot prove is that
-// directory:
+// directory (verifyWorkspaceDir) before anything runs.
 //
-//   - the id must be a ULID, so it cannot be "", "..", or a path;
-//   - the root must be absolute and clean, and not "/";
-//   - the row's host_path must be <root>/<id>/repo — a root changed since
-//     the workspace was created means the clone is somewhere else, and
-//     removing <new root>/<id> would remove the wrong thing or nothing;
-//   - <root>/<id> must be a real directory, not a symlink, and resolve to
-//     <resolved root>/<id>.
+// The host removal comes first. Inside the directory, os.RemoveAll unlinks a
+// symlink rather than following it, so a link in the clone pointing out of
+// the tree removes the link and leaves its target. What the host removal
+// leaves is what the drydock user may not remove: files a root process in
+// the container wrote into the clone. Those go through helper — the cleanup
+// container, which sees <root>/<id> alone, bind-mounted, never a parent
+// (container.CleanupArgs) — after the directory is proved again, and then the
+// now-empty directory, which is Drydock's own, goes from the host. helped
+// reports whether the helper ran.
 //
-// Inside the directory, os.RemoveAll unlinks a symlink rather than following
-// it, so a link in the clone pointing out of the tree removes the link and
-// leaves its target. A directory already gone is success: a resumed delete
-// may have removed it before the restart.
-func removeWorkspaceDir(root string, w workspace.Workspace) error {
-	if !ulidPattern.MatchString(w.ID) {
-		return fmt.Errorf("%w: %q is not a workspace id", ErrUnsafePath, w.ID)
+// A directory already gone is success: a resumed delete may have removed it
+// before the restart.
+func removeWorkspaceDir(ctx context.Context, root string, w workspace.Workspace,
+	helper func(ctx context.Context, workspaceID, dir string) error) (helped bool, err error) {
+	dir, err := verifyWorkspaceDir(root, w)
+	if err != nil || dir == "" {
+		return false, err
 	}
-	if !filepath.IsAbs(root) || filepath.Clean(root) != root || root == "/" {
-		return fmt.Errorf("%w: the workspace root %q is not a clean absolute path", ErrUnsafePath, root)
-	}
-	dir := filepath.Join(root, w.ID)
-	if w.HostPath != filepath.Join(dir, "repo") {
-		return fmt.Errorf("%w: the clone is recorded at %q, not under %q", ErrUnsafePath, w.HostPath, dir)
-	}
-	fi, err := os.Lstat(dir)
-	if errors.Is(err, fs.ErrNotExist) {
-		return nil
-	}
-	if err != nil {
-		return err
-	}
-	if fi.Mode()&fs.ModeSymlink != 0 || !fi.IsDir() {
-		return fmt.Errorf("%w: %s is not a directory (mode %s)", ErrUnsafePath, dir, fi.Mode())
-	}
-	realRoot, err := filepath.EvalSymlinks(root)
-	if err != nil {
-		return err
-	}
-	realDir, err := filepath.EvalSymlinks(dir)
-	if err != nil {
-		return err
-	}
-	if realDir != filepath.Join(realRoot, w.ID) {
-		return fmt.Errorf("%w: %s resolves to %s", ErrUnsafePath, dir, realDir)
-	}
-	if err := os.RemoveAll(dir); err == nil {
-		return nil
+	if err := hostRemoveAll(dir); err == nil {
+		return false, nil
 	}
 	// A read-only directory in the tree (a tool's cache, say) stops
 	// RemoveAll. Make Drydock's own directories writable and try once more.
@@ -405,5 +384,68 @@ func removeWorkspaceDir(root string, w workspace.Workspace) error {
 		}
 		return nil
 	})
-	return os.RemoveAll(dir)
+	hostErr := hostRemoveAll(dir)
+	if hostErr == nil || helper == nil {
+		return false, hostErr
+	}
+	// Prove it again: the helper runs as root, so the directory it is given
+	// is checked immediately before, not only at the top.
+	real, err := verifyWorkspaceDir(root, w)
+	if err != nil || real == "" {
+		return false, err
+	}
+	if err := helper(ctx, w.ID, real); err != nil {
+		return true, errors.Join(hostErr, err)
+	}
+	return true, hostRemoveAll(dir)
+}
+
+// hostRemoveAll is os.RemoveAll; a test replaces it to stand in for files
+// the drydock user does not own, which a unit test cannot make without root.
+var hostRemoveAll = os.RemoveAll
+
+// verifyWorkspaceDir proves <root>/<id> is the workspace's own directory and
+// returns it resolved, or "" with no error when it is already gone. It
+// refuses:
+//
+//   - an id that is not a ULID, so it cannot be "", "..", or a path;
+//   - a root that is not absolute and clean, or is "/";
+//   - a row whose host_path is not <root>/<id>/repo — a root changed since
+//     the workspace was created means the clone is somewhere else, and
+//     removing <new root>/<id> would remove the wrong thing or nothing;
+//   - a <root>/<id> that is not a real directory, is a symlink, or does not
+//     resolve to <resolved root>/<id>.
+func verifyWorkspaceDir(root string, w workspace.Workspace) (string, error) {
+	if !ulidPattern.MatchString(w.ID) {
+		return "", fmt.Errorf("%w: %q is not a workspace id", ErrUnsafePath, w.ID)
+	}
+	if !filepath.IsAbs(root) || filepath.Clean(root) != root || root == "/" {
+		return "", fmt.Errorf("%w: the workspace root %q is not a clean absolute path", ErrUnsafePath, root)
+	}
+	dir := filepath.Join(root, w.ID)
+	if w.HostPath != filepath.Join(dir, "repo") {
+		return "", fmt.Errorf("%w: the clone is recorded at %q, not under %q", ErrUnsafePath, w.HostPath, dir)
+	}
+	fi, err := os.Lstat(dir)
+	if errors.Is(err, fs.ErrNotExist) {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	if fi.Mode()&fs.ModeSymlink != 0 || !fi.IsDir() {
+		return "", fmt.Errorf("%w: %s is not a directory (mode %s)", ErrUnsafePath, dir, fi.Mode())
+	}
+	realRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		return "", err
+	}
+	realDir, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		return "", err
+	}
+	if realDir != filepath.Join(realRoot, w.ID) {
+		return "", fmt.Errorf("%w: %s resolves to %s", ErrUnsafePath, dir, realDir)
+	}
+	return realDir, nil
 }

@@ -33,6 +33,9 @@ type Manager struct {
 	// filters on is under it, so a second Drydock with its own prefix — a
 	// test run — never sees this one's containers.
 	LabelPrefix string
+	// CleanupImage is config.CleanupImage: the digest-pinned image a delete
+	// runs to remove what the drydock user cannot (cleanup.go).
+	CleanupImage string
 }
 
 // Label keys, under the prefix. Workspace is the id-label `up` matches on;

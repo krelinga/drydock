@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -20,7 +22,9 @@ const testPrefix = "drydock.test.provision"
 // "<id> <workspace> <status>" line each, so up, ps, inspect, stop and rm all
 // see one world. It records argv beside the devcontainer fake's, first line
 // "docker". A file docker-fail-<subcommand> in dir makes that subcommand
-// fail; docker-sticky makes rm report success and remove nothing.
+// fail; docker-sticky makes rm report success and remove nothing. run is the
+// cleanup helper: it empties its --mount's source, as `find -delete` would,
+// and the helper label's listing is empty — helpers are never in the world.
 func fakeDocker(dir string) string {
 	return `#!/bin/sh
 dir='` + dir + `'
@@ -32,7 +36,10 @@ case "$1" in
 ps)
   ws=
   for a in "$@"; do
-    case "$a" in label=*.workspace=*) ws=${a#label=*.workspace=} ;; esac
+    case "$a" in
+    label=*.workspace=*) ws=${a#label=*.workspace=} ;;
+    label=*.cleanup=*) exit 0 ;;
+    esac
   done
   if [ -n "$ws" ]; then awk -v ws="$ws" '$2==ws {print $1}' "$st"; else awk '{print $1}' "$st"; fi ;;
 inspect)
@@ -52,6 +59,11 @@ rm)
   [ -e "$dir/docker-sticky" ] && exit 0
   while [ "$1" != -- ]; do shift; done; shift
   for id; do awk -v id="$id" '$1!=id' "$st" > "$st.t" && mv "$st.t" "$st"; done ;;
+run)
+  for a in "$@"; do
+    case "$a" in type=bind,source=*) src=${a#type=bind,source=}; src=${src%%,target=*} ;; esac
+  done
+  find "$src" -mindepth 1 -delete ;;
 *) exit 64 ;;
 esac
 `
@@ -590,21 +602,21 @@ func TestRemoveWorkspaceDirRefusesAnythingElse(t *testing.T) {
 		os.WriteFile(filepath.Join(dir, "repo", "ro", "deep", "f"), nil, 0o400)
 		os.Chmod(filepath.Join(dir, "repo", "ro"), 0o500)
 		os.Symlink(outside, filepath.Join(dir, "repo", "out"))
-		if err := removeWorkspaceDir(root, ws(root, id)); err != nil {
+		if err := rwd(t, root, ws(root, id)); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := os.Lstat(dir); !errors.Is(err, os.ErrNotExist) {
 			t.Errorf("not removed: %v", err)
 		}
 		intact(t, outside)
-		if err := removeWorkspaceDir(root, ws(root, id)); err != nil {
+		if err := rwd(t, root, ws(root, id)); err != nil {
 			t.Errorf("an already-removed directory = %v; a resumed delete must not fail on it", err)
 		}
 	})
 	t.Run("the directory is a symlink out", func(t *testing.T) {
 		root, outside := mk(t)
 		os.Symlink(outside, filepath.Join(root, id))
-		if err := removeWorkspaceDir(root, ws(root, id)); !errors.Is(err, ErrUnsafePath) {
+		if err := rwd(t, root, ws(root, id)); !errors.Is(err, ErrUnsafePath) {
 			t.Errorf("= %v", err)
 		}
 		intact(t, outside)
@@ -612,7 +624,7 @@ func TestRemoveWorkspaceDirRefusesAnythingElse(t *testing.T) {
 	t.Run("the directory is a file", func(t *testing.T) {
 		root, _ := mk(t)
 		os.WriteFile(filepath.Join(root, id), []byte("not a dir"), 0o600)
-		if err := removeWorkspaceDir(root, ws(root, id)); !errors.Is(err, ErrUnsafePath) {
+		if err := rwd(t, root, ws(root, id)); !errors.Is(err, ErrUnsafePath) {
 			t.Errorf("= %v", err)
 		}
 	})
@@ -636,7 +648,7 @@ func TestRemoveWorkspaceDirRefusesAnythingElse(t *testing.T) {
 			if c.root != "" {
 				root = c.root
 			}
-			if err := removeWorkspaceDir(root, c.w(root)); !errors.Is(err, ErrUnsafePath) {
+			if err := rwd(t, root, c.w(root)); !errors.Is(err, ErrUnsafePath) {
 				t.Errorf("= %v, want ErrUnsafePath", err)
 			}
 			intact(t, outside)
@@ -811,5 +823,232 @@ func TestDeleteNamesAStuckSubStep(t *testing.T) {
 				t.Errorf("control: %v", err)
 			}
 		})
+	}
+}
+
+// rwd is removeWorkspaceDir with a helper that must never run: every caller
+// here either refuses or succeeds on the host.
+func rwd(t *testing.T, root string, w workspace.Workspace) error {
+	t.Helper()
+	_, err := removeWorkspaceDir(context.Background(), root, w, func(context.Context, string, string) error {
+		t.Errorf("the helper container ran for %s", w.ID)
+		return errors.New("no helper here")
+	})
+	return err
+}
+
+// unremovable makes the host removal fail while any file named "root-owned"
+// is left under the directory — what a file root made in the clone does to
+// the drydock user, which a unit test cannot make for real without root.
+// The container tier makes it for real.
+func unremovable(t *testing.T) {
+	t.Helper()
+	t.Cleanup(func() { hostRemoveAll = os.RemoveAll })
+	hostRemoveAll = func(dir string) error {
+		found := false
+		filepath.WalkDir(dir, func(_ string, d fs.DirEntry, err error) error {
+			if err == nil && d.Name() == "root-owned" {
+				found = true
+			}
+			return nil
+		})
+		if found {
+			return &fs.PathError{Op: "unlinkat", Path: dir, Err: syscall.EACCES}
+		}
+		return os.RemoveAll(dir)
+	}
+}
+
+// TestRemoveWorkspaceDirFallsBackToTheHelper: what the host cannot remove,
+// the helper does — given the workspace's own directory, resolved, and
+// nothing above it. The control is the same tree without the unremovable
+// file: the host removes it all and the helper never runs. A failing helper
+// is an error that says the helper ran. And a directory that stops being the
+// workspace's between the host's attempt and the helper — swapped for a
+// symlink out — is refused at the re-check, with the helper never run and
+// the target intact.
+func TestRemoveWorkspaceDirFallsBackToTheHelper(t *testing.T) {
+	const id = "01JABCDEFGHJKMNPQRSTVWXYZ0"
+	ctx := context.Background()
+	unremovable(t)
+	mk := func(t *testing.T, stuck bool) (string, string, workspace.Workspace) {
+		base := t.TempDir()
+		root := filepath.Join(base, "ws")
+		os.MkdirAll(filepath.Join(root, id, "repo", "build", "out"), 0o700)
+		os.WriteFile(filepath.Join(base, "precious"), []byte("keep"), 0o600)
+		if stuck {
+			os.WriteFile(filepath.Join(root, id, "repo", "build", "out", "root-owned"), nil, 0o600)
+		}
+		return base, root, workspace.Workspace{ID: id, HostPath: filepath.Join(root, id, "repo")}
+	}
+	var given []string
+	helper := func(_ context.Context, ws, dir string) error {
+		given = append(given, ws+" "+dir)
+		entries, _ := os.ReadDir(dir)
+		for _, e := range entries {
+			os.RemoveAll(filepath.Join(dir, e.Name()))
+		}
+		return nil
+	}
+
+	// Control: nothing stuck, so no helper.
+	_, root, w := mk(t, false)
+	if helped, err := removeWorkspaceDir(ctx, root, w, helper); err != nil || helped || len(given) != 0 {
+		t.Fatalf("control: helped %v, err %v, helper given %v", helped, err, given)
+	}
+	if _, err := os.Lstat(filepath.Join(root, id)); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("control: not removed: %v", err)
+	}
+
+	// Stuck: the helper, given exactly <root>/<id>.
+	base, root, w := mk(t, true)
+	helped, err := removeWorkspaceDir(ctx, root, w, helper)
+	if err != nil || !helped {
+		t.Fatalf("helped %v, err %v", helped, err)
+	}
+	if want := []string{id + " " + filepath.Join(root, id)}; strings.Join(given, "|") != strings.Join(want, "|") {
+		t.Errorf("the helper was given %v, want %v", given, want)
+	}
+	if _, err := os.Lstat(filepath.Join(root, id)); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("not removed: %v", err)
+	}
+	if _, err := os.Stat(root); err != nil {
+		t.Errorf("the root went: %v", err)
+	}
+	if b, _ := os.ReadFile(filepath.Join(base, "precious")); string(b) != "keep" {
+		t.Error("something beside the root was removed")
+	}
+
+	// A helper that fails leaves the error, and says it ran.
+	_, root, w = mk(t, true)
+	helped, err = removeWorkspaceDir(ctx, root, w, func(context.Context, string, string) error { return errors.New("daemon said no") })
+	if !helped || err == nil {
+		t.Errorf("a failing helper: helped %v, err %v", helped, err)
+	}
+
+	// Swapped between the two checks: refused, helper not run.
+	given = nil
+	base, root, w = mk(t, true)
+	outside := filepath.Join(base, "outside")
+	os.MkdirAll(outside, 0o700)
+	os.WriteFile(filepath.Join(outside, "precious"), []byte("keep"), 0o600)
+	inner, calls := hostRemoveAll, 0
+	hostRemoveAll = func(dir string) error {
+		if calls++; calls < 2 {
+			return inner(dir)
+		}
+		// The second, failing attempt — and then the swap.
+		os.Rename(dir, filepath.Join(base, "moved"))
+		os.Symlink(outside, dir)
+		return &fs.PathError{Op: "unlinkat", Path: dir, Err: syscall.EACCES}
+	}
+	helped, err = removeWorkspaceDir(ctx, root, w, helper)
+	hostRemoveAll = inner
+	if !errors.Is(err, ErrUnsafePath) || helped || len(given) != 0 {
+		t.Errorf("a swapped directory: helped %v, err %v, helper given %v", helped, err, given)
+	}
+	if b, _ := os.ReadFile(filepath.Join(outside, "precious")); string(b) != "keep" {
+		t.Error("the symlink's target was emptied")
+	}
+}
+
+// TestDeleteFallsBackToTheHelperContainer: through the delete job, files the
+// host cannot remove go through `docker run` of the cleanup helper, the files
+// sub-step says so, and the workspace is gone. The helper's argv is the whole
+// of its reach, so it is asserted exactly: the pinned image, no network, the
+// helper label (never the workspace label reconciliation lists by), and one
+// bind mount whose source is <root>/<id>. The control is a workspace with
+// nothing stuck, whose delete runs no helper; and a helper that fails leaves
+// the workspace deleting, naming files, until asking again finishes it.
+func TestDeleteFallsBackToTheHelperContainer(t *testing.T) {
+	ctx := context.Background()
+	e := lifecycleEnv(t)
+	e.p.Containers.CleanupImage = "busybox:1.37.0@sha256:" + strings.Repeat("a", 64)
+	unremovable(t)
+	runs := func() [][]string {
+		var out [][]string
+		for _, c := range e.cli.callsTo(t, "docker") {
+			if len(c) > 1 && c[1] == "run" {
+				out = append(out, c[1:])
+			}
+		}
+		return out
+	}
+	detail := func(id string) string {
+		evs, _ := e.log.ForWorkspace(ctx, id, 1000)
+		for _, ev := range evs {
+			var d struct{ Step, Status, Detail string }
+			json.Unmarshal(ev.Data, &d)
+			if ev.Kind == KindAction && d.Step == SubFiles && d.Status != "started" {
+				return d.Status + ": " + d.Detail
+			}
+		}
+		return ""
+	}
+
+	// Control: nothing stuck.
+	c := e.running(t, alpha)
+	if err := e.p.Delete(ctx, c.ID, "krelinga/alpha"); err != nil {
+		t.Fatal(err)
+	}
+	e.p.wg.Wait()
+	if _, err := e.p.Workspaces.Get(ctx, c.ID); !errors.Is(err, workspace.ErrNotFound) {
+		t.Fatalf("control: %v", err)
+	}
+	if r := runs(); len(r) != 0 {
+		t.Errorf("control: the helper ran: %v", r)
+	}
+	if d := detail(c.ID); d != "done: " {
+		t.Errorf("control: files %q", d)
+	}
+
+	v := e.running(t, alpha)
+	os.MkdirAll(filepath.Join(e.root, v.ID, "repo", "build"), 0o700)
+	os.WriteFile(filepath.Join(e.root, v.ID, "repo", "build", "root-owned"), nil, 0o600)
+	if err := e.p.Delete(ctx, v.ID, "krelinga/alpha"); err != nil {
+		t.Fatal(err)
+	}
+	e.p.wg.Wait()
+	if _, err := e.p.Workspaces.Get(ctx, v.ID); !errors.Is(err, workspace.ErrNotFound) {
+		t.Fatalf("the row survived: %v; actions %v", err, e.actions(t, v.ID))
+	}
+	if _, err := os.Lstat(filepath.Join(e.root, v.ID)); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("the workspace directory survived: %v", err)
+	}
+	if d := detail(v.ID); !strings.HasPrefix(d, "done: ") || !strings.Contains(d, "helper container") {
+		t.Errorf("files %q: the event must say the helper was used", d)
+	}
+	r := runs()
+	want := "run --rm --label " + testPrefix + ".cleanup=" + v.ID + " --network none --read-only" +
+		" --cap-drop ALL --cap-add DAC_OVERRIDE --cap-add FOWNER --security-opt no-new-privileges --user 0:0" +
+		" --mount type=bind,source=" + filepath.Join(e.root, v.ID) + ",target=/w --entrypoint find " +
+		e.p.Containers.CleanupImage + " /w -mindepth 1 -delete"
+	if len(r) != 1 || strings.Join(r[0], " ") != want {
+		t.Errorf("helper argv\n got %q\nwant %q", r, want)
+	}
+
+	// The helper fails: stuck in deleting, naming files, with the directory
+	// still there to retry on.
+	f := e.running(t, alpha)
+	os.WriteFile(filepath.Join(e.root, f.ID, "repo", "root-owned"), nil, 0o600)
+	os.WriteFile(filepath.Join(e.cli.dir, "docker-fail-run"), nil, 0o600)
+	if err := e.p.Delete(ctx, f.ID, "krelinga/alpha"); err != nil {
+		t.Fatal(err)
+	}
+	e.p.wg.Wait()
+	got := e.view(t, f.ID)
+	if got.State != workspace.Deleting || !strings.Contains(deref(got.StateDetail), "helper container") {
+		t.Errorf("a failing helper: %s (%s)", got.State, deref(got.StateDetail))
+	}
+	if a := e.actions(t, f.ID); a[len(a)-1] != "delete:files:failed" {
+		t.Errorf("actions %v", a)
+	}
+	os.Remove(filepath.Join(e.cli.dir, "docker-fail-run"))
+	if err := e.p.Delete(ctx, f.ID, "krelinga/alpha"); err != nil {
+		t.Fatal(err)
+	}
+	e.p.wg.Wait()
+	if _, err := e.p.Workspaces.Get(ctx, f.ID); !errors.Is(err, workspace.ErrNotFound) {
+		t.Errorf("retry after the helper recovered: %v", err)
 	}
 }

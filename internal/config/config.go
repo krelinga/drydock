@@ -107,7 +107,21 @@ type Config struct {
 	// build is the long part; a run past this is failed and named, never
 	// left building forever (testing §6.5's "slow" fixture).
 	ProvisionTimeout time.Duration
+	// CleanupImage is the image a delete runs, as root with no network, to
+	// remove what the drydock user cannot: files a root process in the
+	// container left in the clone (design §6). Pinned by digest, and
+	// Validate refuses anything that is not, for the reason the Feature's
+	// Claude Code version is pinned (§11): it runs as root with a host
+	// directory mounted, and a tag can be moved to different content.
+	// Configuration so a host with a registry mirror can name its own copy.
+	CleanupImage string
 }
+
+// DefaultCleanupImage is busybox 1.37.0 by its multi-arch index digest. The
+// helper needs only `find` with -mindepth and -delete.
+const DefaultCleanupImage = "busybox:1.37.0@sha256:bdf57e528e45e4433820e045b29b4597825a1c9e38353532d90a01445013f82e"
+
+var cleanupImagePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9./_:-]*@sha256:[0-9a-f]{64}$`)
 
 // DefaultFeature is the published Feature, by major tag.
 const DefaultFeature = "ghcr.io/krelinga/drydock/drydock:0"
@@ -137,6 +151,7 @@ func Default() Config {
 		BotName:          "krelinga-drydock[bot]",
 		BotEmail:         "337840004+krelinga-drydock[bot]@users.noreply.github.com",
 		ProvisionTimeout: 30 * time.Minute,
+		CleanupImage:     DefaultCleanupImage,
 	}
 }
 
@@ -190,6 +205,9 @@ func (c Config) Validate() error {
 	}
 	if c.ProvisionTimeout < time.Minute {
 		return fmt.Errorf("provision timeout %s is shorter than any image build", c.ProvisionTimeout)
+	}
+	if !cleanupImagePattern.MatchString(c.CleanupImage) {
+		return fmt.Errorf("cleanup image %q must be pinned by digest (name@sha256:<64 hex>): it runs as root with a host directory mounted", c.CleanupImage)
 	}
 	return nil
 }

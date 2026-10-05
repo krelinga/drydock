@@ -87,6 +87,7 @@ func serve(args []string) int {
 	fs.StringVar(&cfg.BotName, "bot-name", cfg.BotName, "git user.name in workspaces: the GitHub App's bot")
 	fs.StringVar(&cfg.BotEmail, "bot-email", cfg.BotEmail, "git user.email in workspaces: <bot-user-id>+<app-slug>[bot]@users.noreply.github.com")
 	fs.DurationVar(&cfg.ProvisionTimeout, "provision-timeout", cfg.ProvisionTimeout, "how long one clone-to-running run may take")
+	fs.StringVar(&cfg.CleanupImage, "cleanup-image", cfg.CleanupImage, "image, pinned by digest, a delete runs as root to remove files the drydock user cannot")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
