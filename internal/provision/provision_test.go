@@ -43,6 +43,7 @@ type stubBroker struct {
 	mu     sync.Mutex
 	opened []string
 	closed []string
+	open   map[string]bool
 	err    error
 }
 
@@ -50,7 +51,16 @@ func (b *stubBroker) Close(id string) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.closed = append(b.closed, id)
+	delete(b.open, id)
 	return nil
+}
+
+// isOpen reports whether the workspace's socket is open now: opened
+// successfully, and not closed since.
+func (b *stubBroker) isOpen(id string) bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.open[id]
 }
 
 func (b *stubBroker) closes() []string {
@@ -63,6 +73,12 @@ func (b *stubBroker) Open(_ context.Context, id string) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.opened = append(b.opened, id)
+	if b.err == nil {
+		if b.open == nil {
+			b.open = map[string]bool{}
+		}
+		b.open[id] = true
+	}
 	return b.err
 }
 func (b *stubBroker) SocketPath(id string) string { return "/run/drydock/sock/" + id + ".sock" }
@@ -479,10 +495,19 @@ func TestEachRealStepNamesItsFailure(t *testing.T) {
 				if v.State != workspace.Running {
 					t.Fatalf("control: state %s (%s)", v.State, deref(v.StateDetail))
 				}
+				if c := e.broker.closes(); len(c) != 0 {
+					t.Errorf("control: a running workspace's socket was closed: %v", c)
+				}
 				return
 			}
 			if v.State != workspace.Failed {
 				t.Fatalf("state %s, want failed", v.State)
+			}
+			// GitHub access follows Drydock's state (§9.1): a failed run
+			// closes its socket, whichever step it failed at — the
+			// container a failed postCreateCommand leaves running included.
+			if c := e.broker.closes(); len(c) != 1 || c[0] != v.ID {
+				t.Errorf("a failed run closed sockets %v; want its own, once", c)
 			}
 			got := v.Steps[c.step]
 			if got.Status != "failed" || !strings.Contains(got.Detail, c.detail) {
@@ -566,6 +591,9 @@ func TestStartResumesFromTheRightStep(t *testing.T) {
 		if v.State != workspace.Failed || v.Steps[workspace.StepUp].Status != "failed" {
 			t.Fatalf("setup: %s %+v", v.State, v.Steps)
 		}
+		if e.broker.isOpen(v.ID) {
+			t.Error("the failed run left its socket open")
+		}
 		mints := len(e.fake.TokenRequests)
 		e.cli.up = "cat <<'EOF'\n" + fixture(t, "up-ok.json") + "\nEOF\n"
 		e.wire(t)
@@ -585,6 +613,30 @@ func TestStartResumesFromTheRightStep(t *testing.T) {
 		}
 		if n := countOf(e.stepEvents(t, v.ID), "resolve_config:started"); n != 2 {
 			t.Errorf("resolve_config ran %d times, want 2", n)
+		}
+		if !e.broker.isOpen(v.ID) {
+			t.Error("a start from failed did not reopen the socket")
+		}
+
+		// A rebuild that fails closes it again, and a rebuild from failed
+		// reopens it.
+		e.cli.up = "echo broken; exit 1"
+		e.wire(t)
+		if err := e.p.Rebuild(ctx, v.ID); err != nil {
+			t.Fatal(err)
+		}
+		e.p.wg.Wait()
+		if v = e.view(t, v.ID); v.State != workspace.Failed || e.broker.isOpen(v.ID) {
+			t.Errorf("a failed rebuild: %s, socket open %v", v.State, e.broker.isOpen(v.ID))
+		}
+		e.cli.up = "cat <<'EOF'\n" + fixture(t, "up-ok.json") + "\nEOF\n"
+		e.wire(t)
+		if err := e.p.Rebuild(ctx, v.ID); err != nil {
+			t.Fatal(err)
+		}
+		e.p.wg.Wait()
+		if v = e.view(t, v.ID); v.State != workspace.Running || !e.broker.isOpen(v.ID) {
+			t.Errorf("a rebuild from failed: %s, socket open %v", v.State, e.broker.isOpen(v.ID))
 		}
 		if err := e.p.Start(ctx, v.ID); !errors.Is(err, workspace.ErrInProgress) {
 			t.Errorf("Start of a running workspace = %v, want ErrInProgress", err)

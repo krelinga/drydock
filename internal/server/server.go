@@ -102,7 +102,7 @@ func New(ctx context.Context, cfg config.Config, env sys.Env) (*Server, error) {
 
 	s := &Server{DB: db, Auth: svc, Events: events.New(db.DB, env.Clock), reconciled: make(chan struct{})}
 	s.Workspaces = &workspace.Store{DB: db.DB, Events: s.Events, Env: env, Root: cfg.WorkspaceRoot, Cap: cfg.ContainerCap}
-	containers := container.Manager{Run: subproc.Exec{}, LabelPrefix: cfg.LabelPrefix}
+	containers := container.Manager{Run: subproc.Exec{}, LabelPrefix: cfg.LabelPrefix, CleanupImage: cfg.CleanupImage}
 	feature := map[string]any{}
 	if cfg.BotName != "" {
 		feature["botName"] = cfg.BotName

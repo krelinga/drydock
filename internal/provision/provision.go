@@ -390,8 +390,31 @@ func (p *Provisioner) run(parent context.Context, id string, first workspace.Ste
 	err := p.Workspaces.Provision(book, id, first, steps)
 	if err != nil {
 		p.logf("drydock: workspace %s: %v", id, err)
+		p.closeIfFailed(book, id)
 	}
 	return err
+}
+
+// closeIfFailed closes a failed workspace's broker socket. GitHub access
+// follows Drydock's state, not Docker's (§9.1): a failed workspace may still
+// have a running container — a failed postCreateCommand leaves one up (§6) —
+// but Drydock has not handed it over as working, and after a restart boot
+// would not reopen its socket either, since only running workspaces get one.
+// Closing it here makes a live failure and a rebooted one the same. Start and
+// rebuild run step 5 again, which reopens it. A run cut off by a delete is
+// left alone: the workspace is deleting, and the delete closes the socket in
+// its own sub-step.
+func (p *Provisioner) closeIfFailed(ctx context.Context, id string) {
+	if p.Broker == nil {
+		return
+	}
+	w, err := p.Workspaces.Get(ctx, id)
+	if err != nil || w.State != workspace.Failed {
+		return
+	}
+	if err := p.Broker.Close(id); err != nil {
+		p.logf("drydock: workspace %s: closing the broker socket after a failed run: %v", id, err)
+	}
 }
 
 // guard runs a step under the run's context, and names an interruption as
