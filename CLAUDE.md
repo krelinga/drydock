@@ -149,8 +149,8 @@ off `main` (PRs are squash-merged, so it is the PR title, which `pr-title.yml` c
 Merging release-please's PR tags `vX.Y.Z` (no component prefix: one root package) and creates the
 release **as a draft** — `"draft"` plus `"force-tag-creation"` in `release-please-config.json`,
 because GitHub tags a draft only when it is published and release-please finds its previous release
-by the tag's commit. In the same workflow it runs the suite and uploads the assets under **fixed
-names** so `releases/latest/download/<name>` always resolves: `drydock_linux_amd64.tar.gz` (binary,
+by the tag's commit. In the same workflow a `test` job runs the Go suite and `assets` uploads them
+under **fixed names** so `releases/latest/download/<name>` always resolves: `drydock_linux_amd64.tar.gz` (binary,
 `install.sh`, both Caddy files, `VERSION`), `SHA256SUMS`, and `install.sh` stamped with its tag. It
 is one workflow, not a tag-triggered second one, because tags pushed with `GITHUB_TOKEN` trigger
 nothing. The repo setting *Allow GitHub Actions to create and approve pull requests* must be on.
@@ -160,17 +160,27 @@ After the upload, `verify` downloads the draft's assets back (`gh release downlo
 bytes, served locally through `DRYDOCK_DOWNLOAD_BASE`. Only then does `publish` make the release
 public and *Latest*, and check that `releases/latest/download` serves it, returning it to a draft if
 not. So a red job anywhere leaves a draft and the previous release still *Latest*: never a *Latest*
-with no files. Re-run the failed jobs for a transient failure; fix forward with a `fix:` otherwise.
+with no files. Re-run the failed jobs (`gh run rerun --failed`) only for a transient failure: a
+re-run uses the workflow file its run started with. When the fix is to the workflow or its test
+environment, merge it as `ci:` and resume the existing draft with the fixed workflow —
+`gh workflow run release-please.yml --ref main -f tag=vX.Y.Z` (`workflow_dispatch` skips
+release-please and refuses a tag that is not a draft). Fix forward with a `fix:` when the code is wrong.
 The release PR itself gets no CI (a `GITHUB_TOKEN`-opened PR triggers no workflows), so it merges
 only with an admin bypass of the ruleset; that is a token decision for the owner, not a workflow bug.
 
 **CI** (`.github/workflows/ci.yml`) runs on every PR and push to `main`: `gofmt`, `go vet`, `go test`
-with Caddy installed and `DRYDOCK_REQUIRE_CADDY=1` — without it a missing `caddy` is a *skip*, which
-in CI is a silent pass of the Caddyfile test — then `npm run check`, then `test/install/run.sh`, and
+with Caddy, `socat` and the devcontainer CLI installed and `DRYDOCK_REQUIRE_CADDY=1` and
+`DRYDOCK_REQUIRE_DOCKER=1` — without them a missing `caddy` or Docker is a *skip*, which in CI is a
+silent pass — then `npm run check`, then `test/install/run.sh`, and
 the `browser` job: `test/browser/run.sh` after `npx playwright install --with-deps chromium`,
-`libnss3-tools` and the pinned Caddy, uploading Playwright traces when it fails. Its
-`CADDY_VERSION` is pinned; the devcontainer's Caddy feature is not, so bump the pin when a rebuild
-moves it. Releases are amd64 only, by choice.
+`libnss3-tools` and the pinned Caddy, uploading Playwright traces when it fails. **The Go suite's tools and
+commands live in one composite action, `.github/actions/go-suite`**, which CI's `go` job and the
+release's `test` job both run (and `browser` for Go and Caddy alone), so a release is held to exactly
+what every PR passed. They used to be two copies, and v0.2.0's release failed because `socat` had
+reached only one of them. Add a test dependency there, never to one workflow. The ruleset requires a
+check named `go`, which is why it is a composite action rather than a reusable workflow (that would
+rename the check `go / …`). Its Caddy version is pinned; the devcontainer's Caddy feature is not, so
+bump the pin when a rebuild moves it. Releases are amd64 only, by choice.
 
 **The GitHub contract tests** (`.github/workflows/github-live.yml`) run the `TestContract*` functions
 against the real dev App, `krelinga-drydock-dev` (App ID 5189839), which is installed on

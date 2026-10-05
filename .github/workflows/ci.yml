@@ -10,44 +10,14 @@ on:
 permissions:
   contents: read
 
-env:
-  # The Caddy the conformance test runs. The devcontainer's feature takes the
-  # latest; bump this when a rebuild moves it.
-  CADDY_VERSION: 2.11.7
-
 jobs:
+  # The suite's tools and commands live in .github/actions/go-suite, which the
+  # release workflow runs too, so a release is held to exactly this job.
   go:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-      - uses: actions/setup-go@v6
-        with:
-          go-version-file: go.mod
-      - name: Install Caddy
-        run: |
-          base=https://github.com/caddyserver/caddy/releases/download/v$CADDY_VERSION
-          tarball=caddy_${CADDY_VERSION}_linux_amd64.tar.gz
-          curl -fsSLO "$base/$tarball" -fsSLO "$base/caddy_${CADDY_VERSION}_checksums.txt"
-          grep " $tarball\$" "caddy_${CADDY_VERSION}_checksums.txt" | sha512sum -c -
-          sudo tar -xzf "$tarball" -C /usr/local/bin caddy
-      # The broker's in-container clients are tested over both transports
-      # they support: socat, and OpenBSD netcat's -U (preinstalled).
-      # The container tier runs real `devcontainer up` (test/container), so
-      # DRYDOCK_REQUIRE_DOCKER needs the CLI too, pinned to the corpus's version.
-      - name: Install the devcontainer CLI
-        run: npm install -g @devcontainers/cli@0.89.0
-      - name: Install socat
-        run: sudo apt-get update -q && sudo apt-get install -y -q --no-install-recommends socat
-      - name: gofmt
-        run: test -z "$(gofmt -l . | tee /dev/stderr)"
-      - run: go vet ./...
-      # Without DRYDOCK_REQUIRE_CADDY a missing caddy is a skip, which here
-      # would be a silent pass of the one test of the LAN-facing surface.
-      - run: go test ./...
-        env:
-          DRYDOCK_REQUIRE_CADDY: "1"
-          # And the container tier (test/container) needs the runner's Docker.
-          DRYDOCK_REQUIRE_DOCKER: "1"
+      - uses: ./.github/actions/go-suite
 
   web:
     runs-on: ubuntu-latest
@@ -73,21 +43,15 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-      - uses: actions/setup-go@v6
+      # Go and the same pinned Caddy as the go job, without running its suite.
+      - uses: ./.github/actions/go-suite
         with:
-          go-version-file: go.mod
+          run-suite: "false"
       - uses: actions/setup-node@v5
         with:
           node-version: 24
           cache: npm
           cache-dependency-path: web/package-lock.json
-      - name: Install Caddy
-        run: |
-          base=https://github.com/caddyserver/caddy/releases/download/v$CADDY_VERSION
-          tarball=caddy_${CADDY_VERSION}_linux_amd64.tar.gz
-          curl -fsSLO "$base/$tarball" -fsSLO "$base/caddy_${CADDY_VERSION}_checksums.txt"
-          grep " $tarball\$" "caddy_${CADDY_VERSION}_checksums.txt" | sha512sum -c -
-          sudo tar -xzf "$tarball" -C /usr/local/bin caddy
       # certutil: how the test CA gets into Chromium's NSS store (Spike 04).
       - name: Install certutil
         run: sudo apt-get update -q && sudo apt-get install -y -q --no-install-recommends libnss3-tools
