@@ -71,8 +71,11 @@ func runShell(t *testing.T, sock, transport, shell, script string, extraEnv ...s
 	return run{out.String(), errb.String(), code}
 }
 
-// The prelude Claude Code runs, verbatim from the Feature.
-const prelude = `eval "$(drydock-secrets export)"`
+// The prelude Claude Code runs, verbatim from the Feature
+// (TestEnvFileIsOneConstantLine holds the two together). The `|| echo exit
+// 69` is for a helper that cannot run at all: see
+// TestPreludeFailsClosedWithoutTheHelper.
+const prelude = `eval "$(drydock-secrets export || echo exit 69)"`
 
 var shells = func() []string {
 	var out []string
@@ -342,6 +345,87 @@ func TestExportFailsClosed(t *testing.T) {
 	check("refused", e.b.SocketPath(wsA), "drydock: secrets unavailable (revoked)")
 	e.b.Close(wsB)
 	check("socket gone", e.b.SocketPath(wsB), "drydock: secrets unavailable: no broker socket")
+}
+
+// Fail closed when the helper cannot run at all — gone from PATH, or there
+// but not executable. Its own `exit 69` cannot help then: it prints nothing,
+// `eval` of the empty substitution succeeds, and a bare
+// `eval "$(drydock-secrets export)"` lets the command run without its
+// secrets. The env file's `|| echo exit 69` is what closes that. Asserted on
+// the command, by a marker it would create, not on any exit status. Control:
+// with the helper in place and the broker answering, the same text runs the
+// command, and the command sees its secret.
+func TestPreludeFailsClosedWithoutTheHelper(t *testing.T) {
+	text, err := os.ReadFile(filepath.Join(binDir, "..", "etc", "claude-env.sh"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	line := strings.TrimSpace(string(text))
+	e := newEnv(t)
+	e.grant(t, "TEST_KEY", "k1", 101)
+
+	// A PATH with no drydock-secrets anywhere on it but the one under test.
+	var rest []string
+	for _, d := range filepath.SplitList(os.Getenv("PATH")) {
+		if _, err := os.Stat(filepath.Join(d, "drydock-secrets")); err != nil {
+			rest = append(rest, d)
+		}
+	}
+	// bins builds a copy of the Feature's clients with drydock-secrets as
+	// mode says: "ok" as shipped, "missing", or "noexec" (0644).
+	bins := func(mode string) string {
+		dir := t.TempDir()
+		ents, err := os.ReadDir(binDir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, ent := range ents {
+			if ent.Name() == "drydock-secrets" && mode == "missing" {
+				continue
+			}
+			b, err := os.ReadFile(filepath.Join(binDir, ent.Name()))
+			if err != nil {
+				t.Fatal(err)
+			}
+			perm := os.FileMode(0o755)
+			if ent.Name() == "drydock-secrets" && mode == "noexec" {
+				perm = 0o644
+			}
+			if err := os.WriteFile(filepath.Join(dir, ent.Name()), b, perm); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return dir
+	}
+	// Both ways Claude Code might join the prelude to a command (Spike 03
+	// observed `&&`), in every shell present.
+	runs := func(mode, sh, join string) (ran bool, out string) {
+		marker := filepath.Join(t.TempDir(), "ran")
+		cmd := exec.Command(sh, "-c", line+join+`printf %s "$TEST_KEY" >`+marker)
+		cmd.Env = []string{
+			"PATH=" + strings.Join(append([]string{bins(mode)}, rest...), string(filepath.ListSeparator)),
+			"DRYDOCK_BROKER_SOCK=" + e.b.SocketPath(wsA),
+			"DRYDOCK_BROKER_TRANSPORT=socat",
+		}
+		o, _ := cmd.CombinedOutput()
+		got, err := os.ReadFile(marker)
+		if err != nil {
+			return false, string(o)
+		}
+		return true, string(got)
+	}
+	for _, sh := range shells {
+		for _, join := range []string{"\n", " && ", "; "} {
+			if ran, got := runs("ok", sh, join); !ran || got != "k1" {
+				t.Fatalf("control (%s, %q): ran %v, saw %q; want the command run with its secret", sh, join, ran, got)
+			}
+			for _, mode := range []string{"missing", "noexec"} {
+				if ran, out := runs(mode, sh, join); ran {
+					t.Errorf("helper %s (%s, %q): the command ran without its secrets (output %q)", mode, sh, join, out)
+				}
+			}
+		}
+	}
 }
 
 // standIn answers every connection on a fresh socket with the given bytes —

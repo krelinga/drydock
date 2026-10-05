@@ -24,7 +24,7 @@ check "no socket, not required: the probe warns and passes" bash -c \
 # after it never runs — and says why on one line. requireBroker does not
 # soften this: a command without its secrets must not run.
 check "CLAUDE_ENV_FILE is the one constant line" bash -c \
-	'[ "$CLAUDE_ENV_FILE" = /usr/local/drydock/etc/claude-env.sh ] && [ "$(cat "$CLAUDE_ENV_FILE")" = "eval \"\$(drydock-secrets export)\"" ] && [ "$(wc -l <"$CLAUDE_ENV_FILE")" = 1 ]'
+	'[ "$CLAUDE_ENV_FILE" = /usr/local/drydock/etc/claude-env.sh ] && [ "$(cat "$CLAUDE_ENV_FILE")" = "eval \"\$(drydock-secrets export || echo exit 69)\"" ] && [ "$(wc -l <"$CLAUDE_ENV_FILE")" = 1 ]'
 check "drydock-secrets is found first, in a login shell too" bash -lc \
 	'[ "$(readlink -f "$(command -v drydock-secrets)")" = /usr/local/drydock/bin/drydock-secrets ]'
 check "no socket: the prelude aborts the command, on one line" bash -c \
@@ -53,6 +53,24 @@ export DRYDOCK_BROKER_SOCK=/tmp/fake-broker.sock
 
 check "with a broker, the prelude is silent and the command sees the secrets" bash -c \
 	'out=$(bash -c "$(cat "$CLAUDE_ENV_FILE") && printf %s \"\$TEST_DATABASE_URL\"" 2>&1) && [ "$out" = postgres://u:p@db:5432/test ]'
+# A helper that cannot run at all prints nothing, and `eval` of an empty
+# substitution succeeds; the env file's `|| echo exit 69` is what stops the
+# command then. Asserted on a marker the command would write, not a status.
+# The control comes first, in the same check: with the helper on PATH and the
+# broker answering, the same text runs the command, which sees its secret.
+# "missing" is a PATH without the Feature's directories; "noexec" puts a
+# non-executable copy first on it. Both shells, since sh is dash here.
+mkdir -p /tmp/noexec && cp /usr/local/drydock/bin/drydock-secrets /tmp/noexec/ && chmod 0644 /tmp/noexec/drydock-secrets
+check "a helper that cannot run stops the command; a working one does not" bash -c '
+	pre=$(cat "$CLAUDE_ENV_FILE")
+	for sh in sh bash; do
+		rm -f /tmp/ran; $sh -c "$pre && printf %s \"\$TEST_DATABASE_URL\" >/tmp/ran"
+		[ "$(cat /tmp/ran 2>/dev/null)" = postgres://u:p@db:5432/test ] || { echo "control failed in $sh"; exit 1; }
+		for p in /usr/bin:/bin /tmp/noexec:/usr/bin:/bin; do
+			rm -f /tmp/ran; env PATH=$p $sh -c "$pre && touch /tmp/ran" 2>/dev/null
+			[ ! -e /tmp/ran ] || { echo "ran without the helper: $sh, PATH=$p"; exit 1; }
+		done
+	done'
 check "a hostile value is held verbatim and runs nothing" bash -c \
 	'v=$(bash -c "$(cat "$CLAUDE_ENV_FILE") && printf %s \"\$TRICKY\"") && [ "$v" = "it'"'"'s \$(touch /tmp/pwned); \`touch /tmp/pwned\`; '"'"'; touch /tmp/pwned; '"'"'" ] && [ ! -e /tmp/pwned ]'
 

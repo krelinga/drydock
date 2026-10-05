@@ -206,7 +206,7 @@ func secretsInContainer(t *testing.T, ctx context.Context, sec *secrets.Store, c
 		}
 	}
 
-	if out, code := run(`cat "$CLAUDE_ENV_FILE"`); code != 0 || out != "eval \"$(drydock-secrets export)\"\n" {
+	if out, code := run(`cat "$CLAUDE_ENV_FILE"`); code != 0 || out != "eval \"$(drydock-secrets export || echo exit 69)\"\n" {
 		t.Fatalf("CLAUDE_ENV_FILE (exit %d) holds %q", code, out)
 	}
 	// A command as Claude Code issues it: the env file's text, trimmed, then

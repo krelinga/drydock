@@ -117,18 +117,23 @@ func secretsServer(t *testing.T, dir string, masterKey []byte) *running {
 	return r
 }
 
-// export runs the prelude Claude Code runs, against a workspace's socket, and
-// returns what the next command's environment holds.
+// export runs the prelude Claude Code runs — the Feature's env file, read
+// from the source tree so this is the line that ships — against a
+// workspace's socket, and returns what the next command's environment holds.
 func (r *running) export(t *testing.T, ws string) (env, stderr string, code int) {
 	t.Helper()
-	cmd := exec.Command("sh", "-c", `eval "$(drydock-secrets export)"`+"\nenv")
+	text, err := os.ReadFile(filepath.Join(featureBin, "..", "etc", "claude-env.sh"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("sh", "-c", strings.TrimSpace(string(text))+"\nenv")
 	cmd.Env = []string{
 		"PATH=" + featureBin + ":" + os.Getenv("PATH"),
 		"DRYDOCK_BROKER_SOCK=" + r.srv.Broker.SocketPath(ws),
 	}
 	var out, errb bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, &errb
-	err := cmd.Run()
+	err = cmd.Run()
 	if ee, ok := err.(*exec.ExitError); ok {
 		code = ee.ExitCode()
 	} else if err != nil {
