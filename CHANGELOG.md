@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.4.0](https://github.com/krelinga/drydock/compare/v0.3.0...v0.4.0) (2026-10-06)
+
+
+### Features
+
+* install Claude Code pinned in the Feature and create the shared credential volume ([#38](https://github.com/krelinga/drydock/issues/38)) ([b57e22a](https://github.com/krelinga/drydock/commit/b57e22a06551ba51a666d4b6977b934bec555d61))
+* sign the shared volume into Claude Code from the UI ([#53](https://github.com/krelinga/drydock/issues/53)) ([f975570](https://github.com/krelinga/drydock/commit/f975570cda91093970818e7e55ee5d62a25b1986))
+* supervise one remote-control server per workspace and discover its sessions ([#52](https://github.com/krelinga/drydock/issues/52)) ([ec84ceb](https://github.com/krelinga/drydock/commit/ec84cebb881956220f4817aee820a37b73f15b3c))
+* watch the shared Claude login and show it fleet-wide ([#37](https://github.com/krelinga/drydock/issues/37)) ([4ab4fc1](https://github.com/krelinga/drydock/commit/4ab4fc19b186497e74c69102294ba6234c2c8757))
+
+
+### Bug Fixes
+
+* tell a GitHub App permission the broker lacks apart from a revoked repository ([#49](https://github.com/krelinga/drydock/issues/49)) ([069e6f4](https://github.com/krelinga/drydock/commit/069e6f4a9659533458bbbb272934a7b5fac08a81))
+
 ## [0.3.0](https://github.com/krelinga/drydock/compare/v0.2.1...v0.3.0) (2026-10-06)
 
 
