@@ -72,6 +72,10 @@ export type ErrorCode =
   | 'secret_description_too_long'
   | 'secret_description_invalid'
   | 'unknown_repository'
+  | 'login_code_invalid'
+  | 'login_not_awaiting_code'
+  | 'login_ended'
+  | 'unavailable'
   | 'internal'
   | 'network'
   | 'unparseable'
@@ -368,8 +372,42 @@ export interface IdentityView {
   check_error: IdentityCheckError | null
 }
 
-/** `GET /api/auth/claude`. `login` is the in-flight handshake: always null until it is built. */
+/** `internal/login.Phase` (design §7.2, frontend §6.2). */
+export type LoginPhase =
+  | 'starting' | 'awaiting_code' | 'submitting' | 'invalid_code'
+  | 'succeeded' | 'timed_out' | 'failed' | 'cancelled'
+
+export const LOGIN_PHASES: readonly LoginPhase[] = [
+  'starting', 'awaiting_code', 'submitting', 'invalid_code', 'succeeded', 'timed_out', 'failed', 'cancelled',
+]
+
+/** The terminal phases: nothing more will happen to this login. */
+export const LOGIN_ENDED: readonly LoginPhase[] = ['succeeded', 'timed_out', 'failed', 'cancelled']
+
+/**
+ * The login handshake (internal/login.View), from `GET /api/auth/claude` and
+ * the `auth.login` event. There is no field a code could go in: the code goes
+ * up, and nothing about it comes back down (frontend §2.5).
+ */
+export interface LoginView {
+  login_id: string
+  phase: LoginPhase
+  /** The authorize URL, from awaiting_code on. */
+  url: string | null
+  /** When an unfinished login times out, from awaiting_code on. */
+  deadline: string | null
+  started_at: string
+  ended_at: string | null
+  /** How many codes have been typed. */
+  attempts: number
+  /** docker | volume | volume_owner | image | start | no_url | url | exited | output | shutdown */
+  problem: string | null
+  /** Drydock's sentence for the phase. Shown, never parsed. */
+  message: string
+}
+
+/** `GET /api/auth/claude`. `login` is the handshake in progress, or one that ended minutes ago; else null. */
 export interface ClaudeIdentityBody {
   identity: IdentityView
-  login: null
+  login: LoginView | null
 }

@@ -176,7 +176,7 @@ describe('one fault, ten cards', () => {
 })
 
 describe('the Claude section in Settings', () => {
-  it('the banner button leads here, and nothing here pretends to sign in', async () => {
+  it('the banner button leads here, where the handshake is the one Sign in to Claude', async () => {
     fleet('blanked')
     const { wrapper, router } = await mountApp('/')
     await signInButtons(wrapper)[0]!.trigger('click')
@@ -185,9 +185,12 @@ describe('the Claude section in Settings', () => {
     expect(router.currentRoute.value.hash).toBe('#claude')
     const section = wrapper.find('[data-test="claude-identity"]')
     expect(section.find('[data-test="claude-state"]').text()).toBe('Signed out. Sign in again.')
-    expect(section.find('[data-test="claude-sign-in-next"]').text()).toContain('arrives with the login handshake')
-    // The page has the banner's one link and no button that claims to sign in.
-    expect(wrapper.findAll('button').filter((e) => /sign in/i.test(e.text())).length).toBe(0)
+    // The banner still says what is wrong, and offers no second button for
+    // the fix: the section's own is the one on this page.
+    expect(identityBanners(wrapper).length).toBe(1)
+    expect(identityBanners(wrapper)[0]!.find('[data-test="fleet-action"]').exists()).toBe(false)
+    expect(signInButtons(wrapper).length).toBe(1)
+    expect(section.find('[data-test="claude-login"]').exists()).toBe(true)
   })
 
   it('shows the account and expiry beside a login, and no sign-in note', async () => {

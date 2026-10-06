@@ -7,16 +7,28 @@
 // auth.identity_check_failed. POST /api/auth/claude/check answers 202 and its
 // body is discarded (§2.1): the check's outcome is the event.
 //
-// `login` — the in-flight handshake — is in the body and is not read: it is
-// always null until the handshake is built (SEAM, lib/identity.ts).
+// The body's `login` — the handshake (design §7.2) — goes to the reducer with
+// it, and auth.login carries every phase after. The three login actions
+// below send, and wait for the event that ends what they asked; none applies
+// a response, and the code passes through `submitCode` into a request body
+// and nowhere else.
 
 import { defineStore } from 'pinia'
 import * as api from '../api/client'
-import type { ClaudeIdentityBody } from '../api/types'
+import { LOGIN_ENDED, type ClaudeIdentityBody, type StreamEvent } from '../api/types'
 import type { ClaudeIdentity } from './reducer'
 import { useStreamStore } from './stream'
 
 export const CHECK_KEY = 'claude:check'
+export const LOGIN_BEGIN_KEY = 'claude:login:begin'
+export const LOGIN_CODE_KEY = 'claude:login:code'
+export const LOGIN_CANCEL_KEY = 'claude:login:cancel'
+
+/** The phase an auth.login event carries, or null. */
+function loginPhase(ev: StreamEvent): string | null {
+  const l = (ev.data ?? {}).login as { phase?: unknown } | undefined
+  return l !== undefined && l !== null && typeof l.phase === 'string' ? l.phase : null
+}
 
 let inFlight: Promise<void> | null = null
 let again = false
@@ -85,6 +97,65 @@ export const useIdentityStore = defineStore('identity', {
         await api.send('POST', '/api/auth/claude/check')
       } catch (e) {
         stream.end(CHECK_KEY)
+        throw e
+      }
+    },
+
+    /**
+     * POST /api/auth/claude/login. The 202's `login_id` is not read (§4.2
+     * step 3): the login, id and all, arrives as auth.login, and a reload
+     * finds it in GET /api/auth/claude. In flight until the login is past
+     * `starting` — its URL is up, or it ended — never on the receipt.
+     */
+    async beginLogin(): Promise<void> {
+      const stream = useStreamStore()
+      if (LOGIN_BEGIN_KEY in stream.inFlight) return
+      const from = stream.lastEventId
+      stream.begin(LOGIN_BEGIN_KEY, (ev) => ev.id > from && ev.kind === 'auth.login' && loginPhase(ev) !== 'starting')
+      try {
+        await api.send('POST', '/api/auth/claude/login')
+      } catch (e) {
+        stream.end(LOGIN_BEGIN_KEY)
+        throw e
+      }
+    },
+
+    /**
+     * POST the pasted code. The caller has already taken it out of its field
+     * and cleared the field: this function holds it only as long as the
+     * request does, and it goes into nothing but the request body — no
+     * store, no storage, no URL, no in-flight key (frontend §2.4, §6.2). In
+     * flight until the verdict: an auth.login past `submitting`.
+     */
+    async submitCode(loginId: string, code: string): Promise<void> {
+      const stream = useStreamStore()
+      if (LOGIN_CODE_KEY in stream.inFlight) return
+      const from = stream.lastEventId
+      stream.begin(LOGIN_CODE_KEY, (ev) => {
+        const p = loginPhase(ev)
+        return ev.id > from && ev.kind === 'auth.login' && p !== null && p !== 'submitting' && p !== 'awaiting_code'
+      })
+      try {
+        await api.send('POST', `/api/auth/claude/login/${encodeURIComponent(loginId)}/code`, { code })
+      } catch (e) {
+        stream.end(LOGIN_CODE_KEY)
+        throw e
+      }
+    },
+
+    /** DELETE the login. In flight until it is announced over. */
+    async cancelLogin(loginId: string): Promise<void> {
+      const stream = useStreamStore()
+      if (LOGIN_CANCEL_KEY in stream.inFlight) return
+      const from = stream.lastEventId
+      stream.begin(LOGIN_CANCEL_KEY, (ev) => {
+        const p = loginPhase(ev)
+        return ev.id > from && ev.kind === 'auth.login' && p !== null && (LOGIN_ENDED as readonly string[]).includes(p)
+      })
+      try {
+        await api.send('DELETE', `/api/auth/claude/login/${encodeURIComponent(loginId)}`)
+      } catch (e) {
+        stream.end(LOGIN_CANCEL_KEY)
         throw e
       }
     },

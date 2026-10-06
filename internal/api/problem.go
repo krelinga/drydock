@@ -57,6 +57,24 @@ const (
 	CodeAppNotConfigured = "app_not_configured"
 	CodeInternal         = "internal"
 
+	// The login handshake's refusals (design §7.2). None carries the code:
+	// the detail names the rule a malformed one broke, never a character of
+	// it.
+	//
+	// CodeLoginCodeInvalid: the pasted code is not `<code>#<state>` in
+	// printable ASCII — most likely half a copy. Refused before the PTY.
+	// The detail is the rule: empty, no_separator, half_missing,
+	// extra_hash or bad_character.
+	CodeLoginCodeInvalid = "login_code_invalid"
+	// CodeLoginNotAwaiting: the login is starting, or is checking a code
+	// already; a code is taken only at the prompt.
+	CodeLoginNotAwaiting = "login_not_awaiting_code"
+	// CodeLoginEnded: the login has already ended — timed out, cancelled,
+	// failed or succeeded. Start a new one.
+	CodeLoginEnded = "login_ended"
+	// CodeUnavailable: Drydock is shutting down.
+	CodeUnavailable = "unavailable"
+
 	// The secret routes' refusals (design §10.1). Each is one sentence in
 	// the UI, and the detail names the rule or the character — never the
 	// value.

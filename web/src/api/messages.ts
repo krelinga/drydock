@@ -55,6 +55,12 @@ const SENTENCES: Record<string, string> = {
   secret_description_too_long: 'The description is too long: at most 4000 bytes.',
   secret_description_invalid: 'The description must be text.',
   unknown_repository: 'That repository is not in the catalog.',
+  // Design §7.2's refusals. None can say anything about the code itself:
+  // the code goes up and nothing about it comes back (frontend §2.5).
+  login_code_invalid: 'That looks like only part of the code. Copy the whole code Claude shows, both sides of the #.',
+  login_not_awaiting_code: 'The login is not waiting for a code right now.',
+  login_ended: 'That login has ended. Start a new one.',
+  unavailable: 'Drydock is shutting down. Try again in a moment.',
   internal: 'Drydock hit an internal error. The host’s log has the detail.',
   network: 'Could not reach Drydock. Check the connection and try again.',
 }

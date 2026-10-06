@@ -17,6 +17,7 @@ import { REFRESH_KEY, useCatalogStore } from '../stores/catalog'
 import { useStreamStore } from '../stores/stream'
 import { CHECK_KEY, useIdentityStore } from '../stores/identity'
 import { identitySentence } from '../lib/identity'
+import ClaudeLogin from '../components/ClaudeLogin.vue'
 
 const session = useSessionStore()
 const catalog = useCatalogStore()
@@ -45,7 +46,6 @@ async function refreshCatalog(): Promise<void> {
 // is a 202: in flight until the check's event lands.
 const identity = useIdentityStore()
 const id = computed(() => stream.entities.identity)
-const needsSignIn = computed(() => id.value !== null && id.value.state !== null && id.value.state !== 'ok')
 const checkFlight = computed(() => stream.inFlight[CHECK_KEY] ?? null)
 const checkError = ref<string | null>(null)
 
@@ -195,13 +195,10 @@ async function signOut(everywhere: boolean): Promise<void> {
         <span class="glyph" aria-hidden="true">!</span>
         <span>{{ id.checkError.message }} Last tried {{ relativeTime(id.checkError.at) }}.</span>
       </div>
-      <!-- SEAM (Phase 5, the login handshake, frontend §6.2): the handshake view
-           mounts here. Until it exists nothing on this page can sign in, and it
-           says so rather than offering a button that does not. -->
-      <p v-if="needsSignIn" class="note" data-test="claude-sign-in-next">
-        Signing in from Drydock arrives with the login handshake, the next part of this phase.
-        One sign-in will cover every workspace: they all share this login.
-      </p>
+      <!-- The login handshake (frontend §6.2): the fleet banner's one Sign in
+           to Claude leads here, and on this page the banner offers no second
+           one — this is it. -->
+      <ClaudeLogin />
       <div class="action">
         <button
           type="button" class="btn" data-test="claude-check"

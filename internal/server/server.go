@@ -34,6 +34,7 @@ import (
 	"github.com/krelinga/drydock/internal/events"
 	"github.com/krelinga/drydock/internal/github"
 	"github.com/krelinga/drydock/internal/identity"
+	"github.com/krelinga/drydock/internal/login"
 	"github.com/krelinga/drydock/internal/provision"
 	"github.com/krelinga/drydock/internal/reconcile"
 	"github.com/krelinga/drydock/internal/secrets"
@@ -75,6 +76,9 @@ type Server struct {
 	// server (§8). Like the Provisioner's, its exported fields are a test's
 	// seam between New and Serve.
 	Supervisor *supervisor.Manager
+	// Login is the handshake (§7.2). Its Launcher is a test's seam, set
+	// between New and Serve.
+	Login *login.Manager
 	// reconciled closes when boot reconciliation has finished, so a test
 	// can set up workspace rows reconciliation would otherwise move.
 	reconciled chan struct{}
@@ -210,10 +214,13 @@ func New(ctx context.Context, cfg config.Config, env sys.Env) (*Server, error) {
 	// The Claude image is built on first need — the first check that finds
 	// a credential file — and reused; the file itself is read with the
 	// cleanup helper's busybox, so blanked and absent never wait on it.
+	// One builder for the watch and the login, so a first build is never
+	// run twice at once.
+	claudeImage := &claudeimage.Builder{Run: subproc.Exec{}, Base: cfg.ClaudeBaseImage, Version: classify.ClaudeCodeVersion}
 	s.Identity = &identity.Watch{DB: db.DB, Events: s.Events, Clock: env.Clock,
 		Volume: cfg.ClaudeVolume, Window: cfg.IdentityExpiringWindow, Interval: cfg.IdentityInterval,
 		Source: identity.DockerSource{Run: subproc.Exec{},
-			Image:     &claudeimage.Builder{Run: subproc.Exec{}, Base: cfg.ClaudeBaseImage, Version: classify.ClaudeCodeVersion},
+			Image:     claudeImage,
 			FileImage: cfg.CleanupImage, Volume: cfg.ClaudeVolume, LabelPrefix: cfg.LabelPrefix},
 		Logf: func(f string, a ...any) { fmt.Fprintf(os.Stderr, f+"\n", a...) }}
 	// The supervisor defers to the stored identity the watch keeps (§7.3,
@@ -226,7 +233,15 @@ func New(ctx context.Context, cfg config.Config, env sys.Env) (*Server, error) {
 		}
 		return string(*v.State), true
 	}
-	for name, h := range (api.ClaudeRoutes{Watch: s.Identity}).Handlers() {
+	// The login handshake (§7.2) runs as Drydock's own uid: the dev
+	// container CLI gives every workspace's remote user this uid, so the
+	// credential the login writes is theirs to read.
+	s.Login = &login.Manager{Events: s.Events, Clock: env.Clock, Identity: s.Identity,
+		Launcher: login.DockerLauncher{Run: subproc.Exec{}, Volumes: containers, Image: claudeImage,
+			PrepImage: cfg.CleanupImage, Volume: cfg.ClaudeVolume, LabelPrefix: cfg.LabelPrefix,
+			UID: os.Getuid(), GID: os.Getgid()},
+		Logf: func(f string, a ...any) { fmt.Fprintf(os.Stderr, f+"\n", a...) }}
+	for name, h := range (api.ClaudeRoutes{Watch: s.Identity, Login: s.Login}).Handlers() {
 		handlers[name] = h
 	}
 	for name, h := range (api.WorkspaceRoutes{Provisioner: s.Provisioner, Workspaces: s.Workspaces, Events: s.Events}).Handlers() {
@@ -390,6 +405,18 @@ func (s *Server) Serve(ctx context.Context) error {
 		defer close(supervising)
 		s.Supervisor.Watch(ctx)
 	}()
+	// A login container an earlier process left — killed mid-login, or a
+	// crash — is removed by its label, as reconciliation's sweep removes
+	// cleanup helpers. A login started meanwhile waits for it.
+	sweeping := make(chan struct{})
+	go func() {
+		defer close(sweeping)
+		if n, err := s.Login.Sweep(ctx); err != nil && ctx.Err() == nil {
+			fmt.Fprintf(os.Stderr, "drydock: login: sweeping leftover login containers: %v\n", err)
+		} else if n > 0 {
+			fmt.Fprintf(os.Stderr, "drydock: login: removed %d leftover login container(s)\n", n)
+		}
+	}()
 	refreshing := make(chan struct{})
 	go func() {
 		defer close(refreshing)
@@ -415,6 +442,7 @@ func (s *Server) Serve(ctx context.Context) error {
 	// Session servers keep serving while Drydock is down (Spike 02: a plain
 	// restart reconnects them); only Drydock's terminals close.
 	s.Supervisor.Detach(supervisorDetachWait)
+	s.Login.Shutdown(provisionShutdownWait)
 	if s.Broker != nil {
 		s.Broker.CloseAll()
 	}
@@ -429,6 +457,7 @@ func (s *Server) Serve(ctx context.Context) error {
 	<-refreshing
 	<-watching
 	<-supervising
+	<-sweeping
 	s.DB.Close()
 	if errors.Is(serveErr, http.ErrServerClosed) {
 		serveErr = nil

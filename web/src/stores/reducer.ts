@@ -64,6 +64,12 @@
 //                                           changed, or a failing check recovered
 //   auth.identity_check_failed {check_error: {at, problem, message}}
 //                                           the stored state stands
+//   auth.login         {login}              internal/login: the handshake's
+//                                           every phase change, the whole view
+//
+// The login handshake (design §7.2) is one fleet-wide value beside the
+// identity, written by the same snapshot's `login` and by auth.login, and
+// versioned on its own. It holds no code: there is no field for one.
 //
 // The Claude identity has its own snapshot, `identity` — a GET
 // /api/auth/claude body — and is written by it and the two auth.identity*
@@ -92,8 +98,8 @@
 // branch rather than vanishing (events_routes.go).
 
 import {
-  IDENTITY_STATES, WORKSPACE_STATES, WORKSPACE_STEPS, type CatalogView, type ClaudeIdentityBody,
-  type IdentityCheckError, type IdentityState, type InstallationView, type RepoView, type SecretList,
+  IDENTITY_STATES, LOGIN_PHASES, WORKSPACE_STATES, WORKSPACE_STEPS, type CatalogView, type ClaudeIdentityBody,
+  type IdentityCheckError, type IdentityState, type InstallationView, type LoginPhase, type RepoView, type SecretList,
   type SecretMeta, type StepStatus, type StreamEvent, type WorkspaceDetail, type WorkspaceList, type WorkspaceState,
   type WorkspaceView, SUPERVISOR_STATES, type SupervisorState,
 } from '../api/types'
@@ -139,6 +145,19 @@ export interface SessionStatus {
   capacityUsed: number | null
   capacityTotal: number | null
   sessions: number
+}
+
+/** The login handshake (design §7.2, frontend §6.2). No field can hold a code. */
+export interface ClaudeLogin {
+  id: string
+  phase: LoginPhase
+  url: string | null
+  deadline: string | null
+  startedAt: string
+  endedAt: string | null
+  attempts: number
+  problem: string | null
+  message: string
 }
 
 export interface StepInfo {
@@ -368,6 +387,10 @@ export interface Entities {
   identity: ClaudeIdentity | null
   /** The event id (or snapshot position) that last wrote `identity`. */
   identityAt: number
+  /** The login handshake in progress or just ended; null when there is none. */
+  login: ClaudeLogin | null
+  /** The event id (or snapshot position) that last wrote `login`, set or cleared. */
+  loginAt: number
 }
 
 export type Action =
@@ -401,6 +424,8 @@ export function emptyEntities(): Entities {
     cap: null,
     identity: null,
     identityAt: 0,
+    login: null,
+    loginAt: 0,
   }
 }
 
@@ -429,9 +454,16 @@ export function reduce(prev: Entities, action: Action): Entities {
     case 'identity': {
       // The body stands unless an identity event newer than it was applied.
       const lastEventId = Math.max(prev.lastEventId, action.at)
+      let next = prev
       const identity = prev.identityAt <= action.at ? toIdentity(action.view?.identity) : null
-      if (identity === null) return lastEventId === prev.lastEventId ? prev : { ...prev, lastEventId }
-      return { ...prev, lastEventId, identity, identityAt: action.at }
+      if (identity !== null) next = { ...next, identity, identityAt: action.at }
+      // Its login half likewise; a null there is a fact — no login is in
+      // progress — and clears an older one.
+      if (prev.loginAt <= action.at && action.view !== null && typeof action.view === 'object' && 'login' in action.view) {
+        next = { ...next, login: toLogin(action.view.login), loginAt: action.at }
+      }
+      if (next === prev) return lastEventId === prev.lastEventId ? prev : { ...prev, lastEventId }
+      return { ...next, lastEventId }
     }
   }
 }
@@ -462,6 +494,32 @@ function toCheckError(v: unknown): IdentityCheckError | null {
   const message = str(x.message)
   if (message === null) return null
   return { at: typeof x.at === 'string' ? x.at : '', problem: typeof x.problem === 'string' ? x.problem : '', message }
+}
+
+/** The login view, field by named field; null for anything that is not one. */
+function toLogin(v: unknown): ClaudeLogin | null {
+  if (v === null || typeof v !== 'object') return null
+  const x = v as Record<string, unknown>
+  const id = str(x.login_id)
+  const phase = (LOGIN_PHASES as readonly unknown[]).includes(x.phase) ? x.phase as LoginPhase : null
+  if (id === null || phase === null) return null
+  return {
+    id, phase,
+    url: str(x.url),
+    deadline: str(x.deadline),
+    startedAt: typeof x.started_at === 'string' ? x.started_at : '',
+    endedAt: str(x.ended_at),
+    attempts: num(x.attempts) ?? 0,
+    problem: str(x.problem),
+    message: typeof x.message === 'string' ? x.message : '',
+  }
+}
+
+/** auth.login replaces the login. */
+function applyLoginEvent(base: Entities, ev: StreamEvent): Entities {
+  if (ev.id <= base.loginAt) return base
+  const login = toLogin((ev.data ?? {}).login)
+  return login === null ? base : { ...base, login, loginAt: ev.id }
 }
 
 /** auth.identity replaces the identity; auth.identity_check_failed sets only its failure. */
@@ -566,6 +624,7 @@ function applyEvent(prev: Entities, ev: StreamEvent): Entities {
 
   if (ev.kind.startsWith('secret.')) return applySecretEvent(base, ev)
   if (ev.kind.startsWith('auth.identity')) return applyIdentityEvent(base, ev)
+  if (ev.kind === 'auth.login') return applyLoginEvent(base, ev)
 
   const wsId = str(ev.workspace_id)
   if (wsId === null) return base

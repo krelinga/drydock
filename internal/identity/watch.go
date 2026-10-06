@@ -123,11 +123,49 @@ type Watch struct {
 	// failure is the last check's failure, nil once one succeeds. In memory,
 	// like the catalog's: a restarted server checks at once.
 	failure *CheckError
+	// login is when a handshake (§7.2) just signed the volume in, consumed
+	// by the next check that finds a live login. Set by LoggedIn.
+	login *time.Time
 }
 
 // Trigger starts a check in the background and returns at once.
 func (w *Watch) Trigger() {
 	go w.Check(context.Background())
+}
+
+// LoggedIn is the login handshake telling the watch it just signed the volume
+// in, at at (§7.2). It waits out a check already running — that one read the
+// volume before the login — then checks afresh, and the first check to find a
+// live login records at as logged_in_at. The verdict is still the check's: a
+// handshake that reported success over a volume with no login on it is
+// stored as whatever the volume says.
+func (w *Watch) LoggedIn(ctx context.Context, at time.Time) error {
+	for {
+		w.mu.Lock()
+		if !w.running {
+			at := at.UTC()
+			w.login = &at
+			w.mu.Unlock()
+			break
+		}
+		done := w.done
+		w.mu.Unlock()
+		select {
+		case <-done:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	_, err := w.Check(ctx)
+	return err
+}
+
+func (w *Watch) takeLogin() *time.Time {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	at := w.login
+	w.login = nil
+	return at
 }
 
 // Run checks now and then every Interval until ctx ends.
@@ -309,6 +347,9 @@ func (w *Watch) load(ctx context.Context) (*row, error) {
 func (w *Watch) store(ctx context.Context, id classify.Identity) (View, error) {
 	now := w.Clock.Now().UTC()
 	state := stateOf(id.State)
+	// A handshake's moment is consumed by this verdict whatever it is: one
+	// that found no login must not date a later login made some other way.
+	pending := w.takeLogin()
 	prev, err := w.load(ctx)
 	if err != nil {
 		return View{}, err
@@ -322,11 +363,15 @@ func (w *Watch) store(ctx context.Context, id classify.Identity) (View, error) {
 			email = sql.NullString{String: id.AccountEmail, Valid: true}
 		}
 		expires = sql.NullString{String: ts(id.ExpiresAt), Valid: true}
-		// logged_in_at is when Drydock first saw this login: the first
-		// live verdict after none. The handshake (§7.2), when it lands,
-		// knows the moment exactly and can write it; until then this is
-		// the watch's best honest answer, never a guess about the past.
-		if prev != nil && prev.state.Live() && prev.loggedInAt.Valid {
+		// logged_in_at is when this login happened. The handshake (§7.2)
+		// knows that exactly and hands it over through LoggedIn; a login
+		// made some other way is dated by the first live verdict after
+		// none — the watch's best honest answer, never a guess about the
+		// past.
+		if pending != nil {
+			at := pending
+			loggedIn = sql.NullString{String: ts(*at), Valid: true}
+		} else if prev != nil && prev.state.Live() && prev.loggedInAt.Valid {
 			loggedIn = prev.loggedInAt
 		} else {
 			loggedIn = sql.NullString{String: ts(now), Valid: true}
@@ -353,7 +398,7 @@ func (w *Watch) store(ctx context.Context, id classify.Identity) (View, error) {
 	if err != nil {
 		return View{}, err
 	}
-	changed := prev == nil || prev.state != state || prev.email != email || prev.expiresAt != expires
+	changed := prev == nil || prev.state != state || prev.email != email || prev.expiresAt != expires || prev.loggedInAt != loggedIn
 	if changed || recovered {
 		w.Events.Emit(ctx, "", levelOf(state), KindIdentity, message(state, id), map[string]any{"identity": v})
 	}

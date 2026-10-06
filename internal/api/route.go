@@ -272,6 +272,13 @@ var Table = []Route{
 		Auth: AuthRequired, Mutating: true,
 		Name: "claude.login.code", Doc: "POST /api/auth/claude/login/:lid/code",
 	},
+	{
+		Method: "DELETE", Pattern: "/api/auth/claude/login/{lid}", Mux: MuxAPI,
+		// §7.2's cancel: a wedged or abandoned login must never need a
+		// restart of Drydock. Kills the process and removes the container.
+		Auth: AuthRequired, Mutating: true,
+		Name: "claude.login.cancel", Doc: "DELETE /api/auth/claude/login/:lid",
+	},
 
 	// ---- the event stream ------------------------------------------------
 	{
