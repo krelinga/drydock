@@ -1,0 +1,166 @@
+#!/usr/bin/env bash
+# The Ansible companion's live run: the playbook assembled from
+# docs/deploy/first-deployment-ansible.md (by check.sh), run against a bare
+# Debian with systemd in a privileged container, installing a locally packaged
+# release the way test/install/run.sh does. The prerequisites are installed
+# for real, from Docker's, NodeSource's and Caddy's repositories, so this needs
+# the internet and takes a few minutes. Not part of CI.
+#
+#   test/ansible/live.sh           # needs ansible-core, community.docker, Docker allowing --privileged
+#   KEEP=1 test/ansible/live.sh    # leave the container up to poke at
+#
+# What it runs: a first install, a no-op re-run (changed=0), an upgrade (with
+# the database backup), another no-op, an App key rotation, and a master-key
+# backup that refuses to be overwritten by a different key.
+set -euo pipefail
+here=$(cd "$(dirname "$0")" && pwd)
+root=$(cd "$here/../.." && pwd)
+work=$(mktemp -d)
+name="drydock-ansible-test-$$"
+UI=drydock.test
+cleanup() {
+	if [ "${KEEP:-0}" = 1 ]; then
+		echo "container left running: docker exec -it $name bash; files in $work"
+	else
+		docker rm -f "$name" >/dev/null 2>&1 || true
+		rm -rf "$work"
+	fi
+}
+trap cleanup EXIT
+if [ -z "${DOCKER_CONFIG:-}" ]; then # as test/install/lib.sh: the base image is public
+	DOCKER_CONFIG="$work/docker"
+	mkdir -p "$DOCKER_CONFIG" && echo '{}' >"$DOCKER_CONFIG/config.json"
+	export DOCKER_CONFIG
+fi
+
+fails=0
+check() { # check DESCRIPTION COMMAND...
+	local d="$1"
+	shift
+	if "$@"; then printf 'ok   %s\n' "$d"; else printf 'FAIL %s\n' "$d"; fails=$((fails + 1)); fi
+}
+in_server() { docker exec "$name" "$@"; }
+
+# The layout, exactly as the document's blocks assemble it (and linted).
+play_dir="$work/play"
+"$here/check.sh" "$play_dir" >/dev/null
+export ANSIBLE_COLLECTIONS_PATH="$play_dir/.collections" ANSIBLE_NOCOLOR=1
+ansible-galaxy collection install community.docker -p "$play_dir/.collections" >/dev/null </dev/null
+
+# Two releases, served from inside the "server" as DRYDOCK_DOWNLOAD_BASE is in test/install.
+"$root/deploy/package.sh" v0.0.1 "$work/releases/v0.0.1" amd64 >/dev/null
+"$root/deploy/package.sh" v0.0.2 "$work/releases/v0.0.2" amd64 >/dev/null
+
+# Runbook step 1's files, on the controller: a private CA (option A), a
+# certificate for the UI host, and an App key. The two keys are vault-encrypted.
+cd "$play_dir/files"
+openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -days 2 \
+	-subj /CN=test-ca -keyout ca.key -out drydock-ca.pem 2>/dev/null
+openssl req -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -subj "/CN=$UI" \
+	-keyout drydock.key -out ui.csr 2>/dev/null
+openssl x509 -req -in ui.csr -CA drydock-ca.pem -CAkey ca.key -CAcreateserial -days 2 \
+	-extfile <(printf 'subjectAltName=DNS:%s' "$UI") -out drydock.crt 2>/dev/null
+openssl genrsa -traditional -out drydock-app.pem 2048 2>/dev/null
+app_sum=$(sha256sum <drydock-app.pem | cut -d' ' -f1)
+rm -f ca.key ui.csr drydock-ca.srl
+echo "test-vault-password" >"$work/vault-pass"
+VAULT=(--vault-password-file "$work/vault-pass")
+ansible-vault encrypt "${VAULT[@]}" drydock-app.pem drydock.key ../group_vars/drydock/vault.yml >/dev/null </dev/null
+cd "$play_dir"
+
+docker build -q -t drydock-ansible-test "$here" >/dev/null
+docker run -d --name "$name" --privileged --cgroupns=host \
+	-v /sys/fs/cgroup:/sys/fs/cgroup:rw --tmpfs /run --tmpfs /run/lock drydock-ansible-test >/dev/null
+for _ in $(seq 1 100); do
+	case "$(in_server systemctl is-system-running 2>/dev/null || true)" in running | degraded) break ;; esac
+	sleep 0.2
+done
+docker cp "$work/releases" "$name:/releases"
+in_server sh -c 'cd /releases && nohup python3 -m http.server 8000 --bind 127.0.0.1 >/dev/null 2>&1 &'
+
+cat >ansible.cfg <<'EOF'
+[defaults]
+inventory = inventory.ini
+
+[ssh_connection]
+pipelining = True
+EOF
+printf '[drydock]\n%s ansible_connection=community.docker.docker ansible_user=root\n' "$name" >inventory.ini
+cat >test-vars.yml <<EOF
+drydock_ui_host: $UI
+drydock_version: v0.0.1
+drydock_release_base_url: "http://127.0.0.1:8000/{{ drydock_version }}"
+drydock_ca_cert_src: "{{ playbook_dir }}/files/drydock-ca.pem"
+drydock_require_clock_sync: false
+drydock_secrets_key_backup: $work/backup/secrets.key
+EOF
+PW=$(ansible-vault view "${VAULT[@]}" group_vars/drydock/vault.yml </dev/null | sed -n 's/^vault_drydock_operator_password: "\(.*\)"$/\1/p')
+
+# play ARGS...: one run. The App key is a fake, so the first catalog refresh
+# is GitHub's 401 in the journal: that one assertion is skipped here, and the
+# journal is checked below instead.
+play() {
+	local n=$((${run:-0} + 1))
+	run=$n
+	rc=0
+	ansible-playbook -v drydock.yml "${VAULT[@]}" -e @test-vars.yml --skip-tags drydock_verify_journal "$@" \
+		>"$work/run$n.log" 2>&1 </dev/null || rc=$?
+	changed=$(sed -n "s/^$name *: .*changed=\([0-9]*\).*/\1/p" "$work/run$n.log")
+	printf -- '--- run %s: rc=%s changed=%s\n' "$n" "$rc" "$changed"
+	[ "$rc" = 0 ] || tail -40 "$work/run$n.log"
+}
+signin() {
+	in_server curl -s -o /dev/null -w '%{http_code}' --cacert /etc/caddy/certs/drydock-ca.pem \
+		--resolve "$UI:443:127.0.0.1" -H "Origin: https://$UI" -H 'Content-Type: application/json' \
+		-d "{\"password\":\"$PW\"}" "https://$UI/api/auth/session"
+}
+
+play
+check "first install succeeds" [ "$rc" = 0 ]
+check "the installer reported a fresh install" grep -q "installed Drydock v0.0.1" "$work/run1.log"
+check "the password from the vault signs in through Caddy (204)" [ "$(signin)" = 204 ]
+check "control: a wrong password does not" [ "$(PW=wrong-password-123 signin)" = 401 ]
+check "the password never reached the log" bash -c "! grep -qF -- \"\$1\" \"\$2\"" _ "$PW" "$work/run1.log"
+check "the App key is installed, drydock's alone, 0400" [ "$(in_server stat -c '%U %a' /etc/drydock/github-app.pem)" = "drydock 400" ]
+check "and is the controller's key" [ "$(in_server sha256sum /etc/drydock/github-app.pem | cut -d' ' -f1)" = "$app_sum" ]
+check "the staged copy is gone" in_server test ! -e /root/drydock-app.pem
+check "the key is 0640 root:caddy" [ "$(in_server stat -c '%U %G %a' /etc/caddy/certs/drydock.key)" = "root caddy 640" ]
+check "the journal says it is serving" bash -c "docker exec $name journalctl -u drydock -o cat | grep -q 'drydock: serving on /run/drydock/http.sock'"
+check "and its only complaint is the fake App key" bash -c "! docker exec $name journalctl -u drydock -o cat | grep -E '^drydock(: reconcile:| serve:)'"
+check "the master key was backed up, 0400" [ "$(stat -c %a "$work/backup/secrets.key")" = 400 ]
+check "and is the server's key" [ "$(sha256sum <"$work/backup/secrets.key")" = "$(in_server cat /etc/drydock/secrets.key | sha256sum)" ]
+check "in a 0700 directory" [ "$(stat -c %a "$work/backup")" = 700 ]
+
+play
+check "a re-run succeeds" [ "$rc" = 0 ]
+check "and changes nothing" [ "$changed" = 0 ]
+check "the installer said current" grep -q "v0.0.1 is installed and current" "$work/run2.log"
+
+play -e drydock_version=v0.0.2
+check "an upgrade succeeds" [ "$rc" = 0 ]
+check "the installer reported the move" grep -q "upgraded Drydock v0.0.1 -> v0.0.2" "$work/run3.log"
+check "the binary is v0.0.2" [ "$(in_server drydock version)" = v0.0.2 ]
+check "the database was backed up first, root 0600" bash -c "[ \"\$(docker exec $name sh -c 'stat -c \"%U %a\" /root/drydock.db.*')\" = 'root 600' ]"
+check "the password was not reset" [ "$(signin)" = 204 ]
+
+play -e drydock_version=v0.0.2
+check "a re-run after the upgrade succeeds" [ "$rc" = 0 ]
+check "and changes nothing" [ "$changed" = 0 ]
+
+openssl genrsa -traditional -out files/drydock-app.pem 2048 2>/dev/null
+app_sum=$(sha256sum <files/drydock-app.pem | cut -d' ' -f1)
+ansible-vault encrypt "${VAULT[@]}" files/drydock-app.pem >/dev/null </dev/null
+play -e drydock_version=v0.0.2
+check "rotating the App key succeeds" [ "$rc" = 0 ]
+check "the installer installed the new key" grep -q "installed the GitHub App key" "$work/run5.log"
+check "the server has the new key" [ "$(in_server sha256sum /etc/drydock/github-app.pem | cut -d' ' -f1)" = "$app_sum" ]
+check "the staged copy is gone again" in_server test ! -e /root/drydock-app.pem
+
+chmod 0600 "$work/backup/secrets.key" && head -c 32 /dev/urandom >"$work/backup/secrets.key"
+play -e drydock_version=v0.0.2
+check "a backup of a different key fails the play" [ "$rc" != 0 ]
+check "at the refusal" grep -q "holds a different key" "$work/run6.log"
+check "control: the server's key is unchanged and still drydock's" [ "$(in_server stat -c '%U %a %s' /etc/drydock/secrets.key)" = "drydock 400 32" ]
+
+printf '\n%s\n' "$([ $fails = 0 ] && echo PASS || echo "$fails FAILED")"
+[ $fails = 0 ]
