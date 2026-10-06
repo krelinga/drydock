@@ -947,24 +947,38 @@ This is the one Phase 2 check that has not yet been run on real hardware
 
 ### 8.6 A Claude session (Phase 5)
 
-The login handshake in the UI is not built yet ([9](#9-what-does-not-work-yet)), so sign in once by
-hand, inside any running workspace. Every workspace shares the login, because every container mounts
-the same `drydock-claude-config` volume at its `CLAUDE_CONFIG_DIR`
-([§7.1](../design/overall/drydock-design.md#71--one-shared-credential-volume)).
+Sign in once, from Settings. Every workspace shares the login, because every container mounts the
+same `drydock-claude-config` volume at its `CLAUDE_CONFIG_DIR`
+([§7.1](../design/overall/drydock-design.md#71--one-shared-credential-volume)). The sign-in is also
+the one check no test can make: the real `Login successful` needs you in a browser with a real
+account.
 
-- [ ] On the server, with `$WS` a running workspace's id:
+- [ ] **Settings → Claude.** Before anyone signs in it says *No one has signed in yet.*, and so
+  does the banner on every page. A running card says *Waiting on Claude sign-in.*, with no button.
+- [ ] **Sign in to Claude.** It says *Starting a login container…* The first time, Drydock builds
+  the image Claude Code runs in (`drydock-claude:<version>-<hash>`) with npm, which needs the
+  network and can take a few minutes.
+- [ ] **Open the Claude sign-in page**, or **Copy link** and open it in another browser. Sign in,
+  and Claude shows a code. You have five minutes from when the link appears; the page counts down.
+  You can leave the page meanwhile: it picks the login up again when you come back.
+- [ ] Paste the code into *Code from Claude* and **Submit code**. It says *Signed in.*, and the
+  section names the account. A wrong code says so and lets you paste again; half a code is refused
+  in the field before anything is sent.
+- [ ] On the server, the volume is Drydock's and the login container is gone:
   ```sh
-  CID=$(sudo docker ps -q --filter label=drydock.workspace=$WS)
-  sudo docker exec -it -u vscode "$CID" claude auth login
+  sudo docker volume inspect -f '{{json .Labels}}' drydock-claude-config   # {"drydock.claude-config":"true"}
+  sudo docker ps -a --filter label=drydock.login                           # empty
   ```
-  Open the URL it prints on any device, authorize, and paste the code back at its prompt. It says
-  `Login successful`. *Why `-u vscode`:* the credential is `0600` and must belong to the user every
-  container runs as.
-- [ ] Tell Drydock: **Settings → Claude → Check now** (or wait for the six-hourly check). Each
-  workspace that was waiting on the login starts its session server by itself.
-  *Without the expiry watch in your release*, press **Start session** on each workspace's detail
-  page instead.
-- [ ] The card goes *Starting session…* → **Capacity 1 / 4**, with **Open in Claude**. The link is
+  The login runs as the `drydock` user, which is the user every workspace container runs as, so the
+  credential it writes is theirs to read. If the volume belongs to another user, the sign-in stops
+  before anything is written and says which two users.
+- [ ] **If the code was right and it does not say *Signed in.*:** the success match is the one
+  part of the handshake measured from Claude Code's binary rather than from a real login (Spike 01).
+  Note what the page said, run `journalctl -u drydock -b -o cat | grep login`, and report it. The
+  journal never holds the code.
+- [ ] Each workspace that was waiting on the login starts its session server by itself: a
+  successful sign-in triggers the login check at once, and the supervisors resume on its result.
+  The card goes *Starting session…* → **Capacity 1 / 4**, with **Open in Claude**. The link is
   `https://claude.ai/code?environment=env_…`; the session also appears in the Claude app on your
   phone, named after the repository. *Why 1 / 4:* the server pre-creates one session in the clone,
   and it counts ([§8](../design/overall/drydock-design.md#8-session-supervision)).
@@ -987,10 +1001,6 @@ wait of one to three minutes, not a failure, and it clears on its own.
 None of the following is a deployment fault. These are the phases still being built
 ([§14](../design/overall/drydock-design.md#14-build-plan)):
 
-- **No Claude sign-in from the UI (Phase 5).** Containers get Claude Code, the shared credential
-  volume, and a supervised `claude remote-control` session server whose sessions the card links to.
-  What is missing is the login handshake: sign in once by hand ([8.6](#86-a-claude-session-phase-5)).
-  `/api/auth/claude/login…` answers `501` once you are signed in.
 - **No previews (port forwarding).** Every route on the preview socket answers `501`. Leave
   `--preview-domain` unset. A preview wildcard certificate buys nothing yet.
 - **Phase 6 is partly done.** Stop, rebuild and delete work, and so do the live session count

@@ -23,9 +23,9 @@
 // banner is on every screen — and refetches them when the stream reopens. It
 // renders only what the reducer holds.
 import { computed, watch } from 'vue'
-import { RouterLink } from 'vue-router'
+import { RouterLink, useRoute } from 'vue-router'
 import { useStreamRefetch } from '../lib/refetch'
-import { identityBanner } from '../lib/identity'
+import { identityBanner, SIGN_IN_TARGET } from '../lib/identity'
 import { relativeTime } from '../lib/time'
 import { useIdentityStore } from '../stores/identity'
 import { useSecretsStore } from '../stores/secrets'
@@ -47,6 +47,11 @@ const stream = useStreamStore()
 const secrets = useSecretsStore()
 const identity = useIdentityStore()
 const session = useSessionStore()
+const route = useRoute()
+// On Settings the Claude section carries the handshake's own Sign in to
+// Claude, so the banner there says what is wrong and offers no second
+// button for the same fix (one cause, one button — §6.6).
+const onSignInPage = computed(() => route.path === SIGN_IN_TARGET.path)
 
 watch(() => session.status, (s) => {
   if (s === 'signed-in') {
@@ -75,7 +80,7 @@ const banners = computed<Banner[]>(() => {
   if (ib !== null && !(ib.dismissible && identity.dismissedFor === (id?.expiresAt ?? ''))) {
     out.push({
       key: `identity-${ib.state}`, tone: ib.tone, title: ib.title, body: ib.body, items: [],
-      link: ib.action !== null ? { to: ib.action.to, label: ib.action.label, button: true } : undefined,
+      link: ib.action !== null && !onSignInPage.value ? { to: ib.action.to, label: ib.action.label, button: true } : undefined,
       dismiss: ib.dismissible ? () => identity.dismiss() : undefined,
     })
   }

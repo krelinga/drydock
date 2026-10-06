@@ -16,6 +16,18 @@
 //   root/run/               Drydock's two sockets and the taps in front of them
 //   root/caddy-*/           each Caddy's data, config, admin socket and log
 //   root/drydock.db         the store; root/secrets.key the master key
+//   root/fakebin/docker     a stand-in docker on `drydock serve`'s PATH (below)
+//   root/fakeclaude/        fakeclaude and its script, for the login handshake
+//
+// A second piece is not production either: **`docker` is a stand-in**. This
+// tier's subject is the browser, not Docker, and the one Docker-backed thing
+// it drives — the Claude login handshake (login.spec.ts) — needs a terminal
+// process behind `docker run -it`. The stand-in answers the shared volume's
+// and the Claude image's questions, runs fakeclaude (testing §6.4) on
+// Drydock's own PTY in place of the login container, and serves the recorded
+// credential and `auth status` fixtures once a login has succeeded. It also
+// means the tier can never reach the host's Docker, its real credential
+// volume above all; `--claude-volume` is the tier's own name besides.
 //
 // One piece is not production: a **tap** between Caddy and each Drydock socket.
 // It forwards bytes unchanged and records what arrived — above all whether the
@@ -26,7 +38,7 @@
 // assertion still measures Caddy.
 
 import { execFileSync, spawn, type ChildProcess } from 'node:child_process'
-import { randomBytes } from 'node:crypto'
+import { createHash, randomBytes } from 'node:crypto'
 import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import http from 'node:http'
 import net from 'node:net'
@@ -390,6 +402,7 @@ export class Stack {
     chmodSync(key, 0o400)
     this.secretsKey = key
 
+    this.fakeDocker()
     await this.startDrydock()
     this.apiTap = new Tap('api', this.apiTapSock, path.join(this.run, 'http.sock'))
     this.previewTap = new Tap('preview', this.previewTapSock, path.join(this.run, 'preview.sock'))
@@ -399,6 +412,70 @@ export class Stack {
 
   bin = ''
   secretsKey = ''
+  /** The one login code fakeclaude accepts: a high-entropy canary, `<code>#<state>`. */
+  readonly loginCode = `cnryCODE${randomBytes(10).toString('hex')}#cnrySTATE${randomBytes(10).toString('hex')}`
+  /** The tier's own shared-volume name; the stand-in docker never creates a real one. */
+  readonly claudeVolume = `drydock-browser-claude-${randomBytes(4).toString('hex')}`
+  fakeBin = ''
+
+  /**
+   * Builds fakeclaude, scripts it to accept `loginCode` alone, and writes
+   * the stand-in docker (see the header). The script is the whole of what
+   * `drydock serve` can ask Docker here; anything else is logged and
+   * answered with nothing.
+   */
+  private fakeDocker(): void {
+    const fc = path.join(this.root, 'fakeclaude')
+    mkdirSync(fc, { recursive: true })
+    const claude = path.join(fc, 'claude')
+    execFileSync('go', ['build', '-o', claude, './internal/claudetest/fakeclaude'], { cwd: REPO, stdio: 'inherit' })
+    const sha = createHash('sha256').update(this.loginCode).digest('hex')
+    writeFileSync(`${claude}.json`, JSON.stringify({
+      corpus: path.join(REPO, 'test', 'fixtures'),
+      state_dir: path.join(this.root, 'fakeclaude-state'),
+      login: { mode: 'answer', accept_sha256: sha },
+    }))
+    const state = path.join(this.root, 'fakedocker')
+    mkdirSync(state, { recursive: true })
+    this.fakeBin = path.join(this.root, 'fakebin')
+    mkdirSync(this.fakeBin, { recursive: true })
+    const fx = path.join(REPO, 'test', 'fixtures')
+    const docker = path.join(this.fakeBin, 'docker')
+    writeFileSync(docker, `#!/bin/sh
+# The browser tier's stand-in docker (harness.ts). Never a real container.
+S='${state}'
+printf '%s\\n' "$*" >>"$S/argv.log"
+case "$1 $2" in
+"volume ls") [ -e "$S/volume" ] && cat "$S/volume"; exit 0 ;;
+"volume create") for a; do last=$a; done; echo "$last" >"$S/volume"; echo "$6" | sed 's/=.*//' >"$S/label"; echo "$last"; exit 0 ;;
+"volume inspect")
+	case " $* " in
+	*" --format "*) printf '{"%s":"true"}\\n' "$(cat "$S/label")" ;;
+	*) printf '[{"Name":"%s","Driver":"local","Labels":{"%s":"true"}}]\\n' "$(cat "$S/volume")" "$(cat "$S/label")" ;;
+	esac
+	exit 0 ;;
+"image inspect") echo sha256:${'b'.repeat(64)}; exit 0 ;;
+esac
+case "$1" in
+ps|rm|stop|inspect) exit 0 ;;
+run) ;;
+*) exit 0 ;;
+esac
+case " $* " in
+*" --tty "*)
+	# The login: fakeclaude on Drydock's own PTY, where the container's
+	# claude would be. A success leaves a login for the watch to find.
+	'${claude}' auth login --claudeai
+	rc=$?
+	[ "$rc" = 0 ] && : >"$S/loggedin"
+	exit "$rc" ;;
+*" DRYDOCK_UID="*) exit 0 ;;
+*".credentials.json"*) [ -e "$S/loggedin" ] && exec cat '${fx}/credentials/ok.json'; exit 3 ;;
+*" auth status "*) [ -e "$S/loggedin" ] && exec cat '${fx}/authstatus/valid.json'; cat '${fx}/authstatus/absent.json'; exit 1 ;;
+esac
+exit 0
+`, { mode: 0o755 })
+  }
 
   async startDrydock(): Promise<void> {
     const log = path.join(this.root, 'drydock.log')
@@ -418,7 +495,8 @@ export class Stack {
       // a container another Drydock — or a developer — owns (testing §5.4).
       '--label-prefix', `test.browser.${randomBytes(4).toString('hex')}`,
       '--secrets-key', this.secretsKey,
-    ], { stdio: ['ignore', out, out] })
+      '--claude-volume', this.claudeVolume,
+    ], { stdio: ['ignore', out, out], env: { ...process.env, PATH: `${this.fakeBin}:${process.env.PATH ?? ''}` } })
     const sock = path.join(this.run, 'http.sock')
     await waitFor('drydock serve', () => unixAnswers(sock), log)
   }

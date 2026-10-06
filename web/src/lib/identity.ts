@@ -20,12 +20,9 @@ import { relativeTime } from './time'
 
 /**
  * Where "Sign in to Claude" goes: the Claude section of Settings, where
- * frontend §5 puts the identity and §6.2's handshake view will live.
- *
- * SEAM (Phase 5, the login handshake): until POST /api/auth/claude/login is
- * built, that section says plainly that signing in from Drydock comes next,
- * and offers nothing that pretends to sign in. When it lands, this link is
- * still right — the handshake view mounts there — and only Settings changes.
+ * frontend §5 puts the identity and §6.2's handshake view lives
+ * (components/ClaudeLogin.vue). On that page the banner offers no link of its
+ * own: the handshake's button is the one Sign in to Claude there.
  */
 export const SIGN_IN_TARGET = { path: '/settings', hash: '#claude' } as const
 export const SIGN_IN_LABEL = 'Sign in to Claude'

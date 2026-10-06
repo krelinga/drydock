@@ -17,10 +17,11 @@
 
 import { http, HttpResponse, sse, type HttpHandler } from 'msw'
 import type {
-  ActionView, CatalogView, Device, IdentityState, IdentityView, InstallationView, PutSecretResult, RepoView, SecretMeta, SessionInfo, SessionView, Stale, StaleWorkspace, SupervisorView,
+  ActionView, CatalogView, Device, IdentityState, IdentityView, InstallationView, LoginView, PutSecretResult, RepoView, SecretMeta, SessionInfo, SessionView, Stale, StaleWorkspace, SupervisorView,
   StepView, StreamEvent, Undeliverable, UndeliverableSecret, WorkspaceDetail, WorkspaceList, WorkspaceState, WorkspaceView,
 } from '../api/types'
 import { checkDescription, checkName, checkReach, checkValue, type SecretRefusal } from '../lib/secretRules'
+import { acceptsCode, checkCodeShape, loginLive } from '../lib/login'
 
 export const MOCK_PASSWORD = 'drydock'
 const LOCKOUT_AFTER = 5
@@ -140,6 +141,67 @@ export interface MockBackend {
   identity: IdentityView
   /** How many POST /api/auth/claude/check requests arrived. */
   identityChecks: number
+
+  /** The login handshake internal/login.Manager holds (design §7.2); null when none. */
+  login: LoginView | null
+  /**
+   * The one code the mock's login accepts; any other well-shaped code is
+   * `invalid_code`, and the login stays at the prompt (Spike 01). Compared
+   * and dropped: the mock keeps no submitted code but in `loginBodies`.
+   */
+  loginAccepts: string
+  /** Every raw body the code route received: a spec's proof a code was sent, once. */
+  loginBodies: Array<{ url: string; body: string }>
+  /**
+   * 'auto': a started login reaches awaiting_code by itself, and a code gets
+   * its verdict by itself. 'manual': a spec moves it with `loginReady` and
+   * `loginVerdict`, to see the in-between states.
+   */
+  loginMode: 'auto' | 'manual'
+  /** The code waiting for its verdict, in manual mode: whether it was the accepted one. */
+  loginPending: boolean | null
+}
+
+/** The authorize URL the mock shows: shaped like the real one, pointing nowhere real. */
+export const MOCK_LOGIN_URL =
+  'https://claude.com/cai/oauth/authorize?code=true&client_id=mock&response_type=code&redirect_uri=https%3A%2F%2Fplatform.claude.com%2Foauth%2Fcode%2Fcallback&scope=user%3Ainference&code_challenge=mock&code_challenge_method=S256&state=mockstate'
+
+/** Stores the login and announces it, as internal/login does on every phase change. */
+export function setLogin(b: MockBackend, view: LoginView): StreamEvent {
+  b.login = view
+  const level = view.phase === 'failed' || view.phase === 'timed_out' ? 'warn' : 'info'
+  return emit(b, 'auth.login', { level, message: view.message, data: { login: view } })
+}
+
+/** The URL is up: starting → awaiting_code, with five minutes on the clock. */
+export function loginReady(b: MockBackend): StreamEvent | null {
+  if (b.login === null || b.login.phase !== 'starting') return null
+  return setLogin(b, {
+    ...b.login, phase: 'awaiting_code', url: MOCK_LOGIN_URL,
+    deadline: new Date(Date.now() + 5 * 60e3).toISOString(),
+    message: 'Open the link, sign in to Claude, and paste the code it shows you.',
+  })
+}
+
+/** The verdict on the code being checked: succeeded (and the volume signed in), or invalid_code. */
+export function loginVerdict(b: MockBackend): StreamEvent | null {
+  const l = b.login
+  if (l === null || l.phase !== 'submitting' || b.loginPending === null) return null
+  const ok = b.loginPending
+  b.loginPending = null
+  if (!ok) {
+    return setLogin(b, { ...l, phase: 'invalid_code', message: 'Claude did not accept that code. Paste it again: the link is still valid.' })
+  }
+  const at = new Date().toISOString()
+  const ev = setLogin(b, { ...l, phase: 'succeeded', ended_at: at, deadline: null, message: 'Claude says the login succeeded. Checking the shared volume.' })
+  setIdentity(b, { ...identityView('ok'), logged_in_at: at })
+  return ev
+}
+
+/** Ends the login in a terminal phase other than success. */
+export function endLogin(b: MockBackend, phase: 'timed_out' | 'failed' | 'cancelled', message: string, problem: string | null = null): StreamEvent | null {
+  if (b.login === null) return null
+  return setLogin(b, { ...b.login, phase, problem, message, deadline: null, ended_at: new Date().toISOString() })
 }
 
 /** A stored identity as the watch writes it: login details only beside a login. */
@@ -315,6 +377,11 @@ function newBackendBare(now: number, overrides: Partial<MockBackend>): MockBacke
     identity: identityView('ok'),
     identityChecks: 0,
     supervisor: false,
+    login: null,
+    loginAccepts: 'mockcode123#mockstate',
+    loginBodies: [],
+    loginMode: 'auto',
+    loginPending: null,
     ...overrides,
   }
 }
@@ -1225,12 +1292,65 @@ export function handlersFor(b: MockBackend): HttpHandler[] {
       return HttpResponse.json({}, { status: 202 })
     }),
 
-    // The Claude identity (design §7.3, internal/api/claude_routes.go). The
-    // login half is null: the handshake is not built.
+    // The Claude identity (design §7.3) and the login handshake (§7.2),
+    // internal/api/claude_routes.go.
     http.get('/api/auth/claude', ({ request }) => {
       record(request)
       if (!b.signedIn) return unauthenticated()
-      return HttpResponse.json({ identity: b.identity, login: null }, { headers: { 'Cache-Control': 'no-store' } })
+      return HttpResponse.json({ identity: b.identity, login: b.login }, { headers: { 'Cache-Control': 'no-store' } })
+    }),
+
+    http.post('/api/auth/claude/login', ({ request }) => {
+      record(request)
+      if (!b.signedIn) return unauthenticated()
+      if (b.login !== null && loginLive(b.login.phase)) return envelope(409, 'in_progress', 'A Claude login is already in progress.')
+      const id = (++b.idSeq).toString(16).padStart(24, '0')
+      setLogin(b, {
+        login_id: id, phase: 'starting', url: null, deadline: null, started_at: new Date().toISOString(),
+        ended_at: null, attempts: 0, problem: null,
+        message: 'Starting a login container for Claude. One sign-in covers every workspace.',
+      })
+      if (b.loginMode === 'auto') setTimeout(() => loginReady(b), 0)
+      return HttpResponse.json({ login_id: id }, { status: 202 })
+    }),
+
+    // The code goes into loginBodies (the spec's control) and is otherwise
+    // compared and dropped, as the server types it and keeps nothing.
+    http.post('/api/auth/claude/login/:lid/code', async ({ request, params }) => {
+      record(request)
+      const body = await request.text()
+      b.loginBodies.push({ url: request.url, body })
+      if (!b.signedIn) return unauthenticated()
+      let code: unknown
+      try {
+        const parsed = JSON.parse(body) as Record<string, unknown>
+        if (Object.keys(parsed).length !== 1) throw new Error('fields')
+        code = parsed.code
+      } catch {
+        return envelope(400, 'bad_request', 'The body must be {"code": "..."}.')
+      }
+      if (typeof code !== 'string') return envelope(400, 'bad_request', 'The body must be {"code": "..."}.')
+      const rule = checkCodeShape(code)
+      if (rule !== null) return envelope(400, 'login_code_invalid', 'That does not look like a whole login code.', {}, rule)
+      const l = b.login
+      if (l === null || l.login_id !== String(params.lid)) return envelope(404, 'not_found', 'No such login.')
+      if (!loginLive(l.phase)) return envelope(409, 'login_ended', 'That login has ended. Start a new one.')
+      if (!acceptsCode(l.phase)) return envelope(409, 'login_not_awaiting_code', 'The login is not waiting for a code right now.')
+      b.loginPending = code.trim() === b.loginAccepts
+      setLogin(b, { ...l, phase: 'submitting', attempts: l.attempts + 1, message: 'Checking the code with Claude.' })
+      if (b.loginMode === 'auto') setTimeout(() => loginVerdict(b), 0)
+      return HttpResponse.json({}, { status: 202 })
+    }),
+
+    http.delete('/api/auth/claude/login/:lid', ({ request, params }) => {
+      record(request)
+      if (!b.signedIn) return unauthenticated()
+      const l = b.login
+      if (l === null || l.login_id !== String(params.lid)) return envelope(404, 'not_found', 'No such login.')
+      if (!loginLive(l.phase)) return envelope(409, 'login_ended', 'That login has already ended.')
+      b.loginPending = null
+      setTimeout(() => endLogin(b, 'cancelled', 'The login was cancelled.'), 0)
+      return HttpResponse.json({}, { status: 202 })
     }),
 
     // A check reads the same stored state again — or, in a spec, whatever
