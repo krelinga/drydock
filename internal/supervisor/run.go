@@ -1,0 +1,471 @@
+//go:build linux
+
+package supervisor
+
+import (
+	"bytes"
+	"context"
+	"errors"
+	"fmt"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/krelinga/drydock/internal/classify"
+	"github.com/krelinga/drydock/internal/container"
+	"github.com/krelinga/drydock/internal/pty"
+	"github.com/krelinga/drydock/internal/subproc"
+)
+
+// sup is one workspace's supervisor: a loop that starts the server, reads its
+// terminal, and decides what an exit means.
+type sup struct {
+	m      *Manager
+	ws     string
+	row    string
+	log    *Ring
+	cancel context.CancelFunc
+	done   chan struct{} // closed when the loop returns
+
+	mu       sync.Mutex
+	state    State
+	reason   Reason
+	detail   string
+	restarts int
+	crashes  []time.Time
+	stopping bool
+	proc     subproc.Process
+	procDone chan struct{}
+	lastBeat time.Time
+}
+
+func (s *sup) running() bool {
+	select {
+	case <-s.done:
+		return false
+	default:
+		return true
+	}
+}
+
+func (s *sup) current() State {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.state
+}
+
+// outcome is how one run of the server ended.
+type outcome struct {
+	kind   outcomeKind
+	reason Reason // for fatal, login, and the crash cause in detail
+	detail string
+}
+
+type outcomeKind int
+
+const (
+	outStopped   outcomeKind = iota // Drydock stopped it
+	outDetached                     // Drydock is shutting down; the server keeps running
+	outWait                         // already served by a terminal: wait, flat, uncounted
+	outLogin                        // the account cannot run Remote Control: awaiting_login
+	outSignedOut                    // the stored identity went signed-out meanwhile
+	outFatal                        // a config error or a bug: degraded, no retry
+	outCrash                        // anything else: counted against the budget
+)
+
+func (s *sup) loop(ctx context.Context) {
+	defer close(s.done)
+	m, p := s.m, s.m.policy()
+	for {
+		if ctx.Err() != nil || s.isStopping() {
+			return
+		}
+		// Defer to the fleet's identity before spending anything (§7.3,
+		// frontend §6.6): a server that cannot run is not started, and
+		// waiting for a sign-in costs no restart.
+		if st, known := m.identity(ctx); known && signedOut(st) {
+			s.set(ctx, AwaitingLogin, ReasonSignedOut, signedOutSentence(st), 0)
+			return
+		}
+		// A server an earlier process (or an earlier run) left behind still
+		// holds the folder, and every start would be refused as already
+		// served until it exits. Stop it, SIGTERM first, so its sessions
+		// reconnect to the new one (Spike 02).
+		if _, err := m.terminate(ctx, s.ws, nil, nil); err != nil && ctx.Err() == nil {
+			m.logf("drydock: workspace %s: stopping a session server left running: %v", s.ws, err)
+		}
+		out := s.runOnce(ctx)
+		switch out.kind {
+		case outStopped, outDetached:
+			return
+		case outWait:
+			s.set(ctx, WaitingRegistration, ReasonWaitRegistration, fmt.Sprintf(
+				"Waiting for the previous session server to release the folder; asking again every %s. This is a wait, not a failure.",
+				durationText(p.RegistrationRetry)), 0)
+			if !s.sleep(ctx, p.RegistrationRetry) {
+				return
+			}
+		case outLogin:
+			s.set(ctx, AwaitingLogin, out.reason, out.detail, 0)
+			return
+		case outSignedOut:
+			continue // the top of the loop says so
+		case outFatal:
+			s.set(ctx, Degraded, out.reason, out.detail, 0)
+			return
+		case outCrash:
+			now := m.clock().Now()
+			s.mu.Lock()
+			kept := s.crashes[:0]
+			for _, t := range s.crashes {
+				if now.Sub(t) < p.BudgetWindow {
+					kept = append(kept, t)
+				}
+			}
+			s.crashes = append(kept, now)
+			n := len(s.crashes)
+			s.mu.Unlock()
+			if n > p.Budget {
+				s.set(ctx, Degraded, ReasonBudgetSpent, fmt.Sprintf(
+					"The session server stopped %d times in %s, so Drydock stopped restarting it. The last time it %s. Restart it from the workspace once the cause is fixed.",
+					n, durationText(p.BudgetWindow), out.detail), 0)
+				return
+			}
+			s.countRestart(ctx)
+			d := p.BackoffFor(n)
+			s.set(ctx, Starting, ReasonBackoff, fmt.Sprintf(
+				"The session server %s. Restarting it in %s (restart %d of %d allowed in %s).",
+				out.detail, durationText(d), n, p.Budget, durationText(p.BudgetWindow)), 0)
+			if !s.sleep(ctx, d) {
+				return
+			}
+		}
+	}
+}
+
+func (s *sup) isStopping() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.stopping
+}
+
+// sleep waits d on the injected clock, or until the loop is cancelled.
+func (s *sup) sleep(ctx context.Context, d time.Duration) bool {
+	select {
+	case <-ctx.Done():
+		return false
+	case <-s.m.clock().After(d):
+		return !s.isStopping()
+	}
+}
+
+// discovered is what one run's output has announced so far.
+type discovered struct {
+	env               string
+	sessions          map[string]bool
+	capUsed, capTotal int
+}
+
+const (
+	// discoveryWindow is how much raw output is re-read on each chunk: more
+	// than any one escape sequence or status block, so a sequence split by a
+	// read is whole on the next pass. Transient, never stored.
+	discoveryWindow = 16 << 10
+	// refusalTail is how much of a run's output an exit is classified on.
+	refusalTail = 32 << 10
+)
+
+func (s *sup) runOnce(ctx context.Context) outcome {
+	m, p := s.m, s.m.policy()
+	spec, err := m.Spec(ctx, s.ws)
+	if err != nil {
+		m.logf("drydock: workspace %s: session server spec: %v", s.ws, err)
+		return outcome{kind: outCrash, detail: "could not be started: Drydock could not read the workspace's configuration"}
+	}
+	spec.Capacity = p.Capacity
+	spec.PidFile = m.PidFile
+
+	s.mu.Lock()
+	if s.stopping {
+		s.mu.Unlock()
+		return outcome{kind: outStopped}
+	}
+	// The process is not tied to the loop's context: cancelling that is
+	// Drydock shutting down, which must leave the server running, and a stop
+	// ends the process by signalling it in the container first.
+	procCtx, procCancel := context.WithCancel(context.Background())
+	proc, master, err := m.Runtime.Start(procCtx, spec, p.Cols, p.Rows)
+	if err != nil {
+		s.mu.Unlock()
+		procCancel()
+		m.logf("drydock: workspace %s: starting the session server: %v", s.ws, err)
+		return outcome{kind: outCrash, detail: "could not be started"}
+	}
+	procDone := make(chan struct{})
+	s.proc, s.procDone = proc, procDone
+	s.mu.Unlock()
+	defer func() {
+		s.mu.Lock()
+		s.proc, s.procDone = nil, nil
+		s.mu.Unlock()
+		procCancel()
+		close(procDone)
+	}()
+	// A retry while the previous server's registration lapses stays a wait
+	// on the card: it is the same wait, asked again, not a new start.
+	if s.current() != WaitingRegistration {
+		s.set(ctx, Starting, ReasonLaunching, "Starting the session server.", proc.Pid())
+	}
+
+	chunks := make(chan []byte, 64)
+	go func() {
+		defer close(chunks)
+		buf := make([]byte, 8192)
+		for {
+			n, err := master.Read(buf)
+			if n > 0 {
+				chunks <- bytes.Clone(buf[:n])
+			}
+			if err != nil {
+				if !pty.IsEOF(err) {
+					m.logf("drydock: workspace %s: reading the session server's terminal: %v", s.ws, err)
+				}
+				return
+			}
+		}
+	}()
+
+	d := &discovered{sessions: map[string]bool{}}
+	var window, tail []byte
+	gate := m.clock().After(p.GateTimeout)
+	cancelled := ctx.Done()
+	var hang Reason
+	serving := false
+	for open := true; open; {
+		select {
+		case b, ok := <-chunks:
+			if !ok {
+				open = false
+				break
+			}
+			now := m.clock().Now()
+			var redact []string
+			if m.Redact != nil {
+				redact = m.Redact(ctx, s.ws)
+			}
+			s.log.Write(now, b, redact)
+			tail = keepTail(append(tail, b...), refusalTail)
+			window = keepTail(append(window, b...), discoveryWindow)
+			s.heartbeat(ctx)
+			if s.discover(ctx, d, window) && !serving {
+				serving = true
+				gate = nil
+				s.set(ctx, Serving, ReasonServing, "", 0)
+			}
+		case <-gate:
+			gate = nil
+			// No environment within the deadline. A hang has no message
+			// (two of the three gates wait at a prompt rather than fail), so
+			// the timeout is the verdict; the prompt's text only names the
+			// key. Stop it — SIGTERM first — and keep reading until it ends.
+			hang = hangReason(visible(tail))
+			// The prompt has no line end; put it in the log now, so the log
+			// shows what the server is waiting at.
+			s.log.Flush(m.clock().Now(), nil)
+			go m.terminate(context.WithoutCancel(ctx), s.ws, proc, procDone)
+		case <-cancelled:
+			cancelled = nil
+			if !s.isStopping() {
+				// Shutdown: close the terminal and leave the server serving.
+				master.Close()
+				for range chunks {
+				}
+				waited := make(chan struct{})
+				go func() { proc.Wait(); close(waited) }()
+				proc.Signal(subproc.SignalTerm)
+				select {
+				case <-waited:
+				case <-time.After(5 * time.Second):
+					proc.Signal(subproc.SignalKill)
+					<-waited
+				}
+				return outcome{kind: outDetached}
+			}
+		}
+	}
+	proc.Wait()
+	master.Close()
+	s.log.Flush(m.clock().Now(), nil)
+
+	if s.isStopping() {
+		return outcome{kind: outStopped}
+	}
+	text := visible(tail)
+	switch hang {
+	case ReasonHangRemoteDialog:
+		return outcome{kind: outFatal, reason: hang, detail: fmt.Sprintf(
+			"The session server waited %s at Claude Code's “Enable Remote Control?” prompt, so Drydock stopped it: remoteDialogSeen is missing from the shared .claude.json, which the Feature writes when the container is created. Drydock never answers the prompt. Rebuild the workspace.",
+			durationText(p.GateTimeout))}
+	case ReasonHangTrust:
+		return outcome{kind: outFatal, reason: hang, detail: fmt.Sprintf(
+			"The session server waited %s at Claude Code's prompt to trust the workspace folder, so Drydock stopped it: hasTrustDialogAccepted is missing for that folder in the shared .claude.json, which the Feature writes when the container is created. Drydock never answers the prompt. Rebuild the workspace.",
+			durationText(p.GateTimeout))}
+	case "":
+	default:
+		return outcome{kind: outCrash, detail: fmt.Sprintf("announced no environment within %s", durationText(p.GateTimeout))}
+	}
+	ref, _ := classify.ClassifyRefusal(tail)
+	switch ref {
+	case classify.RefusalWaitRegistration:
+		return outcome{kind: outWait}
+	case classify.RefusalNoOrganization:
+		return outcome{kind: outLogin, reason: ReasonNoOrganization, detail: "Claude Code could not determine the account's organization, so it will not start Remote Control: the shared login is missing its account record. Sign in to Claude again."}
+	case classify.RefusalWorkspaceNotTrusted:
+		return outcome{kind: outFatal, reason: ReasonNotTrusted, detail: "Claude Code does not trust the workspace folder: hasTrustDialogAccepted is missing for it in the shared .claude.json, which the Feature writes when the container is created. Rebuild the workspace."}
+	case classify.RefusalBadCommandLine:
+		return outcome{kind: outFatal, reason: ReasonBadCommandLine, detail: "Claude Code refused the command line Drydock built for the session server. This is a Drydock bug; restarting will not help."}
+	}
+	if st, known := m.identity(ctx); known && signedOut(st) {
+		return outcome{kind: outSignedOut}
+	}
+	if strings.Contains(text, "drydock: secrets unavailable") {
+		return outcome{kind: outCrash, detail: "could not fetch the workspace's secrets before starting"}
+	}
+	return outcome{kind: outCrash, detail: "exited"}
+}
+
+// hangReason names which gate a server is waiting at, from what it printed.
+// Only after the timeout has decided it is hung: the prompt is a question,
+// not an error, and it is never answered.
+func hangReason(text string) Reason {
+	switch {
+	case strings.Contains(text, "Enable Remote Control?"):
+		return ReasonHangRemoteDialog
+	case strings.Contains(text, "Trust ") && strings.Contains(text, "? [y/N]"):
+		return ReasonHangTrust
+	}
+	return "no_environment"
+}
+
+func keepTail(b []byte, n int) []byte {
+	if len(b) <= n {
+		return b
+	}
+	return append([]byte(nil), b[len(b)-n:]...)
+}
+
+// discover reads the window for what the server announced, records anything
+// new, and reports whether the server is now serving: it has announced its
+// environment and printed its status block (`Capacity: N/M` follows
+// `Connected`).
+func (s *sup) discover(ctx context.Context, d *discovered, window []byte) bool {
+	got, _ := classify.ClassifyDiscovery(window)
+	var what []string
+	if d.env == "" && got.EnvironmentID != "" {
+		// The first id a process announces is its own (classify's rule);
+		// it cannot change within one process, so it is latched.
+		d.env = got.EnvironmentID
+		if s.recordEnvironment(ctx, d.env) {
+			what = append(what, "The session server's environment is "+d.env+".")
+		} else {
+			what = append(what, "The session server reconnected to environment "+d.env+".")
+		}
+	}
+	sessions := -1
+	for _, id := range got.SessionIDs {
+		if d.sessions[id] {
+			continue
+		}
+		d.sessions[id] = true
+		sessions = s.recordSession(ctx, id)
+		what = append(what, "Session "+id+" is being served.")
+	}
+	if got.CapacityTotal > 0 && (got.CapacityUsed != d.capUsed || got.CapacityTotal != d.capTotal) {
+		d.capUsed, d.capTotal = got.CapacityUsed, got.CapacityTotal
+		what = append(what, fmt.Sprintf("Capacity %d/%d.", d.capUsed, d.capTotal))
+	}
+	if len(what) > 0 {
+		if sessions < 0 {
+			sessions = s.sessionCount(ctx)
+		}
+		s.emitSession(ctx, d, sessions, strings.Join(what, " "))
+	}
+	return d.env != "" && d.capTotal > 0
+}
+
+// stop ends the supervisor: the server is signalled in its container,
+// SIGTERM then SIGKILL on timeout, and the loop is waited for.
+func (s *sup) stop(ctx context.Context) error {
+	s.mu.Lock()
+	s.stopping = true
+	proc, procDone := s.proc, s.procDone
+	s.mu.Unlock()
+	_, err := s.m.terminate(ctx, s.ws, proc, procDone)
+	s.cancel()
+	select {
+	case <-s.done:
+	case <-ctx.Done():
+		return errors.Join(err, ctx.Err())
+	}
+	return err
+}
+
+// terminate stops the workspace's server: SIGTERM inside the container, then
+// a wait of Policy.StopTimeout, and only then SIGKILL. With a local process
+// (proc, done), the wait is for it to end — `devcontainer exec` exits when
+// the server does; without one — a server an earlier Drydock left — it polls
+// the container. It reports whether a server was found.
+func (m *Manager) terminate(ctx context.Context, ws string, proc subproc.Process, done chan struct{}) (bool, error) {
+	p := m.policy()
+	found, err := m.Runtime.Signal(ctx, ws, container.SessionTerm, m.PidFile)
+	if err != nil {
+		m.logf("drydock: workspace %s: SIGTERM to the session server: %v", ws, err)
+	}
+	if done == nil && !found {
+		return false, err
+	}
+	gone := func(d time.Duration) bool {
+		deadline := m.clock().After(d)
+		if done != nil {
+			select {
+			case <-done:
+				return true
+			case <-deadline:
+				return false
+			case <-ctx.Done():
+				return false
+			}
+		}
+		for {
+			alive, aerr := m.Runtime.Signal(ctx, ws, container.SessionAlive, m.PidFile)
+			if aerr == nil && !alive {
+				return true
+			}
+			select {
+			case <-deadline:
+				return false
+			case <-ctx.Done():
+				return false
+			case <-m.clock().After(p.StopPoll):
+			}
+		}
+	}
+	if gone(p.StopTimeout) {
+		return true, nil
+	}
+	m.logf("drydock: workspace %s: the session server did not exit within %s of SIGTERM; sending SIGKILL", ws, p.StopTimeout)
+	if _, kerr := m.Runtime.Signal(ctx, ws, container.SessionKill, m.PidFile); kerr != nil {
+		err = errors.Join(err, kerr)
+	}
+	if gone(p.KillWait) {
+		return true, nil
+	}
+	if proc != nil {
+		// The server is beyond reach; at least end Drydock's side of it.
+		proc.Signal(subproc.SignalKill)
+		if gone(p.KillWait) {
+			return true, nil
+		}
+	}
+	return true, errors.Join(err, fmt.Errorf("the session server did not exit after SIGKILL"))
+}

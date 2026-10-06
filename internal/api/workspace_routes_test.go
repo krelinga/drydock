@@ -264,9 +264,9 @@ func TestWorkspaceViewsHaveTheContractShape(t *testing.T) {
 		`"container_id":"c0ffee","created_at":"2026-10-04T12:00:00Z","steps":{` +
 		`"session_server":{"status":"done","detail":"Nothing to do yet.","at":"2026-10-04T12:00:00Z"},` +
 		`"up":{"status":"done","at":"2026-10-04T12:00:00Z"}},` +
-		`"last_action":{"action":"stop","step":"container","status":"failed","detail":"docker could not stop it.","at":"2026-10-04T12:00:00Z"}},` +
+		`"last_action":{"action":"stop","step":"container","status":"failed","detail":"docker could not stop it.","at":"2026-10-04T12:00:00Z"},"environment_id":null,"supervisor":null,"session":null},` +
 		`{"id":"W1","repository_id":101,"full_name":"krelinga/a","branch":"dev","state":"pending","state_detail":null,` +
-		`"container_id":null,"created_at":"2026-10-04T12:00:00Z","steps":{},"last_action":null}],` +
+		`"container_id":null,"created_at":"2026-10-04T12:00:00Z","steps":{},"last_action":null,"environment_id":null,"supervisor":null,"session":null}],` +
 		`"capacity":{"cap":3,"occupied":2}}`
 	if rec.Code != 200 || strings.TrimSpace(rec.Body.String()) != want {
 		t.Errorf("GET /api/workspaces = %d\n got %s\nwant %s", rec.Code, rec.Body, want)
