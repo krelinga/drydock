@@ -329,10 +329,54 @@ func (r *runState) cloneURL(fullName string) string {
 	return strings.TrimSuffix(base, "/") + "/" + fullName + ".git"
 }
 
-// sessionServer is §6 step 8, and does nothing yet: the supervisor (§8) is
-// Phase 5. Like the credential volume, the step stays and says so.
-func (r *runState) sessionServer(context.Context, workspace.Workspace) error {
-	return workspace.Note("Nothing to do yet: the Claude Code session server arrives with Claude support.")
+// sessionServer is §6 step 8: the workspace is handed to the session
+// supervisor (§8), which starts `claude remote-control` in the container and
+// reports its own states — starting, serving, waiting, awaiting a login — as
+// supervisor.state events. The step does not wait for serving: a server that
+// never serves is the supervisor's to describe, and the container is fine,
+// so even a failure here leaves the workspace running (§6).
+func (r *runState) sessionServer(ctx context.Context, w workspace.Workspace) error {
+	if r.p.StartSupervisor == nil {
+		return workspace.Note("No session supervisor is configured, so no session server was started.")
+	}
+	if err := r.p.StartSupervisor(ctx, w); err != nil {
+		return workspace.Public("Drydock could not hand the workspace to the session supervisor.", err)
+	}
+	return workspace.Note("Handed to the session supervisor, which starts the Claude Code session server.")
+}
+
+// SessionSpec is how the supervisor execs into a workspace's container: the
+// same folder and override config `up` and the probe used, and the remote env
+// passed again on the exec, since `up`'s does not carry over (§6, measured) —
+// plus the session name prefix, so the Claude app's session list reads
+// `myrepo-graceful-unicorn` rather than a container hostname (§8). The
+// override is decided as step 3 decides it: by looking for the repository's
+// own devcontainer.json in the clone.
+func (p *Provisioner) SessionSpec(ctx context.Context, id string) (container.SessionSpec, error) {
+	w, err := p.Workspaces.Get(ctx, id)
+	if err != nil {
+		return container.SessionSpec{}, err
+	}
+	r := &runState{p: p}
+	fullName, err := r.fullName(ctx, w)
+	if err != nil {
+		return container.SessionSpec{}, err
+	}
+	has := false
+	for _, rel := range []string{".devcontainer/devcontainer.json", ".devcontainer.json"} {
+		ok, err := exists(filepath.Join(w.HostPath, rel))
+		if err != nil {
+			return container.SessionSpec{}, err
+		}
+		has = has || ok
+	}
+	override := ""
+	if !has {
+		override = filepath.Join(r.dir(w), ".drydock", "devcontainer.json")
+	}
+	env := r.remoteEnv(w, fullName)
+	env["CLAUDE_REMOTE_CONTROL_SESSION_NAME_PREFIX"] = fullName[strings.LastIndex(fullName, "/")+1:]
+	return container.SessionSpec{WorkspaceID: w.ID, Folder: w.HostPath, OverrideConfig: override, RemoteEnv: env}, nil
 }
 
 func exists(path string) (bool, error) {

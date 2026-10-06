@@ -296,7 +296,13 @@ func (p *Provisioner) deleteJob(ctx context.Context, id string) error {
 		}
 		return err
 	}
-	return p.Workspaces.Remove(book, id)
+	if err := p.Workspaces.Remove(book, id); err != nil {
+		return err
+	}
+	if p.ForgetSupervisor != nil {
+		p.ForgetSupervisor(id)
+	}
+	return nil
 }
 
 // KindHelpersSwept is the system event the boot sweep writes when it removed
@@ -356,7 +362,7 @@ func (p *Provisioner) stopSupervisor(ctx context.Context, w workspace.Workspace)
 	if err := p.StopSupervisor(ctx, w); err != nil {
 		return workspace.Public("Drydock could not stop the session server.", err)
 	}
-	return nil
+	return workspace.Note("Stopped the session server, SIGTERM first, so its environment is kept for the next start.")
 }
 
 func (p *Provisioner) closeSocket(id string) error {
