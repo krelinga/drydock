@@ -13,7 +13,9 @@ with a supervised `claude remote-control` session inside it, driven from a web U
 
 **Deploying for the first time? Follow [the first-deployment runbook](docs/deploy/first-deployment.md)**:
 a step-by-step checklist from cutting the release to your first workspace, including the
-certificate options, getting the keys onto the server safely, and troubleshooting.
+certificate options, getting the keys onto the server safely, and troubleshooting. If you manage
+the server with Ansible, [its Ansible companion](docs/deploy/first-deployment-ansible.md) has the
+server-side steps as copy-pastable tasks.
 
 On a Linux server with systemd and [Caddy](https://caddyserver.com/docs/install) installed from its
 official package, with a hostname for the UI and a certificate for it:

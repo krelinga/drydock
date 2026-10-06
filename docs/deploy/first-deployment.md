@@ -7,6 +7,10 @@ Every command is for a **Debian or Ubuntu** host unless a step says otherwise.
 Each step that has a non-obvious reason gets one line of *why*, with a link to the design
 section that argues it. If you want the argument, follow the link; to deploy, you do not need to.
 
+**Managing the server with Ansible?** [The Ansible companion](first-deployment-ansible.md) does
+steps 3 to 7.1 and the upgrade as copy-pastable tasks, numbered the same way, and links back here
+for the rest.
+
 > [!IMPORTANT]
 > **Replace `drydock.example.com` everywhere below with your own UI hostname**, in lowercase.
 > It shows up in commands, paths and URLs. (The installer lowercases `--ui-host` anyway, but the
@@ -50,6 +54,16 @@ them. Each one is also mentioned at the step where it bites.
    installer run.
 4. **There is no `uninstall`.** [Step 10](#10-upgrade-roll-back-uninstall-logs) lists what to remove
    by hand. The list is derived from what `deploy/install.sh` creates.
+5. **A first install with `--github-app-key` fails unless `/etc/drydock` already exists.** The
+   installer copies the App key into `/etc/drydock` before the step that creates that directory,
+   so on a fresh host it stops with
+   `mktemp: failed to create file via template '/etc/drydock/.github-app.XXXXXX': No such file or directory`,
+   after it has created the `drydock` user and `/srv/drydock/ws` and installed
+   `/usr/local/bin/drydock`, but before it writes any configuration or starts anything. Re-running
+   the same line fails the same way. The workaround is one command before the installer, creating the
+   directory exactly as the installer would: `sudo install -d -m 0755 -o root -g root /etc/drydock`
+   ([step 5](#5-install)). Found by the [Ansible companion](first-deployment-ansible.md)'s live
+   run; the installer test configures the App only on a host that is already installed.
 
 Three issues listed here earlier are fixed in v0.2.0. To confirm the installer you are about to run
 has those fixes, `curl -fsSL https://github.com/krelinga/drydock/releases/latest/download/install.sh | grep -c -- '--ca-cert)'`
@@ -482,6 +496,11 @@ not in `ssl-cert`.
   output:
   ```sh
   sudo -v
+  ```
+- [ ] **Create `/etc/drydock`** ([Known issue 5](#0-known-issues--read-these-first)), exactly as
+  the installer would. Without it, a first install with `--github-app-key` fails:
+  ```sh
+  sudo install -d -m 0755 -o root -g root /etc/drydock
   ```
 - [ ] **Run the one-liner** with every flag. This is the README's line plus the App:
   ```sh
@@ -943,6 +962,7 @@ and Caddy stay installed, because you installed them.
 | Installer: `the caddy user cannot read …` | Key in `/etc/ssl/private`, or mode `0600` | [4.2](#42-the-tls-certificate-and-key): group `caddy`, mode `0640`, directory `0750 root:caddy` |
 | Installer: `/etc/caddy/Caddyfile was not written by this installer` | Caddy already serves other sites | Move them elsewhere, or `--take-over-caddy` (a backup is kept) |
 | Installer: `the new Caddy configuration does not validate` | Bad certificate or key file, or a path typo | Read the five lines above the error. Nothing under `/etc/caddy` was changed. |
+| Installer: `mktemp: failed to create file via template '/etc/drydock/.github-app.XXXXXX'` | A first install with `--github-app-key` on a host without `/etc/drydock` ([Known issue 5](#0-known-issues--read-these-first)) | `sudo install -d -m 0755 -o root -g root /etc/drydock`, then re-run the same line |
 | Installer: `--github-app-id must be the numeric App ID` | The Client ID (`Iv…`) was given | `--github-app-id 5189455` |
 | Installer: `Drydock is installed and running, and answers through Caddy, but this host could not verify the certificate …` | Everything works except certificate verification. `unable to get local issuer certificate`: a private CA without `--ca-cert`, or the wrong CA file, or a public certificate whose `--cert` file lacks the intermediates. `no alternative certificate subject name matches`: the certificate is for another name | Option A: re-run with `--ca-cert /etc/caddy/certs/drydock-ca.pem` ([4.2](#42-the-tls-certificate-and-key)). Otherwise check the SAN and the full chain ([1.3](#13-a-tls-certificate-every-client-trusts-for-that-hostname)). Everything else is installed, so a re-run with the fix is all it takes. |
 | Installer: `end-to-end check failed … answered '000'` | Nothing answered over TLS: Caddy is not serving this name, or the handshake failed (`curl`'s reason is in the message) | `journalctl -u caddy -u drydock`. Check the cert/key pair ([1.3](#13-a-tls-certificate-every-client-trusts-for-that-hostname)). |

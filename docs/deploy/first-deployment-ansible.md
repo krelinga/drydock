@@ -1,0 +1,973 @@
+# First deployment with Ansible
+
+The Ansible companion to [the first-deployment runbook](first-deployment.md). It does the runbook's
+**server-side** steps as copy-pastable tasks, numbered the same way, and links back to the runbook
+for the *why* and for everything that cannot be automated: choosing a certificate, DNS, the GitHub
+App's settings, and the checks you do from a laptop and a phone.
+
+Read the runbook's [Known issues](first-deployment.md#0-known-issues--read-these-first) and
+[step 1](first-deployment.md#1-before-you-start) first. This document assumes you have done
+step 1 by hand and have the files it produces on your **controller** (the machine you run
+`ansible-playbook` on).
+
+> [!IMPORTANT]
+> **The installer, `deploy/install.sh`, is the source of truth.** These tasks prepare the host the
+> way the runbook does, run the installer with the flags the runbook gives it, and then check what
+> the runbook checks. They never write a file the installer owns (the unit, the Caddyfile,
+> `/etc/drydock/*`), so an upgrade of the installer cannot be undone by a stale task here. When the
+> installer changes, this document and the runbook change with it. The one exception is
+> `/etc/drydock` itself, created exactly as the installer creates it, as the workaround for
+> [Known issue 5](first-deployment.md#0-known-issues--read-these-first) ([step 5](#5-install)).
+
+Every YAML block below whose first line is `# file: <path>` is one file of the example layout, or
+a part of one. `test/ansible/check.sh` extracts exactly those blocks, assembles them, and runs
+`ansible-playbook --syntax-check` and `ansible-lint` (production profile) on the result, so the
+blocks are the tested copy. `test/ansible/live.sh` runs that assembled play against a bare Debian
+container with systemd: a first install, a re-run that reports `changed=0`, an upgrade, an App key
+rotation. Paste the blocks as they are, then change the variables.
+
+- [Requirements and layout](#requirements-and-layout)
+- [Variables](#variables)
+- [3. Prerequisites on the server](#3-prerequisites-on-the-server)
+- [4. Get the secrets onto the server without leaking them](#4-get-the-secrets-onto-the-server-without-leaking-them)
+- [5. Install](#5-install)
+- [6. Back up the secrets master key, now](#6-back-up-the-secrets-master-key-now)
+- [7. Verify](#7-verify)
+- [8–9. First workspace, and what does not work yet](#89-first-workspace-and-what-does-not-work-yet)
+- [10. Upgrade, roll back, uninstall](#10-upgrade-roll-back-uninstall)
+- [What this does not automate](#what-this-does-not-automate)
+
+---
+
+## Requirements and layout
+
+- **ansible-core 2.15 or later** on the controller (`ansible.builtin.deb822_repository` and
+  `ansible.builtin.systemd_service` arrived in 2.15). Everything is `ansible.builtin.*` except the
+  optional firewall task, which uses **`community.general.ufw`**.
+- **The server** is what [runbook §1.1](first-deployment.md#11-the-server) says: Debian 12/13 or
+  Ubuntu 22.04/24.04 on amd64, with systemd. Ansible reaches it over SSH as a user that can `sudo`.
+  Unlike the runbook, nothing here needs a terminal: the password is set without one
+  ([step 5](#5-install)).
+
+```text
+drydock-ansible/
+├── ansible.cfg
+├── inventory.ini
+├── requirements.yml
+├── drydock.yml                      # the playbook
+├── group_vars/drydock/
+│   ├── vars.yml                     # settings: plain text
+│   └── vault.yml                    # the operator password: ansible-vault encrypted
+├── files/                           # from runbook step 1; keep this directory out of git
+│   ├── drydock-app.pem              # the GitHub App key: ansible-vault encrypted
+│   ├── drydock.crt                  # the certificate, full chain
+│   ├── drydock.key                  # its private key: ansible-vault encrypted
+│   └── drydock-ca.pem               # option A only: the CA's certificate, never its key
+└── roles/drydock/
+    ├── defaults/main.yml
+    ├── handlers/main.yml
+    └── tasks/
+        ├── main.yml
+        ├── prerequisites.yml        # §3
+        ├── firewall.yml             # §3.4, optional
+        ├── tls.yml                  # §4.2
+        ├── install.yml              # §4.1 + §5 (+ the §10.1 database backup)
+        ├── backup_master_key.yml    # §6
+        └── verify.yml               # §7.1
+```
+
+`pipelining` matters here, not only for speed: without it Ansible writes each module's arguments to
+a temporary file on the server before running it, and one task's arguments carry the operator
+password (as `stdin`, [step 5](#5-install)). With it they go over the SSH channel only.
+
+```ini
+# ansible.cfg
+[defaults]
+inventory = inventory.ini
+
+[ssh_connection]
+pipelining = True
+```
+
+```ini
+# inventory.ini
+[drydock]
+drydock-server ansible_host=192.168.1.20 ansible_user=you
+```
+
+```yaml
+# file: requirements.yml
+# Only for the optional firewall task (§3.4):
+#   ansible-galaxy collection install -r requirements.yml
+collections:
+  - name: community.general
+```
+
+```yaml
+# file: drydock.yml
+- name: Deploy Drydock (docs/deploy/first-deployment-ansible.md)
+  hosts: drydock
+  become: true
+  roles:
+    - drydock
+```
+
+Run it with:
+
+```sh
+ansible-galaxy collection install -r requirements.yml   # once, for the firewall task
+ansible-playbook drydock.yml --ask-become-pass --ask-vault-pass
+```
+
+```yaml
+# file: roles/drydock/tasks/main.yml
+- name: Prerequisites (runbook §3)
+  ansible.builtin.import_tasks: prerequisites.yml
+  tags: [drydock_prerequisites]
+
+- name: Firewall (runbook §3.4, optional)
+  ansible.builtin.import_tasks: firewall.yml
+  when: drydock_firewall_lan_cidr | length > 0
+  tags: [drydock_firewall]
+
+- name: TLS certificate and key (runbook §4.2)
+  ansible.builtin.import_tasks: tls.yml
+  tags: [drydock_tls]
+
+- name: Install or upgrade (runbook §4.1, §5, §10.1)
+  ansible.builtin.import_tasks: install.yml
+  tags: [drydock_install]
+
+- name: Back up the secrets master key (runbook §6)
+  ansible.builtin.import_tasks: backup_master_key.yml
+  tags: [drydock_backup]
+
+- name: Verify (runbook §7.1)
+  ansible.builtin.import_tasks: verify.yml
+  tags: [drydock_verify]
+```
+
+```yaml
+# file: roles/drydock/handlers/main.yml
+# Caddy reads the certificate when it loads its config and does not watch the
+# files (runbook §1.3): a renewed certificate takes a reload.
+- name: Reload caddy
+  ansible.builtin.systemd_service:
+    name: caddy
+    state: reloaded
+```
+
+---
+
+## Variables
+
+Set these in `group_vars/drydock/vars.yml`. **`drydock_version` is pinned**, not "latest", so a
+re-run installs the same release until you change it. Use a release that is *published*
+([runbook step 2](first-deployment.md#2-cut-a-release)): a draft's assets do not download, and the
+download task fails rather than installing something else.
+
+```yaml
+# file: group_vars/drydock/vars.yml
+drydock_version: v0.2.0
+# Lowercase, fully qualified, with a dot (runbook §1.2).
+drydock_ui_host: drydock.example.com
+
+# Controller paths of the files from runbook §1.3 and §1.4.
+drydock_cert_src: "{{ playbook_dir }}/files/drydock.crt"
+drydock_key_src: "{{ playbook_dir }}/files/drydock.key"
+# Option A (a private CA) only: the CA's certificate. Leave empty for options B and C.
+drydock_ca_cert_src: ""
+# drydock_ca_cert_src: "{{ playbook_dir }}/files/drydock-ca.pem"
+
+# The production App, krelinga-drydock. Never the dev App (runbook §1.4, Known issue 3).
+drydock_app_id: 5189455
+drydock_app_key_src: "{{ playbook_dir }}/files/drydock-app.pem"
+
+# From the vault (below). Only ever used when no password is set yet.
+drydock_operator_password: "{{ vault_drydock_operator_password }}"
+
+# Where step 6 puts the backup of the secrets master key, on the controller.
+drydock_secrets_key_backup: "{{ lookup('ansible.builtin.env', 'HOME') }}/drydock-backup/secrets.key"
+
+# Optional: allow 443 from this network with ufw (§3.4). Empty: leave the firewall alone.
+drydock_firewall_lan_cidr: ""
+```
+
+**The operator password and the two private keys go in ansible-vault.** The password is a
+variable; the keys are files, and `ansible.builtin.copy` decrypts a vault-encrypted `src` on the
+way, so they never sit on the controller in plain text:
+
+```sh
+ansible-vault create group_vars/drydock/vault.yml          # holds the variable below
+ansible-vault encrypt files/drydock-app.pem files/drydock.key
+```
+
+```yaml
+# file: group_vars/drydock/vault.yml
+# Encrypt this file: ansible-vault encrypt group_vars/drydock/vault.yml
+# At least 12 characters, one line (runbook §1.5).
+vault_drydock_operator_password: "replace me: twelve characters or more"
+```
+
+Everything else has a default. You should not need to change these: the paths are the runbook's,
+and the versions are the ones CI pins.
+
+```yaml
+# file: roles/drydock/defaults/main.yml
+drydock_ca_cert_src: ""
+drydock_firewall_lan_cidr: ""
+drydock_take_over_caddy: false   # true only for runbook §3.3's "Caddy already serves other sites"
+drydock_require_clock_sync: true
+
+# Where releases come from. The tarball and SHA256SUMS are fetched from here.
+drydock_release_base_url: "https://github.com/krelinga/drydock/releases/download/{{ drydock_version }}"
+drydock_release_dir: "/var/cache/drydock-release/{{ drydock_version }}"
+
+# The service's PATH, exactly as the installer writes it into the unit (runbook §3.2).
+drydock_service_path: /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+drydock_devcontainer_cli_version: "0.89.0"
+drydock_node_major: 22
+# Docker's repository is per distribution. On a derivative (Mint, Pop!_OS),
+# set these to the parent distribution's name and codename (runbook §3.1).
+drydock_docker_distro: "{{ ansible_facts['distribution'] | lower }}"
+drydock_docker_codename: "{{ ansible_facts['distribution_release'] }}"
+
+# Server paths: the runbook's convention (§4.2).
+drydock_cert_dir: /etc/caddy/certs
+drydock_cert_path: /etc/caddy/certs/drydock.crt
+drydock_key_path: /etc/caddy/certs/drydock.key
+drydock_ca_cert_path: /etc/caddy/certs/drydock-ca.pem
+# Where the App key waits for the installer, for one task (§4.1).
+drydock_app_key_stage: /root/drydock-app.pem
+```
+
+---
+
+## 3. Prerequisites on the server
+
+[Runbook §3](first-deployment.md#3-prerequisites-on-the-server). The installer checks for all of
+these and installs none of them. The same sources as the runbook, as deb822 `.sources` files with
+their signing keys, rather than the runbook's `.list` files and `apt_key`-era keyrings.
+
+> [!NOTE]
+> **If you already followed the runbook by hand on this server,** its `docker.list` and
+> `caddy-stable.list` describe the same repositories with a different `Signed-By`, and apt refuses
+> the pair (`Conflicting values set for option Signed-By`). The fourth task removes them. A host
+> with **Debian's `docker.io`** installed (which the installer also accepts) gets it replaced by
+> Docker's packages; remove `docker-ce*` from the list if you would rather keep `docker.io`.
+
+```yaml
+# file: roles/drydock/tasks/prerequisites.yml
+- name: Check the host is one the release and these tasks support (runbook §1.1)
+  ansible.builtin.assert:
+    that:
+      - ansible_facts['architecture'] == 'x86_64'
+      - ansible_facts['os_family'] == 'Debian'
+      - ansible_facts['service_mgr'] == 'systemd'
+    fail_msg: Releases are amd64 only, the installer needs systemd, and these tasks use apt.
+
+- name: Check the clock is synchronized (GitHub refuses a JWT from a drifted clock, runbook §1.1)
+  ansible.builtin.command: timedatectl show --property=NTPSynchronized --value
+  register: drydock_clock
+  changed_when: false
+  failed_when: drydock_require_clock_sync | bool and drydock_clock.stdout != 'yes'
+
+- name: Install the base packages (runbook §3)
+  ansible.builtin.apt:
+    name: [ca-certificates, curl, gnupg, openssl, iproute2, python3-debian]
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Remove the runbook's hand-written source lists, which would conflict with the files below
+  ansible.builtin.file:
+    path: "/etc/apt/sources.list.d/{{ item }}"
+    state: absent
+  loop: [docker.list, caddy-stable.list, nodesource.list]
+
+- name: Add Docker's apt repository (runbook §3.1)
+  ansible.builtin.deb822_repository:
+    name: docker
+    types: deb
+    uris: "https://download.docker.com/linux/{{ drydock_docker_distro }}"
+    suites: "{{ drydock_docker_codename }}"
+    components: stable
+    architectures: amd64
+    signed_by: "https://download.docker.com/linux/{{ drydock_docker_distro }}/gpg"
+  register: drydock_repo_docker
+
+- name: Add NodeSource's apt repository (runbook §3.2; the distributions' nodejs is too old)
+  ansible.builtin.deb822_repository:
+    name: nodesource
+    types: deb
+    uris: "https://deb.nodesource.com/node_{{ drydock_node_major }}.x"
+    suites: nodistro
+    components: main
+    architectures: amd64
+    signed_by: https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key
+  register: drydock_repo_nodesource
+
+- name: Prefer NodeSource's nodejs over the distribution's, as its setup script does
+  ansible.builtin.copy:
+    dest: /etc/apt/preferences.d/nodejs
+    content: |
+      Package: nodejs
+      Pin: origin deb.nodesource.com
+      Pin-Priority: 600
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Add Caddy's apt repository (runbook §3.3)
+  ansible.builtin.deb822_repository:
+    name: caddy-stable
+    types: deb
+    uris: https://dl.cloudsmith.io/public/caddy/stable/deb/debian
+    suites: any-version
+    components: main
+    signed_by: https://dl.cloudsmith.io/public/caddy/stable/gpg.key
+  register: drydock_repo_caddy
+
+- name: Refresh the package lists when a repository was added
+  ansible.builtin.apt:
+    update_cache: true
+  when: drydock_repo_docker is changed or drydock_repo_nodesource is changed or drydock_repo_caddy is changed
+
+- name: Install Docker Engine, Node.js and Caddy (runbook §3.1–3.3)
+  ansible.builtin.apt:
+    name: [docker-ce, docker-ce-cli, containerd.io, docker-buildx-plugin, nodejs, caddy]
+    state: present
+
+- name: Start Docker and Caddy, now and at boot
+  ansible.builtin.systemd_service:
+    name: "{{ item }}"
+    enabled: true
+    state: started
+  loop: [docker, caddy]
+
+- name: Check the docker group and the caddy user exist (the installer needs both)
+  ansible.builtin.getent:
+    database: "{{ item.db }}"
+    key: "{{ item.key }}"
+  loop:
+    - {db: group, key: docker}
+    - {db: passwd, key: caddy}
+
+- name: Read the devcontainer CLI's version, on the service's PATH
+  ansible.builtin.command: devcontainer --version
+  environment:
+    PATH: "{{ drydock_service_path }}"
+  register: drydock_devcontainer_installed
+  changed_when: false
+  failed_when: false
+
+- name: Install the pinned devcontainer CLI globally, where the service's PATH finds it (runbook §3.2)
+  ansible.builtin.command: npm install -g --no-fund --no-audit @devcontainers/cli@{{ drydock_devcontainer_cli_version }}
+  environment:
+    PATH: "{{ drydock_service_path }}"
+  when: drydock_devcontainer_installed.stdout != drydock_devcontainer_cli_version
+  changed_when: true
+
+# The installer runs `devcontainer --version` as the drydock user on the
+# service's PATH. That user does not exist yet, so check as nobody: a CLI under
+# nvm, fnm, volta, snap or a home directory fails here, before the install.
+- name: Check node and the CLI run for an unprivileged user on the service's PATH (runbook §3.2)
+  ansible.builtin.command:
+    argv: [runuser, -u, nobody, --, env, "PATH={{ drydock_service_path }}", HOME=/nonexistent, "{{ item.cmd }}", --version]
+  loop:
+    - {cmd: node, want: "v{{ drydock_node_major }}."}
+    - {cmd: devcontainer, want: "{{ drydock_devcontainer_cli_version }}"}
+  register: drydock_tool_check
+  changed_when: false
+  failed_when: drydock_tool_check.rc != 0 or not drydock_tool_check.stdout.startswith(item.want)
+```
+
+Not automated from §3: the runbook's `sudo docker run --rm hello-world` (it pulls from Docker Hub
+on every run) and §3.3's decision about **a Caddy that already serves other sites**. That one is
+yours: the installer refuses a foreign `/etc/caddy/Caddyfile`, and `drydock_take_over_caddy: true`
+passes `--take-over-caddy`, which backs it up and replaces it. Leave it `false` unless you have read
+[§3.3](first-deployment.md#33-caddy-from-its-official-package).
+
+### 3.4 Firewall (optional)
+
+[Runbook §3.4](first-deployment.md#34-firewall). Only if the host runs ufw, and only when
+`drydock_firewall_lan_cidr` is set. It adds one rule and does **not** enable ufw. Port 80 only
+redirects to 443, so it is left out; Drydock listens on no TCP port, so **open nothing else**.
+Needs `community.general` ([requirements.yml](#requirements-and-layout)).
+
+```yaml
+# file: roles/drydock/tasks/firewall.yml
+- name: Allow HTTPS to Caddy from the LAN (runbook §3.4)
+  community.general.ufw:
+    rule: allow
+    port: "443"
+    proto: tcp
+    from_ip: "{{ drydock_firewall_lan_cidr }}"
+```
+
+---
+
+## 4. Get the secrets onto the server without leaking them
+
+[Runbook §4](first-deployment.md#4-get-the-secrets-onto-the-server-without-leaking-them). The
+runbook's two rules hold here as Ansible rules:
+
+- **Files are copied with `ansible.builtin.copy`, never passed as variables, `content:`,
+  environment variables or command-line arguments.** The App key must never enter the environment
+  or a command line ([§13.5](../design/overall/drydock-design.md#135--non-negotiables)), and a
+  `--github-app-key` flag carries only a path.
+- **Every task that handles key material has `no_log: true` and `diff: false`.** `no_log` keeps it
+  out of the output and any callback or log file; `diff: false` matters as much, because
+  `ansible-playbook --diff` prints a copied file's contents otherwise.
+
+### 4.1 The GitHub App private key
+
+This is in [step 5's block](#5-install), because it has to be: the installer copies the key to
+`/etc/drydock/github-app.pem` (mode `0400`, owner `drydock`), and the `drydock` user does not exist
+until the installer creates it. So the same block stages the key at `/root/drydock-app.pem` (root,
+`0400`), passes `--github-app-key /root/drydock-app.pem`, and then always deletes it with
+`shred -u`, as the runbook does by hand.
+
+It stages the key **only when it differs from the installed one**, comparing SHA-256 checksums, so a
+re-run stages nothing and passes only `--github-app-id`, which the installer accepts once a key is
+in place. To rotate the key, replace `files/drydock-app.pem` (vault-encrypted) and re-run; then
+delete the old key on GitHub ([runbook §10.1](first-deployment.md#101-upgrade)).
+
+### 4.2 The TLS certificate and key
+
+Same directory, owners and modes as the runbook: `/etc/caddy/certs` `0750 root:caddy`, the
+certificate `0644`, the key `0640`, both group `caddy`. **Not `/etc/ssl/private`**, which `caddy`
+cannot traverse. A changed certificate (a renewal you copy in) reloads Caddy through the handler.
+
+```yaml
+# file: roles/drydock/tasks/tls.yml
+- name: Create the certificate directory, readable by root and Caddy only (runbook §4.2)
+  ansible.builtin.file:
+    path: "{{ drydock_cert_dir }}"
+    state: directory
+    owner: root
+    group: caddy
+    mode: "0750"
+
+- name: Install the TLS certificate, full chain, leaf first
+  ansible.builtin.copy:
+    src: "{{ drydock_cert_src }}"
+    dest: "{{ drydock_cert_path }}"
+    owner: root
+    group: caddy
+    mode: "0644"
+  notify: Reload caddy
+
+- name: Install the TLS private key
+  ansible.builtin.copy:
+    src: "{{ drydock_key_src }}"
+    dest: "{{ drydock_key_path }}"
+    owner: root
+    group: caddy
+    mode: "0640"
+  diff: false
+  no_log: true
+  notify: Reload caddy
+
+- name: Install the private CA's certificate, for the installer's final check (option A only)
+  ansible.builtin.copy:
+    src: "{{ drydock_ca_cert_src }}"
+    dest: "{{ drydock_ca_cert_path }}"
+    owner: root
+    group: caddy
+    mode: "0644"
+  when: drydock_ca_cert_src | length > 0
+
+- name: Check the caddy user can read the certificate and key, as the installer will
+  ansible.builtin.command:
+    argv: [runuser, -u, caddy, --, test, -r, "{{ item }}"]
+  loop: ["{{ drydock_cert_path }}", "{{ drydock_key_path }}"]
+  changed_when: false
+
+# Runbook §1.3's two checks. Both print public data only.
+- name: Read the certificate's public key and names
+  ansible.builtin.command:
+    argv: [openssl, x509, -noout, -pubkey, -ext, subjectAltName, -in, "{{ drydock_cert_path }}"]
+  register: drydock_cert_info
+  changed_when: false
+
+- name: Read the private key's public half
+  ansible.builtin.command:
+    argv: [openssl, pkey, -pubout, -in, "{{ drydock_key_path }}"]
+  register: drydock_key_pub
+  changed_when: false
+
+- name: Check the certificate matches the key and names the UI host (runbook §1.3)
+  ansible.builtin.assert:
+    that:
+      - drydock_key_pub.stdout in drydock_cert_info.stdout
+      - >-
+        ('DNS:' ~ drydock_ui_host) in drydock_cert_info.stdout or
+        ('DNS:*.' ~ drydock_ui_host.split('.', 1)[1]) in drydock_cert_info.stdout
+    fail_msg: >-
+      The certificate does not match the key, or its subjectAltName does not
+      name {{ drydock_ui_host }}. See runbook §1.3.
+```
+
+---
+
+## 5. Install
+
+[Runbook §5](first-deployment.md#5-install).
+
+**How the installer is fetched.** Not the `curl … | sudo bash` one-liner, and not the stamped
+standalone `install.sh` either: the release's `SHA256SUMS` covers only the tarball, so the
+standalone script is the one file nothing verifies. Instead, `get_url` downloads
+`drydock_linux_amd64.tar.gz` for `drydock_version` and checks it against that release's
+`SHA256SUMS` (the same check the standalone script does), and the play runs the `install.sh`
+**inside** the tarball. That is the exact file the one-liner ends up running: the standalone
+script's only job is to download, verify and re-run it. The version is pinned by the URL, so
+`--version` is not passed (the installer ignores it for an extracted release and says so). As the
+installer's own comment says, a checksum from the same place as the tarball catches a corrupt
+download, not a compromised release.
+
+**The flags** are the runbook's: `--ui-host`, `--cert`, `--key`, `--github-app-id`, plus
+`--github-app-key` when a new key is staged ([§4.1](#41-the-github-app-private-key)), and
+`--ca-cert` for option A. Without a CA certificate the task passes `--no-ca-cert`, so the variables
+stay the whole truth: the installer otherwise keeps a `--ca-cert` from an earlier run. No
+`--preview-*` flags: previews are not built yet ([runbook §9](first-deployment.md#9-what-does-not-work-yet)).
+
+**The password.** The installer asks for it on `/dev/tty`, and Ansible has no terminal to answer
+on. Worse, with `ssh -tt` it may *have* one, and then the installer waits on a prompt nobody sees.
+So the task passes **`--no-password`**, and the next task sets it the installer's own way:
+`drydock passwd --if-unset`, which reads one line from stdin when stdin is not a terminal. The
+password goes in through the `command` module's `stdin:`, never `argv` (where `ps` shows it), with
+`no_log: true`. `--if-unset` makes it a no-op once a password exists, and it then never reads
+stdin, so a re-run signs no one out. **Changing `vault_drydock_operator_password` later changes
+nothing**: to change the password, run the runbook's
+`sudo -u drydock drydock passwd --db /var/lib/drydock/drydock.db` by hand, which signs out every
+device.
+
+**`changed`.** The installer is idempotent and says what it did: every action prints a `==> ` line
+(`==> starting drydock`, `==> reloading caddy`, `==> installed the GitHub App key …`, …), and a run
+that did nothing prints only `==> Drydock vX is installed and current` and `==> open https://…`.
+So the task is `changed` exactly when there is any other `==> ` line. The version line alone would
+be wrong: a new certificate path restarts services and still reports "installed and current".
+
+**Failure.** The installer stops at the first failure, changes nothing below it, and exits
+non-zero, and so does the task. That includes its final check: an unauthenticated
+`https://<ui-host>/api/auth/session` through Caddy must answer `401` over a verified certificate.
+When only the certificate could not be verified, the message starts `Drydock is installed and
+running, and answers through Caddy, but this host could not verify the certificate …`; it is still
+a failure (usually a missing `drydock_ca_cert_src` for option A). The installer's output names no
+secret, so the task shows it; the fixes are in [runbook §11](first-deployment.md#11-troubleshooting).
+
+**Before an upgrade** the block backs up the database
+([runbook §10.1](first-deployment.md#101-upgrade), [Known issue 2](first-deployment.md#0-known-issues--read-these-first)):
+when an installed `drydock version` differs from `drydock_version`, it stops `drydock`, copies
+`/var/lib/drydock/drydock.db` to `/root/drydock.db.<timestamp>` (root, `0600`), and starts it again.
+
+```yaml
+# file: roles/drydock/tasks/install.yml
+- name: Check the settings the installer would refuse
+  ansible.builtin.assert:
+    that:
+      - drydock_version is match('^v[0-9]+[.][0-9]+[.][0-9]+$')
+      - drydock_ui_host == drydock_ui_host | lower
+      - drydock_ui_host is match('^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$')
+      - "'.' in drydock_ui_host"
+      - drydock_app_id | string is match('^[1-9][0-9]*$')
+    fail_msg: >-
+      drydock_version must look like v1.2.3, drydock_ui_host must be a lowercase
+      fully qualified name, and drydock_app_id the numeric App ID (not the Iv… Client ID).
+
+# Checked without printing it: neither the condition nor the message carries the value.
+- name: Check the operator password is long enough (drydock passwd refuses under 12)
+  ansible.builtin.fail:
+    msg: drydock_operator_password must be at least 12 characters, on one line (runbook §1.5).
+  when: drydock_operator_password | length < 12 or '\n' in drydock_operator_password
+
+- name: Create the release cache directory
+  ansible.builtin.file:
+    path: "{{ drydock_release_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Download the release tarball, verified against the release's SHA256SUMS
+  ansible.builtin.get_url:
+    url: "{{ drydock_release_base_url }}/drydock_linux_amd64.tar.gz"
+    dest: "{{ drydock_release_dir }}/drydock_linux_amd64.tar.gz"
+    checksum: "sha256:{{ drydock_release_base_url }}/SHA256SUMS"
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Unpack it (drydock/drydock, drydock/install.sh, the Caddy files, VERSION)
+  ansible.builtin.unarchive:
+    src: "{{ drydock_release_dir }}/drydock_linux_amd64.tar.gz"
+    dest: "{{ drydock_release_dir }}"
+    remote_src: true
+    creates: "{{ drydock_release_dir }}/drydock/install.sh"
+
+- name: Look for an installed binary
+  ansible.builtin.stat:
+    path: /usr/local/bin/drydock
+    get_checksum: false
+  register: drydock_installed_binary
+
+- name: Read the installed release
+  ansible.builtin.command:
+    argv: [/usr/local/bin/drydock, version]
+  register: drydock_installed_version
+  changed_when: false
+  when: drydock_installed_binary.stat.exists
+
+- name: Back up the database before changing release (runbook §10.1, Known issue 2)
+  when:
+    - drydock_installed_version is not skipped
+    - drydock_installed_version.stdout != drydock_version
+  block:
+    - name: Stop drydock, for a clean, checkpointed copy
+      ansible.builtin.systemd_service:
+        name: drydock
+        state: stopped
+
+    - name: Copy the database to /root, root-only
+      ansible.builtin.copy:
+        src: /var/lib/drydock/drydock.db
+        dest: "/root/drydock.db.{{ now(fmt='%Y%m%d%H%M%S') }}"
+        remote_src: true
+        owner: root
+        group: root
+        mode: "0600"
+  always:
+    - name: Start drydock again
+      ansible.builtin.systemd_service:
+        name: drydock
+        state: started
+
+# Known issue 5: on a host where /etc/drydock does not exist yet, the
+# installer copies --github-app-key into it before creating it, and fails.
+# This is the directory exactly as the installer makes it. Remove this task
+# once Known issue 5 is fixed in the release you install.
+- name: Create /etc/drydock as the installer does (runbook Known issue 5)
+  ansible.builtin.file:
+    path: /etc/drydock
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Checksum the installed App key (not its contents)
+  ansible.builtin.stat:
+    path: /etc/drydock/github-app.pem
+    checksum_algorithm: sha256
+  register: drydock_app_key_installed
+
+- name: Stage the App key, run the installer, and always remove the staged key
+  block:
+    - name: Stage the App key for the installer, only when it is new or changed (runbook §4.1)
+      ansible.builtin.copy:
+        src: "{{ drydock_app_key_src }}"
+        dest: "{{ drydock_app_key_stage }}"
+        owner: root
+        group: root
+        mode: "0400"
+      diff: false
+      no_log: true
+      when: >-
+        not drydock_app_key_installed.stat.exists or
+        drydock_app_key_installed.stat.checksum !=
+        (lookup('ansible.builtin.file', drydock_app_key_src, rstrip=false) | hash('sha256'))
+      register: drydock_app_key_staged
+
+    - name: Run the installer from the release (runbook §5)
+      ansible.builtin.command:
+        argv: >-
+          {{
+            ['bash', drydock_release_dir ~ '/drydock/install.sh',
+             '--ui-host', drydock_ui_host,
+             '--cert', drydock_cert_path,
+             '--key', drydock_key_path,
+             '--github-app-id', drydock_app_id | string,
+             '--no-password']
+            + (['--ca-cert', drydock_ca_cert_path] if drydock_ca_cert_src | length > 0 else ['--no-ca-cert'])
+            + (['--github-app-key', drydock_app_key_stage] if drydock_app_key_staged is not skipped else [])
+            + (['--take-over-caddy'] if drydock_take_over_caddy | bool else [])
+          }}
+      register: drydock_installer
+      changed_when: >-
+        drydock_installer.stdout_lines
+        | select('match', '^==> ')
+        | reject('match', '^==> (Drydock [^ ]+ is installed and current|open https://)')
+        | list | length > 0
+  always:
+    - name: Delete the staged App key (runbook §5)
+      ansible.builtin.command:
+        argv: [shred, -u, "{{ drydock_app_key_stage }}"]
+        removes: "{{ drydock_app_key_stage }}"
+
+- name: Set the operator password, only if none is set yet (runbook §5 step 14)
+  ansible.builtin.command:
+    argv: [runuser, -u, drydock, --, /usr/local/bin/drydock, passwd, --db, /var/lib/drydock/drydock.db, --if-unset]
+    stdin: "{{ drydock_operator_password }}"
+  register: drydock_passwd
+  changed_when: "'Password set.' in drydock_passwd.stdout"
+  failed_when: false
+  no_log: true
+
+# drydock passwd never echoes the password, so its stderr is safe to show; the
+# task above hides everything, including why it failed.
+- name: Report why the password could not be set
+  ansible.builtin.fail:
+    msg: "drydock passwd failed: {{ drydock_passwd.stderr }}"
+  when: drydock_passwd.rc != 0
+```
+
+What the installer creates, and where, is [runbook §5's table](first-deployment.md#5-install).
+[Known issue 3](first-deployment.md#0-known-issues--read-these-first) applies unchanged: there is no
+flag for the bot identity, the container cap or the label prefix, and **do not template or
+`lineinfile` `drydock.service`** to add them. The next installer run overwrites the unit, and its
+rollback restores `drydock.service.previous`, not your edit.
+
+---
+
+## 6. Back up the secrets master key, now
+
+[Runbook §6](first-deployment.md#6-back-up-the-secrets-master-key-now). This fetches
+`/etc/drydock/secrets.key` to `drydock_secrets_key_backup` on the controller, in a `0700`
+directory, as a `0400` file.
+
+> [!WARNING]
+> **Move that file into your password manager or an encrypted volume, then delete it from the
+> controller.** Every repository secret is encrypted under this key: **lose it and every stored
+> secret is unreadable**, with no recovery but typing each value in again. And keep it **apart from
+> any database backup**, because the two together are every secret in plaintext-equivalent form.
+> Do not commit it, and do not leave it in the Ansible directory.
+
+It never overwrites a backup silently. If a file is already at that path, the task compares
+checksums: the same key passes untouched, and a **different** one fails the play. That means the
+server's key is not the one you backed up, which needs a person, not a playbook: either the backup
+path is reused from another server, or the server's key was replaced and every secret stored under
+the old one is unreadable. Once you have moved the backup into your vault and deleted the local
+file, later runs fetch it again; add `--skip-tags drydock_backup` to stop that.
+
+```yaml
+# file: roles/drydock/tasks/backup_master_key.yml
+- name: Checksum the server's secrets master key (not its contents)
+  ansible.builtin.stat:
+    path: /etc/drydock/secrets.key
+    checksum_algorithm: sha256
+  register: drydock_master_key
+
+- name: Look for an existing backup on the controller
+  ansible.builtin.stat:
+    path: "{{ drydock_secrets_key_backup }}"
+    checksum_algorithm: sha256
+  delegate_to: localhost
+  become: false
+  register: drydock_master_key_backup
+
+- name: Refuse to overwrite a backup of a different key
+  ansible.builtin.fail:
+    msg: >-
+      {{ drydock_secrets_key_backup }} holds a different key from the server's
+      /etc/drydock/secrets.key. Nothing was overwritten. Find out which key your
+      secrets were stored under before doing anything else (runbook §6).
+  when:
+    - drydock_master_key_backup.stat.exists
+    - drydock_master_key_backup.stat.checksum != drydock_master_key.stat.checksum
+
+- name: Create a private backup directory on the controller
+  ansible.builtin.file:
+    path: "{{ drydock_secrets_key_backup | dirname }}"
+    state: directory
+    mode: "0700"
+  delegate_to: localhost
+  become: false
+
+- name: Fetch the secrets master key (runbook §6)
+  ansible.builtin.fetch:
+    src: /etc/drydock/secrets.key
+    dest: "{{ drydock_secrets_key_backup }}"
+    flat: true
+    fail_on_missing: true
+  no_log: true
+  when: not drydock_master_key_backup.stat.exists
+
+- name: Make the backup readable by you alone
+  ansible.builtin.file:
+    path: "{{ drydock_secrets_key_backup }}"
+    mode: "0400"
+  delegate_to: localhost
+  become: false
+```
+
+To restore the key onto a rebuilt server, follow the runbook's last checkbox in
+[§6](first-deployment.md#6-back-up-the-secrets-master-key-now) by hand, before the first install.
+
+---
+
+## 7. Verify
+
+### 7.1 On the server
+
+[Runbook §7.1](first-deployment.md#71-on-the-server), as assertions. The `401` check is the
+runbook's own `curl` line, run on the server with the UI host resolved to `127.0.0.1` (`--resolve`),
+because `ansible.builtin.uri` has no way to pin a name to an address while still sending that name
+for SNI and `Host`. It verifies the certificate: against `drydock-ca.pem` for option A, against the
+system store otherwise.
+
+The journal check reads only the **running** process's lines (`_PID=` its main PID), so a failure
+from an earlier start in the same boot does not fail it. The first catalog refresh logs only when it
+fails, and asynchronously, so a wrong App key can show up seconds after this check has passed: look
+at `journalctl -u drydock -o cat` once more after signing in. That assertion carries its own tag,
+`drydock_verify_journal`, so `--skip-tags drydock_verify_journal` leaves it out while you fix
+something it already told you about.
+
+```yaml
+# file: roles/drydock/tasks/verify.yml
+- name: Check both services are active
+  ansible.builtin.command:
+    argv: [systemctl, is-active, drydock, caddy]
+  register: drydock_active
+  changed_when: false
+  failed_when: drydock_active.stdout_lines != ['active', 'active']
+
+- name: Read drydock's main PID
+  ansible.builtin.command:
+    argv: [systemctl, show, --property=MainPID, --value, drydock]
+  register: drydock_mainpid
+  changed_when: false
+
+- name: Check drydock runs as the drydock user
+  ansible.builtin.command:
+    argv: [ps, -o, user=, -p, "{{ drydock_mainpid.stdout }}"]
+  register: drydock_ps_user
+  changed_when: false
+  failed_when: drydock_ps_user.stdout | trim != 'drydock'
+
+- name: Check an unauthenticated API call through Caddy is 401, over a verified certificate
+  ansible.builtin.command:
+    argv: >-
+      {{
+        ['curl', '-sS', '-o', '/dev/null', '-w', '%{http_code}', '--max-time', '10',
+         '--resolve', drydock_ui_host ~ ':443:127.0.0.1']
+        + (['--cacert', drydock_ca_cert_path] if drydock_ca_cert_src | length > 0 else [])
+        + ['https://' ~ drydock_ui_host ~ '/api/auth/session']
+      }}
+  register: drydock_gate
+  changed_when: false
+  failed_when: drydock_gate.stdout != '401'
+
+- name: List the listening TCP sockets
+  ansible.builtin.command:
+    argv: [ss, -ltnpH]
+  register: drydock_listening
+  changed_when: false
+
+- name: Check Caddy's admin API is off port 2019, and drydock listens on no TCP port
+  ansible.builtin.assert:
+    that:
+      - drydock_listening.stdout is not search(':2019[^0-9]')
+      - drydock_listening.stdout is not search('"drydock"')
+    fail_msg: "{{ drydock_listening.stdout }}"
+    quiet: true
+
+- name: Read the running drydock's journal
+  ansible.builtin.command:
+    argv: [journalctl, "_PID={{ drydock_mainpid.stdout }}", --boot, --no-pager, --output=cat]
+  register: drydock_journal
+  changed_when: false
+
+- name: Check the journal says it is serving, and nothing else (runbook §7.1)
+  tags: [drydock_verify_journal]
+  ansible.builtin.assert:
+    that:
+      - "'drydock: serving on /run/drydock/http.sock and /run/drydock/preview.sock' in drydock_journal.stdout_lines"
+      - >-
+        drydock_journal.stdout is not
+        search('^drydock(: reconcile:|: catalog refresh:| serve:)', multiline=true)
+    fail_msg: "{{ drydock_journal.stdout }}"
+    quiet: true
+
+- name: Check the secrets master key's owner, mode and size (never its contents)
+  ansible.builtin.stat:
+    path: /etc/drydock/secrets.key
+    get_checksum: false
+  register: drydock_secrets_key
+  failed_when: >-
+    not drydock_secrets_key.stat.exists or
+    [drydock_secrets_key.stat.pw_name, drydock_secrets_key.stat.mode, drydock_secrets_key.stat.size]
+    != ['drydock', '0400', 32]
+```
+
+### 7.2 and 7.3 From a laptop and a phone
+
+Not automated, on purpose: the point of [runbook §7.2](first-deployment.md#72-from-a-laptop) and
+[§7.3](first-deployment.md#73-from-a-phone) is that *those devices* resolve the name and trust the
+certificate. Do them by hand. Signing in from the phone is Phase 1's acceptance test.
+
+---
+
+## 8–9. First workspace, and what does not work yet
+
+[Runbook §8](first-deployment.md#8-first-workspace) and [§9](first-deployment.md#9-what-does-not-work-yet)
+are UI work and checks inside a running container. Nothing to automate; do them as written.
+
+---
+
+## 10. Upgrade, roll back, uninstall
+
+### 10.1 Upgrade
+
+[Runbook §10.1](first-deployment.md#101-upgrade). Wait until the release is published
+([runbook step 2](first-deployment.md#2-cut-a-release); a *draft* cannot be downloaded, so the
+download task fails rather than installing anything), then change one line and re-run:
+
+```yaml
+drydock_version: v0.3.0
+```
+
+The play backs up the database first (the [step 5](#5-install) block above), then the installer
+upgrades in place. It ends with `==> upgraded Drydock vA -> vB`. A re-run without a version change
+reports `ok` on every install task: the installer prints `is installed and current`, and nothing is
+restarted. The App key and the master key are kept, and the password is not asked for again.
+Changing a certificate, the CA, or the App key works the same way: change the file or the variable
+and re-run.
+
+### 10.2 Roll back
+
+- **Automatic:** when a new binary does not start, the installer restores the previous binary (and
+  unit), and exits non-zero with `the upgrade failed and was rolled back to vA; see the log above`.
+  The play fails on that task with that message. Then **set `drydock_version` back to `vA`**, or the
+  next run tries the broken release again.
+- **But a rollback cannot undo a migration** ([Known issue 2](first-deployment.md#0-known-issues--read-these-first)):
+  if the new binary migrated the database before failing, the old one refuses it with
+  `refusing to run an older Drydock against a newer database`, and the rollback does not start
+  either. The fix is to restore the backup the play made, `/root/drydock.db.<timestamp>`.
+- **Manual, to an older release:** restore the matching database backup **by hand first**, exactly as
+  in [runbook §10.2](first-deployment.md#102-roll-back) (stop, `install` the backup over
+  `drydock.db`, remove `-wal` and `-shm`), then set `drydock_version` to the older release and
+  re-run. Restoring a database is not something a play should do on its own; it throws away
+  everything since the backup. (The play backs up the newer database first, because the version
+  differs. That backup is harmless.)
+
+### 10.3 Uninstall
+
+There is no `uninstall` ([Known issue 4](first-deployment.md#0-known-issues--read-these-first)), and
+this document has no tasks for one: [runbook §10.4](first-deployment.md#104-uninstall) is a short,
+destructive list best run by a person who has just deleted every workspace in the UI.
+
+---
+
+## What this does not automate
+
+| Runbook step | Why it stays by hand |
+|---|---|
+| [0. Known issue 1](first-deployment.md#0-known-issues--read-these-first), [2. Cut a release](first-deployment.md#2-cut-a-release) | Merging the release PR needs an admin bypass, on GitHub, not on the server. The play only installs a release that is already published. |
+| [1.2 DNS](first-deployment.md#12-a-hostname-for-the-ui-and-how-clients-resolve-it), [1.3 choosing a certificate](first-deployment.md#13-a-tls-certificate-every-client-trusts-for-that-hostname) | Decisions, and client-side settings. The play checks the result: the certificate matches its key and names `drydock_ui_host`. Renewal (options B and C) stays with your ACME client; copying a renewed certificate in and re-running reloads Caddy. |
+| [1.4 the App's permissions, installations and key](first-deployment.md#14-the-github-apps-private-key) | In GitHub's UI. The App is private. |
+| [3.3 a Caddy that already serves other sites](first-deployment.md#33-caddy-from-its-official-package) | A decision: `drydock_take_over_caddy`. |
+| [6. storing the master-key backup](first-deployment.md#6-back-up-the-secrets-master-key-now) | The play fetches it; moving it into your vault is yours. Restoring it is by hand. |
+| [7.2, 7.3 laptop and phone checks](first-deployment.md#72-from-a-laptop) | They test those devices. |
+| [8. First workspace](first-deployment.md#8-first-workspace), [8.5 the reboot drill](first-deployment.md#85-optional-the-reboot-drill) | UI work. |
+| Changing the operator password | Ends every session; `drydock passwd` by hand ([runbook §10.3](first-deployment.md#103-logs-and-state)). |
+| [10.2 manual rollback](first-deployment.md#102-roll-back), [10.4 uninstall](first-deployment.md#104-uninstall) | Destructive; see [10.2](#102-roll-back) above. |
+| [Known issue 3](first-deployment.md#0-known-issues--read-these-first): cap, bot identity, label prefix | The installer has no flags for them, and the unit is the installer's. |
