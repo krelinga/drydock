@@ -35,7 +35,10 @@ function fleet(state: IdentityState | null, expiresInMs?: number): MockBackend {
       steps: failed ? { up: { status: 'failed', at: new Date(now).toISOString() } } : {},
     }
   }
-  return freshBackend({ signedIn: true, repos, workspaces, identity: identityView(state, expiresInMs) })
+  // Room for the failed one to rebuild: at the cap (the mock's default is 4)
+  // its Rebuild would be replaced by a pointer to Stop, which is the cap's
+  // story, not the login's (frontend §9).
+  return freshBackend({ signedIn: true, repos, workspaces, capacity: RUNNING + 1, identity: identityView(state, expiresInMs) })
 }
 
 const identityBanners = (w: Awaited<ReturnType<typeof mountApp>>['wrapper']) =>
