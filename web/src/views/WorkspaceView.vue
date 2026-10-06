@@ -29,7 +29,7 @@ import { capacity } from '../lib/capacity'
 import { actionStepTitle, cardStatus, stepTitle, withRoom } from '../lib/workspaceCard'
 import { ACTION_STEPS, failedStep, liveAction, runSteps, stopFailed } from '../stores/reducer'
 import { useStreamStore } from '../stores/stream'
-import { deleteKey, rebuildKey, useWorkspacesStore } from '../stores/workspaces'
+import { deleteKey, rebuildKey, stopKey, useWorkspacesStore } from '../stores/workspaces'
 
 const route = useRoute()
 const stream = useStreamStore()
@@ -121,6 +121,20 @@ const canRebuild = computed(() => {
   return (w.state === 'running' || w.state === 'stopped') && liveAction(w) === null
 })
 
+// Stop, now that the session half has the card (§6.1): here, beside
+// Rebuild, and it asks first when sessions are live — design §12: the count
+// makes stop an informed action, and "Capacity N" counts the pre-created one.
+const canStop = computed(() => {
+  const w = ws.value
+  return w !== null && w.state === 'running' && liveAction(w) === null && status.value?.action !== 'stop'
+})
+const liveSessions = computed(() => {
+  const s = ws.value?.session
+  return ws.value?.supervisor?.state === 'serving' && s != null && s.capacityUsed !== null ? s.capacityUsed : 0
+})
+const stopAsked = ref(false)
+watch(id, () => { stopAsked.value = false })
+
 // §6.5: the destructive confirm. The typed text is the one piece of local
 // state a form may hold (§4.2), compared to the full name exactly — no trim,
 // no case folding, as the server compares it — and sent as typed, so the
@@ -162,12 +176,22 @@ watch(id, () => {
           <span v-if="ws.branch" class="branch">{{ ws.branch }}</span>
         </div>
         <p v-if="status.note" class="note" data-test="ws-note">{{ status.note }}</p>
-        <WorkspaceAction :workspace="ws" :action="status.action" primary />
+        <p v-if="status.since" class="note" data-test="waiting-since">Waiting since {{ relativeTime(status.since) }}.</p>
+        <WorkspaceAction :workspace="ws" :action="status.action" :link="status.link" primary />
         <dl class="facts">
           <div><dt>Workspace</dt><dd class="mono">{{ ws.id }}</dd></div>
           <div v-if="ws.containerId"><dt>Container</dt><dd class="mono" :title="ws.containerId">{{ shortId(ws.containerId) }}</dd></div>
           <div v-if="ws.createdAt"><dt>Created</dt><dd :title="ws.createdAt">{{ relativeTime(ws.createdAt) }}</dd></div>
           <div v-if="ws.adopted"><dt>Adopted</dt><dd>Found running after a restart</dd></div>
+          <div v-if="ws.session?.url"><dt>Environment</dt><dd class="mono">{{ ws.session.environmentId }}</dd></div>
+          <div v-if="ws.session && ws.session.sessions > 0"><dt>Sessions seen</dt><dd>{{ ws.session.sessions }}</dd></div>
+          <div v-if="ws.supervisor && ws.supervisor.restartCount > 0">
+            <dt>Restarts</dt><dd>{{ ws.supervisor.restartCount }}</dd>
+          </div>
+          <div v-if="ws.supervisor">
+            <dt>Session log</dt>
+            <dd><RouterLink :to="{ name: 'workspace-logs', params: { id: ws.id } }" data-test="logs-link">Open the log</RouterLink></dd>
+          </div>
         </dl>
       </div>
 
@@ -219,8 +243,24 @@ watch(id, () => {
         <button v-if="feed.length > 0 && !atEnd" type="button" class="btn ghost jump" @click="jump">Jump to latest</button>
       </div>
 
-      <div v-if="canRebuild || canDelete || showSheet" class="block" data-test="more-actions">
+      <div v-if="canStop || canRebuild || canDelete || showSheet" class="block" data-test="more-actions">
         <div class="sec-label"><span>Actions</span></div>
+        <div v-if="canStop" class="more" data-test="stop-block">
+          <p class="sub">Stop ends the session server and stops the container. The clone survives, and Start brings it back.</p>
+          <template v-if="liveSessions > 0 && !stopAsked">
+            <button type="button" class="btn" data-test="stop-ask" @click="stopAsked = true">Stop…</button>
+          </template>
+          <template v-else>
+            <p v-if="liveSessions > 0" class="sub" data-test="stop-sessions">
+              {{ liveSessions === 1 ? 'One session is' : `${liveSessions} sessions are` }} live. Stopping ends
+              {{ liveSessions === 1 ? 'it' : 'them' }}; unpushed work in the clone and its worktrees survives.
+            </p>
+            <ActionButton
+              :label="liveSessions > 0 ? 'Stop and end the sessions' : 'Stop'" :flight-key="stopKey(ws.id)"
+              :run="() => workspaces.stop(ws!.id)" data-test="stop"
+            />
+          </template>
+        </div>
         <div v-if="canRebuild" class="more" data-test="rebuild-block">
           <p class="sub">Rebuild replaces the container with a new one from the dev container configuration. The clone, and everything in it, stays.</p>
           <MakeRoom v-if="withRoom('rebuild', ws, capacity(stream.entities).full) === 'make_room'" />

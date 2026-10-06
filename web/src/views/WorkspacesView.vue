@@ -28,7 +28,7 @@ import type { Workspace } from '../stores/reducer'
 import { cloneKey, useWorkspacesStore } from '../stores/workspaces'
 import { useStreamRefetch } from '../lib/refetch'
 import { relativeTime } from '../lib/time'
-import { cardStatus, rowAction, withRoom, type CardAction } from '../lib/workspaceCard'
+import { cardStatus, rowAction, stoppable, withRoom, type CardAction } from '../lib/workspaceCard'
 
 const catalog = useCatalogStore()
 const workspaces = useWorkspacesStore()
@@ -83,8 +83,21 @@ function rowNote(r: CatalogRow): string | null {
             </span>
           </div>
           <p v-if="status(r.workspace).note" class="detail">{{ status(r.workspace).note }}</p>
-          <WorkspaceIdentityNote :state="r.workspace.state" part="waiting" />
-          <WorkspaceAction :workspace="r.workspace" :action="status(r.workspace).action" />
+          <p v-if="status(r.workspace).since" class="detail" data-test="waiting-since">
+            Waiting since {{ relativeTime(status(r.workspace).since!) }}.
+          </p>
+          <WorkspaceAction
+            :workspace="r.workspace" :action="status(r.workspace).action" :link="status(r.workspace).link"
+          />
+          <!--
+            Stop is the detail view's now that the session half has the card
+            (§6.1) — except at the cap, where MakeRoom sends the operator here
+            to free a slot, so each card that can free one says so.
+          -->
+          <WorkspaceAction
+            v-if="catalog.capacity.full && stoppable(r.workspace) && status(r.workspace).action !== 'stop'"
+            :workspace="r.workspace" action="stop"
+          />
         </li>
       </ul>
       <div v-else class="empty">
@@ -169,7 +182,10 @@ function rowNote(r: CatalogRow): string | null {
               data-test="clone"
             />
             <MakeRoom v-else-if="shownRowAction(r) === 'make_room'" />
-            <WorkspaceAction v-else-if="r.workspace" :workspace="r.workspace" :action="rowAction(r) as CardAction" />
+            <WorkspaceAction
+              v-else-if="r.workspace" :workspace="r.workspace" :action="rowAction(r) as CardAction"
+              :link="status(r.workspace).link"
+            />
             <p v-if="rowNote(r)" class="detail" data-test="removed-note">
               {{ rowNote(r) }}
               <a

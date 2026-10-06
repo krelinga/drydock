@@ -276,3 +276,32 @@ export function catalogBody(over: Partial<CatalogView> = {}): CatalogView {
     ...over,
   }
 }
+
+/** The environment fakeclaude's corpus advertises (test/fixtures env-status-block). */
+export const ENV = 'env_01SWWUTySnsAEuAGMd6azA24'
+
+/**
+ * A supervisor.state event as internal/supervisor's set writes it: data is
+ * workspace.SupervisorData — state, from, reason, detail, restart_count.
+ */
+export function supEvent(id: number, state: string, reason: string, detail = '', from = '', restarts = 0, ws = WS): StreamEvent {
+  return ev(id, 'supervisor.state', ws, { state, from, reason, detail, restart_count: restarts }, detail || `The session server is ${state}.`)
+}
+
+/** A session.status event: workspace.SessionData, with the URL the server builds from the id. */
+export function sessionEvent(id: number, used: number | null, total: number | null, env = ENV, sessions = 1, ws = WS): StreamEvent {
+  return ev(id, 'session.status', ws, {
+    environment_id: env, url: `https://claude.ai/code?environment=${env}`,
+    capacity_used: used, capacity_total: total, sessions,
+  }, `Capacity ${used}/${total}.`)
+}
+
+/** Step 8 and the server coming up after CLONE_OK: starting, the environment, serving at 1/4. */
+export const SERVE_OK: StreamEvent[] = [
+  ev(14, 'workspace.step', WS, { step: 'session_server', status: 'started' }),
+  ev(15, 'workspace.step', WS, { step: 'session_server', status: 'done', detail: 'Handed to the session supervisor, which starts the Claude Code session server.' }),
+  supEvent(16, 'starting', 'launching', 'Starting the session server.'),
+  sessionEvent(17, null, null, ENV, 0),
+  supEvent(18, 'serving', 'connected', '', 'starting'),
+  sessionEvent(19, 1, 4),
+]

@@ -17,7 +17,7 @@
 
 import { http, HttpResponse, sse, type HttpHandler } from 'msw'
 import type {
-  ActionView, CatalogView, Device, IdentityState, IdentityView, InstallationView, PutSecretResult, RepoView, SecretMeta, SessionInfo, Stale, StaleWorkspace,
+  ActionView, CatalogView, Device, IdentityState, IdentityView, InstallationView, PutSecretResult, RepoView, SecretMeta, SessionInfo, SessionView, Stale, StaleWorkspace, SupervisorView,
   StepView, StreamEvent, Undeliverable, UndeliverableSecret, WorkspaceDetail, WorkspaceList, WorkspaceState, WorkspaceView,
 } from '../api/types'
 import { checkDescription, checkName, checkReach, checkValue, type SecretRefusal } from '../lib/secretRules'
@@ -122,6 +122,15 @@ export interface MockBackend {
    * stored secret can be delivered. GET /api/secrets reports it as is.
    */
   undeliverable: Undeliverable | null
+  /**
+   * Phase 5's session supervisor: when true, a workspace that reaches
+   * running hands off at step 8 and its server plays starting → serving with
+   * an environment and `Capacity: 1/4`, the views carry `supervisor`,
+   * `session` and `environment_id`, and POST …/supervisor and GET …/logs
+   * answer. False (the specs' default) is a server older than Phase 5,
+   * whose views carry none of the three.
+   */
+  supervisor: boolean
 
   /**
    * The stored Claude identity internal/identity.Watch holds. Seeded ok and a
@@ -186,6 +195,10 @@ export interface MockWorkspace {
   steps: Record<string, StepView>
   /** The latest workspace.action event, as internal/workspace's view reads it; absent is none. */
   last_action?: ActionView | null
+  /** The latest supervisor.state and session.status, as the view reads them back. */
+  supervisor?: SupervisorView | null
+  session?: SessionView | null
+  environment_id?: string | null
 }
 
 const CURRENT_ID = 'c0ffee0000000000000000000000000000000000000000000000000000000001'
@@ -301,6 +314,7 @@ function newBackendBare(now: number, overrides: Partial<MockBackend>): MockBacke
     undeliverable: null,
     identity: identityView('ok'),
     identityChecks: 0,
+    supervisor: false,
     ...overrides,
   }
 }
@@ -450,6 +464,11 @@ export function workspaceView(b: MockBackend, w: MockWorkspace): WorkspaceView {
     created_at: w.created_at,
     steps: structuredClone(w.steps),
     last_action: w.last_action ? { ...w.last_action } : null,
+    ...(b.supervisor ? {
+      supervisor: w.supervisor ? { ...w.supervisor } : null,
+      session: w.session ? { ...w.session } : null,
+      environment_id: w.environment_id ?? null,
+    } : {}),
   }
 }
 
@@ -559,6 +578,17 @@ export function emit(
     const cur = b.workspaces[id]
     if (cur !== undefined) b.workspaces[id] = { ...cur, container_id: d.container_id }
   }
+  if (id !== undefined && kind === 'supervisor.state') {
+    const cur = b.workspaces[id]
+    if (cur !== undefined) b.workspaces[id] = { ...cur, supervisor: { ...(d as unknown as SupervisorView), at: ev.at } }
+  }
+  if (id !== undefined && kind === 'session.status') {
+    const cur = b.workspaces[id]
+    if (cur !== undefined) {
+      const env = typeof d.environment_id === 'string' ? d.environment_id : cur.environment_id ?? null
+      b.workspaces[id] = { ...cur, session: { ...(d as unknown as SessionView), at: ev.at }, environment_id: env }
+    }
+  }
   if (id !== undefined && kind === 'workspace.gone') delete b.workspaces[id]
   for (const s of b.subscribers) s(ev)
   return ev
@@ -634,7 +664,11 @@ const ACTION_FAILED: Record<string, string> = {
 
 /** The note a sub-step that did nothing, or something worth saying, ends `done` with. */
 function actionNote(b: MockBackend, id: string, step: string): string | undefined {
-  if (step === 'session_server') return 'Nothing to do yet: the Claude Code session server arrives with Claude support.'
+  if (step === 'session_server') {
+    return b.supervisor
+      ? 'Stopped the session server, SIGTERM first, so its environment is kept for the next start.'
+      : 'Nothing to do yet: the Claude Code session server arrives with Claude support.'
+  }
   if (step === 'containers') return b.workspaces[id]?.container_id ? 'Removed its container.' : 'No container to remove.'
   return undefined
 }
@@ -665,6 +699,7 @@ export function stopScript(b: MockBackend, id: string, failAt?: string): Array<(
       return out
     }
     out.push(steps.action('stop', sub, 'done', actionNote(b, id, sub)))
+    if (sub === 'session_server' && b.supervisor) out.push(steps.supervisor('exited', 'stopped', 'The session server was stopped.'))
   }
   out.push(steps.state('stopped', { from: 'running' }, 'Stopped.'))
   return out
@@ -745,6 +780,39 @@ class ScriptSteps {
     }
   }
 
+  supervisor(state: string, reason: string, detail: string, level: StreamEvent['level'] = 'info') {
+    return (at?: string) => {
+      const prev = this.b.workspaces[this.id]?.supervisor
+      emit(this.b, 'supervisor.state', {
+        workspace_id: this.id, level, message: detail || `The session server is ${state}.`,
+        data: { state, from: prev?.state ?? '', reason, detail, restart_count: prev?.restart_count ?? 0 },
+        ...(at ? { at } : {}),
+      })
+    }
+  }
+
+  session(used: number) {
+    return (at?: string) => {
+      const env = mockEnvironmentId(this.id)
+      emit(this.b, 'session.status', {
+        workspace_id: this.id, message: `Capacity ${used}/4.`,
+        data: { environment_id: env, url: `https://claude.ai/code?environment=${env}`, capacity_used: used, capacity_total: 4, sessions: used },
+        ...(at ? { at } : {}),
+      })
+    }
+  }
+
+  /** §6 step 8 and §8: the hand-off, then the server starting and serving. */
+  serve(out: Array<(at?: string) => void>): void {
+    out.push(
+      this.step('session_server', 'started'),
+      this.step('session_server', 'done', 'Handed to the session supervisor, which starts the Claude Code session server.'),
+      this.supervisor('starting', 'launching', 'Starting the session server.'),
+      this.supervisor('serving', 'connected', ''),
+      this.session(1),
+    )
+  }
+
   run(
     out: Array<(at?: string) => void>, plan: Array<[string, WorkspaceState | null]>, from: WorkspaceState, failAt?: string,
   ): Array<(at?: string) => void> {
@@ -763,8 +831,25 @@ class ScriptSteps {
       out.push(this.step(name, 'done'))
     }
     out.push(this.state('running', { from, container_id: mockContainerId(this.id) }, 'Running.'))
+    if (this.b.supervisor) this.serve(out)
     return out
   }
+}
+
+/** The environment a mock workspace's server advertises: stable per workspace, as the real one is. */
+export function mockEnvironmentId(id: string): string {
+  return `env_01${id.slice(-12).replace(/[^A-Za-z0-9]/g, '')}`
+}
+
+/** A session server restart (POST …/supervisor), as internal/supervisor's Restart writes it. */
+export function supervisorScript(b: MockBackend, id: string): Array<(at?: string) => void> {
+  const steps = new ScriptSteps(b, id)
+  return [
+    steps.supervisor('exited', 'stopped', 'The session server was stopped.'),
+    steps.supervisor('starting', 'launching', 'Starting the session server.'),
+    steps.supervisor('serving', 'connected', ''),
+    steps.session(1),
+  ]
 }
 
 /**
@@ -1062,6 +1147,42 @@ export function handlersFor(b: MockBackend): HttpHandler[] {
       if (w.state !== 'running' || b.jobs[id] !== undefined) return busy()
       scheduleStop(b, id)
       return HttpResponse.json({}, { status: 202 })
+    }),
+
+    // Phase 5 (internal/api/supervisor_routes.go): start or restart the
+    // session server, on a running workspace with nothing in flight.
+    http.post('/api/workspaces/:id/supervisor', ({ request, params }) => {
+      record(request)
+      if (!b.signedIn) return unauthenticated()
+      const id = String(params.id)
+      const w = b.workspaces[id]
+      if (w === undefined) return envelope(404, 'not_found', 'There is no such workspace.')
+      if (!b.supervisor) return envelope(501, 'not_implemented', 'Not implemented.')
+      if (w.state !== 'running' || b.jobs[id] !== undefined) {
+        return envelope(409, 'in_progress', 'The session server can be restarted only on a running workspace with nothing else in progress.')
+      }
+      schedule(b, id, supervisorScript(b, id), 'run')
+      return HttpResponse.json({}, { status: 202 })
+    }),
+
+    // The session server's log: redacted lines, in memory on the server.
+    http.get('/api/workspaces/:id/logs', ({ request, params }) => {
+      record(request)
+      if (!b.signedIn) return unauthenticated()
+      const id = String(params.id)
+      const w = b.workspaces[id]
+      if (w === undefined) return envelope(404, 'not_found', 'There is no such workspace.')
+      if (!b.supervisor || !w.supervisor) return HttpResponse.json({ lines: [], truncated: false, held: false })
+      const at = w.supervisor.at
+      const env = mockEnvironmentId(id)
+      const text = [
+        '— Starting the session server.', 'Remote Control v2.1.289', 'Spawn mode: worktree',
+        'Max concurrent sessions: 4', `Environment ID: ${env}`, '·✔︎· Connected · repo',
+        '    Capacity: 1/4 · New sessions will be created in an isolated worktree',
+        `Continue coding in the Claude mobile app or https://claude.ai/code?environment=${env}`,
+        'token in output: [redacted]',
+      ]
+      return HttpResponse.json({ lines: text.map((t, i) => ({ n: i + 1, at, text: t })), truncated: false, held: true })
     }),
 
     // Rebuild is start's run with --remove-existing-container: from step 3,

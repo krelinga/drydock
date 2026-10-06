@@ -81,7 +81,7 @@ const REFUSALS: Record<string, { status: number; message: string; detail?: strin
 }
 
 export async function startMockWorker(): Promise<void> {
-  const backend = newBackend()
+  const backend = newBackend({ supervisor: true })
   const worker = setupWorker(...handlersFor(backend))
   await worker.start({ onUnhandledFrame: 'bypass', quiet: true })
 

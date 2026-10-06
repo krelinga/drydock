@@ -31,6 +31,8 @@ export const stopKey = (id: string) => `workspace:${id}:stop`
 export const rebuildKey = (id: string) => `workspace:${id}:rebuild`
 /** The in-flight key for deleting a workspace, a resumed delete included. */
 export const deleteKey = (id: string) => `workspace:${id}:delete`
+/** The in-flight key for starting or restarting a workspace's session server. */
+export const sessionKey = (id: string) => `workspace:${id}:session`
 
 const MOVING_STATES = new Set(['pending', 'cloning', 'building'])
 
@@ -93,6 +95,21 @@ export function settlesDelete(id: string): (ev: StreamEvent) => boolean {
     const d = ev.data ?? {}
     return ev.kind === 'workspace.state' && d.state === 'deleting' && d.from === 'deleting'
       && typeof d.detail === 'string' && d.detail !== ''
+  }
+}
+
+/**
+ * What settles a session server start or restart (POST …/supervisor): the
+ * supervisor reporting any state but `exited` — a restart reports `exited`
+ * first, as it stops the old server, and that is not the end of it — or the
+ * workspace leaving `running`, which ends any session server with it.
+ */
+export function settlesSession(id: string): (ev: StreamEvent) => boolean {
+  return (ev) => {
+    if (ev.workspace_id !== id) return false
+    if (ev.kind === 'workspace.gone') return true
+    if (ev.kind === 'workspace.state') return ev.data?.state !== 'running'
+    return ev.kind === 'supervisor.state' && typeof ev.data?.state === 'string' && ev.data.state !== 'exited'
   }
 }
 
@@ -197,6 +214,11 @@ export const useWorkspacesStore = defineStore('workspaces', {
     /** POST /api/workspaces/:id/rebuild: a new container, the clone kept. */
     rebuild(id: string): Promise<void> {
       return this.mutate(rebuildKey(id), settlesRebuild(id), 'POST', `/api/workspaces/${encodeURIComponent(id)}/rebuild`)
+    },
+
+    /** POST /api/workspaces/:id/supervisor: start, or restart, the session server. */
+    restartSession(id: string): Promise<void> {
+      return this.mutate(sessionKey(id), settlesSession(id), 'POST', `/api/workspaces/${encodeURIComponent(id)}/supervisor`)
     },
 
     /**

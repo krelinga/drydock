@@ -42,6 +42,11 @@
 //                      {state, from: state}  ClearDetail: a retry clearing either
 //                                           as it starts (§4.5 #15, #16)
 //   workspace.gone     {}
+//   supervisor.state   {state, from, reason, detail, restart_count}
+//                                           internal/supervisor: the session
+//                                           server's process state (design §8)
+//   session.status     {environment_id, url, capacity_used, capacity_total, sessions}
+//                                           what the server's output announced
 //   workspace.adopted  {container_id}       a known row matched to a container
 //   repo.refreshed     {count, added, removed}
 //   repo.refresh_failed {}                  the reason is in `message`
@@ -90,7 +95,7 @@ import {
   IDENTITY_STATES, WORKSPACE_STATES, WORKSPACE_STEPS, type CatalogView, type ClaudeIdentityBody,
   type IdentityCheckError, type IdentityState, type InstallationView, type RepoView, type SecretList,
   type SecretMeta, type StepStatus, type StreamEvent, type WorkspaceDetail, type WorkspaceList, type WorkspaceState,
-  type WorkspaceView,
+  type WorkspaceView, SUPERVISOR_STATES, type SupervisorState,
 } from '../api/types'
 
 /**
@@ -108,6 +113,32 @@ export interface ClaudeIdentity {
   volume: string
   /** The last check's failure, null when it succeeded. */
   checkError: IdentityCheckError | null
+}
+
+/**
+ * The session server's process state (design §8), from `supervisor.state`
+ * events and the views' `supervisor`. Its own state machine, beside the
+ * workspace's: the card joins the two (lib/workspaceCard.ts).
+ */
+export interface Supervisor {
+  state: SupervisorState
+  /** A code (internal/supervisor Reason): the card's sentence is chosen by it, never by `detail`. */
+  reason: string | null
+  /** Drydock's sentence for the reason. Shown, never parsed. */
+  detail: string | null
+  restartCount: number
+  /** When it entered this state: the waiting card's elapsed time. */
+  since: string
+}
+
+/** What the session server announced (`session.status`). */
+export interface SessionStatus {
+  environmentId: string | null
+  /** Built here from the id, never taken from the wire: an href is a capability to send the user somewhere. */
+  url: string | null
+  capacityUsed: number | null
+  capacityTotal: number | null
+  sessions: number
 }
 
 export interface StepInfo {
@@ -180,6 +211,21 @@ export interface Workspace {
    * where it was.
    */
   stateEventId: number
+  /** The session server's state, or null when none was ever started. */
+  supervisor: Supervisor | null
+  /**
+   * Whether anything has said what the supervisor is: a supervisor.state
+   * event, or a view carrying the `supervisor` field. A server older than
+   * Phase 5 never sends it, and its running card must not claim "no session"
+   * on the strength of a field it does not have.
+   */
+  supervisorKnown: boolean
+  /** The id of the event (or snapshot position) that last wrote `supervisor`. */
+  supervisorAt: number
+  /** What the server last announced, or null. */
+  session: SessionStatus | null
+  /** The id of the event (or snapshot position) that last wrote `session`. */
+  sessionAt: number
 }
 
 /** The latest action sub-step, versioned like any field. */
@@ -464,6 +510,37 @@ function stub(id: string): Workspace {
     id, repositoryId: null, fullName: null, branch: null, state: null, detail: null, step: null,
     steps: {}, containerId: null, createdAt: null, adopted: false, stateAt: 0, stepAt: 0, containerAt: 0,
     action: null, lastAction: null, stateEventId: 0,
+    supervisor: null, supervisorAt: 0, supervisorKnown: false, session: null, sessionAt: 0,
+  }
+}
+
+const ENV_ID = /^env_[A-Za-z0-9]+$/
+
+/** The card's link for an environment id (design §8), or null for anything else. */
+export function environmentURL(id: string | null): string | null {
+  return id !== null && ENV_ID.test(id) ? `https://claude.ai/code?environment=${id}` : null
+}
+
+function toSupervisor(d: Record<string, unknown>, at: string): Supervisor | null {
+  const state = d.state
+  if (typeof state !== 'string' || !(SUPERVISOR_STATES as readonly string[]).includes(state)) return null
+  return {
+    state: state as SupervisorState,
+    reason: str(d.reason),
+    detail: str(d.detail),
+    restartCount: num(d.restart_count) ?? 0,
+    since: typeof d.at === 'string' ? d.at : at,
+  }
+}
+
+function toSession(d: Record<string, unknown>, envFallback: string | null): SessionStatus {
+  const environmentId = str(d.environment_id) ?? envFallback
+  return {
+    environmentId,
+    url: environmentURL(environmentId),
+    capacityUsed: num(d.capacity_used),
+    capacityTotal: num(d.capacity_total),
+    sessions: num(d.sessions) ?? 0,
   }
 }
 
@@ -505,6 +582,21 @@ function applyEvent(prev: Entities, ev: StreamEvent): Entities {
   // Every event naming a workspace joins its feed, whatever its kind.
   const feed = mergeFeed(base.feeds[wsId], [ev])
   const fed = feed === base.feeds[wsId] ? base : { ...base, feeds: { ...base.feeds, [wsId]: feed } }
+
+  if (ev.kind === 'supervisor.state' || ev.kind === 'session.status') {
+    const known = fed.workspaces[wsId]
+    const cur = known ?? stub(wsId)
+    let next = cur
+    if (ev.kind === 'supervisor.state' && ev.id > cur.supervisorAt) {
+      const s = toSupervisor(data, ev.at)
+      if (s !== null) next = { ...cur, supervisor: s, supervisorAt: ev.id, supervisorKnown: true }
+    }
+    if (ev.kind === 'session.status' && ev.id > cur.sessionAt) {
+      next = { ...cur, session: toSession(data, cur.session?.environmentId ?? null), sessionAt: ev.id }
+    }
+    if (next === cur && known !== undefined) return fed
+    return { ...fed, workspaces: { ...fed.workspaces, [wsId]: next } }
+  }
 
   if (!ev.kind.startsWith('workspace.')) return fed
 
@@ -785,8 +877,27 @@ function mergeView(cur: Workspace | undefined, at: number, v: WorkspaceView): Wo
     : la === null || !isStepStatus(la.status) || str(la.action) === null || str(la.step) === null
       ? null
       : { name: la.action, step: la.step, status: la.status, detail: str(la.detail), at }
+  // The supervisor and session halves, by the same rule. A body without the
+  // fields (an older server) says nothing either way.
+  let supervisor = base.supervisor
+  let supervisorAt = base.supervisorAt
+  const supervisorKnown = base.supervisorKnown || v.supervisor !== undefined
+  if (v.supervisor !== undefined && base.supervisorAt <= at) {
+    supervisor = v.supervisor === null ? null : toSupervisor(v.supervisor as unknown as Record<string, unknown>, v.supervisor.at)
+    supervisorAt = at
+  }
+  let session = base.session
+  let sessionAt = base.sessionAt
+  if ((v.session !== undefined || v.environment_id !== undefined) && base.sessionAt <= at) {
+    const env = str(v.environment_id)
+    session = v.session == null
+      ? (env === null ? null : toSession({}, env))
+      : toSession(v.session as unknown as Record<string, unknown>, env)
+    sessionAt = at
+  }
   return {
     ...base,
+    supervisor, supervisorAt, supervisorKnown, session, sessionAt,
     action: staleRun ? null : base.action,
     lastAction,
     repositoryId: v.repository_id,

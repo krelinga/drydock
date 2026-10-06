@@ -21,9 +21,9 @@ import { capacity } from '../lib/capacity'
 import { withRoom, type CardAction } from '../lib/workspaceCard'
 import type { Workspace } from '../stores/reducer'
 import { useStreamStore } from '../stores/stream'
-import { deleteKey, rebuildKey, startKey, stopKey, useWorkspacesStore } from '../stores/workspaces'
+import { deleteKey, rebuildKey, sessionKey, startKey, stopKey, useWorkspacesStore } from '../stores/workspaces'
 
-const props = defineProps<{ workspace: Workspace; action: CardAction; primary?: boolean }>()
+const props = defineProps<{ workspace: Workspace; action: CardAction; primary?: boolean; link?: string | null }>()
 const workspaces = useWorkspacesStore()
 const stream = useStreamStore()
 const id = () => props.workspace.id
@@ -44,6 +44,19 @@ const shown = computed(() => withRoom(props.action, props.workspace, capacity(st
     v-else-if="shown === 'rebuild'" label="Rebuild" :primary="primary"
     :flight-key="rebuildKey(workspace.id)" :run="() => workspaces.rebuild(id())" data-test="rebuild"
   />
+  <ActionButton
+    v-else-if="shown === 'start_session'" label="Start session" :primary="primary"
+    :flight-key="sessionKey(workspace.id)" :run="() => workspaces.restartSession(id())" data-test="start-session"
+  />
+  <ActionButton
+    v-else-if="shown === 'restart_session'" label="Restart session server" :primary="primary"
+    :flight-key="sessionKey(workspace.id)" :run="() => workspaces.restartSession(id())" data-test="restart-session"
+  />
+  <!-- The one action that is not a mutation: the environment, in Claude (§8). -->
+  <a
+    v-else-if="shown === 'open' && link" class="btn" :class="{ primary }" :href="link"
+    target="_blank" rel="noopener noreferrer" data-test="open-in-claude"
+  >Open in Claude</a>
   <ActionButton
     v-else-if="shown === 'delete' && workspace.fullName !== null" label="Delete again" danger
     :flight-key="deleteKey(workspace.id)" :run="() => workspaces.remove(id(), workspace.fullName!)"
