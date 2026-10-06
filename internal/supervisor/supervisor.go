@@ -367,7 +367,7 @@ func (m *Manager) Detach(wait time.Duration) {
 		all = append(all, s)
 	}
 	m.mu.Unlock()
-	deadline := time.After(wait)
+	deadline := m.clock().After(wait)
 	for _, s := range all {
 		select {
 		case <-s.done:

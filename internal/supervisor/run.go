@@ -285,7 +285,7 @@ func (s *sup) runOnce(ctx context.Context) outcome {
 				proc.Signal(subproc.SignalTerm)
 				select {
 				case <-waited:
-				case <-time.After(5 * time.Second):
+				case <-m.clock().After(p.KillWait):
 					proc.Signal(subproc.SignalKill)
 					<-waited
 				}
