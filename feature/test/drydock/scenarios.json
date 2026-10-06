@@ -1,6 +1,7 @@
 {
   "debian": {
     "image": "mcr.microsoft.com/devcontainers/base:debian",
+    "mounts": [{ "type": "volume", "source": "drydock-feature-test-debian", "target": "/home/vscode/.claude" }],
     "features": {
       "drydock": {
         "requireBroker": false,
@@ -11,12 +12,16 @@
   },
   "ubuntu-bare": {
     "image": "ubuntu:noble",
+    "remoteUser": "ubuntu",
+    "updateRemoteUserUID": false,
+    "mounts": [{ "type": "volume", "source": "drydock-feature-test-ubuntu", "target": "/home/vscode/.claude" }],
     "features": {
       "drydock": { "requireBroker": false }
     }
   },
   "no-guard": {
     "image": "mcr.microsoft.com/devcontainers/base:debian",
+    "mounts": [{ "type": "volume", "source": "drydock-feature-test-no-guard", "target": "/home/vscode/.claude" }],
     "features": {
       "drydock": { "requireBroker": false, "branchPrefix": "" }
     }

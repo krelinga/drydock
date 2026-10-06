@@ -30,6 +30,103 @@ check "drydock-secrets is found first, in a login shell too" bash -lc \
 check "no socket: the prelude aborts the command, on one line" bash -c \
 	'out=$(bash -c "$(cat "$CLAUDE_ENV_FILE") && echo ran" 2>&1); rc=$?; [ $rc = 69 ] && ! echo "$out" | grep -q ran && [ "$(echo "$out" | wc -l)" = 1 ] && echo "$out" | grep -q "secrets unavailable"'
 
+# --- Claude Code: pinned, on the shared volume, keys written (design §11) ---
+# Every scenario mounts a named volume at /home/vscode/.claude, as Drydock
+# does, because the Feature's postCreateCommand refuses a container without
+# one; the expected-failure builds in feature/expect-fail/ cover what happens
+# when that and the other preflight checks do not hold.
+
+check "Claude Code is the pinned version, found first" bash -c \
+	'[ "$(claude --version)" = "2.1.289 (Claude Code)" ] && [ "$(readlink -f "$(command -v claude)")" = /usr/local/drydock/claude/2.1.289/claude ]'
+check "and in a login shell" bash -lc \
+	'[ "$(claude --version)" = "2.1.289 (Claude Code)" ] && [ "$(readlink -f "$(command -v claude)")" = /usr/local/drydock/claude/2.1.289/claude ]'
+check "the autoupdater is off, in a login shell too" bash -lc '[ "$DISABLE_AUTOUPDATER" = 1 ]'
+check "the install recorded the version" grep -qx CLAUDE_CODE_VERSION=2.1.289 /usr/local/drydock/etc/feature.env
+check "CLAUDE_CONFIG_DIR is the shared volume's mount point, the remote user's, 0700" bash -c \
+	'[ "$CLAUDE_CONFIG_DIR" = /home/vscode/.claude ] && [ "$(awk "\$5 == \"/home/vscode/.claude\"" /proc/self/mountinfo | wc -l)" = 1 ] && [ "$(stat -c %u:%a "$CLAUDE_CONFIG_DIR")" = "$(id -u):700" ]'
+# postCreateCommand ran in the workspace folder, which is where this runs.
+check "postCreate wrote both Remote Control keys for the workspace folder" bash -c \
+	'jq -e --arg ws "$PWD" ".remoteDialogSeen == true and .projects[\$ws].hasTrustDialogAccepted == true" "$CLAUDE_CONFIG_DIR/.claude.json" && [ "$(stat -c %a "$CLAUDE_CONFIG_DIR/.claude.json")" = 600 ] && [ ! -e "$CLAUDE_CONFIG_DIR/.claude.json.lock" ]'
+
+# drydock-preflight, run directly. The control first: in this container, as
+# built, it passes and says nothing. Then each variable of §2.1, one at a
+# time, must fail it by name — empty counts as set — while the other four
+# are named nowhere in its output.
+check "preflight passes, silently, in the container as built" bash -c \
+	'out=$(drydock-preflight 2>&1) && [ -z "$out" ]'
+for v in ANTHROPIC_BASE_URL DISABLE_TELEMETRY DO_NOT_TRACK CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC DISABLE_GROWTHBOOK; do
+	check "preflight fails naming $v, and only $v" bash -c '
+		for val in 1 ""; do
+			[ $0 = ANTHROPIC_BASE_URL ] && [ -n "$val" ] && val=https://gateway.example.com
+			out=$(env "$0=$val" drydock-preflight 2>&1) && { echo "passed with $0=$val"; exit 1; }
+			echo "$out" | grep -q "^drydock feature: $0 is set" || { echo "$out"; exit 1; }
+			[ "$(echo "$out" | grep -cE "(ANTHROPIC_BASE_URL|DISABLE_TELEMETRY|DO_NOT_TRACK|CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC|DISABLE_GROWTHBOOK) is set")" = 1 ] || { echo "$out"; exit 1; }
+		done' "$v"
+done
+check "ANTHROPIC_BASE_URL pointing at api.anthropic.com is allowed" bash -c \
+	'env ANTHROPIC_BASE_URL=https://api.anthropic.com drydock-preflight && env ANTHROPIC_BASE_URL=https://api.anthropic.com/ drydock-preflight'
+# A project's settings.local.json env block reaches every session the same
+# way containerEnv does. The control is the same project with a harmless env.
+check "a settings env block that disables Remote Control fails preflight; a harmless one does not" bash -c '
+	rm -rf /tmp/proj && mkdir -p /tmp/proj/.claude && cd /tmp/proj &&
+	echo "{\"env\":{\"FOO\":\"1\"}}" >.claude/settings.local.json && drydock-preflight &&
+	echo "{\"env\":{\"FOO\":\"1\",\"DISABLE_GROWTHBOOK\":\"1\"}}" >.claude/settings.local.json &&
+	out=$(drydock-preflight 2>&1); [ $? -ne 0 ] && echo "$out" | grep -q "DISABLE_GROWTHBOOK is set in the env block of /tmp/proj/.claude/settings.local.json"'
+check "CLAUDE_CONFIG_DIR moved elsewhere fails preflight, naming it" bash -c \
+	'mkdir -p /tmp/elsewhere && out=$(CLAUDE_CONFIG_DIR=/tmp/elsewhere drydock-preflight 2>&1); [ $? -ne 0 ] && echo "$out" | grep -q "CLAUDE_CONFIG_DIR is ./tmp/elsewhere."'
+
+# drydock-claude-config, against a scratch CLAUDE_CONFIG_DIR seeded the way a
+# signed-in volume looks: the account record, another project, settings.
+seed() {
+	rm -rf /tmp/cc && mkdir -p /tmp/cc && chmod 700 /tmp/cc
+	cat >/tmp/cc/.claude.json <<'JSON'
+{
+  "numStartups": 12,
+  "userID": "a1b2c3",
+  "oauthAccount": { "accountUuid": "acct-1", "emailAddress": "op@example.com", "organizationUuid": "org-1" },
+  "remoteControlMachineId": "m-1",
+  "projects": { "/workspaces/other": { "allowedTools": ["Bash"], "hasTrustDialogAccepted": true } }
+}
+JSON
+	chmod 600 /tmp/cc/.claude.json
+}
+check "the keys are merged in, and everything else survives" bash -c "$(declare -f seed)"'
+	seed && before=$(jq -S "del(.remoteDialogSeen, .projects[\"/workspaces/w\"])" /tmp/cc/.claude.json) &&
+	CLAUDE_CONFIG_DIR=/tmp/cc drydock-claude-config /workspaces/w &&
+	jq -e ".remoteDialogSeen == true and .projects[\"/workspaces/w\"].hasTrustDialogAccepted == true" /tmp/cc/.claude.json >/dev/null &&
+	[ "$(jq -S "del(.remoteDialogSeen, .projects[\"/workspaces/w\"])" /tmp/cc/.claude.json)" = "$before" ] &&
+	jq -e ".oauthAccount.organizationUuid == \"org-1\"" /tmp/cc/.claude.json >/dev/null &&
+	[ "$(stat -c %a /tmp/cc/.claude.json)" = 600 ] && [ ! -e /tmp/cc/.claude.json.lock ] && [ -z "$(ls -A /tmp/cc | grep -v "^\.claude\.json$")" ]'
+check "with no .claude.json yet, it is created holding just the keys" bash -c \
+	'rm -rf /tmp/cc && mkdir /tmp/cc && CLAUDE_CONFIG_DIR=/tmp/cc drydock-claude-config /w && [ "$(jq -c . /tmp/cc/.claude.json)" = "{\"remoteDialogSeen\":true,\"projects\":{\"/w\":{\"hasTrustDialogAccepted\":true}}}" ]'
+check "a second run leaves the file alone" bash -c "$(declare -f seed)"'
+	seed && CLAUDE_CONFIG_DIR=/tmp/cc drydock-claude-config /w && i=$(stat -c %i /tmp/cc/.claude.json) &&
+	CLAUDE_CONFIG_DIR=/tmp/cc drydock-claude-config /w && [ "$(stat -c %i /tmp/cc/.claude.json)" = "$i" ]'
+check "a file that is not a JSON object is refused, not replaced" bash -c '
+	for body in "" "[]" "{\"oauthAccount\": "; do
+		rm -rf /tmp/cc && mkdir /tmp/cc && printf %s "$body" >/tmp/cc/.claude.json
+		out=$(CLAUDE_CONFIG_DIR=/tmp/cc drydock-claude-config /w 2>&1) && exit 1
+		echo "$out" | grep -q "is not a JSON object" && [ "$(cat /tmp/cc/.claude.json)" = "$body" ] && [ ! -e /tmp/cc/.claude.json.lock ] || exit 1
+	done'
+# Claude Code's lock: a writer that finds it held waits, and writes only once
+# it is released — the control for the merge above, which never contended.
+check "it waits for Claude Code's .claude.json.lock, then writes" bash -c "$(declare -f seed)"'
+	seed && mkdir /tmp/cc/.claude.json.lock &&
+	{ CLAUDE_CONFIG_DIR=/tmp/cc drydock-claude-config /w & } && pid=$! && sleep 3 &&
+	! jq -e ".remoteDialogSeen" /tmp/cc/.claude.json >/dev/null && kill -0 $pid &&
+	rmdir /tmp/cc/.claude.json.lock && wait $pid &&
+	jq -e ".remoteDialogSeen == true and .oauthAccount.accountUuid == \"acct-1\"" /tmp/cc/.claude.json >/dev/null'
+check "a lock never released fails it, by name, with the file untouched and the lock left" bash -c "$(declare -f seed)"'
+	seed && mkdir /tmp/cc/.claude.json.lock && sum=$(sha256sum </tmp/cc/.claude.json) &&
+	out=$(DRYDOCK_CLAUDE_LOCK_WAIT=2 CLAUDE_CONFIG_DIR=/tmp/cc drydock-claude-config /w 2>&1); [ $? -ne 0 ] &&
+	echo "$out" | grep -q "/tmp/cc/.claude.json.lock has been held" && [ "$(sha256sum </tmp/cc/.claude.json)" = "$sum" ] && [ -d /tmp/cc/.claude.json.lock ]'
+# Twenty containers' worth of writers at once, each trusting its own folder:
+# with the lock, no write is lost.
+check "concurrent writers lose no update" bash -c "$(declare -f seed)"'
+	seed && for i in $(seq 20); do CLAUDE_CONFIG_DIR=/tmp/cc drydock-claude-config /workspaces/w$i & done; wait &&
+	[ "$(jq "[.projects | to_entries[] | select(.key | startswith(\"/workspaces/w\")) | select(.value.hasTrustDialogAccepted)] | length" /tmp/cc/.claude.json)" = 20 ] &&
+	jq -e ".oauthAccount.organizationUuid == \"org-1\" and .projects[\"/workspaces/other\"].allowedTools == [\"Bash\"]" /tmp/cc/.claude.json >/dev/null'
+
 # A stand-in broker, so the clients get past the token fetch to what they do
 # with it. Without one, a gh shim that execs itself forever still "fails
 # fast" at the fetch, and the loop check below would be vacuous. It answers

@@ -85,6 +85,7 @@ func TestDeleteRemovesRootOwnedFiles(t *testing.T) {
 	cfg.SocketGroup, cfg.LabelPrefix = g.Name, p
 	cfg.GitHubAppID, cfg.GitHubAppKey, cfg.GitHubAPI = 4242, key, f.URL
 	cfg.BotName, cfg.BotEmail = "krelinga-drydock-dev[bot]", botEmail
+	cfg.Feature, cfg.ClaudeVolume = newFeatureRegistry(t).Drydock, claudeVolume(p)
 
 	srv, err := server.New(ctx, cfg, sys.Production())
 	if err != nil {

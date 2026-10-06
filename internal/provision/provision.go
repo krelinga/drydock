@@ -91,6 +91,17 @@ type Provisioner struct {
 	// FeatureOptions its options: botName and botEmail.
 	Feature        string
 	FeatureOptions map[string]any
+	// ClaudeVolume is the shared Claude credential volume (config.ClaudeVolume,
+	// §7.1): step 4 makes it if absent, and up mounts it at the Feature's
+	// CLAUDE_CONFIG_DIR. Empty fails step 4 rather than giving a workspace a
+	// login of its own.
+	ClaudeVolume string
+	// ClaudeCodeVersion is the Claude Code version step 7 requires `claude
+	// --version` to report: classify.ClaudeCodeVersion, the version whose
+	// output the classifiers were recorded against, which the server also
+	// passes as the Feature's claudeCodeVersion option. Empty skips the
+	// comparison but not the check that claude runs.
+	ClaudeCodeVersion string
 	// RemoteEnv is added to every workspace's --remote-env, beside
 	// DRYDOCK_WORKSPACE and DRYDOCK_REPO. Empty in production; a test sets
 	// DRYDOCK_GITHUB_HOST to point the Feature's helper at a fake.

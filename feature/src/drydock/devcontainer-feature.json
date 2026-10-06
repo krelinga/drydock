@@ -1,10 +1,15 @@
 {
   "id": "drydock",
-  "version": "0.3.1",
+  "version": "1.0.0",
   "name": "Drydock",
-  "description": "What a Drydock workspace needs inside its container: GitHub access through the per-workspace token broker (a git credential helper and a gh shim), the agent's commit identity, and the drydock/ branch guard; and the repository secrets granted to it, delivered before every command through CLAUDE_ENV_FILE.",
+  "description": "What a Drydock workspace needs inside its container: Claude Code at a pinned version, configured on Drydock's shared credential volume and checked fit for a headless Remote Control session; GitHub access through the per-workspace token broker (a git credential helper and a gh shim), the agent's commit identity, and the drydock/ branch guard; and the repository secrets granted to it, delivered before every command through CLAUDE_ENV_FILE.",
   "documentationURL": "https://github.com/krelinga/drydock/blob/main/docs/design/overall/drydock-design.md#11-the-devcontainer-feature",
   "options": {
+    "claudeCodeVersion": {
+      "type": "string",
+      "default": "2.1.289",
+      "description": "The exact Claude Code version to install, X.Y.Z — never latest or stable. Pinned because Drydock scrapes its terminal output and depends on undocumented internals of one version (design §11); Drydock passes the version it was built against."
+    },
     "botName": {
       "type": "string",
       "default": "",
@@ -30,9 +35,12 @@
     "ghcr.io/devcontainers/features/github-cli"
   ],
   "containerEnv": {
+    "CLAUDE_CONFIG_DIR": "/home/vscode/.claude",
+    "DISABLE_AUTOUPDATER": "1",
     "DRYDOCK_BROKER_SOCK": "/run/drydock/broker.sock",
     "CLAUDE_ENV_FILE": "/usr/local/drydock/etc/claude-env.sh",
     "PATH": "/usr/local/drydock/bin:${PATH}"
   },
+  "postCreateCommand": "/usr/local/drydock/bin/drydock-preflight && /usr/local/drydock/bin/drydock-claude-config",
   "postStartCommand": "/usr/local/drydock/bin/drydock-probe"
 }

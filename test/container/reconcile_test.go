@@ -58,9 +58,19 @@ func prefix(t *testing.T) string {
 				exec.Command("docker", append([]string{"rm", "-f"}, ids...)...).Run()
 			}
 		}
+		// The shared credential volume step 4 made, found by the label it
+		// carries — after the containers that mounted it are gone.
+		out, _ := exec.Command("docker", "volume", "ls", "-q", "--filter", "label="+p+".claude-config").Output()
+		if vs := strings.Fields(string(out)); len(vs) > 0 {
+			exec.Command("docker", append([]string{"volume", "rm", "-f"}, vs...)...).Run()
+		}
 	})
 	return p
 }
+
+// claudeVolume is the test Drydock's shared credential volume: its own, so
+// no test touches another's login, or the devcontainer's.
+func claudeVolume(p string) string { return p + ".claude" }
 
 // docker runs a docker command and returns its stdout. Stdout only: on a
 // cold cache `docker run` reports the image pull on stderr, and mixing the two

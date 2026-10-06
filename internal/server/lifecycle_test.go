@@ -28,12 +28,9 @@ import (
 // real daemon.
 func fakeCLIs(t *testing.T, origin string) subproc.Runner {
 	t.Helper()
-	dc := fakeDevcontainer(t, origin).(subproc.Exec).Resolver.(subproc.FixedResolver)["devcontainer"]
-	d := filepath.Join(t.TempDir(), "docker")
-	if err := os.WriteFile(d, []byte("#!/bin/sh\ncase \"$1\" in ps|stop|rm) exit 0 ;; esac\nexit 64\n"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	return subproc.Exec{Resolver: subproc.FixedResolver{"devcontainer": dc, "docker": d}}
+	// fakeDevcontainer's docker answers ps, stop and rm as well as step 4's
+	// volume commands.
+	return fakeDevcontainer(t, origin)
 }
 
 // appServer is a server with the fake GitHub as its App and the fake CLIs,

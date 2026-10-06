@@ -73,6 +73,20 @@ run)
     case "$a" in type=bind,source=*) src=${a#type=bind,source=}; src=${src%%,target=*} ;; esac
   done
   find "$src" -mindepth 1 -delete ;;
+volume)
+  # Volumes as files, vols/<name>.json being what inspect prints; create of
+  # an existing name is a no-op, as the real one is.
+  v="$dir/vols"; mkdir -p "$v"
+  case "$2" in
+  ls) ls "$v" | sed 's/\.json$//' ;;
+  create)
+    shift 2; label=
+    while [ "$1" != -- ]; do [ "$1" = --label ] && { label=$2; shift; }; shift; done
+    [ -e "$v/$2.json" ] || printf '{"Name":"%s","Driver":"local","Labels":{"%s":"%s"}}' "$2" "${label%%=*}" "${label#*=}" >"$v/$2.json"
+    echo "$2" ;;
+  inspect) printf '[%s]\n' "$(cat "$v/$4.json")" ;;
+  *) exit 64 ;;
+  esac ;;
 *) exit 64 ;;
 esac
 `

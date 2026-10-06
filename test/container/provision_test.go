@@ -18,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/krelinga/drydock/internal/classify"
 	"github.com/krelinga/drydock/internal/config"
 	"github.com/krelinga/drydock/internal/github/githubtest"
 	"github.com/krelinga/drydock/internal/provision"
@@ -106,6 +107,7 @@ func TestCreateWorkspaceThroughTheServer(t *testing.T) {
 	cfg.GitHubAppID, cfg.GitHubAppKey, cfg.GitHubAPI = 4242, key, f.URL
 	cfg.BotName, cfg.BotEmail = "krelinga-drydock-dev[bot]", botEmail
 	cfg.Feature = reg.Drydock
+	cfg.ClaudeVolume = claudeVolume(p)
 
 	srv, err := server.New(context.Background(), cfg, sys.Production())
 	if err != nil {
@@ -223,6 +225,42 @@ func TestCreateWorkspaceThroughTheServer(t *testing.T) {
 	// from (the published one before 0.3.0 does not), and gh is there.
 	if out, err := execIn("101", "grep GH_INSTALLED_BY= /usr/local/drydock/etc/feature.env && /usr/local/drydock/real/gh --version 2>/dev/null || /usr/bin/gh --version"); err != nil || !strings.Contains(out, "gh version") {
 		t.Errorf("the workspace's Feature: exec %v:\n%s", err, out)
+	}
+
+	// Claude Code (design §7.1, §11). In every workspace: the pinned version
+	// is the claude found, a login shell included; CLAUDE_CONFIG_DIR is the
+	// one mount at the Feature's path; and postCreate wrote the two keys
+	// whose absence hangs a headless remote-control, for the workspace
+	// folder (step 7's, /workspaces/repo, which every one of these has).
+	wantClaude := classify.ClaudeCodeVersion + " (Claude Code)\n" + classify.ClaudeCodeVersion + " (Claude Code)\n" +
+		"1\n/home/vscode/.claude\n1\n[true,true]\n"
+	for repo := range views {
+		out, err := execIn(repo, `claude --version; bash -lc 'claude --version'; echo "$DISABLE_AUTOUPDATER"; echo "$CLAUDE_CONFIG_DIR"
+awk '$5 == "/home/vscode/.claude"' /proc/self/mountinfo | wc -l
+jq -c '[.remoteDialogSeen, .projects["/workspaces/repo"].hasTrustDialogAccepted]' "$CLAUDE_CONFIG_DIR/.claude.json"`)
+		if err != nil || out != wantClaude {
+			t.Errorf("repository %s: Claude Code in the container: exec %v:\n%s\nwant:\n%s", repo, err, out, wantClaude)
+		}
+	}
+	// And it is one volume, the configured one, in all of them — Docker's
+	// answer, not the container's — and local and labelled as step 4 made
+	// it. The sharing itself, seen from inside: what one workspace writes
+	// there, another reads.
+	for repo, id := range ids {
+		cid := docker(t, "ps", "-q", "--no-trunc", "--filter", "label="+p+".workspace="+id)
+		if got := docker(t, "inspect", "-f", `{{range .Mounts}}{{if eq .Destination "/home/vscode/.claude"}}{{.Type}} {{.Name}}{{end}}{{end}}`, cid); got != "volume "+claudeVolume(p) {
+			t.Errorf("repository %s: /home/vscode/.claude is %q", repo, got)
+		}
+	}
+	if got := docker(t, "volume", "inspect", "-f", `{{.Driver}} {{index .Labels "`+p+`.claude-config"}} {{len .Options}}`, claudeVolume(p)); got != "local true 0" {
+		t.Errorf("the shared volume: %q", got)
+	}
+	shared := fmt.Sprintf("shared-%x", time.Now().UnixNano())
+	if _, err := execIn("101", `echo `+shared+` > "$CLAUDE_CONFIG_DIR/drydock-test-shared"`); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := execIn("102", `cat "$CLAUDE_CONFIG_DIR/drydock-test-shared"`); err != nil || strings.TrimSpace(out) != shared {
+		t.Errorf("what one workspace wrote to the shared volume, another read as %q (%v)", out, err)
 	}
 
 	// Secrets reach a provisioned container the way Claude Code would run a

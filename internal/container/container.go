@@ -23,6 +23,7 @@ import (
 	"strings"
 
 	"github.com/krelinga/drydock/internal/classify"
+	"github.com/krelinga/drydock/internal/config"
 	"github.com/krelinga/drydock/internal/subproc"
 )
 
@@ -65,6 +66,11 @@ type UpSpec struct {
 	// bind-mounted at BrokerMountPoint in this container and no other
 	// (§6 step 5, §9.1). Empty mounts nothing.
 	BrokerSocket string
+	// ClaudeVolume is the shared Claude credential volume (§7.1), mounted at
+	// ClaudeConfigMountPoint — the same volume in every workspace, which is
+	// what makes one login serve them all. EnsureClaudeVolume makes it.
+	// Empty mounts nothing, and the Feature then refuses the container.
+	ClaudeVolume string
 	// Features is --additional-features: feature reference → options. It
 	// composes with what the repository declares rather than replacing it.
 	Features map[string]map[string]any
@@ -144,6 +150,12 @@ func (m Manager) Args(s UpSpec) ([]string, error) {
 			return nil, fmt.Errorf("container: broker socket path %q must be absolute and free of ',' and '='", s.BrokerSocket)
 		}
 		args = append(args, "--mount", "type=bind,source="+s.BrokerSocket+",target="+BrokerMountPoint)
+	}
+	if s.ClaudeVolume != "" {
+		if !config.ValidVolumeName(s.ClaudeVolume) {
+			return nil, fmt.Errorf("container: %q is not a volume name", s.ClaudeVolume)
+		}
+		args = append(args, "--mount", "type=volume,source="+s.ClaudeVolume+",target="+ClaudeConfigMountPoint)
 	}
 	if len(s.Features) > 0 {
 		b, err := json.Marshal(s.Features)

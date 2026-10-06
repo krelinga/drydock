@@ -150,13 +150,33 @@ func (r *runState) resolveLockfile(w workspace.Workspace, configFile string) err
 	return nil
 }
 
-// credentialVolume is §6 step 4, and does nothing yet: the shared Claude
-// credential volume (§7.1) arrives with Claude support in Phase 5. The step
-// is kept, and says so, rather than being left out — so the pipeline the UI
-// shows is the design's eight steps from the first workspace, and Phase 5
-// fills a step in rather than adding one.
-func (r *runState) credentialVolume(context.Context, workspace.Workspace) error {
-	return workspace.Note("Nothing to do yet: the shared Claude credential volume arrives with Claude support.")
+// credentialVolume is §6 step 4: the shared Claude credential volume (§7.1),
+// made if it is absent — local driver, labelled with this Drydock's prefix —
+// and checked either way. Every workspace mounts the same one at its
+// CLAUDE_CONFIG_DIR, so one login serves them all. It runs on every create,
+// start and rebuild and is a no-op once the volume is there; it never removes
+// or changes a volume, and refuses one this Drydock did not make or that is
+// not a plain local volume (container.EnsureClaudeVolume) — Claude Code's
+// refresh lock inside it needs mkdir to be atomic, which NFS and CIFS do not
+// give (Spike 00).
+func (r *runState) credentialVolume(ctx context.Context, _ workspace.Workspace) error {
+	name := r.p.ClaudeVolume
+	if name == "" {
+		return workspace.Public("No shared Claude credential volume is configured.",
+			errors.New("provision: ClaudeVolume is empty"))
+	}
+	created, err := r.p.Containers.EnsureClaudeVolume(ctx, name)
+	switch {
+	case errors.Is(err, container.ErrForeignVolume):
+		return workspace.Public(fmt.Sprintf("A Docker volume named %s exists but was not made by this Drydock, so it is not used as the shared Claude credential volume.", name), err)
+	case errors.Is(err, container.ErrVolumeNotLocal):
+		return workspace.Public(fmt.Sprintf("The shared Claude credential volume %s is not a plain local Docker volume. It must be: Claude Code's refresh lock is not safe on a network filesystem.", name), err)
+	case err != nil:
+		return workspace.Public("Drydock could not create or check the shared Claude credential volume.", err)
+	case created:
+		return workspace.Note(fmt.Sprintf("Created the shared Claude credential volume %s.", name))
+	}
+	return workspace.Note(fmt.Sprintf("The shared Claude credential volume %s is there.", name))
 }
 
 // brokerSocket is §6 step 5: the workspace's token-broker socket.
@@ -192,6 +212,7 @@ func (r *runState) up(ctx context.Context, w workspace.Workspace) error {
 		WorkspaceID: w.ID, RepositoryID: w.RepositoryID, FullName: fullName, Branch: w.Branch,
 		Folder:         w.HostPath,
 		BrokerSocket:   r.p.Broker.SocketPath(w.ID),
+		ClaudeVolume:   r.p.ClaudeVolume,
 		Features:       map[string]map[string]any{r.p.Feature: r.p.FeatureOptions},
 		RemoteEnv:      r.remoteEnv(w, fullName),
 		OverrideConfig: r.override,
@@ -239,16 +260,18 @@ func (r *runState) remoteEnv(w workspace.Workspace, fullName string) map[string]
 }
 
 // verify is §6 step 7: a green probe is what moves the workspace to running.
-// Two checks, each through `devcontainer exec` as the remote user:
+// Three checks, each through `devcontainer exec` as the remote user:
 //
 //   - drydock-probe, one PING over the broker socket — the Feature is
 //     installed and the socket is mounted and answering;
 //   - git -C <folder> remote -v — the clone is where the container's
 //     workspace folder says, and its origin is the plain repository URL the
-//     clone left (no credential, no helper: the Feature's is the only one).
-//
-// The design's third check, `claude --version`, belongs to Phase 5, which
-// installs Claude Code; it is not faked here.
+//     clone left (no credential, no helper: the Feature's is the only one);
+//   - claude --version — Claude Code runs, and is the version this Drydock's
+//     classifiers were recorded against. A repository's image can carry a
+//     Claude Code of its own; the Feature puts its pinned one first on PATH,
+//     and this is where a container in which that did not hold is refused,
+//     rather than a session server scraped with the wrong version's patterns.
 func (r *runState) verify(ctx context.Context, w workspace.Workspace) error {
 	fullName, err := r.fullName(ctx, w)
 	if err != nil {
@@ -284,6 +307,16 @@ func (r *runState) verify(ctx context.Context, w workspace.Workspace) error {
 		r.p.logTail(w.ID, "probe", []byte(out))
 		return workspace.Public("The probe inside the container failed: the clone's origin is not the repository.",
 			fmt.Errorf("git remote -v has no %q", want))
+	}
+	out, err = exec("claude", "--version")
+	if err != nil {
+		r.p.logTail(w.ID, "probe", []byte(out))
+		return workspace.Public("The probe inside the container failed: Claude Code did not run.", err)
+	}
+	if v := r.p.ClaudeCodeVersion; v != "" && !strings.HasPrefix(out, v+" ") {
+		r.p.logTail(w.ID, "probe", []byte(out))
+		return workspace.Public(fmt.Sprintf("The probe inside the container failed: Claude Code is not version %s, the one Drydock was built for.", v),
+			fmt.Errorf("claude --version said %q", strings.TrimSpace(out)))
 	}
 	return nil
 }

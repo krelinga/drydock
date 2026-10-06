@@ -1,0 +1,100 @@
+#!/bin/sh
+# drydock-claude-config [folder] — the second half of the Feature's
+# postCreateCommand (design §11, Spike 02): write the two keys in
+# $CLAUDE_CONFIG_DIR/.claude.json whose absence makes a headless
+# `claude remote-control` HANG rather than fail —
+#
+#   projects["<folder>"].hasTrustDialogAccepted = true   (else `Trust <dir>? [y/N]`
+#                                                         on the supervisor's PTY)
+#   remoteDialogSeen = true                              (else `Enable Remote
+#                                                         Control? (y/n)`)
+#
+# <folder> is the workspace folder, which is where postCreateCommand runs, so
+# it defaults to the current directory. Trust is keyed on the absolute path.
+#
+# The third gate, oauthAccount, is not written here: it comes from the login
+# (§7.2), and this must never clobber it. So the file is merged, not
+# rewritten: every other key in it survives, byte for byte as jq reads it.
+#
+# The file is on the shared credential volume, so other containers' Claude
+# Code processes write it too — and Claude Code serialises its own writes with
+# a proper-lockfile lock at "$CLAUDE_CONFIG_DIR/.claude.json.lock", a
+# directory made with mkdir(2), re-reading the file under the lock before it
+# writes (read out of 2.1.289; the same mechanism Spike 00 measured for the
+# refresh lock). This takes the same lock the same way, so neither side can
+# write over an update the other made between its read and its write:
+#
+#   * mkdir the lock, retrying once a second for up to 60 s. Never steal it:
+#     Claude Code takes over a lock whose mtime is stale itself, and a second
+#     party deciding a lock is abandoned races the holder's heartbeat — the
+#     reasoning that forbids reaping the refresh lock (Spike 00, CLAUDE.md).
+#     Drydock's own hold is a jq run long, so a lock held for a minute is not
+#     ours, and the create fails saying so rather than waiting forever.
+#   * Under the lock: read, merge, write a temporary file in the same
+#     directory, and rename(2) it over the old one, so no reader ever sees a
+#     torn file (Claude Code's own writes are rename()s too).
+#   * Release the lock on every exit.
+#
+# A file that is not a JSON object is refused rather than replaced: it may
+# hold the fleet's login record.
+set -eu
+
+die() {
+	echo "drydock feature: $*" >&2
+	exit 1
+}
+
+dir=${CLAUDE_CONFIG_DIR:-}
+[ -n "$dir" ] || die "CLAUDE_CONFIG_DIR is not set, so there is no shared Claude configuration to write."
+[ -d "$dir" ] || die "CLAUDE_CONFIG_DIR $dir is not a directory."
+folder=${1:-$PWD}
+case $folder in
+/*) ;;
+*) die "the workspace folder '$folder' is not an absolute path." ;;
+esac
+
+file=$dir/.claude.json
+lock=$file.lock
+tmp=$dir/.claude.json.drydock.$$
+umask 077
+
+held=false
+cleanup() {
+	rm -f "$tmp"
+	if $held; then rmdir "$lock" 2>/dev/null || true; fi
+}
+trap cleanup EXIT
+trap 'exit 1' HUP INT TERM
+
+tries=0
+vanished=0
+until mkdir "$lock" 2>/dev/null; do
+	if [ ! -d "$lock" ]; then
+		# The holder released it between the mkdir and this look: try
+		# again at once. Only a mkdir that keeps failing with no lock there
+		# is a real failure (a read-only or full volume, say).
+		vanished=$((vanished + 1))
+		[ "$vanished" -lt 100 ] || die "cannot create the lock $lock."
+		continue
+	fi
+	vanished=0
+	tries=$((tries + 1))
+	[ "$tries" -lt "${DRYDOCK_CLAUDE_LOCK_WAIT:-60}" ] ||
+		die "$lock has been held for over a minute, so the Remote Control keys could not be written to $file. Claude Code takes over a stale lock itself; if no Claude Code process is running anywhere on the shared volume, remove the directory and rebuild."
+	sleep 1
+done
+held=true
+
+merge='.remoteDialogSeen = true | .projects[$ws].hasTrustDialogAccepted = true'
+if [ -e "$file" ]; then
+	jq -e 'type == "object"' "$file" >/dev/null 2>&1 ||
+		die "$file is not a JSON object, so Drydock will not write over it: it may hold the shared login's account record. Repair or remove it, then rebuild."
+	if jq -e --arg ws "$folder" '.remoteDialogSeen == true and .projects[$ws].hasTrustDialogAccepted == true' "$file" >/dev/null 2>&1; then
+		exit 0
+	fi
+	jq --arg ws "$folder" "$merge" "$file" >"$tmp"
+else
+	jq -n --arg ws "$folder" "$merge" >"$tmp"
+fi
+chmod 0600 "$tmp"
+mv -f "$tmp" "$file"

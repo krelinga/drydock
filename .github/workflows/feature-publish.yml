@@ -2,7 +2,8 @@
 # feature/src changes on main. The version is devcontainer-feature.json's own,
 # independent of Drydock's release: bump it there to publish, and the action
 # skips a version that already exists. Drydock references it by major tag
-# (ghcr.io/krelinga/drydock/drydock:0) in --additional-features.
+# (ghcr.io/krelinga/drydock/drydock:1) in --additional-features; a breaking
+# Feature change bumps the major, so an older Drydock keeps the one it knows.
 name: feature-publish
 
 on:

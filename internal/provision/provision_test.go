@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/krelinga/drydock/internal/classify"
 	"github.com/krelinga/drydock/internal/clone"
 	"github.com/krelinga/drydock/internal/container"
 	"github.com/krelinga/drydock/internal/events"
@@ -34,7 +35,9 @@ const (
 	gone  = 103 // removed from the installation
 )
 
-const feature = "ghcr.io/krelinga/drydock/drydock:0"
+const feature = "ghcr.io/krelinga/drydock/drydock:1"
+
+const claudeVolume = "drydock-test-claude-config"
 
 // stubBroker stands in for internal/broker: the socket is the broker's
 // business and has its own tests; here what matters is that the step opens
@@ -111,10 +114,24 @@ func newFakeCLI(t *testing.T, origin string) *fakeCLI {
 		// The probe answers; git prints the origin the clone left.
 		exec: `case " $* " in
 *" drydock-probe "*) exit 0 ;;
+*" claude --version "*) echo '2.1.289 (Claude Code)' ;;
 *" remote -v "*) printf 'origin\t%s (fetch)\norigin\t%s (push)\n' "` + origin + `" "` + origin + `" ;;
 *) exit 9 ;;
 esac`,
 	}
+}
+
+// claudeAnswers is the default exec body with `claude --version` answered by
+// body instead.
+func claudeAnswers(e *env, body string) string {
+	return strings.Replace(e.cli.exec, "echo '2.1.289 (Claude Code)'", body, 1)
+}
+
+// seedVolume puts a volume on the fake docker before a run, as inspect
+// would print it.
+func seedVolume(e *env, json string) {
+	os.MkdirAll(filepath.Join(e.cli.dir, "vols"), 0o700)
+	os.WriteFile(filepath.Join(e.cli.dir, "vols", claudeVolume+".json"), []byte(json), 0o600)
 }
 
 func (c *fakeCLI) runner(t *testing.T) subproc.Runner {
@@ -222,11 +239,13 @@ func newEnv(t *testing.T, setup ...func(*githubtest.Fake)) *env {
 		Workspaces: ws, Events: log, Broker: b,
 		Cloner: &clone.Cloner{DB: db.DB, GitHub: &github.Client{AppID: 4242, Key: key, BaseURL: f.URL, Clock: clock},
 			Runner: subproc.Exec{}, BaseURL: f.URL},
-		Containers:     container.Manager{LabelPrefix: "drydock.test.provision"},
-		Feature:        feature,
-		FeatureOptions: map[string]any{"botName": "krelinga-drydock-dev[bot]", "botEmail": "1+x[bot]@users.noreply.github.com"},
-		Timeout:        time.Minute,
-		Logf:           t.Logf,
+		Containers:        container.Manager{LabelPrefix: "drydock.test.provision"},
+		Feature:           feature,
+		FeatureOptions:    map[string]any{"botName": "krelinga-drydock-dev[bot]", "botEmail": "1+x[bot]@users.noreply.github.com"},
+		ClaudeVolume:      claudeVolume,
+		ClaudeCodeVersion: classify.ClaudeCodeVersion,
+		Timeout:           time.Minute,
+		Logf:              t.Logf,
 	}
 	return &env{p: p, cli: cli, fake: f, broker: b, log: log, root: root, dbPath: dbPath}
 }
@@ -309,10 +328,11 @@ func TestRepositoryWithAConfigReachesRunning(t *testing.T) {
 	if v.Branch != "main" {
 		t.Errorf("branch %q; the default branch is main", v.Branch)
 	}
-	for _, st := range []workspace.Step{workspace.StepCredentialVolume, workspace.StepSessionServer} {
-		if d := v.Steps[st].Detail; !strings.Contains(d, "Nothing to do yet") {
-			t.Errorf("%s says %q; a step that does nothing must say so", st, d)
-		}
+	if d := v.Steps[workspace.StepSessionServer].Detail; !strings.Contains(d, "Nothing to do yet") {
+		t.Errorf("session_server says %q; a step that does nothing must say so", d)
+	}
+	if d := v.Steps[workspace.StepCredentialVolume].Detail; d != "Created the shared Claude credential volume "+claudeVolume+"." {
+		t.Errorf("credential_volume says %q", d)
 	}
 	if d := v.Steps[workspace.StepUp].Detail; d != "" {
 		t.Errorf("up has a detail %q on success", d)
@@ -332,7 +352,8 @@ func TestRepositoryWithAConfigReachesRunning(t *testing.T) {
 	if got := flag(up, "--workspace-folder"); len(got) != 1 || got[0] != filepath.Join(e.root, v.ID, "repo") {
 		t.Errorf("--workspace-folder %v", got)
 	}
-	if got := flag(up, "--mount"); len(got) != 1 || got[0] != "type=bind,source=/run/drydock/sock/"+v.ID+".sock,target="+container.BrokerMountPoint {
+	if got := flag(up, "--mount"); len(got) != 2 || got[0] != "type=bind,source=/run/drydock/sock/"+v.ID+".sock,target="+container.BrokerMountPoint ||
+		got[1] != "type=volume,source="+claudeVolume+",target=/home/vscode/.claude" {
 		t.Errorf("--mount %v", got)
 	}
 	var feats map[string]map[string]string
@@ -352,12 +373,13 @@ func TestRepositoryWithAConfigReachesRunning(t *testing.T) {
 	}
 
 	execs := e.cli.callsTo(t, "exec")
-	if len(execs) != 2 {
+	if len(execs) != 3 {
 		t.Fatalf("exec calls: %v", execs)
 	}
-	probe, git := strings.Join(execs[0], " "), strings.Join(execs[1], " ")
-	if !strings.HasSuffix(probe, "-- drydock-probe") || !strings.HasSuffix(git, "-- git -C /workspaces/repo remote -v") {
-		t.Errorf("the probe ran\n %s\n %s", probe, git)
+	probe, git, claude := strings.Join(execs[0], " "), strings.Join(execs[1], " "), strings.Join(execs[2], " ")
+	if !strings.HasSuffix(probe, "-- drydock-probe") || !strings.HasSuffix(git, "-- git -C /workspaces/repo remote -v") ||
+		!strings.HasSuffix(claude, "-- claude --version") {
+		t.Errorf("the probe ran\n %s\n %s\n %s", probe, git, claude)
 	}
 	// The remote env is given to exec again: up's does not persist.
 	if !strings.Contains(git, "--remote-env DRYDOCK_WORKSPACE="+v.ID) {
@@ -430,6 +452,71 @@ func gitOut(t *testing.T, dir string, args ...string) string {
 	return string(out)
 }
 
+// TestTheCredentialVolumeIsMadeOnceAndShared is §6 step 4 against a fake
+// docker that keeps its volumes: the first workspace's run creates the shared
+// volume, labelled with the prefix; a second workspace and a rebuild find it
+// and create nothing; and every up mounts that one volume at the Feature's
+// CLAUDE_CONFIG_DIR, which is what makes one login serve them all.
+func TestTheCredentialVolumeIsMadeOnceAndShared(t *testing.T) {
+	e := newEnv(t)
+	// Two repositories, so git's origin is whichever this exec is for.
+	e.cli.exec = `case " $* " in
+*" drydock-probe "*) exit 0 ;;
+*" claude --version "*) echo '2.1.289 (Claude Code)' ;;
+*" remote -v "*) for a; do case $a in DRYDOCK_REPO=*) r=${a#DRYDOCK_REPO=} ;; esac; done
+  printf 'origin\t%s/%s.git (fetch)\n' '` + e.fake.URL + `' "$r" ;;
+*) exit 9 ;;
+esac`
+	e.wire(t)
+	ctx := context.Background()
+	creates := func() (n int) {
+		for _, a := range e.cli.callsTo(t, "docker") {
+			if len(a) > 2 && a[1] == "volume" && a[2] == "create" {
+				if got := strings.Join(a[1:], " "); got != "volume create --driver local --label drydock.test.provision.claude-config=true -- "+claudeVolume {
+					t.Errorf("create argv %q", got)
+				}
+				n++
+			}
+		}
+		return n
+	}
+
+	first := e.create(t, alpha, "")
+	if d := first.Steps[workspace.StepCredentialVolume].Detail; d != "Created the shared Claude credential volume "+claudeVolume+"." {
+		t.Errorf("first workspace's credential_volume says %q", d)
+	}
+	if n := creates(); n != 1 {
+		t.Fatalf("after one workspace, %d creates", n)
+	}
+	second := e.create(t, plain, "")
+	if err := e.p.Rebuild(ctx, first.ID); err != nil {
+		t.Fatal(err)
+	}
+	e.p.wg.Wait()
+	first = e.view(t, first.ID)
+	for _, v := range []workspace.View{first, second} {
+		if v.State != workspace.Running {
+			t.Fatalf("%s: %s (%s)", v.ID, v.State, deref(v.StateDetail))
+		}
+		if d := v.Steps[workspace.StepCredentialVolume].Detail; d != "The shared Claude credential volume "+claudeVolume+" is there." {
+			t.Errorf("%s: credential_volume says %q", v.ID, d)
+		}
+	}
+	if n := creates(); n != 1 {
+		t.Errorf("after two workspaces and a rebuild, %d creates; want the first only", n)
+	}
+	ups := e.cli.callsTo(t, "up")
+	if len(ups) != 3 {
+		t.Fatalf("up calls: %d", len(ups))
+	}
+	for _, up := range ups {
+		mounts := flag(up, "--mount")
+		if len(mounts) != 2 || mounts[1] != "type=volume,source="+claudeVolume+",target="+container.ClaudeConfigMountPoint {
+			t.Errorf("up mounts %v", mounts)
+		}
+	}
+}
+
 // TestEachRealStepNamesItsFailure extends the workspace package's "every
 // step writes an event naming itself" from stubs to the real step functions:
 // one scripted failure per step that can fail, each asserting the step that
@@ -478,6 +565,24 @@ func TestEachRealStepNamesItsFailure(t *testing.T) {
 			break_: func(e *env) {
 				e.cli.exec = "case \" $* \" in *\" remote -v \"*) printf 'origin\\thttps://example.com/other.git (fetch)\\n' ;; esac"
 			}},
+		{name: "verify claude missing", repo: alpha, step: workspace.StepVerify, detail: "Claude Code did not run",
+			break_: func(e *env) { e.cli.exec = claudeAnswers(e, "echo 'claude: not found' >&2; exit 127") }},
+		// The image's own Claude Code first on PATH, or a Feature that
+		// installed another: the classifiers are this version's.
+		{name: "verify claude version", repo: alpha, step: workspace.StepVerify,
+			detail: "Claude Code is not version " + classify.ClaudeCodeVersion,
+			break_: func(e *env) { e.cli.exec = claudeAnswers(e, "echo '2.1.246 (Claude Code)'") }},
+		{name: "credential_volume foreign", repo: alpha, step: workspace.StepCredentialVolume,
+			detail: "exists but was not made by this Drydock",
+			break_: func(e *env) { seedVolume(e, `{"Name":"`+claudeVolume+`","Driver":"local","Labels":{}}`) }},
+		{name: "credential_volume nfs", repo: alpha, step: workspace.StepCredentialVolume,
+			detail: "is not a plain local Docker volume",
+			break_: func(e *env) {
+				seedVolume(e, `{"Name":"`+claudeVolume+`","Driver":"local","Labels":{"drydock.test.provision.claude-config":"true"},"Options":{"type":"nfs","device":":/claude"}}`)
+			}},
+		{name: "credential_volume docker", repo: alpha, step: workspace.StepCredentialVolume,
+			detail: "could not create or check the shared Claude credential volume",
+			break_: func(e *env) { os.WriteFile(filepath.Join(e.cli.dir, "docker-fail-volume"), nil, 0o600) }},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
