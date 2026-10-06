@@ -67,8 +67,17 @@ trap cleanup EXIT
 trap 'exit 1' HUP INT TERM
 
 tries=0
+vanished=0
 until mkdir "$lock" 2>/dev/null; do
-	[ -d "$lock" ] || die "cannot create the lock $lock."
+	if [ ! -d "$lock" ]; then
+		# The holder released it between the mkdir and this look: try
+		# again at once. Only a mkdir that keeps failing with no lock there
+		# is a real failure (a read-only or full volume, say).
+		vanished=$((vanished + 1))
+		[ "$vanished" -lt 100 ] || die "cannot create the lock $lock."
+		continue
+	fi
+	vanished=0
 	tries=$((tries + 1))
 	[ "$tries" -lt "${DRYDOCK_CLAUDE_LOCK_WAIT:-60}" ] ||
 		die "$lock has been held for over a minute, so the Remote Control keys could not be written to $file. Claude Code takes over a stale lock itself; if no Claude Code process is running anywhere on the shared volume, remove the directory and rebuild."
