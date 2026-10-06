@@ -78,6 +78,42 @@ describe('one fault, ten cards', () => {
     expect(failed[0]!.find('[data-test="rebuild"]').exists()).toBe(true)
   })
 
+  // Phase 5: the same fleet with session servers that report — each degraded,
+  // the very cards that would carry ten Restart session server buttons. The
+  // override drops the session half, and the waiting sentence is said once
+  // per card, by the identity note, never also by the card's own line.
+  it.each(['blanked', 'absent', 'expired'] as const)('%s with session servers: one waiting sentence per card, no restart button', async (state) => {
+    const b = fleet(state)
+    b.supervisor = true
+    for (const w of Object.values(b.workspaces)) {
+      if (w.state === 'running') {
+        w.supervisor = { state: 'degraded', reason: 'budget_spent', detail: 'Parked.', restart_count: 6, at: new Date().toISOString() }
+      }
+    }
+    const { wrapper } = await mountApp('/')
+    const running = wrapper.findAll('[data-test="running-row"]').filter((r) => !r.text().includes('Failed'))
+    expect(running.length).toBe(RUNNING)
+    for (const r of running) {
+      expect(r.text().split('Waiting on Claude sign-in').length - 1).toBe(1)
+      expect(r.find('[data-test="running-state"]').text()).toBe('Running')
+      expect(r.find('[data-test="restart-session"]').exists()).toBe(false)
+    }
+    expect(signInButtons(wrapper).length).toBe(1)
+  })
+
+  it('control: the same session servers under ok each say degraded and offer a restart', async () => {
+    const b = fleet('ok')
+    b.supervisor = true
+    for (const w of Object.values(b.workspaces)) {
+      if (w.state === 'running') {
+        w.supervisor = { state: 'degraded', reason: 'budget_spent', detail: 'Parked.', restart_count: 6, at: new Date().toISOString() }
+      }
+    }
+    const { wrapper } = await mountApp('/')
+    expect(wrapper.findAll('[data-test="running-row"] [data-test="restart-session"]').length).toBe(RUNNING)
+    expect(wrapper.text()).not.toContain('Waiting on Claude sign-in')
+  })
+
   it('blanked and absent are told apart on screen', async () => {
     fleet('blanked')
     const blanked = await mountApp('/')

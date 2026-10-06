@@ -26,6 +26,9 @@ export function createAppRouter(history: RouterHistory): Router {
       // §5: a route on a phone. (The ≥ 900 px column beside the list is a
       // layout still to come; the route is what both would render.)
       { path: '/ws/:id', name: 'workspace', component: WorkspaceView, meta: { title: 'Workspace' } },
+      // The session server's log: its own lazy chunk (§5), so a log is never
+      // in the detail payload.
+      { path: '/ws/:id/logs', name: 'workspace-logs', component: () => import('./views/LogsView.vue'), meta: { title: 'Log' } },
       // A lazy chunk, per frontend §3.1: secrets and logs are the two. All
       // three secret routes import one module, so they are one chunk.
       { path: '/secrets', name: 'secrets', component: () => import('./views/secrets').then((m) => m.SecretsListView), meta: { title: 'Secrets' } },

@@ -23,7 +23,24 @@ export type Tone = 'ok' | 'bad' | 'busy' | 'idle'
  * that stuck — the first delete is the detail view's, behind its confirm
  * (§6.5), and never a card's primary action.
  */
-export type CardAction = 'start' | 'stop' | 'rebuild' | 'delete' | null
+export type CardAction =
+  | 'start' | 'stop' | 'rebuild' | 'delete'
+  // The supervisor half's (Phase 5): start or restart the session server
+  // (POST …/supervisor), and open the environment in Claude — a link, the
+  // one action that is not a mutation.
+  | 'start_session' | 'restart_session' | 'open'
+  | null
+
+/**
+ * The fleet's Claude login as the identity watch stored it (design §7.3), or
+ * null when it is not known. It overrides the session half of every card
+ * (§6.6): one cause, one message, one button — and that button is the
+ * banner's, never a card's.
+ */
+export type FleetLogin = 'ok' | 'expiring' | 'expired' | 'blanked' | 'absent' | null
+
+/** The logins under which no session server can run until someone signs in. */
+const SIGNED_OUT = new Set<FleetLogin>(['expired', 'blanked', 'absent'])
 
 /**
  * What is rendered where an action would be: the action, or — when it needs a
@@ -45,6 +62,10 @@ export interface CardStatus {
   /** The sentence under it, when there is one. */
   note: string | null
   action: CardAction
+  /** For `open`: the environment's link (design §8), built from its id. */
+  link?: string | null
+  /** For the waiting row: when the wait began, for its elapsed time. */
+  since?: string | null
 }
 
 const STATE_LABEL: Record<string, string> = {
@@ -85,22 +106,74 @@ export function stepTitle(name: string): string {
 const MOVING = new Set(['pending', 'cloning', 'building'])
 
 /**
- * SEAM (Phase 5): §6.1's rows for `running` × `supervisor.state` — absent,
- * starting, awaiting_login, waiting_registration, serving, degraded, exited —
- * and §6.6's fleet override belong here, fed by a supervisor entity the
- * reducer does not have yet. Until it does, return null and let the
- * workspace half speak. Do not fill this from `workspace.state` alone: a
- * `running` container says nothing about whether a session server is serving,
- * and "Container up, no session" with a Start session button would be a
- * claim, not a reading. When it fills, its action takes the card, Stop moves
- * to the detail view's Actions beside Rebuild, and §6.5 has it confirm when
- * sessions are live.
+ * Reasons that are the container's or Drydock's fault, not the login's: the
+ * fleet override leaves these cards alone (§6.6 keeps the override narrow),
+ * and each points at the fix that can work.
  */
-function supervisorHalf(_w: Workspace): CardStatus | null {
-  return null
+const CONFIG_FAULTS = new Set(['not_trusted', 'hang_remote_dialog', 'hang_trust'])
+
+/**
+ * §6.1's rows for `running` × `supervisor.state`, read from the supervisor
+ * entity — `supervisor.state` events and the views' `supervisor`, never
+ * `workspace.state` — with §6.6's fleet override over them. Its action takes
+ * the card; Stop is the detail view's.
+ */
+function supervisorHalf(w: Workspace, fleet: FleetLogin): CardStatus | null {
+  // A server that does not report a supervisor (older than Phase 5) has said
+  // nothing about a session: the workspace half speaks, as it did then.
+  if (!w.supervisorKnown) return null
+  const s = w.supervisor
+  const configFault = s !== null && s.state === 'degraded' && CONFIG_FAULTS.has(s.reason ?? '')
+  // §6.6: a signed-out fleet replaces the session half of every running
+  // card — no session line, no session button; the banner holds the one Sign
+  // in to Claude — except where the card's own fault is not the login's. The
+  // card says only what is still its own, that the container runs; the
+  // "Waiting on Claude sign-in." under it is WorkspaceIdentityNote's
+  // (lib/identity.ts cardOverlay), so the sentence has one source and
+  // appears once.
+  if (SIGNED_OUT.has(fleet) && !configFault && (s === null || s.state !== 'degraded' || s.reason !== 'bad_command_line')) {
+    return { line: 'Running', tone: 'idle', note: null, action: null }
+  }
+  if (s === null) {
+    return { line: 'Container up, no session', tone: 'idle', note: null, action: 'start_session' }
+  }
+  switch (s.state) {
+    case 'starting':
+      return { line: 'Starting session…', tone: 'busy', note: s.reason === 'backoff' ? s.detail : null, action: null }
+    case 'awaiting_login':
+      // The fix is fleet-wide; the banner has its one button.
+      return { line: 'Claude is not signed in', tone: 'bad', note: s.detail, action: null }
+    case 'waiting_registration':
+      // Not a failure (§8): it retries on its own, and pressing anything is
+      // the mistake. Elapsed time, no action, never the word failed.
+      return {
+        line: 'Waiting for the previous session server to release the folder', tone: 'busy',
+        note: 'This clears on its own; nothing to press.', action: null, since: s.since,
+      }
+    case 'serving': {
+      const sess = w.session
+      const line = sess !== null && sess.capacityUsed !== null && sess.capacityTotal !== null
+        ? `Capacity ${sess.capacityUsed} / ${sess.capacityTotal}`
+        : 'Serving'
+      const link = sess?.url ?? null
+      return { line, tone: 'ok', note: null, action: link !== null ? 'open' : null, link }
+    }
+    case 'degraded':
+      if (configFault) {
+        // §9: the trust record or the consent key is missing — the Feature
+        // writes both at create, so a rebuild is the fix, not a restart.
+        return { line: 'Container misconfigured', tone: 'bad', note: s.detail, action: 'rebuild' }
+      }
+      if (s.reason === 'bad_command_line') {
+        return { line: 'Drydock built a bad command line', tone: 'bad', note: s.detail, action: null }
+      }
+      return { line: 'Session degraded', tone: 'bad', note: s.detail, action: 'restart_session' }
+    case 'exited':
+      return { line: 'Session stopped', tone: 'idle', note: null, action: 'start_session' }
+  }
 }
 
-export function cardStatus(w: Workspace): CardStatus {
+export function cardStatus(w: Workspace, fleet: FleetLogin = null): CardStatus {
   const label = STATE_LABEL[w.state ?? ''] ?? 'Unknown'
   switch (w.state) {
     case 'pending':
@@ -132,7 +205,7 @@ export function cardStatus(w: Workspace): CardStatus {
         const step = w.lastAction!.step
         return { line: `Stop failed while ${ACTION_STEP_LABEL[step] ?? step}`, tone: 'bad', note: w.detail, action: 'stop' }
       }
-      return supervisorHalf(w) ?? { line: label, tone: 'ok', note: w.detail, action: 'stop' }
+      return supervisorHalf(w, fleet) ?? { line: label, tone: 'ok', note: w.detail, action: 'stop' }
     }
     case 'stopped':
       // Fig 3: stopped says what survived, which is what makes Start cheap.
@@ -174,7 +247,11 @@ export type RowAction = 'clone' | CardAction
  * (design §1: "the UI shows you which one to stop").
  */
 export function stoppable(w: Workspace): boolean {
-  return cardStatus(w).action === 'stop'
+  if (w.state !== 'running') return false
+  const a = cardStatus(w).action
+  // A running workspace is stoppable unless a stop is already under way; a
+  // failed stop's card offers Stop again.
+  return a === 'stop' || liveAction(w) === null
 }
 
 /**

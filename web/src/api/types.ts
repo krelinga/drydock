@@ -119,6 +119,58 @@ export interface WorkspaceView {
    * from a server older than it.
    */
   last_action?: ActionView | null
+  /** The env_… the session server advertised (design §8): the card's only link. */
+  environment_id?: string | null
+  /** The latest `supervisor.state` event, or null when no server was ever started. */
+  supervisor?: SupervisorView | null
+  /** The latest `session.status` event, or null before one. */
+  session?: SessionView | null
+}
+
+/** `internal/supervisor` State; the database's CHECK constraint holds the same set. */
+export type SupervisorState =
+  | 'starting' | 'waiting_registration' | 'awaiting_login' | 'serving' | 'degraded' | 'exited'
+
+export const SUPERVISOR_STATES: readonly SupervisorState[] = [
+  'starting', 'waiting_registration', 'awaiting_login', 'serving', 'degraded', 'exited',
+]
+
+/**
+ * `supervisor.state`'s data (internal/workspace SupervisorData). `reason` is
+ * a code the card turns into a sentence — never the server's message — and
+ * `detail` is Drydock's own sentence for it.
+ */
+export interface SupervisorView {
+  state: SupervisorState
+  from?: string
+  reason?: string
+  detail?: string
+  restart_count: number
+  at: string
+}
+
+/** `session.status`'s data (internal/workspace SessionData). */
+export interface SessionView {
+  environment_id?: string
+  url?: string
+  capacity_used: number | null
+  capacity_total: number | null
+  sessions: number
+  at: string
+}
+
+/** One line of a session server's log (internal/api LogLine): redacted when written. */
+export interface LogLineView {
+  n: number
+  at: string
+  text: string
+}
+
+/** `GET /api/workspaces/:id/logs?tail=n`. `held` is false when Drydock has no log for it. */
+export interface LogTail {
+  lines: LogLineView[]
+  truncated: boolean
+  held: boolean
 }
 
 /** One `workspace.action` event as the view reports it (internal/workspace ActionOutcome). */

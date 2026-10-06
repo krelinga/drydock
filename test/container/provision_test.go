@@ -116,6 +116,7 @@ func TestCreateWorkspaceThroughTheServer(t *testing.T) {
 	srv.Provisioner.Cloner.BaseURL = f.URL
 	srv.Provisioner.Config = []byte(hostNetConfig)
 	srv.Provisioner.RemoteEnv = map[string]string{"DRYDOCK_GITHUB_HOST": strings.TrimPrefix(f.URL, "http://")}
+	noLogin(t, srv.DB.DB, cfg.ClaudeVolume)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() { done <- srv.Serve(ctx) }()
@@ -166,6 +167,7 @@ func TestCreateWorkspaceThroughTheServer(t *testing.T) {
 		StateDetail *string `json:"state_detail"`
 		ContainerID *string `json:"container_id"`
 		Steps       map[string]struct{ Status, Detail string }
+		Supervisor  *struct{ State, Reason string }
 	}
 	views := map[string]view{}
 	deadline = time.Now().Add(15 * time.Minute)
@@ -186,6 +188,14 @@ func TestCreateWorkspaceThroughTheServer(t *testing.T) {
 		if v.State != "running" {
 			t.Errorf("repository %s: %s (%s); steps %+v", repo, v.State, deref(v.StateDetail), v.Steps)
 			continue
+		}
+		// Step 8 handed the workspace to the supervisor, which — no one
+		// being signed in on the test volume — started no server and waits.
+		if st := v.Steps["session_server"]; st.Status != "done" {
+			t.Errorf("repository %s: session_server %+v", repo, st)
+		}
+		if v.Supervisor == nil || v.Supervisor.State != "awaiting_login" || v.Supervisor.Reason != "signed_out" {
+			t.Errorf("repository %s: supervisor %+v; want awaiting_login/signed_out", repo, v.Supervisor)
 		}
 		// Docker is the truth: the container the row names is the one
 		// carrying this workspace's label, and it is running.

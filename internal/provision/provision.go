@@ -121,6 +121,17 @@ type Provisioner struct {
 	// the next start for minutes (Spike 02). Nil until the supervisor
 	// exists; the sub-step then records that it had nothing to do.
 	StopSupervisor func(ctx context.Context, w workspace.Workspace) error
+	// StartSupervisor is §6 step 8: hand the running workspace to the
+	// session supervisor (internal/supervisor, §8), which starts its
+	// `claude remote-control` server and carries its own states from there.
+	// Nil records the step as a no-op. ForgetSupervisor drops what the
+	// supervisor holds for a workspace once its delete has finished.
+	StartSupervisor  func(ctx context.Context, w workspace.Workspace) error
+	ForgetSupervisor func(id string)
+	// SupervisorRestart stops (SIGTERM first) and starts a workspace's
+	// session server: the job RestartSupervisor runs. Nil refuses the
+	// route with ErrNoSupervisor.
+	SupervisorRestart func(ctx context.Context, id string) error
 
 	// afterStep, in a test, runs after each stop or delete sub-step
 	// finishes; an error it returns ends the job there, as a crash between

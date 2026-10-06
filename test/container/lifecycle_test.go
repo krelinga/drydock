@@ -79,6 +79,7 @@ func TestStopStartRebuildDelete(t *testing.T) {
 	srv.Provisioner.Cloner.BaseURL = f.URL
 	srv.Provisioner.Config = []byte(hostNetConfig)
 	srv.Provisioner.RemoteEnv = map[string]string{"DRYDOCK_GITHUB_HOST": strings.TrimPrefix(f.URL, "http://")}
+	noLogin(t, srv.DB.DB, cfg.ClaudeVolume)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() { done <- srv.Serve(ctx) }()

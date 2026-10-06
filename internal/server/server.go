@@ -39,6 +39,7 @@ import (
 	"github.com/krelinga/drydock/internal/secrets"
 	"github.com/krelinga/drydock/internal/store"
 	"github.com/krelinga/drydock/internal/subproc"
+	"github.com/krelinga/drydock/internal/supervisor"
 	"github.com/krelinga/drydock/internal/sys"
 	"github.com/krelinga/drydock/internal/web"
 	"github.com/krelinga/drydock/internal/workspace"
@@ -70,6 +71,10 @@ type Server struct {
 	// first-run state. Its Source is a test's seam, set between New and
 	// Serve.
 	Identity *identity.Watch
+	// Supervisor runs each running workspace's `claude remote-control`
+	// server (§8). Like the Provisioner's, its exported fields are a test's
+	// seam between New and Serve.
+	Supervisor *supervisor.Manager
 	// reconciled closes when boot reconciliation has finished, so a test
 	// can set up workspace rows reconciliation would otherwise move.
 	reconciled chan struct{}
@@ -125,6 +130,21 @@ func New(ctx context.Context, cfg config.Config, env sys.Env) (*Server, error) {
 		Feature: cfg.Feature, FeatureOptions: feature, Timeout: cfg.ProvisionTimeout,
 		ClaudeVolume: cfg.ClaudeVolume, ClaudeCodeVersion: classify.ClaudeCodeVersion,
 		Logf: func(f string, a ...any) { fmt.Fprintf(os.Stderr, f+"\n", a...) }}
+	// The session supervisor (§8): started at step 8, at boot for every
+	// running workspace, and from POST …/supervisor; stopped, SIGTERM first,
+	// before a stop, a rebuild or a delete touches the container.
+	s.Supervisor = &supervisor.Manager{DB: db.DB, Events: s.Events, Env: env,
+		Runtime: supervisor.ContainerRuntime{Containers: containers, PTY: subproc.Exec{}},
+		Spec:    s.Provisioner.SessionSpec,
+		Logf:    func(f string, a ...any) { fmt.Fprintf(os.Stderr, f+"\n", a...) }}
+	s.Provisioner.StartSupervisor = func(ctx context.Context, w workspace.Workspace) error {
+		return s.Supervisor.Start(ctx, w.ID)
+	}
+	s.Provisioner.StopSupervisor = func(ctx context.Context, w workspace.Workspace) error {
+		return s.Supervisor.Stop(ctx, w.ID)
+	}
+	s.Provisioner.ForgetSupervisor = s.Supervisor.Forget
+	s.Provisioner.SupervisorRestart = s.Supervisor.Restart
 	// A deleting row found at boot is finished by the same delete the route
 	// runs (§6: resume the delete), so a delete is resumable from any
 	// sub-step it was interrupted after.
@@ -151,6 +171,9 @@ func New(ctx context.Context, cfg config.Config, env sys.Env) (*Server, error) {
 		}
 		s.Secrets = &secrets.Store{DB: db.DB, Key: key, Events: s.Events, Env: env}
 		secretRoutes = s.Secrets
+		// A granted secret's value a session server prints is masked in its
+		// log as it is written (§13.5: redact by default).
+		s.Supervisor.Redact = s.secretValues
 	}
 	var repoCatalog api.RepoCatalog
 	if cfg.GitHubAppID != 0 {
@@ -172,6 +195,9 @@ func New(ctx context.Context, cfg config.Config, env sys.Env) (*Server, error) {
 		s.Provisioner.Cloner = &clone.Cloner{DB: db.DB, GitHub: gh, Runner: subproc.Exec{}}
 	}
 	handlers := api.SessionRoutes{Auth: svc}.Handlers()
+	for name, h := range (api.SupervisorRoutes{Provisioner: s.Provisioner, Workspaces: s.Workspaces, Logs: s.supervisorLogs}).Handlers() {
+		handlers[name] = h
+	}
 	for name, h := range (api.RepoRoutes{Catalog: repoCatalog}).Handlers() {
 		handlers[name] = h
 	}
@@ -190,6 +216,16 @@ func New(ctx context.Context, cfg config.Config, env sys.Env) (*Server, error) {
 			Image:     &claudeimage.Builder{Run: subproc.Exec{}, Base: cfg.ClaudeBaseImage, Version: classify.ClaudeCodeVersion},
 			FileImage: cfg.CleanupImage, Volume: cfg.ClaudeVolume, LabelPrefix: cfg.LabelPrefix},
 		Logf: func(f string, a ...any) { fmt.Fprintf(os.Stderr, f+"\n", a...) }}
+	// The supervisor defers to the stored identity the watch keeps (§7.3,
+	// frontend §6.6): a signed-out fleet starts no session server and spends
+	// no restart. Read through the watch, so there is one reader of the row.
+	s.Supervisor.Identity = func(ctx context.Context) (string, bool) {
+		v, err := s.Identity.Read(ctx)
+		if err != nil || v.State == nil {
+			return "", false
+		}
+		return string(*v.State), true
+	}
 	for name, h := range (api.ClaudeRoutes{Watch: s.Identity}).Handlers() {
 		handlers[name] = h
 	}
@@ -261,6 +297,38 @@ func apiSocketHandler(gate api.Gate, apiMux *http.ServeMux, ui http.Handler) htt
 // stop timeout, so the service is never SIGKILLed for waiting.
 const provisionShutdownWait = 20 * time.Second
 
+// supervisorDetachWait bounds how long shutdown waits for the supervisors to
+// let go of their terminals.
+const supervisorDetachWait = 10 * time.Second
+
+// secretValues are the values of the secrets a workspace's repository is
+// granted, for its session server's log to mask. Read from the broker's
+// snapshot: no decryption per call (§10.3).
+func (s *Server) secretValues(ctx context.Context, workspaceID string) []string {
+	w, err := s.Workspaces.Get(ctx, workspaceID)
+	if err != nil {
+		return nil
+	}
+	entries, err := s.Secrets.Resolve(ctx, w.RepositoryID)
+	if err != nil {
+		return nil
+	}
+	out := make([]string, 0, len(entries))
+	for _, e := range entries {
+		out = append(out, e.Value)
+	}
+	return out
+}
+
+func (s *Server) supervisorLogs(id string, n int) ([]api.LogLine, bool, bool) {
+	lines, truncated, held := s.Supervisor.Logs(id, n)
+	out := make([]api.LogLine, len(lines))
+	for i, l := range lines {
+		out[i] = api.LogLine{N: l.N, At: l.At, Text: l.Text}
+	}
+	return out, truncated, held
+}
+
 // Serve runs both muxes until ctx is cancelled, then shuts down gracefully.
 func (s *Server) Serve(ctx context.Context) error {
 	// Reconcile once at boot, beside serving rather than before it: a slow
@@ -294,6 +362,14 @@ func (s *Server) Serve(ctx context.Context) error {
 				fmt.Fprintf(os.Stderr, "drydock: broker: %v\n", err)
 			}
 		}
+		// Then every running workspace's session server (§6: adopt, and
+		// restart the supervisor) — after the sockets, since the launch
+		// fetches the workspace's secrets through its socket.
+		if ctx.Err() == nil {
+			if err := s.Provisioner.ResumeSupervisors(ctx); err != nil && ctx.Err() == nil {
+				fmt.Fprintf(os.Stderr, "drydock: session servers: %v\n", err)
+			}
+		}
 	}()
 	// Look at the stored secrets once at boot, so a condition that would fail
 	// every workspace's commands — a replaced master key, above all — is on
@@ -308,6 +384,11 @@ func (s *Server) Serve(ctx context.Context) error {
 	go func() {
 		defer close(watching)
 		s.Identity.Run(ctx)
+	}()
+	supervising := make(chan struct{})
+	go func() {
+		defer close(supervising)
+		s.Supervisor.Watch(ctx)
 	}()
 	refreshing := make(chan struct{})
 	go func() {
@@ -331,6 +412,9 @@ func (s *Server) Serve(ctx context.Context) error {
 	// One that outlasts the wait is left mid-provision for boot
 	// reconciliation to mark failed.
 	s.Provisioner.Shutdown(provisionShutdownWait)
+	// Session servers keep serving while Drydock is down (Spike 02: a plain
+	// restart reconnects them); only Drydock's terminals close.
+	s.Supervisor.Detach(supervisorDetachWait)
 	if s.Broker != nil {
 		s.Broker.CloseAll()
 	}
@@ -344,6 +428,7 @@ func (s *Server) Serve(ctx context.Context) error {
 	<-reconciled // they may still be writing; the database closes after them
 	<-refreshing
 	<-watching
+	<-supervising
 	s.DB.Close()
 	if errors.Is(serveErr, http.ErrServerClosed) {
 		serveErr = nil

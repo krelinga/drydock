@@ -328,7 +328,7 @@ func TestRepositoryWithAConfigReachesRunning(t *testing.T) {
 	if v.Branch != "main" {
 		t.Errorf("branch %q; the default branch is main", v.Branch)
 	}
-	if d := v.Steps[workspace.StepSessionServer].Detail; !strings.Contains(d, "Nothing to do yet") {
+	if d := v.Steps[workspace.StepSessionServer].Detail; !strings.Contains(d, "no session server was started") {
 		t.Errorf("session_server says %q; a step that does nothing must say so", d)
 	}
 	if d := v.Steps[workspace.StepCredentialVolume].Detail; d != "Created the shared Claude credential volume "+claudeVolume+"." {
