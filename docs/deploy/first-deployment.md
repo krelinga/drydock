@@ -831,10 +831,14 @@ should stay quiet.
 - [ ] Open it (the repository name is a link to `/ws/<id>`). Note the **id** in the URL: it is a
   26-character ULID. **Steps** lists the eight steps from
   [§6](../design/overall/drydock-design.md#6-clone--container): allocating, cloning, resolving
-  config (B gets Drydock's minimal config, and the step says so), preparing credentials (*a
-  recorded no-op until Phase 5*), opening the broker socket, starting the container, verifying,
-  and starting the session server (*a recorded no-op until Phase 5*). Each step reaches *done*.
-  **Recent events** shows the same.
+  config (B gets Drydock's minimal config, and the step says so), preparing credentials (it
+  creates the shared Claude volume, `drydock-claude-config`, the first time), opening the broker
+  socket, starting the container, verifying, and starting the session server (*"Handed to the
+  session supervisor…"*). Each step reaches *done*. **Recent events** shows the same.
+- [ ] The card's line is now the **session server's**, not the container's. Until someone has
+  signed in to Claude it reads *Claude is not signed in* (or, once the expiry watch has looked,
+  *Waiting on Claude sign-in*) with no button: that is expected, and [8.6](#86-a-claude-session-phase-5)
+  fixes it for every workspace at once.
 - [ ] Do the same for **A**. If A commits a `devcontainer-lock.json` that is stale, the
   *starting the container* step says that `devcontainer up` rewrote it in the clone. That is
   expected, and it is what VS Code would do too
@@ -912,7 +916,7 @@ before every command ([§10.3](../design/overall/drydock-design.md#103--delivery
 
 ### 8.4 Stop, start, rebuild, delete (Phase 6 server side)
 
-- [ ] **Stop** (on the workspace's card or detail page). It moves to *Stopped*. On the server, the
+- [ ] **Stop** (detail page → *Actions*; once a session server is serving it asks first while a session is live). It moves to *Stopped*. On the server, the
   container is stopped but still exists (`sudo docker ps -a --filter label=drydock.workspace=$WS`),
   and `/run/drydock/sock/$WS.sock` is **gone**. *Why:* GitHub access follows Drydock's state, not
   Docker's ([§9.1](../design/overall/drydock-design.md#91--why-a-broker-rather-than-an-injected-token)).
@@ -941,6 +945,41 @@ This is the one Phase 2 check that has not yet been run on real hardware
   **Start** brings it back with its clone intact.
 - [ ] `journalctl -u drydock -b -o cat` has no `reconcile:` line.
 
+### 8.6 A Claude session (Phase 5)
+
+The login handshake in the UI is not built yet ([9](#9-what-does-not-work-yet)), so sign in once by
+hand, inside any running workspace. Every workspace shares the login, because every container mounts
+the same `drydock-claude-config` volume at its `CLAUDE_CONFIG_DIR`
+([§7.1](../design/overall/drydock-design.md#71--one-shared-credential-volume)).
+
+- [ ] On the server, with `$WS` a running workspace's id:
+  ```sh
+  CID=$(sudo docker ps -q --filter label=drydock.workspace=$WS)
+  sudo docker exec -it -u vscode "$CID" claude auth login
+  ```
+  Open the URL it prints on any device, authorize, and paste the code back at its prompt. It says
+  `Login successful`. *Why `-u vscode`:* the credential is `0600` and must belong to the user every
+  container runs as.
+- [ ] Tell Drydock: **Settings → Claude → Check now** (or wait for the six-hourly check). Each
+  workspace that was waiting on the login starts its session server by itself.
+  *Without the expiry watch in your release*, press **Start session** on each workspace's detail
+  page instead.
+- [ ] The card goes *Starting session…* → **Capacity 1 / 4**, with **Open in Claude**. The link is
+  `https://claude.ai/code?environment=env_…`; the session also appears in the Claude app on your
+  phone, named after the repository. *Why 1 / 4:* the server pre-creates one session in the clone,
+  and it counts ([§8](../design/overall/drydock-design.md#8-session-supervision)).
+- [ ] **Open the log** on the detail page: the server's own lines, redacted, held in Drydock's memory
+  only. The journal stays quiet.
+- [ ] **Stop** (detail page → *Actions*) now asks first, because a session is live. Stop it, then
+  **Start**: the workspace comes back, and its card returns to *Capacity 1 / 4* on the **same**
+  environment link. *Why:* a stop is `SIGTERM`, which keeps the environment for the next start
+  ([Spike 02](../design/spikes/02-rc-restart.md)).
+- [ ] Restart Drydock itself: `sudo systemctl restart drydock`. Sessions keep running while it is
+  down; after it is back the card reads *Capacity 1 / 4* again, on the same link.
+
+If a card says *Waiting for the previous session server to release the folder*, leave it: that is a
+wait of one to three minutes, not a failure, and it clears on its own.
+
 ---
 
 ## 9. What does not work yet
@@ -948,16 +987,15 @@ This is the one Phase 2 check that has not yet been run on real hardware
 None of the following is a deployment fault. These are the phases still being built
 ([§14](../design/overall/drydock-design.md#14-build-plan)):
 
-- **No Claude at all (Phase 5).** Containers do not get Claude Code. No `claude remote-control`
-  session server runs. There is no login handshake, no shared credential volume, no session
-  discovery, and no expiry watch. The *preparing credentials* and *starting the session server*
-  steps are recorded no-ops. The routes behind this answer `501` once you are signed in:
-  `/api/auth/claude…`, `/api/workspaces/{id}/supervisor`, `/api/workspaces/{id}/logs`. Nothing
-  appears in the Claude app.
+- **No Claude sign-in from the UI (Phase 5).** Containers get Claude Code, the shared credential
+  volume, and a supervised `claude remote-control` session server whose sessions the card links to.
+  What is missing is the login handshake: sign in once by hand ([8.6](#86-a-claude-session-phase-5)).
+  `/api/auth/claude/login…` answers `501` once you are signed in.
 - **No previews (port forwarding).** Every route on the preview socket answers `501`. Leave
   `--preview-domain` unset. A preview wildcard certificate buys nothing yet.
-- **Phase 6 is partly done.** Stop, rebuild and delete work. These do not exist yet: memory and
-  disk per workspace on the card, the live session count, the log viewer, and the failure-mode
+- **Phase 6 is partly done.** Stop, rebuild and delete work, and so do the live session count
+  (the card's capacity fraction) and the log viewer. These do not exist yet: memory and
+  disk per workspace on the card, and the rest of the failure-mode
   messages from §12.
 - **Secret staleness is always *"applies to new commands"*.** It is truthful until Phase 5 adds a
   process that holds a frozen environment.
