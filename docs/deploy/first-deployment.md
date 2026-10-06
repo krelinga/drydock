@@ -50,16 +50,10 @@ them. Each one is also mentioned at the step where it bites.
    installer run.
 4. **There is no `uninstall`.** [Step 10](#10-upgrade-roll-back-uninstall-logs) lists what to remove
    by hand. The list is derived from what `deploy/install.sh` creates.
-5. **v0.2.0's first release run failed, and v0.2.0 is a draft until it is resumed.** The release
-   job's test environment lacked `socat`, which CI's had since the broker landed, so the socat half
-   of the broker client tests failed (`the broker did not answer`). Nothing was published, and
-   *Latest* stayed `v0.1.0`. The two now share one environment. Once that fix is on `main`, finish
-   v0.2.0 with [step 2's resume](#resume-a-draft-release); do not merge a new release PR for it.
 
-Three issues listed here earlier are fixed from the release that carries this runbook's
-`--ca-cert` flag (v0.2.0, if it is cut after that fix merged — check with
-`curl -fsSL https://github.com/krelinga/drydock/releases/latest/download/install.sh | grep -c -- '--ca-cert)'`,
-which prints `1`):
+Three issues listed here earlier are fixed in v0.2.0. To confirm the installer you are about to run
+has those fixes, `curl -fsSL https://github.com/krelinga/drydock/releases/latest/download/install.sh | grep -c -- '--ca-cert)'`
+prints `1`:
 
 - A private CA no longer fails the installer's final check: pass `--ca-cert` ([step 5](#5-install)).
   A certificate the server cannot verify is now reported as exactly that, apart from a real failure.
@@ -67,7 +61,9 @@ which prints `1`):
   than refusing every sign-in with `forbidden_origin`.
 - A release is created as a draft and becomes public and *Latest* only after its assets are uploaded
   and installed by the README one-liner, so a failed release never leaves *Latest* without files
-  ([step 2](#2-cut-a-release)).
+  ([step 2](#2-cut-a-release)). v0.2.0's own first release run failed this way, on a missing
+  `socat` in the release job's test environment, and was finished with
+  [step 2's resume](#resume-a-draft-release) once the two environments became one.
 
 ---
 
@@ -198,15 +194,14 @@ baked into the unit is the production App's ([Known issue 3](#0-known-issues--re
 
 ## 2. Cut a release
 
-The install one-liner always installs the **latest** GitHub release. Today that is `v0.1.0`,
-which is the front door only, with no workspaces. Everything this runbook uses is in the open
-release-please PR, which is currently titled **`chore(main): release 0.2.0`**. Merging it publishes
-`v0.2.0`. If more `feat:` or `fix:` commits land first, the PR's number stays the same and its
-title and changelog grow.
+> **For this deployment, this step is done.** `v0.2.0` is published and *Latest*, and it is the
+> release this runbook deploys. Go to [step 3](#3-prerequisites-on-the-server). The rest of this
+> step is for cutting a later release.
 
-> **v0.2.0 specifically:** its release PR (#11) is already merged and its first run failed
-> ([Known issue 5](#0-known-issues--read-these-first)), so there is no release PR to merge for it.
-> Skip to [Resume a draft release](#resume-a-draft-release), then *Confirm it published*.
+The install one-liner always installs the **latest** GitHub release. A new release comes from the
+open release-please PR, titled **`chore(main): release X.Y.Z`**; merging it publishes `vX.Y.Z`. If
+more `feat:` or `fix:` commits land first, the PR's number stays the same and its title and
+changelog grow.
 
 Run these from any machine with `gh` signed in as a repository admin:
 
@@ -251,7 +246,7 @@ Run these from any machine with `gh` signed in as a repository admin:
 
 Do not delete the tag to make release-please try again. Its release PR is already labelled
 `autorelease: tagged`, so it would not recreate the release, and without the tag it would plan the
-next release from `v0.1.0` again.
+next release from the tag before it again.
 
 #### Resume a draft release
 
@@ -262,13 +257,13 @@ cannot replace a public release's files.
 
 - [ ] **Check the draft and its tag exist**, and that the fix is on `main`:
   ```sh
-  gh release view v0.2.0 --repo krelinga/drydock --json isDraft,tagName,assets --jq '{isDraft, tagName, assets: [.assets[].name]}'
-  gh api repos/krelinga/drydock/git/ref/tags/v0.2.0 --jq .object.sha
+  gh release view vX.Y.Z --repo krelinga/drydock --json isDraft,tagName,assets --jq '{isDraft, tagName, assets: [.assets[].name]}'
+  gh api repos/krelinga/drydock/git/ref/tags/vX.Y.Z --jq .object.sha
   ```
-  `isDraft` must be `true`. Any assets left from an earlier run are replaced (`--clobber`).
+  `isDraft` must be `true`. (v0.2.0 was finished this way, with `vX.Y.Z` as `v0.2.0`.) Any assets left from an earlier run are replaced (`--clobber`).
 - [ ] **Run it and watch it**:
   ```sh
-  gh workflow run release-please.yml --repo krelinga/drydock --ref main -f tag=v0.2.0
+  gh workflow run release-please.yml --repo krelinga/drydock --ref main -f tag=vX.Y.Z
   gh run list --repo krelinga/drydock --workflow release-please.yml --event workflow_dispatch --limit 1
   gh run watch <run-id> --repo krelinga/drydock --exit-status
   ```
@@ -279,8 +274,8 @@ cannot replace a public release's files.
   curl -fsSL https://github.com/krelinga/drydock/releases/latest/download/install.sh | grep '^RELEASE_VERSION='
   ```
   The assets must be exactly `SHA256SUMS`, `drydock_linux_amd64.tar.gz` and `install.sh`. The
-  second command must print `RELEASE_VERSION="v0.2.0"`, or whatever was tagged. If it prints
-  `v0.1.0`, or `curl` fails, the upload has not finished.
+  second command must print `RELEASE_VERSION="vX.Y.Z"`, the tag you resumed. If it prints the
+  previous tag, or `curl` fails, the upload has not finished.
 
 ---
 
