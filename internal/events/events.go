@@ -149,23 +149,30 @@ func (l *Log) Emit(ctx context.Context, workspaceID string, level Level, kind, m
 }
 
 // Sub is one live subscriber. Events arrive on C in id order; C is closed when
-// the subscriber falls too far behind, is cancelled, or the Log closes.
+// the subscriber falls too far behind, is cancelled, or the Log closes — or
+// at once, for a Sub made after the Log closed. C is closed exactly once
+// whichever of those happen, in whatever order: every close goes through end.
 type Sub struct {
 	ch   chan Event
 	C    <-chan Event
 	once sync.Once
 }
 
+// end closes C, once. It is the only place that does.
+func (s *Sub) end() { s.once.Do(func() { close(s.ch) }) }
+
 // Subscribe registers a subscriber. Call it before reading the backlog with
 // Since, so nothing written in between is missed; the overlap is the caller's
-// to skip, by id.
+// to skip, by id. After Close it returns a Sub that is already over, and
+// Cancel on it is as safe as on any other: a goroutine Serve started can
+// subscribe after shutdown has closed the log.
 func (l *Log) Subscribe() *Sub {
 	s := &Sub{ch: make(chan Event, subBuffer)}
 	s.C = s.ch
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	if l.closed {
-		close(s.ch)
+		s.end()
 		return s
 	}
 	if l.subs == nil {
@@ -175,7 +182,8 @@ func (l *Log) Subscribe() *Sub {
 	return s
 }
 
-// Cancel unregisters s. Safe to call more than once.
+// Cancel unregisters s. Safe to call more than once, and in any order with
+// Close.
 func (l *Log) Cancel(s *Sub) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -184,7 +192,7 @@ func (l *Log) Cancel(s *Sub) {
 
 func (l *Log) drop(s *Sub) { // l.mu held
 	delete(l.subs, s)
-	s.once.Do(func() { close(s.ch) })
+	s.end()
 }
 
 // Close ends every subscription, which ends every open stream: the server

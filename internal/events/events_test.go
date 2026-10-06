@@ -190,3 +190,66 @@ func TestCloseEndsSubscriptions(t *testing.T) {
 	}
 	l.Cancel(before) // and cancelling one already closed is harmless
 }
+
+// Every way a subscription ends — Cancel, Close, falling behind, and being
+// made after Close — closes C exactly once, in any order and however many
+// times each happens. A second close panics, and shutdown is where they meet:
+// the supervisor's Watch, started beside serving, can subscribe after the
+// server has closed the log and then Cancel on its way out. That crashed the
+// v0.4.0 release's test run, and would crash the server on a fast shutdown.
+//
+// The control is the same subscription made on an open log: it delivers an
+// event before anything ends it, so "closed" is not a subscription that was
+// never live.
+func TestASubscriptionEndsOnceHoweverItEnds(t *testing.T) {
+	ctx := context.Background()
+	ends := map[string]func(*testing.T, *Log, *Sub){
+		"cancel": func(_ *testing.T, l *Log, s *Sub) { l.Cancel(s) },
+		"close":  func(_ *testing.T, l *Log, _ *Sub) { l.Close() },
+		"lag": func(t *testing.T, l *Log, _ *Sub) {
+			for i := 0; i <= subBuffer; i++ {
+				if _, err := l.Emit(ctx, "", Info, "k", "m", nil); err != nil {
+					t.Fatal(err)
+				}
+			}
+		},
+	}
+	names := []string{"cancel", "close", "lag"}
+	for _, afterClose := range []bool{false, true} {
+		for _, a := range names {
+			for _, b := range names {
+				name := a + "," + b
+				if afterClose {
+					name = "subscribed-after-close," + name
+				}
+				t.Run(name, func(t *testing.T) {
+					l, _ := newLog(t)
+					if afterClose {
+						l.Close()
+					}
+					s := l.Subscribe()
+					if !afterClose {
+						e, err := l.Emit(ctx, "", Info, "k", "m", nil)
+						if err != nil {
+							t.Fatal(err)
+						}
+						if got, ok := <-s.C; !ok || got.ID != e.ID {
+							t.Fatalf("control: an open subscription delivered %+v (open %v), want event %d", got, ok, e.ID)
+						}
+					}
+					ends[a](t, l, s)
+					ends[b](t, l, s)
+					l.Cancel(s) // what every subscriber defers
+					deadline := time.After(5 * time.Second)
+					for open := true; open; {
+						select {
+						case _, open = <-s.C:
+						case <-deadline:
+							t.Fatal("the subscription is still open")
+						}
+					}
+				})
+			}
+		}
+	}
+}

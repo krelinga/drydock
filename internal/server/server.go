@@ -346,6 +346,11 @@ func (s *Server) supervisorLogs(id string, n int) ([]api.LogLine, bool, bool) {
 
 // Serve runs both muxes until ctx is cancelled, then shuts down gracefully.
 func (s *Server) Serve(ctx context.Context) error {
+	// Everything started below ends on ctx, and shutdown waits for each of
+	// them. Serving can also end with a listener's error while the caller's
+	// context is live, so Serve cancels its own as serving ends, either way.
+	ctx, stop := context.WithCancel(ctx)
+	defer stop()
 	// Reconcile once at boot, beside serving rather than before it: a slow
 	// daemon must not keep the sign-in page down. A failure changes nothing
 	// (reconcile refuses to act on a list it could not read), is written to
@@ -433,6 +438,7 @@ func (s *Server) Serve(ctx context.Context) error {
 	case <-ctx.Done():
 	case serveErr = <-errc:
 	}
+	stop()
 	// Runs first, while the broker, the log and the database are all still
 	// there: each in-flight run fails the step it was on, saying Drydock shut
 	// down, and that has to be written before anything it writes to closes.
