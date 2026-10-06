@@ -12,12 +12,14 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"fmt"
 	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/krelinga/drydock/internal/events"
 	"github.com/krelinga/drydock/internal/github"
@@ -195,20 +197,67 @@ func TestContractPushABranch(t *testing.T) {
 	}
 }
 
-// The v0.3.0 deployment's bug, against the real GitHub: the dev App lacks
-// actions:write (githubtest.DevAppPermissions, pinned by the github package's
-// contract), so the gh scope is refused with GitHub's 422 — and the broker
-// says the App lacks a permission, not that the repository was revoked. The
-// git scope, from the same socket, is the control: the repository is fine.
-func TestContractAMissingPermissionIsNotARevocation(t *testing.T) {
+// The gh scope mints against the real App, from each testbed's socket, and
+// the token it hands out reaches that workspace's repository and no other.
+// Until the dev App was given Actions this was refused live, which is how the
+// v0.3.0 deployment's failure was reproduced: a missing permission is now
+// pinned live one level down, by the github package's
+// TestContractTokenRequestsBeyondTheAppAreRefused (the same 422 sentence and
+// the same matcher the broker uses), and through the broker against the fake
+// by TestAMissingAppPermissionIsNotARevocation. What this adds is the scope's
+// full permission set (§9.3, testdata/scope-gh.json) accepted by GitHub
+// itself, which no earlier run had shown.
+//
+// The answers are never logged as they came: an OK line carries a token, and
+// the CI log is not a place for any of one.
+func TestContractGHScopeMints(t *testing.T) {
+	ctx := context.Background()
 	ce := newContractEnv(t)
-	ws := ce.ws[githubtest.TestbedA]
-	if got := ce.ask(t, ws, "GET-TOKEN scope=git"); !strings.HasPrefix(got, "OK token=") {
-		t.Fatalf("control: the git scope: %.40q", got)
+	for _, own := range []string{githubtest.TestbedA, githubtest.TestbedB} {
+		answer := ce.ask(t, ce.ws[own], "GET-TOKEN scope=gh")
+		value, ok := answerToken(answer)
+		if !ok {
+			t.Errorf("the gh scope from %s's socket: %s; want OK token=…", own, redactAnswer(answer))
+			continue
+		}
+		// The token is for this socket's repository alone: GitHub lists
+		// exactly it. Run for both testbeds, each is the other's control —
+		// a listing that came back with every repository would fail one.
+		repos, err := ce.backend.Client.Repositories(ctx, github.NewToken(value, time.Time{}))
+		if err != nil {
+			t.Errorf("listing with %s's gh token: %v", own, err)
+			continue
+		}
+		var names []string
+		for _, r := range repos {
+			names = append(names, r.FullName)
+		}
+		if len(names) != 1 || names[0] != own {
+			t.Errorf("%s's gh token reaches %v; want only %s", own, names, own)
+		}
 	}
-	if got := ce.ask(t, ws, "GET-TOKEN scope=gh"); got != "ERR reason=app_permission_missing" {
-		t.Errorf("the gh scope against an App without actions:write: %.40q; want ERR reason=app_permission_missing", got)
+}
+
+// answerToken reads the token out of an OK answer.
+func answerToken(answer string) (string, bool) {
+	rest, ok := strings.CutPrefix(answer, "OK token=")
+	if !ok {
+		return "", false
 	}
+	value, _, _ := strings.Cut(rest, " ")
+	return value, value != ""
+}
+
+// redactAnswer is an answer fit for a test log: an ERR line as it came, an OK
+// line with its token replaced.
+func redactAnswer(answer string) string {
+	if strings.HasPrefix(answer, "ERR ") {
+		return fmt.Sprintf("%q", answer)
+	}
+	if _, ok := answerToken(answer); ok {
+		return "OK token=[redacted]"
+	}
+	return fmt.Sprintf("an answer of %d bytes", len(answer))
 }
 
 func (ce *contractEnv) ask(t *testing.T, ws, line string) string {

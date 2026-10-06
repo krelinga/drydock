@@ -208,7 +208,8 @@ func TestContractTokenRequestsBeyondTheAppAreRefused(t *testing.T) {
 	// Precondition: the App really lacks administration:write, or the first
 	// request below proves nothing about a missing permission.
 	// The App's permissions are a fixture (githubtest.DevAppPermissions):
-	// the broker's contract relies on the dev App lacking actions:write.
+	// the broker's contract relies on the dev App holding every permission
+	// its scopes ask for, this test on its lacking administration.
 	perms := appPermissions(t, b)
 	t.Logf("live=%v the App's permissions: %v", b.Live, perms)
 	if !maps.Equal(perms, githubtest.DevAppPermissions()) {

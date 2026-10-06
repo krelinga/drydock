@@ -43,14 +43,14 @@ func Testbed() Installation {
 // DevAppPermissions is what the dev App holds, as GET /app reports it, and so
 // what the fake holds in a contract run. It is a fixture like the testbed:
 // TestContractTokenRequestsBeyondTheAppAreRefused fails, naming this, when
-// the App's settings change. It lacks actions:write on purpose, so the gh
-// scope is refused against it, and the broker's contract pins that refusal
-// (app_permission_missing, not revoked) against the real GitHub. A fresh map
-// each call.
+// the App's settings change. It matches the production App's set — every
+// permission §9.3's scopes ask for, so the broker's contract mints both
+// scopes live — and lacks administration, which the github contract asks for
+// to pin GitHub's missing-permission refusal. A fresh map each call.
 func DevAppPermissions() map[string]string {
 	return map[string]string{
 		"metadata": "read", "contents": "write", "issues": "write", "pull_requests": "write",
-		"workflows": "write", "checks": "read",
+		"workflows": "write", "checks": "read", "actions": "write",
 	}
 }
 
