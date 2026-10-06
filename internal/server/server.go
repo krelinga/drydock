@@ -216,6 +216,16 @@ func New(ctx context.Context, cfg config.Config, env sys.Env) (*Server, error) {
 			Image:     &claudeimage.Builder{Run: subproc.Exec{}, Base: cfg.ClaudeBaseImage, Version: classify.ClaudeCodeVersion},
 			FileImage: cfg.CleanupImage, Volume: cfg.ClaudeVolume, LabelPrefix: cfg.LabelPrefix},
 		Logf: func(f string, a ...any) { fmt.Fprintf(os.Stderr, f+"\n", a...) }}
+	// The supervisor defers to the stored identity the watch keeps (§7.3,
+	// frontend §6.6): a signed-out fleet starts no session server and spends
+	// no restart. Read through the watch, so there is one reader of the row.
+	s.Supervisor.Identity = func(ctx context.Context) (string, bool) {
+		v, err := s.Identity.Read(ctx)
+		if err != nil || v.State == nil {
+			return "", false
+		}
+		return string(*v.State), true
+	}
 	for name, h := range (api.ClaudeRoutes{Watch: s.Identity}).Handlers() {
 		handlers[name] = h
 	}

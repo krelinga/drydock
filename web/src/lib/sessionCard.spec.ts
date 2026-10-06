@@ -87,12 +87,12 @@ describe('the card, supervisor half (§6.1)', () => {
 describe('one fault, ten cards (§6.6)', () => {
   const signedOut: FleetLogin[] = ['blanked', 'absent', 'expired']
 
-  it.each(signedOut)('%s: every session-dependent card says it waits on sign-in, with no button of its own', (fleet) => {
+  it.each(signedOut)('%s: every session-dependent card drops its session line and button (the waiting sentence is the identity note’s)', (fleet) => {
     const cards = [
       serving(), withSup('degraded', 'budget_spent'), withSup('awaiting_login', 'signed_out'),
       withSup('starting', 'backoff'), withSup('exited', 'stopped'),
     ].map((w) => cardStatus(w, fleet))
-    for (const c of cards) expect(c).toMatchObject({ line: 'Waiting on Claude sign-in', action: null })
+    for (const c of cards) { expect(c).toMatchObject({ line: 'Running', note: null, action: null }); expect(c.link ?? null).toBeNull() }
     // No Restart session server anywhere: that button cannot work.
     expect(cards.filter((c) => c.action === 'restart_session')).toHaveLength(0)
   })

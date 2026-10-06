@@ -25,6 +25,7 @@ import WorkspaceAction from '../components/WorkspaceAction.vue'
 import WorkspaceIdentityNote from '../components/WorkspaceIdentityNote.vue'
 import { catalogEvent, useCatalogStore, type CatalogRow } from '../stores/catalog'
 import type { Workspace } from '../stores/reducer'
+import { useStreamStore } from '../stores/stream'
 import { cloneKey, useWorkspacesStore } from '../stores/workspaces'
 import { useStreamRefetch } from '../lib/refetch'
 import { relativeTime } from '../lib/time'
@@ -40,7 +41,10 @@ onMounted(() => {
 useStreamRefetch({ refetch: () => catalog.load(), when: catalogEvent })
 useStreamRefetch({ refetch: () => workspaces.loadList() })
 
-const status = (w: Workspace) => cardStatus(w)
+// The fleet's Claude login (frontend §6.6), from the identity store #37's
+// watch feeds: it overrides the session half of every running card.
+const stream = useStreamStore()
+const status = (w: Workspace) => cardStatus(w, stream.entities.identity?.state ?? null)
 // A row's action at the cap: Clone (or a Start) becomes the pointer to Stop.
 const shownRowAction = (r: CatalogRow) => {
   const a = rowAction(r)
@@ -83,6 +87,7 @@ function rowNote(r: CatalogRow): string | null {
             </span>
           </div>
           <p v-if="status(r.workspace).note" class="detail">{{ status(r.workspace).note }}</p>
+          <WorkspaceIdentityNote :state="r.workspace.state" part="waiting" />
           <p v-if="status(r.workspace).since" class="detail" data-test="waiting-since">
             Waiting since {{ relativeTime(status(r.workspace).since!) }}.
           </p>

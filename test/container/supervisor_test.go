@@ -222,7 +222,8 @@ func TestSessionServerInARealContainer(t *testing.T) {
 // fleet starts no server: step 8 still hands off, and the supervisor waits.
 func noLogin(t *testing.T, db *sql.DB, volume string) {
 	t.Helper()
-	if _, err := db.Exec(`INSERT INTO claude_identity (id, volume_name, state) VALUES (1, ?, 'absent')`, volume); err != nil {
+	if _, err := db.Exec(`INSERT INTO claude_identity (id, volume_name, state) VALUES (1, ?, 'absent')
+		ON CONFLICT (id) DO UPDATE SET state = 'absent'`, volume); err != nil {
 		t.Fatal(err)
 	}
 }

@@ -47,6 +47,7 @@ import (
 
 	"github.com/krelinga/drydock/internal/container"
 	"github.com/krelinga/drydock/internal/events"
+	"github.com/krelinga/drydock/internal/identity"
 	"github.com/krelinga/drydock/internal/subproc"
 	"github.com/krelinga/drydock/internal/sys"
 	"github.com/krelinga/drydock/internal/workspace"
@@ -169,7 +170,8 @@ type Manager struct {
 	// granted secrets' values. Nil masks the credential patterns only.
 	Redact func(ctx context.Context, workspaceID string) []string
 	// Identity reports the stored Claude identity verdict (§7.3) and
-	// whether there is one. Nil reads claude_identity directly. Unknown
+	// whether there is one: the server wires identity.Watch.Read. Nil reads
+	// claude_identity directly, the same row. Unknown
 	// never blocks a start: only a verdict that no one can sign a server
 	// in — blanked, absent, expired — does.
 	Identity func(ctx context.Context) (state string, known bool)
@@ -397,7 +399,7 @@ func (m *Manager) Watch(ctx context.Context) {
 			if !ok {
 				return
 			}
-			if ev.Kind == "auth.identity" {
+			if ev.Kind == identity.KindIdentity {
 				m.resumeWaiting(ctx)
 			}
 		}
@@ -442,8 +444,8 @@ func (m *Manager) identity(ctx context.Context) (string, bool) {
 
 // signedOut: a verdict under which no server can run until someone signs in.
 func signedOut(state string) bool {
-	switch state {
-	case "blanked", "absent", "expired":
+	switch identity.State(state) {
+	case identity.Blanked, identity.Absent, identity.Expired:
 		return true
 	}
 	return false

@@ -22,6 +22,7 @@ import { WORKSPACE_STEPS, type StreamEvent } from '../api/types'
 import { describeError } from '../api/messages'
 import ActionButton from '../components/ActionButton.vue'
 import WorkspaceAction from '../components/WorkspaceAction.vue'
+import WorkspaceIdentityNote from '../components/WorkspaceIdentityNote.vue'
 import { useStreamRefetch } from '../lib/refetch'
 import { relativeTime } from '../lib/time'
 import MakeRoom from '../components/MakeRoom.vue'
@@ -39,7 +40,7 @@ const id = computed(() => String(route.params.id ?? ''))
 const ws = computed(() => stream.entities.workspaces[id.value] ?? null)
 const deleted = computed(() => stream.entities.gone[id.value] !== undefined)
 const load = computed(() => workspaces.detail[id.value] ?? { status: 'idle', error: null })
-const status = computed(() => (ws.value !== null ? cardStatus(ws.value) : null))
+const status = computed(() => (ws.value !== null ? cardStatus(ws.value, stream.entities.identity?.state ?? null) : null))
 
 const name = computed(() => {
   const w = ws.value
@@ -176,6 +177,7 @@ watch(id, () => {
           <span v-if="ws.branch" class="branch">{{ ws.branch }}</span>
         </div>
         <p v-if="status.note" class="note" data-test="ws-note">{{ status.note }}</p>
+        <WorkspaceIdentityNote :state="ws.state" part="waiting" />
         <p v-if="status.since" class="note" data-test="waiting-since">Waiting since {{ relativeTime(status.since) }}.</p>
         <WorkspaceAction :workspace="ws" :action="status.action" :link="status.link" primary />
         <dl class="facts">

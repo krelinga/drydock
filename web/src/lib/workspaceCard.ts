@@ -125,10 +125,14 @@ function supervisorHalf(w: Workspace, fleet: FleetLogin): CardStatus | null {
   const s = w.supervisor
   const configFault = s !== null && s.state === 'degraded' && CONFIG_FAULTS.has(s.reason ?? '')
   // §6.6: a signed-out fleet replaces the session half of every running
-  // card with one line and no button — the banner holds the one Sign in to
-  // Claude — except where the card's own fault is not the login's.
+  // card — no session line, no session button; the banner holds the one Sign
+  // in to Claude — except where the card's own fault is not the login's. The
+  // card says only what is still its own, that the container runs; the
+  // "Waiting on Claude sign-in." under it is WorkspaceIdentityNote's
+  // (lib/identity.ts cardOverlay), so the sentence has one source and
+  // appears once.
   if (SIGNED_OUT.has(fleet) && !configFault && (s === null || s.state !== 'degraded' || s.reason !== 'bad_command_line')) {
-    return { line: 'Waiting on Claude sign-in', tone: 'idle', note: null, action: null }
+    return { line: 'Running', tone: 'idle', note: null, action: null }
   }
   if (s === null) {
     return { line: 'Container up, no session', tone: 'idle', note: null, action: 'start_session' }

@@ -85,6 +85,11 @@ func TestClaudeIdentityEndToEnd(t *testing.T) {
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
+	// The supervisor reads the same verdict, through the watch: blanked is
+	// a fleet under which no session server is started (§7.3, §8).
+	if st, known := srv.Supervisor.Identity(context.Background()); !known || st != "blanked" {
+		t.Errorf("the supervisor sees identity %q (known %v); want blanked", st, known)
+	}
 	if login, ok := body["login"]; !ok || string(login) != "null" {
 		t.Errorf("login = %s (present %v); want null until the handshake exists", login, ok)
 	}
