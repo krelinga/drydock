@@ -205,6 +205,46 @@ func ownListeners(t *testing.T) int {
 
 // TestNoTCPListener is the first non-negotiable (§13.5), asserted on the
 // running process rather than by reading the code for net.Listen calls.
+// Serve also ends when a listener fails, with its context still live — and
+// then it must stop what it started as surely as a cancelled context does.
+// The loops it runs beside serving (the identity watch, the catalog, the
+// supervisor's Watch) end on that context, and Serve waits for each of them
+// before closing the database, so a context nobody cancelled held Serve, and
+// the process, forever.
+//
+// The control is the same server serving: while its listener is up, Serve
+// has not returned and a request is answered.
+func TestServeEndsWhenAListenerFails(t *testing.T) {
+	cfg := testConfig(t, t.TempDir())
+	srv, err := New(context.Background(), cfg, sys.Production())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- srv.Serve(ctx) }()
+	r := &running{cfg: cfg, srv: srv, client: unixClient(cfg.APISocket)}
+	if resp := r.do(t, req{method: "GET", path: "/api/auth/session"}); resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("control: GET /api/auth/session while serving: %d, want 401", resp.StatusCode)
+	}
+	select {
+	case err := <-done:
+		t.Fatalf("control: Serve returned while serving: %v", err)
+	default:
+	}
+
+	srv.apiLn.Close() // the listener fails under the server
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Error("Serve returned nil after its listener failed; want the listener's error")
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("Serve did not return after its listener failed, with its context never cancelled")
+	}
+}
+
 func TestNoTCPListener(t *testing.T) {
 	r := start(t)
 	if n := ownListeners(t); n != 0 {

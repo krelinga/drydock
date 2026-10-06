@@ -24,6 +24,9 @@ type streamEnv struct {
 	clock *sys.FakeClock
 	alive atomic.Bool
 	url   string
+	// serve is the handler without a server around it, so a panic in it
+	// reaches the test rather than net/http's recover.
+	serve http.HandlerFunc
 }
 
 func newStreamEnv(t *testing.T) *streamEnv {
@@ -40,9 +43,10 @@ func newStreamEnv(t *testing.T) *streamEnv {
 		Alive: func(_ context.Context, id string) (bool, error) { return id == "s1" && env.alive.Load(), nil }}
 	h := routes.Handlers()["events.stream"]
 	// Stands in for the gate, which these tests are not about.
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	env.serve = func(w http.ResponseWriter, r *http.Request) {
 		h(w, r.WithContext(context.WithValue(r.Context(), sessionKey{}, auth.Session{ID: "s1"})))
-	}))
+	}
+	srv := httptest.NewServer(env.serve)
 	t.Cleanup(func() { env.log.Close(); srv.Close() })
 	env.url = srv.URL
 	return env
@@ -260,6 +264,36 @@ func TestStreamEndsOnClose(t *testing.T) {
 	env.log.Close()
 	if f, ok := s.next(); ok {
 		t.Fatalf("the stream went on after Close: %+v", f)
+	}
+}
+
+// A stream asked for after Close — between the server closing the log and
+// shutting its listeners, which is when a reconnecting browser arrives — ends
+// at once rather than panicking: its subscription is over before it starts,
+// and the handler's deferred Cancel must not close it again. The handler is
+// called directly, since net/http would recover the panic and hide it.
+//
+// The control is a stream opened before Close, which is live (it is sent an
+// event) until Close ends it.
+func TestAStreamAskedForAfterCloseEnds(t *testing.T) {
+	env := newStreamEnv(t)
+	s := env.connect(t, "")
+	s.expectComment("connected")
+	s.expectEvent(env.emit(t, "workspace.state"))
+	env.log.Close()
+	if f, ok := s.next(); ok {
+		t.Fatalf("control: the stream went on after Close: %+v", f)
+	}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		env.serve(httptest.NewRecorder(), httptest.NewRequest("GET", "/api/events", nil))
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("a stream asked for after Close is still open")
 	}
 }
 
