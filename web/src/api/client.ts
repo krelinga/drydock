@@ -9,9 +9,22 @@
 //     there is nothing to be tempted by. The one exception, `sendForResult`,
 //     returns an operation's result for its own screen, never for the reducer.
 //  3. Requests are same-origin JSON fetches: `credentials: 'same-origin'`,
-//     never `mode: 'no-cors'`, never a native form submission. That is what
-//     makes the browser send the `Origin` header the server's exact-match
-//     check needs (§13.3).
+//     `mode: 'same-origin'`, never `mode: 'no-cors'`, never a native form
+//     submission. That is what makes the browser send the `Origin` header the
+//     server's exact-match check needs (§13.3).
+//  4. Every request carries `referrerPolicy: 'same-origin'`, overriding the
+//     document's `no-referrer` for Drydock's own API and nothing else (§8).
+//     Without it, the Fetch standard's "append a request Origin header"
+//     serializes the Origin of a non-GET request whose mode is not `cors`
+//     through the referrer policy, and `no-referrer` makes it `null`: Safari
+//     and Firefox send `Origin: null` on every mutation, sign-in included, and
+//     the server's exact match refuses it with `forbidden_origin` (v0.2.1).
+//     Chromium sends the real origin either way, which is how it shipped.
+//     Under `same-origin` the serialization yields the real origin for a
+//     same-origin request; the cost is a `Referer` carrying the page's URL,
+//     sent to Drydock alone, since `mode: 'same-origin'` refuses any other
+//     destination. The document-level policy stays `no-referrer`, so links
+//     out (GitHub, claude.ai) still carry no Drydock URL.
 //
 // Errors are reported by the envelope's machine-readable `code`; the server's
 // prose `message` is kept for logging but never shown (see messages.ts).
@@ -64,6 +77,8 @@ async function request(method: Method, path: string, body?: unknown): Promise<Re
     headers,
     credentials: 'same-origin',
     mode: 'same-origin',
+    // Point 4 above: without this, Safari and Firefox send `Origin: null`.
+    referrerPolicy: 'same-origin',
     cache: 'no-store',
   }
   if (body !== undefined) {

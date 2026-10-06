@@ -23,4 +23,14 @@ export default defineConfig({
     // asserts that the browser still notices one.
     ignoreHTTPSErrors: false,
   },
+  // Chromium runs every spec against the TLS stack. Firefox and WebKit run
+  // engines.spec.ts, against the loopback front: v0.2.1 sent `Origin: null`
+  // from Safari, and only another engine could have shown it (testing §10.1).
+  // They cannot run the TLS specs, because this tier has no per-run way to
+  // make them trust its CA, and ignoring certificate errors is not one.
+  projects: [
+    { name: 'chromium', use: { browserName: 'chromium' } },
+    { name: 'firefox', use: { browserName: 'firefox' }, testMatch: 'engines.spec.ts' },
+    { name: 'webkit', use: { browserName: 'webkit' }, testMatch: 'engines.spec.ts' },
+  ],
 })

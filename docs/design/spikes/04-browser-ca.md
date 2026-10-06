@@ -158,6 +158,16 @@ requirement.
 not testable here at all. The tier buys confidence that Drydock's own half is right — the cookie
 attributes it sets, the origins it serves, the routes it refuses — not that every browser agrees.
 
+> **Addendum, 6 October 2026 (v0.2.1).** That last sentence bit. The first real sign-in, from
+> Safari on macOS, was refused with `forbidden_origin`: the UI's client sent its mutations in mode
+> `same-origin` under the page's `no-referrer` policy, which WebKit and Firefox serialize as
+> `Origin: null` and Chromium does not. Drydock's half was *not* right; the cookie and origin
+> semantics this spike measured were, but the request the app made was engine-dependent. The browser
+> tier now runs `engines.spec.ts` in Playwright's Firefox and WebKit too (testing §10.4), against a
+> plain-HTTP loopback front, because the NSS-in-a-per-run-`HOME` route this spike settled is
+> Chromium's: it gives those two engines no per-run trust store. This spike's findings and its
+> harness are unchanged and remain Chromium-only.
+
 ---
 
 ## Reproducing

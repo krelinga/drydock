@@ -70,6 +70,32 @@ describe('mutations', () => {
     expect(read).toMatchObject({ method: 'GET', credentials: 'same-origin', contentType: null })
   })
 
+  it("override the page's no-referrer policy, or Safari and Firefox send Origin: null", async () => {
+    // Under the document's `no-referrer`, a non-GET fetch whose mode is not
+    // `cors` gets `Origin: null` (Fetch, "append a request Origin header"),
+    // which the server's exact match refuses. `referrerPolicy: 'same-origin'`
+    // on the request is the fix, and `mode: 'same-origin'` is the guard that
+    // keeps its Referer at Drydock. The browser tier proves the header; this
+    // pins the init that produces it, for every method.
+    freshBackend({ signedIn: true })
+    const spy = vi.spyOn(globalThis, 'fetch')
+    try {
+      await get('/api/auth/session')
+      for (const m of ['POST', 'PUT', 'PATCH', 'DELETE'] as const) {
+        await send(m, '/api/x').catch(() => {})
+      }
+      expect(spy).toHaveBeenCalledTimes(5)
+      for (const [, init] of spy.mock.calls) {
+        expect(init).toMatchObject({ mode: 'same-origin', credentials: 'same-origin', referrerPolicy: 'same-origin' })
+      }
+      // Control: the spy sees the client's init as written, not a default —
+      // the method differs per call, so these are the five requests above.
+      expect(spy.mock.calls.map(([, i]) => i?.method)).toEqual(['GET', 'POST', 'PUT', 'PATCH', 'DELETE'])
+    } finally {
+      spy.mockRestore()
+    }
+  })
+
   it('refuse to leave the API', async () => {
     freshBackend({ signedIn: true })
     await expect(get('https://evil.example/api/x')).rejects.toThrow(/non-API path/)

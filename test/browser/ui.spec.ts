@@ -5,7 +5,7 @@
 import { randomBytes } from 'node:crypto'
 import { DatabaseSync } from 'node:sqlite'
 import { UI } from './harness'
-import { expect, putSecret, sessionCookie, test } from './fixtures'
+import { expect, putSecret, seenBy, sessionCookie, test } from './fixtures'
 
 async function signInThroughTheForm(page: import('@playwright/test').Page, password: string): Promise<void> {
   await page.getByLabel('Password').fill(password)
@@ -25,8 +25,15 @@ test('signing in through the real UI lands on the home screen', async ({ page, c
   await expect(page).toHaveURL(`${UI}/signin`)
 
   // The right one signs in and lands on the home screen.
+  stack.apiTap.clear()
   await signInThroughTheForm(page, stack.password)
   await expect(page).toHaveURL(`${UI}/`)
+  // The form's POST reached the server with the UI's exact Origin, through
+  // Caddy. Chromium sent it under v0.2.1's client too; engines.spec.ts is
+  // where Safari's and Firefox's `Origin: null` is caught.
+  const post = await seenBy(stack.apiTap.seen, (s) => s.method === 'POST' && s.path === '/api/auth/session', 'the sign-in POST')
+  expect(post.origin).toBe(UI)
+  expect(post.status).toBe(204)
   await expect(page.getByRole('heading', { name: 'Workspaces' })).toBeVisible()
   expect(await sessionCookie(context)).toBeDefined()
 })

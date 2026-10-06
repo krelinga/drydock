@@ -6,8 +6,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **Mostly design, with the first code in.** The repository contains the overall design
 document (`docs/design/overall/drydock-design.md`, draft v24), supplemental ones on port forwarding
-(`docs/design/port-forwarding/`, draft v5), testing (`docs/design/testing/`, draft v13) and the Vue
-frontend (`docs/design/frontend/`, draft v9), a settled brand mark (`docs/design/brand/`, v1.1,
+(`docs/design/port-forwarding/`, draft v5), testing (`docs/design/testing/`, draft v14) and the Vue
+frontend (`docs/design/frontend/`, draft v12), a settled brand mark (`docs/design/brand/`, v1.1,
 with the shipping icon assets), an adversarial security review
 (`docs/design/security-review.md`), their SVG diagrams, a devcontainer definition, and **five
 completed spikes** with their harnesses under `docs/design/spikes/` — the four Phase 0 ones plus
@@ -22,7 +22,7 @@ go build ./... && go vet ./... && go test ./...   # the whole suite; the Caddy t
 gofmt -l .                                        # must print nothing
 cd web && npm ci && npm run check                 # the UI: types, tests, dist is current, size budget
 test/install/run.sh                               # the installer, in a systemd container
-test/browser/run.sh                               # the browser tier: Chromium, Caddy, drydock (needs web/'s npm ci)
+test/browser/run.sh                               # the browser tier: Chromium (+ Firefox, WebKit), Caddy, drydock (needs web/'s npm ci)
 go build -o drydock ./cmd/drydock                 # the one binary
 printf "%s\n" "$PW" | ./drydock passwd --db x.db  # set the operator password (no HTTP route can)
 ./drydock serve --db x.db --ui-origin https://drydock.example.com --ui-host drydock.example.com \
@@ -62,7 +62,7 @@ printf "%s\n" "$PW" | ./drydock passwd --db x.db  # set the operator password (n
 | `deploy/package.sh` | Builds the release assets — the same script in CI and in the installer test. |
 | `test/install/` | `run.sh` runs the installer against real systemd, the official Caddy package, Debian's Docker (a nested daemon) and the devcontainer CLI in a privileged container: refusal without Docker or the CLI, a real `devcontainer up` inside the running service's own mount namespace, fresh install, no-op re-run, upgrade, rollback, previews on and off, an unreadable key, a foreign Caddyfile, the secrets master key (created, never printed, kept across re-run and upgrade, a damaged one refused), `--ca-cert` (kept; without it the trust failure is named as one; with Caddy cut off from the socket the check still fails, with or without it), and a mixed-case `--ui-host` (lowercased, sign-in works, an old `drydock.env` repaired, `drydock serve` refusing one), and last a first install *with* `--github-app-key` on a host with no `/etc/drydock`, which v0.2.0 failed because every earlier App install found the directory already made; then `--secrets-key` from nothing (a wrong size, base64, a missing file and a directory refused before anything is installed; the given bytes installed; the same key restarting nothing; a different key replacing it while no secret is stored, and refused with a secret stored — key byte-identical, drydock never stopped, the secret still served; a hex sweep of every installer output and the journal for the key bytes). `live.sh vX.Y.Z` runs the README one-liner against a *published* release from GitHub; `live.sh --dir DIR vX.Y.Z` against assets on disk, served the way GitHub serves them. Neither is part of `go test`; CI runs the first, the release workflow the second (`--dir`, on the draft's assets). |
 | `test/container/` | The container tier: real Docker (the devcontainer's DinD, or the CI runner's) and the real `devcontainer` CLI. Adopt-an-orphan and died-unobserved against real containers, and Phase 3's deliverable end to end. That is a real `devcontainer up` with the Feature from this checkout and the broker socket bind-mounted. Inside, git pushes a `drydock/` branch through the helper; a push to `main` is refused, the other repository is unreachable, and there is no socket but its own and no Docker socket. Then Phase 4's: a suite run through the Feature's `CLAUDE_ENV_FILE` passes while a secret is granted and fails on the next command once it is not; a hostile value runs nothing; no value is in any `/proc/*/cmdline` or `docker inspect`. And Phase 2's: `POST /api/workspaces` through the real server, signed in, for a repository with a config and one without, both reaching `running` with the published Feature, the clones untouched and no token anywhere in the tree or the database; a secret granted to one reaches its `CLAUDE_ENV_FILE` prelude and not the other's. Each test runs under its own random label prefix. Skips without Docker unless `DRYDOCK_REQUIRE_DOCKER` is set, which CI does. |
-| `test/browser/` | The browser tier (testing §10, §10.4): Playwright's Chromium against the real `drydock serve` and real Caddy on the shipped Caddyfile, with a throwaway CA trusted through NSS in a per-run `HOME` — never `ignoreHTTPSErrors`. A tap between Caddy and each socket records what arrived, so "no cookie" is asserted at the server. Covers the `__Host-` cookie and its illegal variants, the `SameSite=Lax` split, the `Origin` belt, cross-origin reads, framing both ways, the CSP as served, SSE through Caddy's `encode`, the browser's own `Last-Event-ID` replay, sign-in with `return`, the mid-session `401`, and a wrong-host certificate refused. Mutation-checked. Run by `run.sh`, which resolves `@playwright/test` from `web/node_modules` via `NODE_PATH` and type-checks first. |
+| `test/browser/` | The browser tier (testing §10, §10.4): Playwright's Chromium against the real `drydock serve` and real Caddy on the shipped Caddyfile, with a throwaway CA trusted through NSS in a per-run `HOME` — never `ignoreHTTPSErrors`. A tap between Caddy and each socket records what arrived, so "no cookie" is asserted at the server. Covers the `__Host-` cookie and its illegal variants, the `SameSite=Lax` split, the `Origin` belt, cross-origin reads, framing both ways, the CSP as served, SSE through Caddy's `encode`, the browser's own `Last-Event-ID` replay, sign-in with `return`, the mid-session `401`, and a wrong-host certificate refused. Mutation-checked. Run by `run.sh`, which resolves `@playwright/test` from `web/node_modules` via `NODE_PATH` and type-checks first. **Not Chromium-only**: `engines.spec.ts` also runs in Playwright's Firefox and WebKit (the `firefox` and `webkit` projects), driving the real sign-in form and Settings' sign-out and asserting the `Origin` the server received. v0.2.1 shipped a client that sent `Origin: null` from Safari and Firefox, which Chromium never shows. Those two engines cannot trust the tier's CA, so they run against a **loopback front** (`Stack.front()`: the real `drydock serve` over plain HTTP on 127.0.0.1) that maps only its own exact origin to the UI origin and passes `null` through, which the spec's controls prove from Node. The `signIn` fixture is a bare `fetch` (mode `cors`, so it sends the right Origin whatever the client does) and is for tests where how the sign-in was made is not the subject. |
 | `test/ansible/` | The Ansible companion's checks: `check.sh` extracts the document's YAML blocks and syntax-checks and lints them; `live.sh` runs them against a bare Debian systemd container, installing a locally packaged release: first install, a `changed=0` re-run, an upgrade with its database backup, an App key rotation, a master-key backup that refuses a different key, and the move to a vaulted master key (the installed key vaulted: `changed=0`; a new one with no secret stored: replaced; another with one stored: refused, the key unchanged). Neither is in CI. |
 | `test/component/` | Real binaries, nothing mocked. Today: the Caddyfile conformance test (testing §3.2), mutation-checked against the Caddyfile itself. |
 | `test/fixtures/` | The corpus: 42 fixtures from `2.1.289` and devcontainer CLI `0.89.0`, plus `record.sh`, which is testing §11.1 step 3. Some are hand-written or synthetic, and their `.meta` says which. |
@@ -107,11 +107,12 @@ keeps certificate validation on. **Playwright's browsers are deliberately not in
 devcontainer's features**: `--with-deps` pulls in some forty transitive system libraries, and
 enumerating those in a package list is how the list goes stale silently. It is a lifecycle command
 instead — `postCreateCommand` runs `npm ci` in `web/` and then `npx playwright install --with-deps
-chromium`, which fetches the Chromium build web/'s pinned `@playwright/test` wants. A
-`drydock-playwright-cache` volume on `~/.cache/ms-playwright` keeps that ~114 MB download across
-rebuilds, the same reasoning as the DinD volume beside it. **The `postCreate` step needs a container
+chromium firefox webkit`, which fetches the builds web/'s pinned `@playwright/test` wants: Chromium
+for the whole tier, Firefox and WebKit for `engines.spec.ts`. A `drydock-playwright-cache` volume on
+`~/.cache/ms-playwright` keeps that download (~114 MB for Chromium, about 100 MB more for each of
+the others) across rebuilds, the same reasoning as the DinD volume beside it. **The `postCreate` step needs a container
 rebuild to take effect**; until then, run the two commands by hand in `web/` (the system libraries
-need `sudo npx playwright install-deps chromium`). Playwright itself is a devDependency of `web/`,
+need `sudo npx playwright install-deps chromium firefox webkit`). Playwright itself is a devDependency of `web/`,
 pinned — bump it with the §11.6 ritual, since a new Chromium is a new set of cookie rules.
 
 A third volume, `drydock-gh-config` on `~/.config/gh`, keeps `gh`'s login across rebuilds. The intended
@@ -173,7 +174,7 @@ only with an admin bypass of the ruleset; that is a token decision for the owner
 with Caddy, `socat` and the devcontainer CLI installed and `DRYDOCK_REQUIRE_CADDY=1` and
 `DRYDOCK_REQUIRE_DOCKER=1` — without them a missing `caddy` or Docker is a *skip*, which in CI is a
 silent pass — then `npm run check`, then `test/install/run.sh`, and
-the `browser` job: `test/browser/run.sh` after `npx playwright install --with-deps chromium`,
+the `browser` job: `test/browser/run.sh` after `npx playwright install --with-deps chromium firefox webkit`,
 `libnss3-tools` and the pinned Caddy, uploading Playwright traces when it fails. **The Go suite's tools and
 commands live in one composite action, `.github/actions/go-suite`**, which CI's `go` job and the
 release's `test` job both run (and `browser` for Go and Caddy alone), so a release is held to exactly

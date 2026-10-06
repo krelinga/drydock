@@ -796,7 +796,10 @@ untouched. Re-run without `--secrets-key` to finish the upgrade.
   ([§14](../design/overall/drydock-design.md#14-build-plan)).
 - [ ] If the phone fails and the laptop works, the cause is almost always DNS (Private DNS or
   rebind filtering, [step 1.2](#12-a-hostname-for-the-ui-and-how-clients-resolve-it)) or trust
-  (a CA profile installed but not enabled for full trust).
+  (a CA profile installed but not enabled for full trust). A sign-in that the page refuses with
+  *This request did not come from Drydock's own page* is neither: it is a release before v0.3.0,
+  whose UI could not sign in from Safari or any other iPhone browser
+  ([11](#11-troubleshooting)).
 
 ---
 
@@ -1068,6 +1071,7 @@ and Caddy stay installed, because you installed them.
 | Browser: cannot connect / times out | DNS points elsewhere, or a firewall blocks the port | `nslookup` from that device. Check `sudo ss -ltnp \| grep :443` and the firewall rules. |
 | JSON `forbidden_host` | Drydock's own `Host` check, behind Caddy | Should not happen with the installer's config. Compare `systemctl cat drydock` with `/etc/drydock/drydock.env`. |
 | Sign-in fails with `forbidden_origin` | The browser is on a page that is not `https://drydock.example.com` (another name for the server, or an old tab) | Open exactly `https://drydock.example.com`. The installer lowercases `--ui-host`, so case is no longer a cause. |
+| Sign-in fails with *This request did not come from Drydock's own page* (`forbidden_origin`) on exactly `https://drydock.example.com`, and the browser's developer tools show the `POST /api/auth/session` request carrying **`Origin: null`** | **A release before v0.3.0** (v0.2.1 or earlier). Its UI sent every sign-in and every other change with `Origin: null` from Safari (macOS and iOS) and Firefox, which the server refuses. Chrome and other Chromium browsers were not affected | Upgrade ([10](#10-upgrade-roll-back-uninstall-logs)), then reload the page so the browser loads the new UI. Until then, sign in from Chrome or another Chromium browser. On an iPhone or iPad every browser is built on WebKit, Chrome included, so expect the same refusal from all of them until the upgrade. |
 | Journal: `drydock serve: config: UIOrigin … must be lowercase` | The unit was hand-edited, or written by an installer older than `--ca-cert` | Re-run the installer: it lowercases the setting in `/etc/drydock/drydock.env`. |
 | Sign-in: *too many failed sign-ins; retry after …* | Lockout: per-IP exponential backoff (up to 15 min), and a global cap of 50 failures in 15 min | Wait it out. The lockout survives a restart on purpose. |
 | Forgot the password | — | `sudo -u drydock drydock passwd --db /var/lib/drydock/drydock.db` (this signs out every device) |
