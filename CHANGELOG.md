@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.3.0](https://github.com/krelinga/drydock/compare/v0.2.1...v0.3.0) (2026-10-06)
+
+
+### Features
+
+* let the installer take the secrets master key from a file ([#46](https://github.com/krelinga/drydock/issues/46)) ([fd7ddf9](https://github.com/krelinga/drydock/commit/fd7ddf9b883445cfb06f960ab8810e396c0b85ef))
+
+
+### Bug Fixes
+
+* send Drydock's real Origin from the UI under its no-referrer policy ([#47](https://github.com/krelinga/drydock/issues/47)) ([fec2486](https://github.com/krelinga/drydock/commit/fec2486f80c9dfeba0478f40c30d637f5e91b1c9))
+
 ## [0.2.1](https://github.com/krelinga/drydock/compare/v0.2.0...v0.2.1) (2026-10-06)
 
 
