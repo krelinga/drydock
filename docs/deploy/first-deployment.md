@@ -22,7 +22,7 @@ for the rest.
 - [3. Prerequisites on the server](#3-prerequisites-on-the-server)
 - [4. Get the secrets onto the server without leaking them](#4-get-the-secrets-onto-the-server-without-leaking-them)
 - [5. Install](#5-install)
-- [6. Back up the secrets master key, now](#6-back-up-the-secrets-master-key-now)
+- [6. The secrets master key: supply it, or back it up](#6-the-secrets-master-key-supply-it-or-back-it-up)
 - [7. Verify](#7-verify)
 - [8. First workspace](#8-first-workspace)
 - [9. What does not work yet](#9-what-does-not-work-yet)
@@ -54,10 +54,14 @@ them. Each one is also mentioned at the step where it bites.
    installer run.
 4. **There is no `uninstall`.** [Step 10](#10-upgrade-roll-back-uninstall-logs) lists what to remove
    by hand. The list is derived from what `deploy/install.sh` creates.
-Four issues listed here earlier are fixed: three in v0.2.0, and one in v0.2.1, the release this
-runbook deploys. To confirm the installer you are about to run is v0.2.1 or later,
+Four issues listed here earlier are fixed: three in v0.2.0, and one in v0.2.1. This runbook
+deploys **v0.3.0**, the first release whose installer takes `--secrets-key`
+([step 6](#6-the-secrets-master-key-supply-it-or-back-it-up)). To confirm the installer you are
+about to run is v0.3.0 or later,
 `curl -fsSL https://github.com/krelinga/drydock/releases/latest/download/install.sh | grep '^RELEASE_VERSION='`
-prints `RELEASE_VERSION="v0.2.1"` or a later tag:
+prints `RELEASE_VERSION="v0.3.0"` or a later tag. An older installer stops at the flag with
+`unknown option: --secrets-key`; on one, leave the flag off and take
+[step 6's generated key](#62-a-generated-key-back-it-up-now).
 
 - A first install with `--github-app-key` on a host without `/etc/drydock` no longer stops with
   `mktemp: failed to create file via template '/etc/drydock/.github-app.XXXXXX'` (fixed in
@@ -202,7 +206,7 @@ baked into the unit is the production App's ([Known issue 3](#0-known-issues--re
 
 ## 2. Cut a release
 
-> **For this deployment, this step is done.** `v0.2.1` is published and *Latest*, and it is the
+> **For this deployment, this step is done.** `v0.3.0` is published and *Latest*, and it is the
 > release this runbook deploys. Go to [step 3](#3-prerequisites-on-the-server). The rest of this
 > step is for cutting a later release.
 
@@ -482,6 +486,35 @@ not in `ssl-cert`.
   private key. (Adding the CA to the system store with `update-ca-certificates` also works, but it
   makes every program on the server trust your CA, which the check does not need.)
 
+### 4.3 Optional: your own secrets master key
+
+Every repository secret is encrypted under one master key. Decide now where its durable copy
+lives ([step 6](#6-the-secrets-master-key-supply-it-or-back-it-up)): **your own key**, which you
+make and keep in your own secret store and give to the installer with `--secrets-key`; or **a
+generated key**, which the installer makes and you then back up. For a generated key, skip this
+step.
+
+- [ ] **Make the key where your secret store is** (your laptop, say), and store it there first:
+  ```sh
+  head -c 32 /dev/urandom > drydock-secrets.key    # exactly 32 raw bytes: not base64, no newline
+  chmod 0400 drydock-secrets.key
+  sha256sum drydock-secrets.key                     # the hash is safe to show; the key is not
+  ```
+  Put the file in your password manager as an attachment, or in an encrypted vault, before going
+  on. A copy of a key that already exists works the same way (for example the one an earlier
+  install generated, fetched as in [6.2](#62-a-generated-key-back-it-up-now)).
+- [ ] **Copy it to the server** the way [4.1](#41-the-github-app-private-key) copies the App key:
+  ```sh
+  install -d -m 0700 ~/drydock-drop                                       # server
+  scp drydock-secrets.key <you>@<server>:drydock-drop/secrets.key         # laptop
+  sudo install -m 0400 -o root -g root ~/drydock-drop/secrets.key /root/drydock-secrets.key   # server
+  shred -fu ~/drydock-drop/secrets.key && rmdir ~/drydock-drop            # server
+  sudo sha256sum /root/drydock-secrets.key                                # server: the same hash
+  ```
+  [Step 5](#5-install) installs it at `/etc/drydock/secrets.key` (mode `0400`, owner `drydock`), and
+  you delete `/root/drydock-secrets.key` right after. Then delete the laptop's loose copy
+  (`shred -fu drydock-secrets.key`) once your secret store has it.
+
 ---
 
 ## 5. Install
@@ -504,6 +537,12 @@ not in `ssl-cert`.
   **Option A (private CA):** add one more flag, `--ca-cert /etc/caddy/certs/drydock-ca.pem`. With a
   publicly trusted certificate (options B and C), leave it out.
 
+  **Your own secrets master key ([4.3](#43-optional-your-own-secrets-master-key)):** add
+  `--secrets-key /root/drydock-secrets.key`. Without it, the installer generates the key, and
+  [step 6](#6-the-secrets-master-key-supply-it-or-back-it-up) has you back it up. Like
+  `--github-app-key`, the flag is a path, is not kept in `drydock.env`, and later runs need it only
+  to change the key.
+
   Do **not** pass `--preview-domain`. Previews are not built yet ([step 9](#9-what-does-not-work-yet)).
 
 **What it does, in order.** It stops at the first failure, and nothing below the failure is
@@ -511,13 +550,14 @@ changed:
 
 1. It downloads `drydock_linux_amd64.tar.gz` and `SHA256SUMS` for the tag stamped into this
    `install.sh`, checks the checksum, and runs the `install.sh` inside the tarball. Output starts
-   with `==> downloading drydock_linux_amd64.tar.gz (v0.2.1)`.
+   with `==> downloading drydock_linux_amd64.tar.gz (v0.3.0)`.
 2. It checks prerequisites: root, Linux, systemd, `caddy` and the `caddy` user, `curl`, `docker`,
    the `docker` group, and `devcontainer` on the service `PATH`.
 3. It validates flags: the hostname must contain a dot, and is lowercased (it says so if that
    changed it); certificate paths must be absolute files; `--ca-cert` must be a certificate, not a key;
    the App ID must be numeric (the Client ID starts with `Iv` and is refused); the key must look
-   like a PEM private key.
+   like a PEM private key; `--secrets-key` must be a regular file of exactly 32 bytes. The refusals
+   name the file and its size, never its contents.
 4. It checks that the `caddy` user can read the certificate and key.
 5. It decides about the Caddyfile. The stock file is backed up and replaced:
    `==> replacing the Caddy package's default Caddyfile (saved to /etc/caddy/Caddyfile.before-drydock.<timestamp>)`.
@@ -531,7 +571,8 @@ changed:
 9. It installs `/usr/local/bin/drydock` and creates `/etc/drydock` (root, `0755`), before
    anything is written into it.
 10. `==> installed the GitHub App key at /etc/drydock/github-app.pem (mode 0400, owner drydock)`.
-11. `==> created the secrets master key at /etc/drydock/secrets.key (mode 0400, owner drydock); back it up — without it no stored secret can be read`.
+11. Without `--secrets-key`: `==> created the secrets master key at /etc/drydock/secrets.key (mode 0400, owner drydock); back it up — without it no stored secret can be read`.
+    With it: `==> installed the secrets master key at /etc/drydock/secrets.key from /root/drydock-secrets.key (mode 0400, owner drydock); keep your copy of it safe — without it no stored secret can be read`.
 12. It writes `/etc/drydock/drydock.env`, `/etc/systemd/system/drydock.service`,
     `/etc/systemd/system/caddy.service.d/drydock.conf`, `/etc/caddy/Caddyfile` and the directory
     `/etc/caddy/drydock.d/`. The new Caddy config is validated with `caddy validate` **before**
@@ -545,11 +586,12 @@ changed:
     check passes. If everything is running and only the certificate could not be verified, it says
     exactly that, `Drydock is installed and running, and answers through Caddy, but this host could
     not verify the certificate …`, with `curl`'s reason; see [§11](#11-troubleshooting).
-16. `==> installed Drydock v0.2.1` and `==> open https://drydock.example.com`.
+16. `==> installed Drydock v0.3.0` and `==> open https://drydock.example.com`.
 
-- [ ] **Delete the temporary App key**:
+- [ ] **Delete the temporary App key**, and the temporary master key if you gave one:
   ```sh
   sudo shred -u /root/drydock-app.pem
+  sudo shred -u /root/drydock-secrets.key   # your own key only
   ```
 
 **If the password step was skipped or refused**, the installer only warns. For example, the
@@ -568,7 +610,7 @@ sudo -u drydock drydock passwd --db /var/lib/drydock/drydock.db
 | `/usr/local/bin/drydock` | root `0755` | The binary. `drydock.previous` appears after an upgrade. |
 | `/etc/drydock/drydock.env` | root `0644` | Settings: hostnames, cert paths, the `--ca-cert` path, App ID. Nothing secret. Parsed by the installer, never `source`d. |
 | `/etc/drydock/github-app.pem` | drydock `0400` | The App key. Passed to Drydock as a path. |
-| `/etc/drydock/secrets.key` | drydock `0400` | The secrets master key: 32 random bytes. **[Back it up](#6-back-up-the-secrets-master-key-now).** |
+| `/etc/drydock/secrets.key` | drydock `0400` | The secrets master key: 32 raw bytes, the file given to `--secrets-key` or generated. **[Keep a copy](#6-the-secrets-master-key-supply-it-or-back-it-up).** |
 | `/etc/systemd/system/drydock.service` | root `0644` | `drydock serve …` as `drydock`, `ProtectSystem=strict`, the fixed `PATH`. `.previous` is kept for rollback. |
 | `/etc/systemd/system/caddy.service.d/drydock.conf` | root `0644` | Caddy's `EnvironmentFile`, `SupplementaryGroups=drydock`, and `/run/caddy`. |
 | `/etc/caddy/Caddyfile` | root `0644` | Drydock's. The original is kept at `/etc/caddy/Caddyfile.before-drydock.<timestamp>`. |
@@ -582,17 +624,33 @@ sudo -u drydock drydock passwd --db /var/lib/drydock/drydock.db
 
 ---
 
-## 6. Back up the secrets master key, now
+## 6. The secrets master key: supply it, or back it up
 
-Do this before you store a single secret.
+Settle this before you store a single secret.
 
 *Why:* every repository secret is encrypted with XChaCha20-Poly1305 under this key
 ([§10.2](../design/overall/drydock-design.md#102--storage)). **If you lose it, every stored secret
 is unreadable**, and the only recovery is to type each value in again. Re-runs and upgrades keep
 it. If the file is damaged, the installer refuses to run rather than quietly generating a new one.
 
-Keep the backup **apart from any backup of the database**. A backup that holds both holds every
-secret in plaintext-equivalent form.
+Keep your copy of the key **apart from any backup of the database**. A backup that holds both holds
+every secret in plaintext-equivalent form.
+
+| | Your own key | A generated key |
+|---|---|---|
+| In step 5 | `--secrets-key /root/drydock-secrets.key` ([4.3](#43-optional-your-own-secrets-master-key)) | nothing |
+| The durable copy | already in your secret store | a backup you take now ([6.2](#62-a-generated-key-back-it-up-now)) |
+| Rebuilding the server | pass the same file as `--secrets-key` | restore the backup ([6.2](#62-a-generated-key-back-it-up-now)), or pass it as `--secrets-key` |
+
+### 6.1 Your own key
+
+- [ ] **Check the server holds the key you stored**: `sudo sha256sum /etc/drydock/secrets.key`
+  prints the hash you noted in [4.3](#43-optional-your-own-secrets-master-key).
+
+There is no backup step: your secret store is the backup. Later runs keep the installed key without
+the flag. Passing the same file again changes nothing and restarts nothing.
+
+### 6.2 A generated key: back it up, now
 
 - [ ] **On the server**, make a copy that your login user can read:
   ```sh
@@ -611,15 +669,54 @@ secret in plaintext-equivalent form.
   shred -fu ./drydock-secrets.key                      # laptop, after it is stored (-f: the file is 0400)
   shred -fu ~/drydock-drop/secrets.key && rmdir ~/drydock-drop  # server
   ```
-- [ ] **To restore it later**, for example on a rebuilt server, copy the backup to the server the
-  way [4.1](#41-the-github-app-private-key) copies the App key, then:
+  The stored copy is now your own key in every sense, so from here on you may pass it as
+  `--secrets-key` like any supplied key: it is the installed key, so nothing changes.
+- [ ] **To restore it later**, for example on a rebuilt server, copy the backup to
+  `/root/drydock-secrets.key` as in [4.3](#43-optional-your-own-secrets-master-key) and pass
+  `--secrets-key /root/drydock-secrets.key` to that server's first install. On an installed host
+  whose key file was damaged, put it back by hand:
   ```sh
-  sudo install -d -m 0755 /etc/drydock
-  sudo install -m 0400 -o drydock -g drydock ./secrets.key /etc/drydock/secrets.key   # after the drydock user exists
+  sudo install -m 0400 -o drydock -g drydock ./secrets.key /etc/drydock/secrets.key
   sudo systemctl restart drydock
   ```
-  On a brand-new host, put the file in place with owner `root` before the first install. The
-  installer keeps a valid 32-byte file and corrects its owner and mode.
+
+### 6.3 Switch an installed key to one you supply
+
+For an installed host whose key you now want to keep in your own secret store, such as a first
+install that generated its key. There are two ways:
+
+- **Keep the installed key.** Back it up as in [6.2](#62-a-generated-key-back-it-up-now),
+  and store that copy. Nothing is re-run and nothing changes. This works whether or not secrets are
+  stored.
+- **Install a different key.** Make one as in [4.3](#43-optional-your-own-secrets-master-key), then:
+  ```sh
+  sudo runuser -u drydock -- drydock count-secrets --db /var/lib/drydock/drydock.db   # must print 0
+  curl -fsSL https://github.com/krelinga/drydock/releases/latest/download/install.sh \
+    | sudo bash -s -- --secrets-key /root/drydock-secrets.key
+  sudo shred -u /root/drydock-secrets.key
+  ```
+  With no secret stored, the run prints `==> stopping drydock to replace the secrets master key`,
+  then `==> replaced the secrets master key at /etc/drydock/secrets.key with
+  /root/drydock-secrets.key (no secret was stored under the old one); …`, and starts Drydock on
+  the new key. It asks the database once while Drydock runs and again once Drydock is stopped, so
+  no secret can be stored under the old key in between.
+
+**With a secret stored, a different key is refused**, and nothing changes: the installed key stays
+byte for byte, and Drydock is not stopped or restarted. The run ends with:
+
+```
+error: --secrets-key /root/drydock-secrets.key is not the key installed at /etc/drydock/secrets.key, and 1 stored secret(s) are sealed under the installed key. Replacing it would make every one of them unreadable, and Drydock delivers no secret while any cannot be read. The installed key was left as it is. To keep it, copy /etc/drydock/secrets.key into your secret store and pass that copy as --secrets-key, or leave the flag off. To move to the new key, delete the stored secrets on Drydock's Secrets screen, re-run with --secrets-key, and enter them again.
+```
+
+*Why:* every stored secret is sealed under the installed key, and Drydock refuses to deliver any
+secret while one cannot be decrypted, so a swap would break every workspace's secrets at once. The
+installer never deletes or re-encrypts a secret, and has no flag to force the swap. To move to a new
+key anyway, have every value at hand first (Drydock never shows one), delete the secrets on
+**Secrets**, re-run with the flag, then store them and their grants again.
+
+If the same run was also an upgrade, the new binary is already in `/usr/local/bin`, but the
+refusal comes before the unit is rewritten or anything restarts, so the running Drydock is
+untouched. Re-run without `--secrets-key` to finish the upgrade.
 
 ---
 
@@ -665,7 +762,8 @@ secret in plaintext-equivalent form.
   process that can reach Drydock's socket
   ([§13.1](../design/overall/drydock-design.md#131--the-front-door)).
 - [ ] **The secrets key is in place** and was never printed:
-  `sudo stat -c '%U %a %s' /etc/drydock/secrets.key` prints `drydock 400 32`.
+  `sudo stat -c '%U %a %s' /etc/drydock/secrets.key` prints `drydock 400 32`. With your own key
+  (`--secrets-key`), `sudo sha256sum /etc/drydock/secrets.key` matches your stored copy.
 
 ### 7.2 From a laptop
 
@@ -871,11 +969,14 @@ None of the following is a deployment fault. These are the phases still being bu
   A `--ca-cert` given before is kept, so the line needs no flags. The run ends with
   `==> upgraded Drydock vA -> vB`, or `==> Drydock vX is installed and current` when there was
   nothing to do. A re-run restarts only what changed. It never asks for the password again
-  (`--if-unset`), so no one is signed out. It keeps the App key and the master key.
+  (`--if-unset`), so no one is signed out. It keeps the App key and the master key, so neither
+  `--github-app-key` nor `--secrets-key` is needed on an upgrade.
 - [ ] **To change a setting**, re-run with only that flag, for example
   `… | sudo bash -s -- --cert /new/path.crt --key /new/path.key`. To replace the App key, pass
   `--github-app-id 5189455 --github-app-key <new.pem>`, then revoke the old key on GitHub. Moving
   from a private CA to a public certificate: `--no-ca-cert` with the new `--cert` and `--key`.
+  To change the master key: [6.3](#63-switch-an-installed-key-to-one-you-supply), which is refused
+  once a secret is stored.
 - [ ] **A specific release:** `… | sudo bash -s -- --version vX.Y.Z`.
 
 ### 10.2 Roll back
@@ -928,7 +1029,7 @@ sudo rm -f /etc/systemd/system/caddy.service.d/drydock.conf
 sudo cp -p "$(ls -1 /etc/caddy/Caddyfile.before-drydock.* | head -n1)" /etc/caddy/Caddyfile   # the oldest backup is the original
 sudo rm -rf /etc/caddy/drydock.d
 sudo systemctl daemon-reload && sudo systemctl restart caddy
-# 4. Data and keys. Save secrets.key and the DB first if you might come back.
+# 4. Data and keys. Save the DB, and secrets.key unless your secret store has it, if you might come back.
 sudo rm -rf /srv/drydock/ws /var/lib/drydock
 sudo shred -u /etc/drydock/secrets.key /etc/drydock/github-app.pem
 sudo rm -rf /etc/drydock
@@ -958,7 +1059,10 @@ and Caddy stay installed, because you installed them.
 | Installer: `--ca-cert … holds a private key` | The CA's key was given instead of its certificate | Pass the CA's certificate. Never copy the CA key to the server. |
 | Installer: `… answered '502'` | Caddy is up, Drydock is not | `journalctl -u drydock -n 50`. Check the socket with `ls -l /run/drydock/http.sock`. |
 | Installer: `the upgrade failed and was rolled back` | The new release would not start | The log above the message. Open an issue, and fix forward. |
-| Installer: `secrets.key is not a 32-byte key file` | The master key is damaged or truncated | Restore it from your backup ([6](#6-back-up-the-secrets-master-key-now)). Never move it aside unless you accept losing every secret. |
+| Installer: `secrets.key is not a 32-byte key file` | The master key is damaged or truncated | Restore it from your copy ([6.2](#62-a-generated-key-back-it-up-now)). Never move it aside unless you accept losing every secret. |
+| Installer: `--secrets-key … is N bytes; a secrets master key is exactly 32 raw bytes` | The file is base64 or hex text, has a trailing newline, or is cut short | Make it with `head -c 32 /dev/urandom > secrets.key` ([4.3](#43-optional-your-own-secrets-master-key)). Nothing was changed. |
+| Installer: `--secrets-key … is not the key installed at /etc/drydock/secrets.key, and N stored secret(s) are sealed under the installed key` | A different key was given after secrets were stored | Nothing was changed, and Drydock kept running. Keep the installed key: store a copy of it ([6.2](#62-a-generated-key-back-it-up-now)) and pass that, or leave the flag off. Or move keys by deleting and re-entering the secrets ([6.3](#63-switch-an-installed-key-to-one-you-supply)). |
+| Installer: `… could not tell whether any secret is stored under the installed one` | `drydock count-secrets` could not read the database | The error above it. Run `sudo runuser -u drydock -- drydock count-secrets --db /var/lib/drydock/drydock.db` by hand. Nothing was changed. |
 | Browser: certificate warning or `NET::ERR_CERT_AUTHORITY_INVALID` | Private CA not installed or not fully trusted on this device | Install the CA. On iOS, also enable it under *Certificate Trust Settings*. |
 | Browser: `ERR_SSL_PROTOCOL_ERROR` / `SSL_ERROR_INTERNAL_ERROR_ALERT` | **Host mismatch**: you used an IP, a short name or another alias. Caddy has no site for that name, so there is no certificate to offer | Use exactly `https://drydock.example.com`. This is the DNS-rebinding defence working ([§13.3](../design/overall/drydock-design.md#133--what-a-browser-can-be-talked-into)). |
 | Browser: cannot connect / times out | DNS points elsewhere, or a firewall blocks the port | `nslookup` from that device. Check `sudo ss -ltnp \| grep :443` and the firewall rules. |

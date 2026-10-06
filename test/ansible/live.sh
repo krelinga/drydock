@@ -11,7 +11,9 @@
 #
 # What it runs: a first install, a no-op re-run (changed=0), an upgrade (with
 # the database backup), another no-op, an App key rotation, and a master-key
-# backup that refuses to be overwritten by a different key.
+# backup that refuses to be overwritten by a different key, then the move to a
+# vaulted secrets master key: the installed key vaulted (changed=0), a new one
+# while no secret is stored (replaced), and another once one is (refused).
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 root=$(cd "$here/../.." && pwd)
@@ -161,6 +163,71 @@ play -e drydock_version=v0.0.2
 check "a backup of a different key fails the play" [ "$rc" != 0 ]
 check "at the refusal" grep -q "holds a different key" "$work/run6.log"
 check "control: the server's key is unchanged and still drydock's" [ "$(in_server stat -c '%U %a %s' /etc/drydock/secrets.key)" = "drydock 400 32" ]
+
+# Option A, from an install that generated its key: the document's "Move to a
+# vaulted key". First the installed key itself, vaulted. The backup above is
+# still a different key, so a run that reached the backup tasks would fail.
+server_sum() { in_server sha256sum /etc/drydock/secrets.key | cut -d' ' -f1; }
+in_server cat /etc/drydock/secrets.key >files/drydock-secrets.key
+check "control: the fetched key is the server's" [ "$(sha256sum <files/drydock-secrets.key | cut -d' ' -f1)" = "$(server_sum)" ]
+ansible-vault encrypt "${VAULT[@]}" files/drydock-secrets.key >/dev/null </dev/null
+cp files/drydock-secrets.key "$work/key1.vault"
+KEYSRC=(-e drydock_version=v0.0.2 -e '{"drydock_secrets_key_src": "{{ playbook_dir }}/files/drydock-secrets.key"}')
+sum1=$(server_sum) pid=$(in_server systemctl show -p MainPID --value drydock)
+play "${KEYSRC[@]}"
+check "vaulting the installed key: the run succeeds, skipping the backup" [ "$rc" = 0 ]
+check "and changes nothing" [ "$changed" = 0 ]
+check "the server's key is the same" [ "$(server_sum)" = "$sum1" ]
+check "drydock was not restarted" [ "$(in_server systemctl show -p MainPID --value drydock)" = "$pid" ]
+check "nothing is left staged" in_server test ! -e /root/drydock-secrets.key
+
+# Then a new key, with no secret stored: replaced.
+head -c 32 /dev/urandom >files/drydock-secrets.key
+sum2=$(sha256sum <files/drydock-secrets.key | cut -d' ' -f1)
+ansible-vault encrypt "${VAULT[@]}" files/drydock-secrets.key >/dev/null </dev/null
+play "${KEYSRC[@]}"
+n=$run
+check "a new vaulted key with no secret stored is installed" [ "$rc" = 0 ]
+check "the installer replaced the key" grep -q "replaced the secrets master key" "$work/run$n.log"
+check "the server holds the new key, drydock's, 0400" bash -c "[ \"\$(docker exec $name sha256sum /etc/drydock/secrets.key | cut -d' ' -f1)\" = $sum2 ] && [ \"\$(docker exec $name stat -c '%U %a %s' /etc/drydock/secrets.key)\" = 'drydock 400 32' ]"
+check "the run reported a change" [ "$changed" != 0 ]
+check "the staged copy is gone" in_server test ! -e /root/drydock-secrets.key
+check "sign-in still works" [ "$(signin)" = 204 ]
+play "${KEYSRC[@]}"
+check "a re-run with it succeeds" [ "$rc" = 0 ]
+check "and changes nothing" [ "$changed" = 0 ]
+
+# A secret stored, then a third key: refused, nothing changed.
+in_server curl -s -o /dev/null -c /root/jar --cacert /etc/caddy/certs/drydock-ca.pem \
+	--resolve "$UI:443:127.0.0.1" -H "Origin: https://$UI" -H 'Content-Type: application/json' \
+	-d "{\"password\":\"$PW\"}" "https://$UI/api/auth/session"
+stored=$(in_server curl -s -b /root/jar -X PUT --cacert /etc/caddy/certs/drydock-ca.pem \
+	--resolve "$UI:443:127.0.0.1" -H "Origin: https://$UI" -H 'Content-Type: application/json' \
+	-d '{"value":"ansible-test-value","reach":"reads a scratch bucket"}' "https://$UI/api/secrets/TEST_KEY")
+check "control: a secret is stored" grep -q '"created":true' <<<"$stored"
+cp files/drydock-secrets.key "$work/key2.vault"
+head -c 32 /dev/urandom >files/drydock-secrets.key
+ansible-vault encrypt "${VAULT[@]}" files/drydock-secrets.key >/dev/null </dev/null
+cp files/drydock-secrets.key "$work/key3.vault"
+pid=$(in_server systemctl show -p MainPID --value drydock)
+play "${KEYSRC[@]}"
+n=$run
+check "a different vaulted key with a secret stored fails the play" [ "$rc" != 0 ]
+check "with the installer's refusal" grep -q "1 stored secret(s) are sealed under the installed key" "$work/run$n.log"
+check "the server's key is unchanged" [ "$(server_sum)" = "$sum2" ]
+check "drydock was not restarted" [ "$(in_server systemctl show -p MainPID --value drydock)" = "$pid" ]
+check "the staged copy is gone, even so" in_server test ! -e /root/drydock-secrets.key
+
+# No key's bytes in any run's output, raw (searched as hex) or encoded.
+cat "$work"/run*.log >"$work/all-runs.log"
+hex() { od -An -v -tx1 "$@" | tr -d ' \n'; }
+for k in key1 key2 key3; do
+	ansible-vault decrypt "${VAULT[@]}" --output "$work/$k.raw" "$work/$k.vault" >/dev/null </dev/null
+	kh=$(hex "$work/$k.raw") kb=$(base64 -w0 "$work/$k.raw")
+	{ echo x; cat "$work/$k.raw"; echo y; } >"$work/control.bin"
+	check "control: the sweep finds $k where it is" bash -c "od -An -v -tx1 $work/control.bin | tr -d ' \\n' | grep -qF $kh"
+	check "$k is in no run's output" bash -c "! od -An -v -tx1 $work/all-runs.log | tr -d ' \\n' | grep -qF $kh && ! grep -qF -- '$kh' $work/all-runs.log && ! grep -qF -- '$kb' $work/all-runs.log"
+done
 
 printf '\n%s\n' "$([ $fails = 0 ] && echo PASS || echo "$fails FAILED")"
 [ $fails = 0 ]

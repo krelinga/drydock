@@ -44,9 +44,10 @@ DB=/var/lib/drydock/drydock.db
 # The GitHub App's private key: the one credential Drydock stores (design §4).
 # A file Drydock alone can read, never an environment variable (§13.5).
 APP_KEY=$CONF_DIR/github-app.pem
-# The secrets master key (design §10.2): 32 random bytes, created on the first
-# install and never replaced — every stored secret is sealed under it, so a
-# new one makes them all unreadable. A file, never an environment variable.
+# The secrets master key (design §10.2): 32 raw bytes, created on the first
+# install or supplied with --secrets-key. Every stored secret is sealed under
+# it, so a different one makes them all unreadable: it is replaced only while
+# no secret is stored. A file, never an environment variable.
 SECRETS_KEY=$CONF_DIR/secrets.key
 API_SOCKET=/run/drydock/http.sock
 # Where clones live (/srv/drydock/ws/<id>/repo): Drydock's alone, mode 0700,
@@ -92,6 +93,12 @@ Install or upgrade Drydock. Run as root.
   --github-app-key PATH its private key (.pem); copied to                  } repository
                         /etc/drydock/github-app.pem, mode 0400, owned by     } list; the
                         drydock. Give it again only to replace the key.      } ID is kept
+  --secrets-key PATH    the secrets master key, exactly 32 raw bytes (make one with
+                        head -c 32 /dev/urandom > secrets.key); copied to
+                        /etc/drydock/secrets.key, mode 0400, owned by drydock.
+                        Without it the first install generates one. A different
+                        key replaces the installed one only while no secret is
+                        stored; otherwise it is refused and nothing changes.
   --version vX.Y.Z      install that release instead of the latest (download mode)
   --take-over-caddy     replace an existing /etc/caddy/Caddyfile this installer
                         did not write (it is backed up first)
@@ -99,8 +106,9 @@ Install or upgrade Drydock. Run as root.
   -h, --help            this text
 
 Settings from earlier runs are kept in /etc/drydock/drydock.env; flags override them.
-The first install creates the secrets master key, /etc/drydock/secrets.key, and
-later runs keep it. Back it up: without it no stored secret can be read.
+Without --secrets-key the first install creates the secrets master key,
+/etc/drydock/secrets.key, and later runs keep it. Back it up, or keep the file
+you gave --secrets-key: without the key no stored secret can be read.
 EOF
 }
 
@@ -274,6 +282,20 @@ validate_config() {
 		grep -q -- '-----BEGIN .*PRIVATE KEY-----' "$APP_KEY_SRC" ||
 			die "$APP_KEY_SRC is not a PEM private key (download it from the App's settings page: Private keys → Generate)"
 	fi
+	if [ -n "${SECRETS_KEY_SRC:-}" ]; then
+		[ -e "$SECRETS_KEY_SRC" ] || die "no such file: $SECRETS_KEY_SRC"
+		[ -f "$SECRETS_KEY_SRC" ] || die "--secrets-key $SECRETS_KEY_SRC is not a regular file"
+		check_secrets_key_size "$SECRETS_KEY_SRC" "--secrets-key $SECRETS_KEY_SRC"
+	fi
+}
+
+# check_secrets_key_size FILE WHAT: a master key is exactly 32 raw bytes. Only
+# the size is ever said — never a byte of the file.
+check_secrets_key_size() {
+	local size
+	size=$(stat -L -c %s "$1")
+	[ "$size" = 32 ] ||
+		die "$2 is $size bytes; a secrets master key is exactly 32 raw bytes — not base64 or hex, and no trailing newline. Make one with: head -c 32 /dev/urandom > secrets.key"
 }
 
 # install_app_key copies the App key into place, readable by drydock alone.
@@ -295,11 +317,14 @@ install_app_key() {
 	say "installed the GitHub App key at $APP_KEY (mode 0400, owner drydock)"
 }
 
-# install_secrets_key creates the master key once, from /dev/urandom, straight
-# into a file only drydock can read; it is never printed. A key already there
-# is kept — and one that is not a key is refused rather than replaced, because
-# replacing it is how every stored secret is lost. That decision belongs to a
-# person: restore the file from a backup, or move it aside knowingly.
+# install_secrets_key puts the master key in place, straight into a file only
+# drydock can read; it is never printed. With no key there yet, it is the one
+# given with --secrets-key, or else 32 bytes of /dev/urandom. A key already
+# there is kept — and one that is not a key is refused rather than replaced,
+# because replacing it is how every stored secret is lost. That decision
+# belongs to a person: restore the file from a backup, or move it aside
+# knowingly. A different --secrets-key replaces it only while no secret is
+# stored (replace_secrets_key).
 install_secrets_key() {
 	if [ -e "$SECRETS_KEY" ] || [ -L "$SECRETS_KEY" ]; then
 		if [ ! -f "$SECRETS_KEY" ] || [ -L "$SECRETS_KEY" ] || [ "$(stat -c %s "$SECRETS_KEY")" != 32 ]; then
@@ -308,9 +333,17 @@ install_secrets_key() {
 		# Kept as it is; only its ownership and mode are put right.
 		chown drydock:drydock "$SECRETS_KEY"
 		chmod 0400 "$SECRETS_KEY"
+		[ -z "${SECRETS_KEY_SRC:-}" ] || replace_secrets_key
 		return 0
 	fi
 	local tmp
+	if [ -n "${SECRETS_KEY_SRC:-}" ]; then
+		tmp=$(stage_secrets_key) || exit 1
+		mv -f "$tmp" "$SECRETS_KEY"
+		KEY_CHANGED=1
+		say "installed the secrets master key at $SECRETS_KEY from $SECRETS_KEY_SRC (mode 0400, owner drydock); keep your copy of it safe — without it no stored secret can be read"
+		return 0
+	fi
 	tmp=$(mktemp "$CONF_DIR/.secrets-key.XXXXXX") # 0600, root's, until the chown
 	head -c 32 /dev/urandom >"$tmp"
 	[ "$(stat -c %s "$tmp")" = 32 ] || {
@@ -322,6 +355,73 @@ install_secrets_key() {
 	mv -f "$tmp" "$SECRETS_KEY"
 	KEY_CHANGED=1
 	say "created the secrets master key at $SECRETS_KEY (mode 0400, owner drydock); back it up — without it no stored secret can be read"
+}
+
+# stage_secrets_key copies --secrets-key beside the installed key, drydock's
+# and 0400, and prints the copy's path. The size is checked again on the copy:
+# the source was checked before anything changed, but it is the copy that is
+# installed. Called in a command substitution, so a die here exits only that
+# subshell: callers exit on its status.
+stage_secrets_key() {
+	local tmp
+	tmp=$(mktemp "$CONF_DIR/.secrets-key.XXXXXX") # 0600, root's, until the chown
+	cat "$SECRETS_KEY_SRC" >"$tmp"
+	if [ "$(stat -c %s "$tmp")" != 32 ]; then
+		rm -f "$tmp"
+		check_secrets_key_size "$SECRETS_KEY_SRC" "--secrets-key $SECRETS_KEY_SRC"
+		die "--secrets-key $SECRETS_KEY_SRC changed while it was being read"
+	fi
+	chown drydock:drydock "$tmp"
+	chmod 0400 "$tmp"
+	printf '%s\n' "$tmp"
+}
+
+# stored_secrets prints how many secrets the database holds. Asked by the new
+# binary, as drydock, read-only (`drydock count-secrets`): no sqlite3 on the
+# host, no instance lock, no migration under a server that may be older, and
+# anything it cannot read is a failure, never a zero.
+stored_secrets() {
+	local n
+	n=$(runuser -u drydock -- "$BIN" count-secrets --db "$DB") || return 1
+	[[ "$n" =~ ^[0-9]+$ ]] || return 1
+	printf '%s\n' "$n"
+}
+
+# replace_secrets_key installs a --secrets-key that differs from the installed
+# key — but only while no secret is stored. Every stored secret is sealed under
+# the installed key, and Drydock delivers none while any cannot be opened, so a
+# swap with secrets stored breaks every workspace's secrets at once. Then it
+# refuses and changes nothing; it never deletes or re-seals a secret. The
+# question is asked twice: once with drydock running, so a refusal costs no
+# downtime, and again with it stopped, so no secret can be written under the
+# old key between the answer and the swap.
+replace_secrets_key() {
+	local tmp n was_active=0
+	tmp=$(stage_secrets_key) || exit 1
+	if cmp -s "$tmp" "$SECRETS_KEY"; then
+		rm -f "$tmp"
+		return 0
+	fi
+	local unsure="--secrets-key $SECRETS_KEY_SRC is not the key installed at $SECRETS_KEY, and the installer could not tell whether any secret is stored under the installed one (see the error above). Nothing was changed."
+	n=$(stored_secrets) || {
+		rm -f "$tmp"
+		die "$unsure"
+	}
+	if [ "$n" = 0 ] && systemctl is-active --quiet drydock; then
+		say "stopping drydock to replace the secrets master key"
+		systemctl stop drydock
+		was_active=1
+		n=$(stored_secrets) || n=unknown
+	fi
+	if [ "$n" != 0 ]; then
+		rm -f "$tmp"
+		[ "$was_active" = 0 ] || systemctl start drydock
+		[ "$n" != unknown ] || die "$unsure"
+		die "--secrets-key $SECRETS_KEY_SRC is not the key installed at $SECRETS_KEY, and $n stored secret(s) are sealed under the installed key. Replacing it would make every one of them unreadable, and Drydock delivers no secret while any cannot be read. The installed key was left as it is. To keep it, copy $SECRETS_KEY into your secret store and pass that copy as --secrets-key, or leave the flag off. To move to the new key, delete the stored secrets on Drydock's Secrets screen, re-run with --secrets-key, and enter them again."
+	fi
+	mv -f "$tmp" "$SECRETS_KEY"
+	KEY_CHANGED=1
+	say "replaced the secrets master key at $SECRETS_KEY with $SECRETS_KEY_SRC (no secret was stored under the old one); keep your copy of it safe — without it no stored secret can be read"
 }
 
 check_prerequisites() {
@@ -714,6 +814,7 @@ main() {
 		--no-ca-cert) NO_CA_CERT=1; shift ;;
 		--github-app-id) APP_ID="${2:?--github-app-id needs a value}"; shift 2 ;;
 		--github-app-key) APP_KEY_SRC="${2:?--github-app-key needs a value}"; shift 2 ;;
+		--secrets-key) SECRETS_KEY_SRC="${2:?--secrets-key needs a value}"; shift 2 ;;
 		--version) version="${2:?--version needs a value}"; shift 2 ;;
 		--take-over-caddy) TAKE_OVER_CADDY=1; shift ;;
 		--no-password) NO_PASSWORD=1; shift ;;
@@ -751,6 +852,7 @@ main() {
 	[ "${NO_CA_CERT:-0}" = 1 ] && args+=(--no-ca-cert)
 	[ -n "${APP_ID:-}" ] && args+=(--github-app-id "$APP_ID")
 	[ -n "${APP_KEY_SRC:-}" ] && args+=(--github-app-key "$APP_KEY_SRC")
+	[ -n "${SECRETS_KEY_SRC:-}" ] && args+=(--secrets-key "$SECRETS_KEY_SRC")
 	[ "${TAKE_OVER_CADDY:-0}" = 1 ] && args+=(--take-over-caddy)
 	[ "${NO_PASSWORD:-0}" = 1 ] && args+=(--no-password)
 	download_and_reexec "$version" "${args[@]}"

@@ -71,13 +71,25 @@ curl -fsSL https://github.com/krelinga/drydock/releases/latest/download/install.
 The installer copies the key to `/etc/drydock/github-app.pem`, readable by the `drydock` user alone,
 and re-runs keep it. Use the numeric **App ID** from the App's settings page, not its Client ID.
 
-**Back up the secrets master key.** The first install creates `/etc/drydock/secrets.key` — 32 random
-bytes, readable by the `drydock` user alone — and every repository secret you store is encrypted
-under it. **Lose it and every stored secret is unreadable**: there is no recovery but entering each
-value again. Re-runs and upgrades keep it, and the installer refuses to replace one that is damaged
-rather than quietly making a new one; restore it from your backup instead. Copy it somewhere safe
-that is not the database's backup (`sudo cp /etc/drydock/secrets.key …`), since a backup holding
-both is a backup holding every secret.
+**Keep a copy of the secrets master key.** Every repository secret you store is encrypted under
+`/etc/drydock/secrets.key` — 32 raw bytes, readable by the `drydock` user alone. **Lose it and every
+stored secret is unreadable**: there is no recovery but entering each value again. Either supply the
+key yourself, from a copy you already keep in a password manager or vault — a file of exactly 32
+raw bytes, not base64 and with no newline (`head -c 32 /dev/urandom > secrets.key` makes one),
+copied to the server readable by root alone:
+
+```sh
+curl -fsSL https://github.com/krelinga/drydock/releases/latest/download/install.sh \
+  | sudo bash -s -- --secrets-key /root/secrets.key
+```
+
+or leave `--secrets-key` off, let the first install generate the key, and back that up. Re-runs and
+upgrades keep the installed key, and the installer refuses to replace one that is damaged rather
+than quietly making a new one; restore it from your copy instead. `--secrets-key` with a
+*different* key replaces the installed one only while no secret is stored, and is otherwise
+refused with nothing changed — it never deletes or re-encrypts a secret. Like `--github-app-key`,
+the flag is a path, read once and not kept in `drydock.env`. Keep the copy somewhere that is not
+the database's backup, since a backup holding both is a backup holding every secret.
 
 To change the password later: `sudo -u drydock drydock passwd --db /var/lib/drydock/drydock.db`.
 It signs out every device.
