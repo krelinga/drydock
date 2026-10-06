@@ -5,7 +5,10 @@ package broker
 // the assertions sit beside the broker's own.
 
 import (
+	"bufio"
 	"bytes"
+	"errors"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -96,6 +99,64 @@ func TestClientsSayAccessIsUnavailable(t *testing.T) {
 	r = e.client(t, wsB, "nc", "host=github.com\n\n", os.Getenv("PATH"), "drydock-credential", "get")
 	if r.code == 0 || r.stdout != "" || !strings.Contains(r.stderr, "GitHub access unavailable (repo_archived)") {
 		t.Errorf("archived: %+v", r)
+	}
+}
+
+// An App without actions:write refuses the gh scope. The shim says what to
+// check, not "revoked", and the real gh never runs; git's scope, which does
+// not ask for actions, still works through the helper (the control).
+func TestClientsNameAMissingAppPermission(t *testing.T) {
+	for _, tr := range transports {
+		t.Run(tr, func(t *testing.T) {
+			e := newEnv(t)
+			e.fake.Mu.Lock()
+			delete(e.fake.AppPermissions, "actions")
+			e.fake.Mu.Unlock()
+			realDir := t.TempDir()
+			os.WriteFile(filepath.Join(realDir, "gh"), []byte("#!/bin/sh\necho ran\n"), 0o755)
+			r := e.client(t, wsA, tr, "", realDir+":"+os.Getenv("PATH"), "gh", "repo", "view")
+			want := "drydock: GitHub access unavailable (the GitHub App lacks a permission; see the workspace's events in Drydock)\n"
+			if r.code == 0 || r.stdout != "" || r.stderr != want {
+				t.Errorf("gh without actions:write: %+v; want stderr %q", r, want)
+			}
+			r = e.client(t, wsA, tr, "protocol=https\nhost=github.com\n\n", os.Getenv("PATH"), "drydock-credential", "get")
+			if r.code != 0 || !strings.Contains(r.stdout, "password=ghs_") {
+				t.Errorf("control: git's scope through the helper: %+v", r)
+			}
+		})
+	}
+}
+
+// A reason this copy of the client does not know — a newer server's — is
+// named as it came, with exit 69: an older Feature fails cleanly.
+func TestClientsNameAnUnknownReason(t *testing.T) {
+	sock := shortDir(t)
+	l, err := net.Listen("unix", sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { l.Close() })
+	go func() {
+		for {
+			c, err := l.Accept()
+			if err != nil {
+				return
+			}
+			bufio.NewReader(c).ReadString('\n')
+			c.Write([]byte("ERR reason=some_future_reason\n"))
+			c.Close()
+		}
+	}()
+	for _, tr := range transports {
+		cmd := exec.Command(filepath.Join(binDir, "drydock-broker"), "GET-TOKEN", "scope=git")
+		cmd.Env = []string{"PATH=" + binDir + ":" + os.Getenv("PATH"), "DRYDOCK_BROKER_SOCK=" + sock, "DRYDOCK_BROKER_TRANSPORT=" + tr}
+		var errb bytes.Buffer
+		cmd.Stderr = &errb
+		err := cmd.Run()
+		var ee *exec.ExitError
+		if !errors.As(err, &ee) || ee.ExitCode() != 69 || errb.String() != "drydock: GitHub access unavailable (some_future_reason)\n" {
+			t.Errorf("%s: %v, stderr %q", tr, err, errb.String())
+		}
 	}
 }
 

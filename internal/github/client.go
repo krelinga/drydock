@@ -88,6 +88,35 @@ func IsNotFound(err error) bool {
 	return errors.As(err, &ae) && ae.Status == http.StatusNotFound
 }
 
+// GitHub answers two different refusals of a token request with the same
+// 422, and only the message tells them apart: a permission the App does not
+// hold (or holds, but the installation has not accepted), which the operator
+// fixes in the App's settings, and a repository the installation does not
+// cover, which is a revocation. The contract tests pin both messages against
+// the real dev App, so these matchers are checked against GitHub, not only
+// against the fake's copy of it. Each is keyed on the stable middle of the
+// sentence, case-insensitively, and neither ever guesses: a 422 matching
+// neither is neither.
+const (
+	msgPermissionNotGranted  = "permissions requested are not granted"
+	msgRepositoryNotIncluded = "not accessible to the parent installation"
+)
+
+// IsPermissionNotGranted reports whether err is GitHub refusing a token
+// request because the App lacks a requested permission, or the installation
+// has not accepted it.
+func IsPermissionNotGranted(err error) bool { return is422(err, msgPermissionNotGranted) }
+
+// IsRepositoryNotIncluded reports whether err is GitHub refusing a token
+// request for a repository the installation does not include.
+func IsRepositoryNotIncluded(err error) bool { return is422(err, msgRepositoryNotIncluded) }
+
+func is422(err error, stable string) bool {
+	var ae *APIError
+	return errors.As(err, &ae) && ae.Status == http.StatusUnprocessableEntity &&
+		strings.Contains(strings.ToLower(ae.Message), stable)
+}
+
 // Installations lists every installation of the App.
 func (c *Client) Installations(ctx context.Context) ([]Installation, error) {
 	jwt, err := JWT(c.AppID, c.Key, c.Clock.Now())

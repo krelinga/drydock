@@ -18,7 +18,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"sort"
@@ -188,6 +187,13 @@ func (f *Fake) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		page(w, r, out)
 
+	case r.Method == "GET" && path == "/app":
+		if !f.appAuth(w, r) {
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{"id": f.AppID, "permissions": f.AppPermissions})
+
 	case r.Method == "POST" && strings.HasPrefix(path, "/app/installations/") && strings.HasSuffix(path, "/access_tokens"):
 		if !f.appAuth(w, r) {
 			return
@@ -209,7 +215,9 @@ func (f *Fake) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		for p, level := range body.Permissions {
 			granted, ok := f.AppPermissions[p]
 			if !ok || (level == "write" && granted != "write") {
-				fail(w, http.StatusUnprocessableEntity, fmt.Sprintf("The permissions requested are not granted to this installation (%s:%s).", p, level))
+				// GitHub's own sentence, which does not name the permission
+				// (pinned by TestContractTokenRequestsBeyondTheAppAreRefused).
+				fail(w, http.StatusUnprocessableEntity, "The permissions requested are not granted to this installation.")
 				return
 			}
 		}

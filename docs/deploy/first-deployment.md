@@ -55,11 +55,13 @@ them. Each one is also mentioned at the step where it bites.
 4. **There is no `uninstall`.** [Step 10](#10-upgrade-roll-back-uninstall-logs) lists what to remove
    by hand. The list is derived from what `deploy/install.sh` creates.
 Four issues listed here earlier are fixed: three in v0.2.0, and one in v0.2.1. This runbook
-deploys **v0.3.0**, the first release whose installer takes `--secrets-key`
-([step 6](#6-the-secrets-master-key-supply-it-or-back-it-up)). To confirm the installer you are
-about to run is v0.3.0 or later,
+deploys **v0.3.1**. v0.3.0 is the first release whose installer takes `--secrets-key`
+([step 6](#6-the-secrets-master-key-supply-it-or-back-it-up)), and v0.3.1 tells a GitHub App
+missing a permission apart from a revoked repository ([§11](#11-troubleshooting)). To confirm the
+installer you are about to run is v0.3.1 or later,
 `curl -fsSL https://github.com/krelinga/drydock/releases/latest/download/install.sh | grep '^RELEASE_VERSION='`
-prints `RELEASE_VERSION="v0.3.0"` or a later tag. An older installer stops at the flag with
+prints `RELEASE_VERSION="v0.3.1"` or a later tag. v0.3.0 installs and runs the same way. An
+installer older than v0.3.0 stops at the flag with
 `unknown option: --secrets-key`; on one, leave the flag off and take
 [step 6's generated key](#62-a-generated-key-back-it-up-now).
 
@@ -174,9 +176,17 @@ baked into the unit is the production App's ([Known issue 3](#0-known-issues--re
   [§9.3](../design/overall/drydock-design.md#93--permissions)'s repository permissions:
   *Actions: read & write*, *Checks: read*, *Contents: read & write*, *Issues: read & write*,
   *Metadata: read*, *Pull requests: read & write*, *Workflows: read & write*.
+  **Actions: read & write is the easy one to miss**: nothing in `git` needs it, so clones, fetches
+  and pushes all work, and only `gh` inside a workspace fails, because the `gh` token asks for
+  every permission in this list.
   *Why:* each token Drydock mints asks for a subset of these, and GitHub refuses a token request
   for a permission the App lacks. A missing `workflows` permission shows up later as a confusing
-  push rejection. *This runbook cannot see the App's settings, because the App is private.
+  push rejection.
+- [ ] **After changing any of these permissions, accept them on each installation.** GitHub does
+  not apply a permission change to an existing installation until its owner accepts it: open
+  <https://github.com/settings/installations>, choose the App, and accept the pending request
+  (GitHub also emails the owner). Until then the installation keeps the old permissions, and the
+  tokens that need the new one are refused exactly as if the App still lacked it. *This runbook cannot see the App's settings, because the App is private.
   Check them yourself.*
 - [ ] **Install the App on the repositories Drydock should see**:
   <https://github.com/settings/apps/krelinga-drydock/installations>. *Only select repositories* is
@@ -206,8 +216,8 @@ baked into the unit is the production App's ([Known issue 3](#0-known-issues--re
 
 ## 2. Cut a release
 
-> **For this deployment, this step is done.** `v0.3.0` is published and *Latest*, and it is the
-> release this runbook deploys. Go to [step 3](#3-prerequisites-on-the-server). The rest of this
+> **For this deployment, this step is done once `v0.3.1` is published and *Latest*.** It is the
+> release this runbook deploys; until it is, cut it with the steps below. Go to [step 3](#3-prerequisites-on-the-server). The rest of this
 > step is for cutting a later release.
 
 The install one-liner always installs the **latest** GitHub release. A new release comes from the
@@ -550,7 +560,7 @@ changed:
 
 1. It downloads `drydock_linux_amd64.tar.gz` and `SHA256SUMS` for the tag stamped into this
    `install.sh`, checks the checksum, and runs the `install.sh` inside the tarball. Output starts
-   with `==> downloading drydock_linux_amd64.tar.gz (v0.3.0)`.
+   with `==> downloading drydock_linux_amd64.tar.gz (v0.3.1)`.
 2. It checks prerequisites: root, Linux, systemd, `caddy` and the `caddy` user, `curl`, `docker`,
    the `docker` group, and `devcontainer` on the service `PATH`.
 3. It validates flags: the hostname must contain a dot, and is lowercased (it says so if that
@@ -586,7 +596,7 @@ changed:
     check passes. If everything is running and only the certificate could not be verified, it says
     exactly that, `Drydock is installed and running, and answers through Caddy, but this host could
     not verify the certificate …`, with `curl`'s reason; see [§11](#11-troubleshooting).
-16. `==> installed Drydock v0.3.0` and `==> open https://drydock.example.com`.
+16. `==> installed Drydock v0.3.1` and `==> open https://drydock.example.com`.
 
 - [ ] **Delete the temporary App key**, and the temporary master key if you gave one:
   ```sh
@@ -846,12 +856,17 @@ WS=<workspace-id>
 CID=$(sudo docker ps -q --filter "label=drydock.workspace=$WS")
 sudo docker exec -u vscode -w /workspaces/repo "$CID" git remote -v      # plain https://github.com/<owner>/<repo>.git, no token
 sudo docker exec -u vscode -w /workspaces/repo "$CID" git fetch          # works: the broker minted a token
-sudo docker exec -u vscode -w /workspaces/repo "$CID" gh repo view --json nameWithOwner --jq .nameWithOwner
+sudo docker exec -u vscode -w /workspaces/repo "$CID" gh repo view --json nameWithOwner --jq .nameWithOwner   # prints <owner>/<repo>: this workspace's repository, and nothing else
 sudo docker exec -u vscode -w /workspaces/repo "$CID" gh repo view <owner>/<A>   # another PRIVATE repo, even one the App is installed on: not found
 ```
 
 Use a *private* repository for that last check. An installation token can still read public
 repositories, as any anonymous caller can.
+
+If `git fetch` works and `gh repo view` fails with
+`drydock: GitHub access unavailable (the GitHub App lacks a permission; see the workspace's events in Drydock)`
+— or with `(revoked)` on v0.3.0 and earlier — the App is missing one of the `gh` token's extra
+permissions, or its installation has not accepted a change. See [§11](#11-troubleshooting).
 
 Optional. This pushes a branch to GitHub, then deletes it:
 
@@ -1077,6 +1092,7 @@ and Caddy stay installed, because you installed them.
 | Forgot the password | — | `sudo -u drydock drydock passwd --db /var/lib/drydock/drydock.db` (this signs out every device) |
 | UI: *No GitHub App is set up yet* / API `503 app_not_configured` | The unit has no `--github-app-id` | `systemctl cat drydock \| grep github`. Re-run the installer with `--github-app-id 5189455 --github-app-key <pem>`. |
 | UI: *Could not refresh the repository list from GitHub: … 401 …*; journal `drydock: catalog refresh: github: GET /app/installations: 401 …` | **Wrong App ID or key**: the key is from a different App (the dev App?) or was deleted on GitHub. Or the server clock is off | Check `grep APP_ID /etc/drydock/drydock.env` says `5189455`. Generate a fresh key and re-run with `--github-app-key`. `timedatectl`. |
+| Inside a workspace, `gh` fails with `drydock: GitHub access unavailable (the GitHub App lacks a permission; see the workspace's events in Drydock)`, or with `drydock: GitHub access unavailable (revoked)` on v0.3.0 and earlier, while `git fetch` works. The workspace's events show `GitHub refused a gh token for this workspace: the GitHub App lacks a permission this scope needs.` (on v0.3.0 and earlier, `GitHub refused a token for this workspace (revoked).`) | The App lacks one of the permissions the `gh` token asks for beyond `git`'s: **Actions: read & write** (the usual one), *Checks: read*, *Issues: read & write* or *Pull requests: read & write*. Or the App has them, but the installation has a permission request nobody accepted. GitHub refuses both with the same `422` as a repository outside the installation, which is why v0.3.0 said `revoked` | Check the App's permissions ([1.4](#14-the-github-apps-private-key)), then accept any pending request at <https://github.com/settings/installations>. Nothing in Drydock needs restarting: the next `gh` call asks again. The event's `data.permissions` lists exactly what the `gh` token asks for. The client's sentence comes from the Feature, so a container built with Feature 0.3.0 or earlier says `(app_permission_missing)` instead, until it is rebuilt. |
 | UI: refreshed, `0 repositories` | The App is installed on nothing | Install it on repositories ([1.4](#14-the-github-apps-private-key)), then **Refresh catalog** |
 | A repository you expected is missing | Not in the App's installation | Its row's *Installation settings* link, or GitHub → the App → *Configure* |
 | Journal: `drydock: reconcile: … permission denied … docker.sock` | **Docker permission**: `drydock` is not in `docker`, or the service started before it was | `id drydock` shows `docker`. `sudo systemctl restart drydock` (new groups apply only on restart). |

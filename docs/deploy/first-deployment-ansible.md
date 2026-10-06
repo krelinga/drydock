@@ -171,7 +171,7 @@ download task fails rather than installing something else. `drydock_secrets_key_
 
 ```yaml
 # file: group_vars/drydock/vars.yml
-drydock_version: v0.3.0
+drydock_version: v0.3.1
 # Lowercase, fully qualified, with a dot (runbook §1.2).
 drydock_ui_host: drydock.example.com
 
@@ -1029,7 +1029,7 @@ are UI work and checks inside a running container. Nothing to automate; do them 
 download task fails rather than installing anything), then change one line and re-run:
 
 ```yaml
-drydock_version: v0.3.1
+drydock_version: v0.3.2
 ```
 
 The play backs up the database first (the [step 5](#5-install) block above), then the installer
