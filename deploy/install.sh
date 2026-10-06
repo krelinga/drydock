@@ -301,7 +301,6 @@ install_app_key() {
 # replacing it is how every stored secret is lost. That decision belongs to a
 # person: restore the file from a backup, or move it aside knowingly.
 install_secrets_key() {
-	install -d -m 0755 "$CONF_DIR"
 	if [ -e "$SECRETS_KEY" ] || [ -L "$SECRETS_KEY" ]; then
 		if [ ! -f "$SECRETS_KEY" ] || [ -L "$SECRETS_KEY" ] || [ "$(stat -c %s "$SECRETS_KEY")" != 32 ]; then
 			die "$SECRETS_KEY is not a 32-byte key file. It is never replaced automatically: every stored secret is sealed under it, and a new key makes them all unreadable. Restore it from your backup — or, accepting that every stored secret is lost, move it aside and re-run."
@@ -366,6 +365,15 @@ ensure_docker_access() {
 		warn "the drydock user cannot reach the Docker daemon yet (is it running? systemctl enable --now docker). Workspaces will fail to start until it can."
 }
 
+# ensure_conf_dir makes /etc/drydock before anything writes into it: the App
+# key, the secrets master key and drydock.env all land there, each through a
+# temporary file beside it. Once, here, rather than in each writer — a writer
+# that assumed another had run first is how a first install with
+# --github-app-key failed in v0.2.0.
+ensure_conf_dir() {
+	install -d -m 0755 -o root -g root "$CONF_DIR"
+}
+
 ensure_workspace_root() {
 	# /srv/drydock is made root's if it is not there, and left alone if it
 	# is; the workspace root inside it is drydock's, 0700, always.
@@ -415,7 +423,6 @@ caddyfile_policy() {
 }
 
 write_env_file() {
-	install -d -m 0755 "$CONF_DIR"
 	# Paths and names only — nothing secret, which is why it can be 0644 and
 	# read by both services.
 	write_if_changed "$CONF" 0644 ENV_CHANGED <<EOF
@@ -668,6 +675,7 @@ install_bundle() {
 	ensure_docker_access
 	ensure_workspace_root
 	install_binary "$here"
+	ensure_conf_dir
 	install_app_key
 	install_secrets_key
 	write_env_file
