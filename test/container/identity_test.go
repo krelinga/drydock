@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -83,7 +84,17 @@ func TestIdentityWatchReadsARealVolume(t *testing.T) {
 		t.Fatalf("checking a missing volume created it: %q", out)
 	}
 
+	// A volume of the name that this Drydock did not make (§6 step 4 labels
+	// the one it makes, and refuses to mount one without): the check fails
+	// rather than reading it, and keeps the state. Then the label, as step 4
+	// puts it, and the same volume is read — the control.
 	docker(t, "volume", "create", vol)
+	var re *identity.ReadError
+	if _, err := w.Check(ctx); !errors.As(err, &re) || re.Problem != identity.ProblemForeign {
+		t.Fatalf("an unlabelled volume: %v; want a foreign_volume read error", err)
+	}
+	docker(t, "volume", "rm", vol)
+	docker(t, "volume", "create", "--label", p+"."+identity.LabelVolume+"=true", vol)
 	check(identity.Absent)
 
 	fixtures, _ := filepath.Abs(filepath.Join("..", "fixtures", "credentials"))

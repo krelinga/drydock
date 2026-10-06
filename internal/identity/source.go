@@ -3,6 +3,7 @@ package identity
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"regexp"
@@ -37,11 +38,12 @@ type ImageEnsurer interface {
 type Problem string
 
 const (
-	ProblemDocker      Problem = "docker"      // the daemon did not answer
-	ProblemImage       Problem = "image"       // the Claude image could not be built
-	ProblemCredentials Problem = "credentials" // the file could not be read, or makes no sense
-	ProblemAuthStatus  Problem = "auth_status" // claude auth status did not give a usable answer
-	ProblemDisagree    Problem = "disagree"    // the file says live, Claude Code says signed out
+	ProblemDocker      Problem = "docker"         // the daemon did not answer
+	ProblemImage       Problem = "image"          // the Claude image could not be built
+	ProblemCredentials Problem = "credentials"    // the file could not be read, or makes no sense
+	ProblemAuthStatus  Problem = "auth_status"    // claude auth status did not give a usable answer
+	ProblemDisagree    Problem = "disagree"       // the file says live, Claude Code says signed out
+	ProblemForeign     Problem = "foreign_volume" // a volume of the name exists, and this Drydock did not make it
 	ProblemUnknown     Problem = "unknown"
 )
 
@@ -62,6 +64,14 @@ const Mount = "/claude"
 // <prefix>.workspace: reconciliation lists by that label, so a helper is never
 // adopted or given a row (the cleanup helper's reasoning, internal/container).
 const LabelIdentity = "identity"
+
+// LabelVolume is the label, under the prefix, that §6 step 4 puts on the
+// shared credential volume when it makes it (internal/container's
+// LabelClaudeConfig, which must stay equal to this). A volume of the
+// configured name without it was made by something else — another Drydock
+// with its own prefix, or a hand — and step 4 refuses to mount it, so the
+// watch refuses to read it: a login no workspace runs on is not the fleet's.
+const LabelVolume = "claude-config"
 
 // maxRead bounds what Drydock reads from either helper. A credential file is a
 // few hundred bytes; anything past this is not one.
@@ -210,12 +220,40 @@ func (d DockerSource) volumeExists(ctx context.Context) (bool, error) {
 	if code != 0 {
 		return false, &ReadError{Problem: ProblemDocker, Detail: fmt.Sprintf("docker volume ls exited %d", code)}
 	}
+	found := false
 	for _, name := range strings.Fields(string(out)) {
 		if name == d.Volume {
-			return true, nil
+			found = true
 		}
 	}
-	return false, nil
+	if !found {
+		return false, nil
+	}
+	return true, d.checkLabel(ctx)
+}
+
+// checkLabel refuses a volume this Drydock did not make (LabelVolume). Read
+// as JSON, never as a table: a label's value can hold anything.
+func (d DockerSource) checkLabel(ctx context.Context) error {
+	if d.LabelPrefix == "" {
+		return errors.New("identity: no label prefix")
+	}
+	out, code, err := d.run(ctx, []string{"volume", "inspect", "--format", "{{json .Labels}}", "--", d.Volume})
+	if err != nil {
+		return err
+	}
+	if code != 0 {
+		return &ReadError{Problem: ProblemDocker, Detail: fmt.Sprintf("docker volume inspect exited %d", code)}
+	}
+	var labels map[string]string
+	if err := json.Unmarshal(bytes.TrimSpace(out), &labels); err != nil {
+		return &ReadError{Problem: ProblemDocker, Detail: "docker volume inspect: the labels are not a JSON object"}
+	}
+	key := d.LabelPrefix + "." + LabelVolume
+	if _, ok := labels[key]; !ok {
+		return &ReadError{Problem: ProblemForeign, Detail: fmt.Sprintf("volume %q has no %s label", d.Volume, key)}
+	}
+	return nil
 }
 
 // run executes docker and returns stdout, capped. stderr is read and dropped:

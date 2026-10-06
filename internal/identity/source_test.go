@@ -25,8 +25,11 @@ type scripted struct {
 func (s *scripted) Run(_ context.Context, c subproc.Cmd) subproc.Result {
 	s.cmds = append(s.cmds, c)
 	key := c.Args[0]
-	if key == "run" {
+	switch key {
+	case "run":
 		key = "run " + entrypoint(c.Args)
+	case "volume":
+		key = "volume " + c.Args[1]
 	}
 	if f := s.answers[key]; f != nil {
 		return f(c)
@@ -126,10 +129,11 @@ func TestRunArgsAreReadOnlyAndBare(t *testing.T) {
 // with the busybox image, never the Claude one.
 func TestCredentialsReadsTheFileOrSaysAbsent(t *testing.T) {
 	ctx := context.Background()
+	const ours = `{"drydock.test.claude-config":"true"}` + "\n"
 	img := &fixedImage{id: testClaudeID}
 
 	r := &scripted{answers: map[string]func(subproc.Cmd) subproc.Result{
-		"volume": write("drydock-claude-config-old\nx-drydock-claude-config\n", 0)}}
+		"volume ls": write("drydock-claude-config-old\nx-drydock-claude-config\n", 0)}}
 	if b, err := newSource(r, img).Credentials(ctx); err != nil || b != nil {
 		t.Errorf("no such volume: %q, %v; want nil, nil", b, err)
 	}
@@ -152,8 +156,9 @@ func TestCredentialsReadsTheFileOrSaysAbsent(t *testing.T) {
 		{"docker failed", 125, "", "", false, true},
 	} {
 		r := &scripted{answers: map[string]func(subproc.Cmd) subproc.Result{
-			"volume": write("drydock-claude-config\n", 0),
-			"run sh": write(c.out, c.code)}}
+			"volume ls":      write("drydock-claude-config\n", 0),
+			"volume inspect": write(ours, 0),
+			"run sh":         write(c.out, c.code)}}
 		b, err := newSource(r, img).Credentials(ctx)
 		switch {
 		case c.wantErr && err == nil:
@@ -175,13 +180,14 @@ func TestCredentialsReadsTheFileOrSaysAbsent(t *testing.T) {
 
 	// Over the cap is an error, not a truncated credential.
 	r = &scripted{answers: map[string]func(subproc.Cmd) subproc.Result{
-		"volume": write("drydock-claude-config\n", 0),
-		"run sh": write(strings.Repeat("x", maxRead+1), 0)}}
+		"volume ls":      write("drydock-claude-config\n", 0),
+		"volume inspect": write(ours, 0),
+		"run sh":         write(strings.Repeat("x", maxRead+1), 0)}}
 	if _, err := newSource(r, img).Credentials(ctx); err == nil {
 		t.Error("an oversized read was accepted")
 	}
 	// The daemon down is a docker problem.
-	r = &scripted{answers: map[string]func(subproc.Cmd) subproc.Result{"volume": write("", 1)}}
+	r = &scripted{answers: map[string]func(subproc.Cmd) subproc.Result{"volume ls": write("", 1)}}
 	var re *ReadError
 	if _, err := newSource(r, img).Credentials(ctx); !errors.As(err, &re) || re.Problem != ProblemDocker {
 		t.Errorf("docker down: %v; want a docker ReadError", err)
@@ -209,5 +215,45 @@ func TestAuthStatusTakesZeroAndOne(t *testing.T) {
 	var re *ReadError
 	if _, err := newSource(r, &fixedImage{err: errors.New("npm: network")}).AuthStatus(ctx); !errors.As(err, &re) || re.Problem != ProblemImage {
 		t.Errorf("image failure: %v; want an image ReadError", err)
+	}
+}
+
+// TestAForeignVolumeIsNotRead: a volume of the configured name that this
+// Drydock did not make — no <prefix>.claude-config label, which §6 step 4
+// puts on the one it makes and refuses to mount without — is a check that
+// failed, never a verdict: not absent, and its file is never read. Another
+// prefix's label is not ours. The control is the same volume labelled with
+// this prefix, which is read.
+func TestAForeignVolumeIsNotRead(t *testing.T) {
+	ctx := context.Background()
+	for _, c := range []struct{ name, labels string }{
+		{"no labels", "null\n"},
+		{"other labels", `{"com.example":"x"}` + "\n"},
+		{"another Drydock's", `{"drydock.other.claude-config":"true"}` + "\n"},
+	} {
+		r := &scripted{answers: map[string]func(subproc.Cmd) subproc.Result{
+			"volume ls":      write("drydock-claude-config\n", 0),
+			"volume inspect": write(c.labels, 0),
+			"run sh":         write(`{"claudeAiOauth":{}}`, 0)}}
+		b, err := newSource(r, &fixedImage{id: testClaudeID}).Credentials(ctx)
+		var re *ReadError
+		if !errors.As(err, &re) || re.Problem != ProblemForeign || b != nil {
+			t.Errorf("%s: %q, %v; want a foreign_volume ReadError", c.name, b, err)
+		}
+		for _, cmd := range r.cmds {
+			if cmd.Args[0] == "run" {
+				t.Errorf("%s: a foreign volume was mounted: %v", c.name, cmd.Args)
+			}
+		}
+	}
+	r := &scripted{answers: map[string]func(subproc.Cmd) subproc.Result{
+		"volume ls":      write("drydock-claude-config\n", 0),
+		"volume inspect": write(`{"drydock.test.claude-config":"true"}`+"\n", 0),
+		"run sh":         write(`{"claudeAiOauth":{}}`, 0)}}
+	if b, err := newSource(r, &fixedImage{id: testClaudeID}).Credentials(ctx); err != nil || string(b) != `{"claudeAiOauth":{}}` {
+		t.Errorf("control, our label: %q, %v", b, err)
+	}
+	if got := r.cmds[1].Args; strings.Join(got, " ") != "volume inspect --format {{json .Labels}} -- drydock-claude-config" {
+		t.Errorf("inspect argv: %v", got)
 	}
 }

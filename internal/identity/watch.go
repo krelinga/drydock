@@ -250,6 +250,8 @@ func sentence(p Problem) string {
 		return "Could not check the Claude login: claude auth status did not give a usable answer." + kept
 	case ProblemDisagree:
 		return "Could not check the Claude login: the credential file holds a login that Claude Code itself reports as signed out." + kept
+	case ProblemForeign:
+		return "Could not check the Claude login: a Docker volume with the shared volume's name exists, but this Drydock did not make it, so no workspace mounts it and it is not read." + kept
 	}
 	return "Could not check the Claude login." + kept
 }
