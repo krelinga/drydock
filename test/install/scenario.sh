@@ -28,6 +28,17 @@ install() {
 	out=$(cat "/releases/$v/install.sh" |
 		DRYDOCK_DOWNLOAD_BASE="http://127.0.0.1:8000/$v" bash -s -- "$@" 2>&1)
 	rc=$?
+	# Every word any run printed, for the sweeps that say what never was.
+	printf '%s\n' "$out" >>/root/installer-output.log
+}
+# forget_drydock: back to a host that never had Drydock. Caddy's files are
+# left, since they belong to the Caddy package and its Caddyfile is the
+# installer's own.
+forget_drydock() {
+	systemctl disable --now --quiet drydock
+	rm -rf /etc/drydock /var/lib/drydock /usr/local/bin/drydock /usr/local/bin/drydock.previous \
+		/etc/systemd/system/drydock.service /etc/systemd/system/drydock.service.previous /etc/systemd/system/caddy.service.d/drydock.conf
+	systemctl daemon-reload
 }
 mainpid() { systemctl show -p MainPID --value "$1"; }
 status() { "${CURL[@]}" -o /dev/null -w '%{http_code}' "$@"; }
@@ -301,13 +312,8 @@ check "and the secret still decrypts" grep -q '"rotated":false' <<<"$(put TEST_K
 section "a first install with the App key, from nothing"
 # Every install above found /etc/drydock already there, made by the first
 # install, which had no App key. v0.2.0 wrote the key into that directory
-# before anything created it, so exactly this install failed. Take Drydock's
-# own files away, back to a host that never had it; Caddy's are left, since
-# they belong to the Caddy package and its Caddyfile is the installer's own.
-systemctl disable --now --quiet drydock
-rm -rf /etc/drydock /var/lib/drydock /usr/local/bin/drydock /usr/local/bin/drydock.previous \
-	/etc/systemd/system/drydock.service /etc/systemd/system/drydock.service.previous /etc/systemd/system/caddy.service.d/drydock.conf
-systemctl daemon-reload
+# before anything created it, so exactly this install failed.
+forget_drydock
 check "control: the host has no /etc/drydock" [ ! -e /etc/drydock ]
 check "control: nor a drydock binary" [ ! -e /usr/local/bin/drydock ]
 install v0.0.2 --ui-host "$UI" --cert /etc/ssl/drydock/ui.pem --key /etc/ssl/drydock/ui.key --ca-cert "$CA" \
@@ -333,6 +339,115 @@ check "a re-run with the same key succeeds" [ "$rc" = 0 ]
 check "control: drydock was running before the re-run" [ "$pid_d" != 0 ]
 check "and the re-run restarts nothing" [ "$(mainpid drydock)" = "$pid_d" ]
 check "and leaves /etc/drydock as it was" [ "$(stat -c '%U %G %a' /etc/drydock)" = "root root 755" ]
+
+section "the secrets master key from a file (--secrets-key)"
+forget_drydock
+SK1=/root/sk1.key SK2=/root/sk2.key
+head -c 32 /dev/urandom >"$SK1" && head -c 32 /dev/urandom >"$SK2" && chmod 0600 "$SK1" "$SK2"
+check "control: the two keys differ" bash -c "! cmp -s $SK1 $SK2"
+FIRST=(--ui-host "$UI" --cert /etc/ssl/drydock/ui.pem --key /etc/ssl/drydock/ui.key --ca-cert "$CA")
+# The refusals first, on a first install: each must stop before anything is
+# installed, binary included.
+head -c 31 /dev/urandom >/root/short.key
+install v0.0.2 "${FIRST[@]}" --secrets-key /root/short.key
+check "a 31-byte key is refused" [ "$rc" != 0 ]
+check "it says the size, and how to make one" grep -q "is 31 bytes; a secrets master key is exactly 32 raw bytes" <<<"$out"
+check "before anything was installed" bash -c "[ ! -e /usr/local/bin/drydock ] && [ ! -e $SK ]"
+base64 -w0 "$SK1" >/root/b64.key
+install v0.0.2 "${FIRST[@]}" --secrets-key /root/b64.key
+check "a base64-encoded key is refused, and it says why" bash -c '[ "$1" != 0 ] && grep -q "is 44 bytes" <<<"$2" && grep -q "not base64" <<<"$2"' _ "$rc" "$out"
+check "and nothing was installed" [ ! -e /usr/local/bin/drydock ]
+install v0.0.2 "${FIRST[@]}" --secrets-key /root/missing.key
+check "a missing file is refused" bash -c '[ "$1" != 0 ] && grep -q "no such file: /root/missing.key" <<<"$2"' _ "$rc" "$out"
+mkdir -p /root/dir.key
+install v0.0.2 "${FIRST[@]}" --secrets-key /root/dir.key
+check "a directory is refused" bash -c '[ "$1" != 0 ] && grep -q "is not a regular file" <<<"$2"' _ "$rc" "$out"
+check "and nothing was installed" bash -c "[ ! -e /usr/local/bin/drydock ] && [ ! -e $SK ]"
+
+install v0.0.2 "${FIRST[@]}" --secrets-key "$SK1"
+check "control: the same first install with a 32-byte key succeeds" [ "$rc" = 0 ] || printf '%s\n' "$out"
+check "it installed the bytes given" cmp -s "$SK1" "$SK"
+check "drydock's alone, mode 0400" [ "$(stat -c '%U %G %a %s' "$SK")" = "drydock drydock 400 32" ]
+check "it says where it came from" grep -q "installed the secrets master key at $SK from $SK1" <<<"$out"
+check "it generated nothing" bash -c '! grep -q "created the secrets master key" <<<"$1"' _ "$out"
+check "no temporary file was left behind" bash -c '! compgen -G "/etc/drydock/.*.??????" >/dev/null'
+check "the flag is not kept in drydock.env" bash -c "! grep -q -- '$SK1' /etc/drydock/drydock.env && ! grep -qi secrets /etc/drydock/drydock.env"
+printf '%s\n' "$PW" | runuser -u drydock -- drydock passwd --db /var/lib/drydock/drydock.db >/dev/null
+jar=$(mktemp)
+code=$("${CURL[@]}" -o /dev/null -w '%{http_code}' -c "$jar" -H "Origin: https://$UI" \
+	-H 'Content-Type: application/json' -d "{\"password\":\"$PW\"}" "https://$UI/api/auth/session")
+check "sign-in works (204)" [ "$code" = 204 ]
+check "count-secrets says none are stored" [ "$(runuser -u drydock -- drydock count-secrets --db /var/lib/drydock/drydock.db)" = 0 ]
+
+pid_d=$(mainpid drydock)
+install v0.0.2 --secrets-key "$SK1"
+check "a re-run with the same key succeeds" [ "$rc" = 0 ] || printf '%s\n' "$out"
+check "control: drydock was running before it" [ "$pid_d" != 0 ]
+check "and restarts nothing" [ "$(mainpid drydock)" = "$pid_d" ]
+check "and says nothing about the key" bash -c '! grep -q "secrets master key" <<<"$1"' _ "$out"
+check "the key is unchanged" cmp -s "$SK1" "$SK"
+install v0.0.2
+check "a re-run without the flag succeeds" [ "$rc" = 0 ]
+check "and keeps the supplied key, restarting nothing" bash -c "cmp -s $SK1 $SK && [ \$(systemctl show -p MainPID --value drydock) = $pid_d ]"
+
+install v0.0.2 --secrets-key "$SK2"
+check "a different key with no secret stored is accepted" [ "$rc" = 0 ] || printf '%s\n' "$out"
+check "it is installed" cmp -s "$SK2" "$SK"
+check "drydock's alone, mode 0400" [ "$(stat -c '%U %G %a %s' "$SK")" = "drydock drydock 400 32" ]
+check "it says it replaced the key" grep -q "replaced the secrets master key at $SK with $SK2" <<<"$out"
+check "it stopped drydock for the swap" grep -q "stopping drydock to replace the secrets master key" <<<"$out"
+check "and drydock was restarted onto it" [ "$(mainpid drydock)" != "$pid_d" ]
+check "and is running" systemctl is-active --quiet drydock
+check "drydock is given it as a path" bash -c "tr '\\0' ' ' </proc/$(mainpid drydock)/cmdline | grep -q -- '--secrets-key=$SK'"
+check "a secret can be stored under the new key" grep -q '"created":true' <<<"$(put TEST_KEY install-test-value)"
+check "and read back: the same value is not a rotation" grep -q '"rotated":false' <<<"$(put TEST_KEY install-test-value)"
+check "count-secrets says one is stored" [ "$(runuser -u drydock -- drydock count-secrets --db /var/lib/drydock/drydock.db)" = 1 ]
+
+key_sum=$(sha256sum "$SK") pid_d=$(mainpid drydock)
+install v0.0.2 --secrets-key "$SK1"
+check "a different key with a secret stored is refused" [ "$rc" != 0 ]
+check "it says how many secrets the swap would break" grep -q "1 stored secret(s) are sealed under the installed key" <<<"$out"
+check "and what to do instead" grep -q "delete the stored secrets on Drydock's Secrets screen" <<<"$out"
+check "the installed key is byte-identical" [ "$(sha256sum "$SK")" = "$key_sum" ]
+check "and is still the one installed before" cmp -s "$SK2" "$SK"
+check "drydock was neither stopped nor restarted" [ "$(mainpid drydock)" = "$pid_d" ]
+check "it did not even stop it to look" bash -c '! grep -q "stopping drydock" <<<"$1"' _ "$out"
+check "no temporary file was left behind" bash -c '! compgen -G "/etc/drydock/.*.??????" >/dev/null'
+check "the secret is still served: the same value is not a rotation" grep -q '"rotated":false' <<<"$(put TEST_KEY install-test-value)"
+check "and there is still one secret" [ "$(runuser -u drydock -- drydock count-secrets --db /var/lib/drydock/drydock.db)" = 1 ]
+
+install v0.0.2 --secrets-key /root/short.key
+check "a wrong-size key on a re-run is refused" bash -c '[ "$1" != 0 ] && grep -q "is 31 bytes" <<<"$2"' _ "$rc" "$out"
+install v0.0.2 --secrets-key /root/missing.key
+check "a missing file on a re-run is refused" bash -c '[ "$1" != 0 ] && grep -q "no such file" <<<"$2"' _ "$rc" "$out"
+check "both left the key alone" cmp -s "$SK2" "$SK"
+check "and drydock running, unrestarted" [ "$(mainpid drydock)" = "$pid_d" ]
+install v0.0.2 --secrets-key "$SK2"
+check "control: the installed key given again is accepted" [ "$rc" = 0 ]
+check "and restarts nothing" [ "$(mainpid drydock)" = "$pid_d" ]
+
+# The key's bytes are in no output, journal, argv, environment or setting.
+# Searched as hex, raw bytes are found wherever they landed, whatever bytes
+# surround them; the key's own hex and base64 are searched for as text too.
+hex() { od -An -v -tx1 "$@" | tr -d ' \n'; }
+absent() { # absent KEYFILE FILE...: no trace of KEYFILE's bytes in the FILEs
+	local kh kb
+	kh=$(hex "$1") kb=$(base64 -w0 "$1")
+	shift
+	! hex "$@" | grep -qF -- "$kh" && ! grep -qF -- "$kh" "$@" && ! grep -qF -- "$kb" "$@"
+}
+present() { ! absent "$@"; }
+journalctl -o cat --no-pager >/root/journal.txt 2>/dev/null
+pid=$(mainpid drydock)
+for k in "$SK1" "$SK2" /root/short.key; do
+	{ echo before; cat "$k"; echo after; } >/root/control.bin
+	check "control: the sweep finds $(basename "$k") where it is" present "$k" /root/control.bin
+	check "$(basename "$k") is in no installer output" absent "$k" /root/installer-output.log
+	check "nor in the journal" absent "$k" /root/journal.txt
+	check "nor in drydock's argv, environment or settings" absent "$k" "/proc/$pid/cmdline" "/proc/$pid/environ" /etc/drydock/drydock.env
+done
+check "control: the installer output was collected" grep -q "replaced the secrets master key" /root/installer-output.log
+check "control: so was the journal" grep -q "serving on" /root/journal.txt
 
 printf '\n%s\n' "$([ $fails = 0 ] && echo PASS || echo "$fails FAILED")"
 [ $fails = 0 ]

@@ -83,6 +83,35 @@ func OpenAdmin(ctx context.Context, path string) (*DB, error) {
 	return s, nil
 }
 
+// OpenReadOnly opens an existing database read-only: no instance lock, no
+// migration, and SQLite itself refusing every write. It is for questions the
+// installer asks before it restarts anything — `drydock count-secrets` — where
+// the server that owns the file may still be an older binary running against
+// it. A migration there would leave that binary, or the one a failed upgrade
+// rolls back to, refusing a schema newer than it knows. A path with no file is
+// an error, never an empty database created in its place.
+func OpenReadOnly(ctx context.Context, path string) (*DB, error) {
+	st, err := os.Stat(path)
+	if err != nil {
+		return nil, err
+	}
+	if !st.Mode().IsRegular() {
+		return nil, fmt.Errorf("open %s: not a regular file", path)
+	}
+	q := url.Values{}
+	q.Set("mode", "ro")
+	q.Add("_pragma", "busy_timeout(5000)")
+	db, err := sql.Open("sqlite", "file:"+path+"?"+q.Encode())
+	if err != nil {
+		return nil, fmt.Errorf("open %s: %w", path, err)
+	}
+	if err := db.PingContext(ctx); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("open %s: %w", path, err)
+	}
+	return &DB{DB: db}, nil
+}
+
 // Close releases the database and then the lock, in that order, so the lock
 // is never released while this process might still write.
 func (s *DB) Close() error {

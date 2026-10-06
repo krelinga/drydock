@@ -1,8 +1,9 @@
-// Command drydock is the whole server: one binary, three subcommands.
+// Command drydock is the whole server: one binary, four subcommands.
 //
-//	drydock serve   [flags]   run the front door on its two Unix sockets
-//	drydock passwd  [flags]   set the operator password
-//	drydock version           print the release this binary was built from
+//	drydock serve         [flags]   run the front door on its two Unix sockets
+//	drydock passwd        [flags]   set the operator password
+//	drydock count-secrets [flags]   print how many secrets are stored (read-only)
+//	drydock version                 print the release this binary was built from
 //
 // There is deliberately nothing else. In particular there is no flag that binds a
 // TCP port (design §13.5), and no way to set the password except from a shell
@@ -45,6 +46,8 @@ func main() {
 		os.Exit(serve(os.Args[2:]))
 	case "passwd":
 		os.Exit(passwd(os.Args[2:], os.Stdin, os.Stdout, os.Stderr))
+	case "count-secrets":
+		os.Exit(countSecrets(os.Args[2:], os.Stdout, os.Stderr))
 	case "version", "--version":
 		fmt.Println(version)
 	case "-h", "--help", "help":
@@ -58,11 +61,12 @@ func main() {
 
 func usage(w io.Writer) {
 	fmt.Fprint(w, `usage:
-  drydock serve   [flags]   run the front door on its two Unix sockets
-  drydock passwd  [flags]   set the operator password (ends every session)
-  drydock version           print the release this binary was built from
+  drydock serve         [flags]   run the front door on its two Unix sockets
+  drydock passwd        [flags]   set the operator password (ends every session)
+  drydock count-secrets [flags]   print how many secrets are stored (read-only; for the installer)
+  drydock version                 print the release this binary was built from
 
-Run either with -h for its flags.
+Run any of them with -h for its flags.
 `)
 }
 

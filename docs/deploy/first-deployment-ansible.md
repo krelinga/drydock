@@ -22,14 +22,15 @@ a part of one. `test/ansible/check.sh` extracts exactly those blocks, assembles 
 `ansible-playbook --syntax-check` and `ansible-lint` (production profile) on the result, so the
 blocks are the tested copy. `test/ansible/live.sh` runs that assembled play against a bare Debian
 container with systemd: a first install, a re-run that reports `changed=0`, an upgrade, an App key
-rotation. Paste the blocks as they are, then change the variables.
+rotation, and the move to a vaulted secrets master key. Paste the blocks as they are, then change
+the variables.
 
 - [Requirements and layout](#requirements-and-layout)
 - [Variables](#variables)
 - [3. Prerequisites on the server](#3-prerequisites-on-the-server)
 - [4. Get the secrets onto the server without leaking them](#4-get-the-secrets-onto-the-server-without-leaking-them)
 - [5. Install](#5-install)
-- [6. Back up the secrets master key, now](#6-back-up-the-secrets-master-key-now)
+- [6. The secrets master key: supply it, or back it up](#6-the-secrets-master-key-supply-it-or-back-it-up)
 - [7. Verify](#7-verify)
 - [8–9. First workspace, and what does not work yet](#89-first-workspace-and-what-does-not-work-yet)
 - [10. Upgrade, roll back, uninstall](#10-upgrade-roll-back-uninstall)
@@ -60,7 +61,8 @@ drydock-ansible/
 │   ├── drydock-app.pem              # the GitHub App key: ansible-vault encrypted
 │   ├── drydock.crt                  # the certificate, full chain
 │   ├── drydock.key                  # its private key: ansible-vault encrypted
-│   └── drydock-ca.pem               # option A only: the CA's certificate, never its key
+│   ├── drydock-ca.pem               # option A only: the CA's certificate, never its key
+│   └── drydock-secrets.key          # optional: the secrets master key, ansible-vault encrypted
 └── roles/drydock/
     ├── defaults/main.yml
     ├── handlers/main.yml
@@ -69,8 +71,8 @@ drydock-ansible/
         ├── prerequisites.yml        # §3
         ├── firewall.yml             # §3.4, optional
         ├── tls.yml                  # §4.2
-        ├── install.yml              # §4.1 + §5 (+ the §10.1 database backup)
-        ├── backup_master_key.yml    # §6
+        ├── install.yml              # §4.1 + §4.3 + §5 (+ the §10.1 database backup)
+        ├── backup_master_key.yml    # §6, only without drydock_secrets_key_src
         └── verify.yml               # §7.1
 ```
 
@@ -136,8 +138,10 @@ ansible-playbook drydock.yml --ask-become-pass --ask-vault-pass
   ansible.builtin.import_tasks: install.yml
   tags: [drydock_install]
 
-- name: Back up the secrets master key (runbook §6)
+# A generated key only: with drydock_secrets_key_src, the vault already holds it.
+- name: Back up the secrets master key (runbook §6.2)
   ansible.builtin.import_tasks: backup_master_key.yml
+  when: drydock_secrets_key_src | length == 0
   tags: [drydock_backup]
 
 - name: Verify (runbook §7.1)
@@ -162,11 +166,12 @@ ansible-playbook drydock.yml --ask-become-pass --ask-vault-pass
 Set these in `group_vars/drydock/vars.yml`. **`drydock_version` is pinned**, not "latest", so a
 re-run installs the same release until you change it. Use a release that is *published*
 ([runbook step 2](first-deployment.md#2-cut-a-release)): a draft's assets do not download, and the
-download task fails rather than installing something else.
+download task fails rather than installing something else. `drydock_secrets_key_src` needs
+**v0.3.0 or later**: an older installer stops at `--secrets-key` with `unknown option`.
 
 ```yaml
 # file: group_vars/drydock/vars.yml
-drydock_version: v0.2.1
+drydock_version: v0.3.0
 # Lowercase, fully qualified, with a dot (runbook §1.2).
 drydock_ui_host: drydock.example.com
 
@@ -184,14 +189,19 @@ drydock_app_key_src: "{{ playbook_dir }}/files/drydock-app.pem"
 # From the vault (below). Only ever used when no password is set yet.
 drydock_operator_password: "{{ vault_drydock_operator_password }}"
 
-# Where step 6 puts the backup of the secrets master key, on the controller.
+# The secrets master key (runbook §4.3, §6). Your own key: a controller path
+# to a vault-encrypted file of exactly 32 raw bytes, which the installer puts
+# in place, and no backup step is needed. Empty: the installer generates the
+# key, and step 6 fetches a backup of it to the path below.
+drydock_secrets_key_src: ""
+# drydock_secrets_key_src: "{{ playbook_dir }}/files/drydock-secrets.key"
 drydock_secrets_key_backup: "{{ lookup('ansible.builtin.env', 'HOME') }}/drydock-backup/secrets.key"
 
 # Optional: allow 443 from this network with ufw (§3.4). Empty: leave the firewall alone.
 drydock_firewall_lan_cidr: ""
 ```
 
-**The operator password and the two private keys go in ansible-vault.** The password is a
+**The operator password and the private keys go in ansible-vault.** The password is a
 variable; the keys are files, and `ansible.builtin.copy` decrypts a vault-encrypted `src` on the
 way, so they never sit on the controller in plain text:
 
@@ -199,6 +209,12 @@ way, so they never sit on the controller in plain text:
 ansible-vault create group_vars/drydock/vault.yml          # holds the variable below
 ansible-vault encrypt files/drydock-app.pem files/drydock.key
 ```
+
+The secrets master key, if you supply it ([§4.3](#43-optional-your-own-secrets-master-key)), is
+encrypted the same way. It is 32 **raw** bytes, not text, and that is fine: `ansible-vault encrypt`
+and `decrypt --output`, `copy`, and the checksum the play takes all keep it byte for byte (checked
+on ansible-core 2.15 and 2.21). **Never `ansible-vault view` or `edit` it**: `view` replaces every
+byte that is not UTF-8 with `?` on the way to the terminal, and an editor would rewrite it.
 
 ```yaml
 # file: group_vars/drydock/vault.yml
@@ -237,6 +253,9 @@ drydock_key_path: /etc/caddy/certs/drydock.key
 drydock_ca_cert_path: /etc/caddy/certs/drydock-ca.pem
 # Where the App key waits for the installer, for one task (§4.1).
 drydock_app_key_stage: /root/drydock-app.pem
+# Your own secrets master key, if any, and where it waits for the installer (§4.3).
+drydock_secrets_key_src: ""
+drydock_secrets_key_stage: /root/drydock-secrets.key
 ```
 
 ---
@@ -412,7 +431,7 @@ runbook's two rules hold here as Ansible rules:
 - **Files are copied with `ansible.builtin.copy`, never passed as variables, `content:`,
   environment variables or command-line arguments.** The App key must never enter the environment
   or a command line ([§13.5](../design/overall/drydock-design.md#135--non-negotiables)), and a
-  `--github-app-key` flag carries only a path.
+  `--github-app-key` or `--secrets-key` flag carries only a path.
 - **Every task that handles key material has `no_log: true` and `diff: false`.** `no_log` keeps it
   out of the output and any callback or log file; `diff: false` matters as much, because
   `ansible-playbook --diff` prints a copied file's contents otherwise.
@@ -506,6 +525,30 @@ cannot traverse. A changed certificate (a renewal you copy in) reloads Caddy thr
       name {{ drydock_ui_host }}. See runbook §1.3.
 ```
 
+### 4.3 Optional: your own secrets master key
+
+[Runbook §4.3](first-deployment.md#43-optional-your-own-secrets-master-key) and
+[§6](first-deployment.md#6-the-secrets-master-key-supply-it-or-back-it-up). Set
+`drydock_secrets_key_src` to a vault-encrypted file of exactly 32 raw bytes (your own key), or
+leave it empty and let the installer generate the key, which
+[step 6](#6-the-secrets-master-key-supply-it-or-back-it-up) backs up. To make a new one, on the controller:
+
+```sh
+(umask 077 && head -c 32 /dev/urandom > files/drydock-secrets.key)   # 32 raw bytes: not base64, no newline
+ansible-vault encrypt files/drydock-secrets.key
+```
+
+Like the App key, it is staged by [step 5's block](#5-install), because the installer installs it
+as `drydock`'s and that user may not exist yet: only when its SHA-256 differs from the installed
+`/etc/drydock/secrets.key`, at `/root/drydock-secrets.key` (root, `0400`), passed as
+`--secrets-key`, and always deleted with `shred -u`. A re-run stages nothing and passes no flag, so
+it changes nothing.
+
+A different key replaces the installed one **only while no secret is stored**. With a secret
+stored, the installer refuses, changes nothing, and the play fails on the installer task with its
+message (`… N stored secret(s) are sealed under the installed key …`). What to do then is
+[runbook §6.3](first-deployment.md#63-switch-an-installed-key-to-one-you-supply).
+
 ---
 
 ## 5. Install
@@ -524,8 +567,9 @@ installer's own comment says, a checksum from the same place as the tarball catc
 download, not a compromised release.
 
 **The flags** are the runbook's: `--ui-host`, `--cert`, `--key`, `--github-app-id`, plus
-`--github-app-key` when a new key is staged ([§4.1](#41-the-github-app-private-key)), and
-`--ca-cert` for option A. Without a CA certificate the task passes `--no-ca-cert`, so the variables
+`--github-app-key` when a new key is staged ([§4.1](#41-the-github-app-private-key)),
+`--secrets-key` when a new master key is staged ([§4.3](#43-optional-your-own-secrets-master-key)),
+and `--ca-cert` for option A. Without a CA certificate the task passes `--no-ca-cert`, so the variables
 stay the whole truth: the installer otherwise keeps a `--ca-cert` from an earlier run. No
 `--preview-*` flags: previews are not built yet ([runbook §9](first-deployment.md#9-what-does-not-work-yet)).
 
@@ -646,7 +690,13 @@ when an installed `drydock version` differs from `drydock_version`, it stops `dr
     checksum_algorithm: sha256
   register: drydock_app_key_installed
 
-- name: Stage the App key, run the installer, and always remove the staged key
+- name: Checksum the installed secrets master key (not its contents)
+  ansible.builtin.stat:
+    path: /etc/drydock/secrets.key
+    checksum_algorithm: sha256
+  register: drydock_secrets_key_installed
+
+- name: Stage the keys, run the installer, and always remove the staged keys
   block:
     - name: Stage the App key for the installer, only when it is new or changed (runbook §4.1)
       ansible.builtin.copy:
@@ -663,6 +713,22 @@ when an installed `drydock version` differs from `drydock_version`, it stops `dr
         (lookup('ansible.builtin.file', drydock_app_key_src, rstrip=false) | hash('sha256'))
       register: drydock_app_key_staged
 
+    - name: Stage your secrets master key, only when it is new or changed (runbook §4.3)
+      ansible.builtin.copy:
+        src: "{{ drydock_secrets_key_src }}"
+        dest: "{{ drydock_secrets_key_stage }}"
+        owner: root
+        group: root
+        mode: "0400"
+      diff: false
+      no_log: true
+      when: >-
+        drydock_secrets_key_src | length > 0 and (
+        not drydock_secrets_key_installed.stat.exists or
+        drydock_secrets_key_installed.stat.checksum !=
+        (lookup('ansible.builtin.file', drydock_secrets_key_src, rstrip=false) | hash('sha256')))
+      register: drydock_secrets_key_staged
+
     - name: Run the installer from the release (runbook §5)
       ansible.builtin.command:
         argv: >-
@@ -675,6 +741,7 @@ when an installed `drydock version` differs from `drydock_version`, it stops `dr
              '--no-password']
             + (['--ca-cert', drydock_ca_cert_path] if drydock_ca_cert_src | length > 0 else ['--no-ca-cert'])
             + (['--github-app-key', drydock_app_key_stage] if drydock_app_key_staged is not skipped else [])
+            + (['--secrets-key', drydock_secrets_key_stage] if drydock_secrets_key_staged is not skipped else [])
             + (['--take-over-caddy'] if drydock_take_over_caddy | bool else [])
           }}
       register: drydock_installer
@@ -688,6 +755,11 @@ when an installed `drydock version` differs from `drydock_version`, it stops `dr
       ansible.builtin.command:
         argv: [shred, -u, "{{ drydock_app_key_stage }}"]
         removes: "{{ drydock_app_key_stage }}"
+
+    - name: Delete the staged secrets master key (runbook §5)
+      ansible.builtin.command:
+        argv: [shred, -u, "{{ drydock_secrets_key_stage }}"]
+        removes: "{{ drydock_secrets_key_stage }}"
 
 - name: Set the operator password, only if none is set yet (runbook §5 step 14)
   ansible.builtin.command:
@@ -714,25 +786,32 @@ rollback restores `drydock.service.previous`, not your edit.
 
 ---
 
-## 6. Back up the secrets master key, now
+## 6. The secrets master key: supply it, or back it up
 
-[Runbook §6](first-deployment.md#6-back-up-the-secrets-master-key-now). This fetches
-`/etc/drydock/secrets.key` to `drydock_secrets_key_backup` on the controller, in a `0700`
-directory, as a `0400` file.
+[Runbook §6](first-deployment.md#6-the-secrets-master-key-supply-it-or-back-it-up). Two options:
+
+- **Your own key, `drydock_secrets_key_src` set:** the key is already in your vault, and the installer
+  installed that file ([§4.3](#43-optional-your-own-secrets-master-key)). There is no backup step:
+  the tasks below are skipped, and [§7.1](#71-on-the-server) checks that the server holds the
+  vaulted key.
+- **A generated key, `drydock_secrets_key_src` empty:** the installer generated the key, and the tasks
+  below fetch `/etc/drydock/secrets.key` to `drydock_secrets_key_backup` on the controller, in a
+  `0700` directory, as a `0400` file.
 
 > [!WARNING]
-> **Move that file into your password manager or an encrypted volume, then delete it from the
-> controller.** Every repository secret is encrypted under this key: **lose it and every stored
-> secret is unreadable**, with no recovery but typing each value in again. And keep it **apart from
-> any database backup**, because the two together are every secret in plaintext-equivalent form.
-> Do not commit it, and do not leave it in the Ansible directory.
+> **With a generated key, move that file into your vault, then delete it from the controller**
+> ([below](#move-to-a-vaulted-key)). Every repository secret is encrypted under this key:
+> **lose it and every stored secret is unreadable**, with no recovery but typing each value in
+> again. And keep it **apart from any database backup**, because the two together are every secret
+> in plaintext-equivalent form. Do not commit it unencrypted, and do not leave it loose in the
+> Ansible directory.
 
 It never overwrites a backup silently. If a file is already at that path, the task compares
 checksums: the same key passes untouched, and a **different** one fails the play. That means the
 server's key is not the one you backed up, which needs a person, not a playbook: either the backup
 path is reused from another server, or the server's key was replaced and every secret stored under
 the old one is unreadable. Once you have moved the backup into your vault and deleted the local
-file, later runs fetch it again; add `--skip-tags drydock_backup` to stop that.
+file, set `drydock_secrets_key_src` to the vaulted copy, and later runs skip the backup.
 
 ```yaml
 # file: roles/drydock/tasks/backup_master_key.yml
@@ -785,8 +864,40 @@ file, later runs fetch it again; add `--skip-tags drydock_backup` to stop that.
   become: false
 ```
 
-To restore the key onto a rebuilt server, follow the runbook's last checkbox in
-[§6](first-deployment.md#6-back-up-the-secrets-master-key-now) by hand, before the first install.
+### Move to a vaulted key
+
+For a server already installed with a generated key, such as a first run with
+`drydock_secrets_key_src` empty. Either way ends with the key in your vault and
+`drydock_secrets_key_src` pointing at it.
+
+**Vault the installed key.** This keeps the key, so it works whether or not secrets are stored,
+and the next run changes nothing. With the backup the play fetched:
+
+```sh
+install -m 0600 ~/drydock-backup/secrets.key files/drydock-secrets.key
+ansible-vault encrypt files/drydock-secrets.key
+shred -u ~/drydock-backup/secrets.key && rmdir ~/drydock-backup
+```
+
+(If the play never fetched one, fetch it once instead:
+`ansible drydock -b -m ansible.builtin.fetch -a "src=/etc/drydock/secrets.key dest=files/drydock-secrets.key flat=true"`,
+then `chmod 0600 files/drydock-secrets.key` and encrypt it as above.) Then set
+`drydock_secrets_key_src: "{{ playbook_dir }}/files/drydock-secrets.key"` and re-run: the
+checksums match, so nothing is staged and the run reports `changed=0`.
+
+**Or install a new key**, only while no secret is stored. Make and encrypt one as in
+[§4.3](#43-optional-your-own-secrets-master-key), set `drydock_secrets_key_src`, and re-run. The
+installer prints `==> stopping drydock to replace the secrets master key` and
+`==> replaced the secrets master key at /etc/drydock/secrets.key with /root/drydock-secrets.key …`,
+and starts Drydock on the new key. Then shred the old backup, which no longer matches the server:
+`shred -u ~/drydock-backup/secrets.key`. With a secret stored, the installer refuses and the play
+fails with nothing changed ([runbook §6.3](first-deployment.md#63-switch-an-installed-key-to-one-you-supply)).
+To check first:
+`ansible drydock -b -m ansible.builtin.command -a "runuser -u drydock -- drydock count-secrets --db /var/lib/drydock/drydock.db"`
+prints `0`.
+
+To restore the key onto a rebuilt server, set `drydock_secrets_key_src` to the vaulted copy before
+the first run: the installer installs it in place of generating one.
 
 ---
 
@@ -882,6 +993,16 @@ something it already told you about.
     not drydock_secrets_key.stat.exists or
     [drydock_secrets_key.stat.pw_name, drydock_secrets_key.stat.mode, drydock_secrets_key.stat.size]
     != ['drydock', '0400', 32]
+
+- name: Check the server holds your vaulted master key (checksums, not contents)
+  ansible.builtin.stat:
+    path: /etc/drydock/secrets.key
+    checksum_algorithm: sha256
+  register: drydock_secrets_key_sum
+  failed_when: >-
+    drydock_secrets_key_sum.stat.checksum !=
+    (lookup('ansible.builtin.file', drydock_secrets_key_src, rstrip=false) | hash('sha256'))
+  when: drydock_secrets_key_src | length > 0
 ```
 
 ### 7.2 and 7.3 From a laptop and a phone
@@ -908,13 +1029,14 @@ are UI work and checks inside a running container. Nothing to automate; do them 
 download task fails rather than installing anything), then change one line and re-run:
 
 ```yaml
-drydock_version: v0.3.0
+drydock_version: v0.3.1
 ```
 
 The play backs up the database first (the [step 5](#5-install) block above), then the installer
 upgrades in place. It ends with `==> upgraded Drydock vA -> vB`. A re-run without a version change
 reports `ok` on every install task: the installer prints `is installed and current`, and nothing is
 restarted. The App key and the master key are kept, and the password is not asked for again.
+With `drydock_secrets_key_src` set, the installed key matches it, so nothing is staged.
 Changing a certificate, the CA, or the App key works the same way: change the file or the variable
 and re-run.
 
@@ -951,7 +1073,7 @@ destructive list best run by a person who has just deleted every workspace in th
 | [1.2 DNS](first-deployment.md#12-a-hostname-for-the-ui-and-how-clients-resolve-it), [1.3 choosing a certificate](first-deployment.md#13-a-tls-certificate-every-client-trusts-for-that-hostname) | Decisions, and client-side settings. The play checks the result: the certificate matches its key and names `drydock_ui_host`. Renewal (options B and C) stays with your ACME client; copying a renewed certificate in and re-running reloads Caddy. |
 | [1.4 the App's permissions, installations and key](first-deployment.md#14-the-github-apps-private-key) | In GitHub's UI. The App is private. |
 | [3.3 a Caddy that already serves other sites](first-deployment.md#33-caddy-from-its-official-package) | A decision: `drydock_take_over_caddy`. |
-| [6. storing the master-key backup](first-deployment.md#6-back-up-the-secrets-master-key-now) | The play fetches it; moving it into your vault is yours. Restoring it is by hand. |
+| [6. storing the master-key backup](first-deployment.md#6-the-secrets-master-key-supply-it-or-back-it-up) | A generated key only: the play fetches it; moving it into your vault is yours ([above](#move-to-a-vaulted-key)). With your own key there is nothing to store. |
 | [7.2, 7.3 laptop and phone checks](first-deployment.md#72-from-a-laptop) | They test those devices. |
 | [8. First workspace](first-deployment.md#8-first-workspace), [8.5 the reboot drill](first-deployment.md#85-optional-the-reboot-drill) | UI work. |
 | Changing the operator password | Ends every session; `drydock passwd` by hand ([runbook §10.3](first-deployment.md#103-logs-and-state)). |
