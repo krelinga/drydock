@@ -8,7 +8,9 @@ package github_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"maps"
 	"net/http"
 	"testing"
 
@@ -191,21 +193,92 @@ func TestContractPermissionIsEnforced(t *testing.T) {
 // Belief: GitHub refuses a token request for more than the App holds, or for
 // a repository the installation does not cover — 422, not a quieter token
 // with less in it. The broker relies on a refusal it can report (§12).
+//
+// And the two refusals share that 422, so the status cannot say which one it
+// was: only GitHub's message does. One is the operator's to fix in the App's
+// settings, the other is a revocation, and the broker tells the container
+// which (design §9.4). So this pins each message against the matcher the
+// broker uses — each matches its own refusal and not the other's — and logs
+// both verbatim, so a live run records what GitHub actually said.
 func TestContractTokenRequestsBeyondTheAppAreRefused(t *testing.T) {
 	ctx := context.Background()
 	b := githubtest.NewBackend(t)
 	in := installation(t, b)
-	_, err := b.Client.InstallationToken(ctx, github.TokenRequest{InstallationID: in.ID,
+
+	// Precondition: the App really lacks administration:write, or the first
+	// request below proves nothing about a missing permission.
+	// The App's permissions are a fixture (githubtest.DevAppPermissions):
+	// the broker's contract relies on the dev App lacking actions:write.
+	perms := appPermissions(t, b)
+	t.Logf("live=%v the App's permissions: %v", b.Live, perms)
+	if !maps.Equal(perms, githubtest.DevAppPermissions()) {
+		t.Errorf("the App holds %v; githubtest.DevAppPermissions says %v. Changing the dev App's permissions is changing a fixture: update it", perms, githubtest.DevAppPermissions())
+	}
+	if perms["administration"] == github.Write {
+		t.Fatal("the dev App holds administration:write; pick a permission it lacks for this test")
+	}
+
+	_, permErr := b.Client.InstallationToken(ctx, github.TokenRequest{InstallationID: in.ID,
 		Permissions: map[string]string{"administration": github.Write}})
-	if status(err) != http.StatusUnprocessableEntity {
-		t.Errorf("a permission the App lacks: %v; want 422", err)
+	t.Logf("a permission the App lacks: %v", permErr)
+	if status(permErr) != http.StatusUnprocessableEntity {
+		t.Errorf("a permission the App lacks: %v; want 422", permErr)
 	}
 	// krelinga/drydock exists and is not in the dev App's installation.
-	_, err = b.Client.InstallationToken(ctx, github.TokenRequest{InstallationID: in.ID,
+	_, repoErr := b.Client.InstallationToken(ctx, github.TokenRequest{InstallationID: in.ID,
 		Permissions: meta(), RepositoryIDs: []int64{drydockRepoID}})
-	if status(err) != http.StatusUnprocessableEntity {
-		t.Errorf("a repository outside the installation: %v; want 422", err)
+	t.Logf("a repository outside the installation: %v", repoErr)
+	if status(repoErr) != http.StatusUnprocessableEntity {
+		t.Errorf("a repository outside the installation: %v; want 422", repoErr)
 	}
+
+	// Each matcher recognises its own refusal and not the other's: a matcher
+	// that said yes to every 422 would pass the first half alone.
+	if !github.IsPermissionNotGranted(permErr) || github.IsRepositoryNotIncluded(permErr) {
+		t.Errorf("a missing permission (%v): IsPermissionNotGranted=%v IsRepositoryNotIncluded=%v; want true, false",
+			permErr, github.IsPermissionNotGranted(permErr), github.IsRepositoryNotIncluded(permErr))
+	}
+	if !github.IsRepositoryNotIncluded(repoErr) || github.IsPermissionNotGranted(repoErr) {
+		t.Errorf("a repository outside the installation (%v): IsRepositoryNotIncluded=%v IsPermissionNotGranted=%v; want true, false",
+			repoErr, github.IsRepositoryNotIncluded(repoErr), github.IsPermissionNotGranted(repoErr))
+	}
+
+	// Control: the same installation mints a token for what it does hold, so
+	// the refusals above are about what was asked for.
+	if _, err := b.Client.InstallationToken(ctx, github.TokenRequest{InstallationID: in.ID, Permissions: meta()}); err != nil {
+		t.Errorf("control: a metadata token: %v", err)
+	}
+}
+
+// appPermissions reads GET /app: the permissions the App holds. Only the
+// contract needs it, so it is a raw request here rather than a client method.
+func appPermissions(t *testing.T, b githubtest.Backend) map[string]string {
+	t.Helper()
+	jwt, err := github.JWT(b.Client.AppID, b.Client.Key, b.Client.Clock.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := b.Client.BaseURL
+	if base == "" {
+		base = github.DefaultBaseURL
+	}
+	req, _ := http.NewRequest("GET", base+"/app", nil)
+	req.Header.Set("Authorization", "Bearer "+jwt)
+	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
+	req.Header.Set("User-Agent", "drydock-contract-test")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	var app struct {
+		Permissions map[string]string `json:"permissions"`
+	}
+	if resp.StatusCode != http.StatusOK || json.NewDecoder(resp.Body).Decode(&app) != nil || app.Permissions == nil {
+		t.Fatalf("GET /app: %s", resp.Status)
+	}
+	return app.Permissions
 }
 
 // drydockRepoID is krelinga/drydock's id: a real repository the dev App is

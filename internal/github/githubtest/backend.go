@@ -40,6 +40,20 @@ func Testbed() Installation {
 	}}
 }
 
+// DevAppPermissions is what the dev App holds, as GET /app reports it, and so
+// what the fake holds in a contract run. It is a fixture like the testbed:
+// TestContractTokenRequestsBeyondTheAppAreRefused fails, naming this, when
+// the App's settings change. It lacks actions:write on purpose, so the gh
+// scope is refused against it, and the broker's contract pins that refusal
+// (app_permission_missing, not revoked) against the real GitHub. A fresh map
+// each call.
+func DevAppPermissions() map[string]string {
+	return map[string]string{
+		"metadata": "read", "contents": "write", "issues": "write", "pull_requests": "write",
+		"workflows": "write", "checks": "read",
+	}
+}
+
 // The live run is configured by environment, which only the test process
 // sees — never Drydock: the App key's own rule (§13.5) is about the server.
 const (
@@ -92,6 +106,7 @@ func NewBackend(t *testing.T) Backend {
 		clock := sys.RealClock{}
 		f := New(t, 4242, clock.Now)
 		f.Installations = []Installation{Testbed()}
+		f.AppPermissions = DevAppPermissions()
 		key, err := github.ParseKey(KeyPEM(t))
 		if err != nil {
 			t.Fatal(err)

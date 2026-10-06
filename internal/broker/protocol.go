@@ -106,6 +106,10 @@ const (
 	ReasonRevoked      = "revoked"      // the repository left the installation, or the workspace is going away
 	ReasonRateLimited  = "rate_limited" // GitHub's limit, or the App suspended
 	ReasonUnavailable  = "unavailable"  // GitHub unreachable, or anything else
+	// The App lacks a permission the scope asks for, or its installation has
+	// not accepted one: the operator's to fix in the App's settings, and not
+	// a revocation, though GitHub answers both with a 422.
+	ReasonPermissionMissing = "app_permission_missing"
 )
 
 func okToken(token string, expires time.Time) string {

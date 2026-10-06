@@ -283,8 +283,16 @@ func (b *Broker) token(ctx context.Context, wsID string, scope Scope) string {
 	})
 	if err != nil {
 		reason := reasonFor(err)
-		b.Events.Emit(ctx, wsID, events.Warn, "token.refused",
-			"GitHub refused a token for this workspace ("+reason+").", map[string]any{"scope": scope, "reason": reason})
+		// A fixed sentence keyed by reason, and never GitHub's own message:
+		// the event is what the operator reads, so it says what to check.
+		// The permission set is the scope's constant, not a secret.
+		msg := fmt.Sprintf("GitHub refused a %s token for this workspace (%s).", scope, reason)
+		if reason == ReasonPermissionMissing {
+			msg = fmt.Sprintf("GitHub refused a %s token for this workspace: the GitHub App lacks a permission this scope needs. "+
+				"Check the App's permissions, and accept any pending permission request on its installation.", scope)
+		}
+		b.Events.Emit(ctx, wsID, events.Warn, "token.refused", msg,
+			map[string]any{"scope": scope, "reason": reason, "permissions": scope.Permissions()})
 		return errLine(reason)
 	}
 	b.record(ctx, wsID, bd.repositoryID, scope, tok)
@@ -320,10 +328,14 @@ func (b *Broker) record(ctx context.Context, wsID string, repoID int64, scope Sc
 		map[string]any{"scope": scope, "expires_at": tok.ExpiresAt.UTC()})
 }
 
-// reasonFor maps a GitHub failure to the protocol's closed set. A 404 or 422
-// on the mint means the repository is not (or no longer) the installation's;
-// a 429, or a 403 that says "rate limit" or "suspended", is GitHub refusing
-// the App as a whole.
+// reasonFor maps a GitHub failure to the protocol's closed set. A 429, or a
+// 403 that says "rate limit" or "suspended", is GitHub refusing the App as a
+// whole. A 422 is two different refusals that only GitHub's message tells
+// apart (the contract tests pin both against the real App): a permission the
+// App lacks, or the installation has not accepted, is the operator's to fix;
+// a repository the installation does not include is a revocation. A 404 is
+// an installation that is gone. Anything else, a 422 included, is
+// unavailable: never a guess.
 func reasonFor(err error) string {
 	var ae *github.APIError
 	if !errors.As(err, &ae) {
@@ -334,7 +346,9 @@ func reasonFor(err error) string {
 	case ae.Status == http.StatusTooManyRequests,
 		ae.Status == http.StatusForbidden && (strings.Contains(msg, "rate limit") || strings.Contains(msg, "suspended")):
 		return ReasonRateLimited
-	case ae.Status == http.StatusNotFound, ae.Status == http.StatusUnprocessableEntity:
+	case github.IsPermissionNotGranted(err):
+		return ReasonPermissionMissing
+	case ae.Status == http.StatusNotFound, github.IsRepositoryNotIncluded(err):
 		return ReasonRevoked
 	}
 	return ReasonUnavailable

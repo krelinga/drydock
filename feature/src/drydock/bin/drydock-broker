@@ -43,7 +43,18 @@ OK | "OK "*)
 	printf '%s\n' "$answer"
 	;;
 "ERR reason="*)
-	echo "drydock: $what unavailable (${answer#ERR reason=})" >&2
+	# A reason this copy knows the remedy for gets a sentence; any other,
+	# including one a newer server added, is named as it came, so an older
+	# Feature still fails cleanly with exit 69.
+	reason=${answer#ERR reason=}
+	case $reason in
+	app_permission_missing)
+		echo "drydock: $what unavailable (the GitHub App lacks a permission; see the workspace's events in Drydock)" >&2
+		;;
+	*)
+		echo "drydock: $what unavailable ($reason)" >&2
+		;;
+	esac
 	exit 69
 	;;
 *)

@@ -80,6 +80,25 @@ check "with a broker, the shim reaches the real gh with the token, by either pat
 	'for p in /usr/local/bin/gh /usr/local/drydock/bin/gh; do [ "$(timeout 10 $p auth token)" = ghs_FakeTokenForFeatureTests ] || exit 1; done'
 check "with a broker, the probe passes" drydock-probe
 
+# A broker that refuses: the reason the operator can fix gets its sentence,
+# and one this copy does not know (a newer server's) is named as it came,
+# still exit 69. The control is the working broker above, same clients.
+cat >/tmp/refusing-broker.sh <<'BROKER'
+#!/bin/sh
+read -r l
+case $l in
+"GET-TOKEN scope=gh") echo "ERR reason=app_permission_missing" ;;
+*) echo "ERR reason=some_future_reason" ;;
+esac
+BROKER
+chmod +x /tmp/refusing-broker.sh
+socat UNIX-LISTEN:/tmp/refusing-broker.sock,fork,mode=666 EXEC:/tmp/refusing-broker.sh &
+for _ in $(seq 50); do [ -S /tmp/refusing-broker.sock ] && break; sleep 0.1; done
+check "a missing App permission: the shim says what to check" bash -c \
+	'out=$(DRYDOCK_BROKER_SOCK=/tmp/refusing-broker.sock gh api user 2>&1); [ $? -ne 0 ] && [ "$out" = "drydock: GitHub access unavailable (the GitHub App lacks a permission; see the workspace'"'"'s events in Drydock)" ]'
+check "an unknown reason: named as it came, exit 69" bash -c \
+	'DRYDOCK_BROKER_SOCK=/tmp/refusing-broker.sock drydock-broker GET-TOKEN scope=git 2>/tmp/err; [ $? = 69 ] && [ "$(cat /tmp/err)" = "drydock: GitHub access unavailable (some_future_reason)" ]'
+
 # A scratch repository with a bare "remote", for the hook checks.
 scratch() {
 	rm -rf /tmp/dd && mkdir -p /tmp/dd && cd /tmp/dd &&

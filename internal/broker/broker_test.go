@@ -281,7 +281,13 @@ func TestNeverFallsBackToABroaderCredential(t *testing.T) {
 		{403, "This installation has been suspended", "ERR reason=rate_limited"},
 		{403, "API rate limit exceeded for installation", "ERR reason=rate_limited"},
 		{429, "Too Many Requests", "ERR reason=rate_limited"},
-		{422, "There is at least one repository that does not exist", "ERR reason=revoked"},
+		// GitHub's two 422s, word for word as the contract test pins them,
+		// and a third it might one day send: the status is the same, so only
+		// the message decides, and an unknown one is never a guess.
+		{422, "There is at least one repository that does not exist or is not accessible to the parent installation.", "ERR reason=revoked"},
+		{422, "The permissions requested are not granted to this installation.", "ERR reason=app_permission_missing"},
+		{422, "Validation Failed", "ERR reason=unavailable"},
+		{404, "Not Found", "ERR reason=revoked"},
 		{500, "Server Error", "ERR reason=unavailable"},
 	} {
 		e := newEnv(t)
@@ -297,6 +303,66 @@ func TestNeverFallsBackToABroaderCredential(t *testing.T) {
 		if n := e.fake.Count("POST"); n != 1 {
 			t.Errorf("%d %q: %d token requests; want exactly the one that failed", tc.status, tc.msg, n)
 		}
+	}
+}
+
+// The v0.3.0 deployment's bug: an App without actions:write refuses the gh
+// scope with a 422, and the broker called that "revoked", so the operator
+// looked for a removed repository. Driven by the fake's own enforcement of
+// the App's permissions and the installation's repositories, not by Fail.
+func TestAMissingAppPermissionIsNotARevocation(t *testing.T) {
+	ctx := context.Background()
+	e := newEnv(t)
+	e.fake.Mu.Lock()
+	delete(e.fake.AppPermissions, "actions")
+	e.fake.Mu.Unlock()
+
+	if got := e.ask(t, wsA, "GET-TOKEN scope=gh"); got != "ERR reason=app_permission_missing" {
+		t.Errorf("gh without actions:write: %q; want app_permission_missing", got)
+	}
+	// Control: git's scope does not ask for actions, and still works — the
+	// App is otherwise fine, which is exactly what the operator sees.
+	tokenOf(t, e.ask(t, wsA, "GET-TOKEN scope=git"))
+
+	var level, msg, data string
+	if err := e.db.QueryRowContext(ctx, `SELECT level, message, data FROM event WHERE kind = 'token.refused' AND workspace_id = ?`, wsA).
+		Scan(&level, &msg, &data); err != nil {
+		t.Fatal(err)
+	}
+	want := "GitHub refused a gh token for this workspace: the GitHub App lacks a permission this scope needs. " +
+		"Check the App's permissions, and accept any pending permission request on its installation."
+	if level != "warn" || msg != want {
+		t.Errorf("event %s %q; want warn %q", level, msg, want)
+	}
+	var d struct {
+		Scope       string            `json:"scope"`
+		Reason      string            `json:"reason"`
+		Permissions map[string]string `json:"permissions"`
+	}
+	if err := json.Unmarshal([]byte(data), &d); err != nil {
+		t.Fatal(err)
+	}
+	if d.Scope != "gh" || d.Reason != ReasonPermissionMissing || d.Permissions["actions"] != "write" || len(d.Permissions) != len(ScopeGH.Permissions()) {
+		t.Errorf("event data %s", data)
+	}
+	// GitHub's own sentence stays out of the log: the message is ours.
+	if strings.Contains(msg+data, "not granted to this installation") {
+		t.Errorf("GitHub's raw message reached the event: %q %s", msg, data)
+	}
+
+	// Positive control for the distinction: the repository leaving the
+	// installation, with the database not yet knowing, is still revoked.
+	e.fake.Mu.Lock()
+	e.fake.Installations[0].Repos = e.fake.Installations[0].Repos[1:] // drops krelinga/alpha, wsA's
+	e.fake.AppPermissions["actions"] = "write"
+	e.fake.Mu.Unlock()
+	if got := e.ask(t, wsA, "GET-TOKEN scope=gh"); got != "ERR reason=revoked" {
+		t.Errorf("a repository outside the installation: %q; want revoked", got)
+	}
+	var revokedMsg string
+	e.db.QueryRowContext(ctx, `SELECT message FROM event WHERE kind = 'token.refused' AND data LIKE '%"revoked"%'`).Scan(&revokedMsg)
+	if revokedMsg != "GitHub refused a gh token for this workspace (revoked)." {
+		t.Errorf("the revoked event says %q", revokedMsg)
 	}
 }
 

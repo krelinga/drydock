@@ -7,10 +7,12 @@ package broker
 // where the push is real and its branch is deleted after.
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -191,4 +193,32 @@ func TestContractPushABranch(t *testing.T) {
 		t.Errorf("A's socket pushed to B:\n%s", out)
 		ce.git(t, b, repo, "push", "-q", ce.backend.GitURL(t, b), "--delete", branch)
 	}
+}
+
+// The v0.3.0 deployment's bug, against the real GitHub: the dev App lacks
+// actions:write (githubtest.DevAppPermissions, pinned by the github package's
+// contract), so the gh scope is refused with GitHub's 422 — and the broker
+// says the App lacks a permission, not that the repository was revoked. The
+// git scope, from the same socket, is the control: the repository is fine.
+func TestContractAMissingPermissionIsNotARevocation(t *testing.T) {
+	ce := newContractEnv(t)
+	ws := ce.ws[githubtest.TestbedA]
+	if got := ce.ask(t, ws, "GET-TOKEN scope=git"); !strings.HasPrefix(got, "OK token=") {
+		t.Fatalf("control: the git scope: %.40q", got)
+	}
+	if got := ce.ask(t, ws, "GET-TOKEN scope=gh"); got != "ERR reason=app_permission_missing" {
+		t.Errorf("the gh scope against an App without actions:write: %.40q; want ERR reason=app_permission_missing", got)
+	}
+}
+
+func (ce *contractEnv) ask(t *testing.T, ws, line string) string {
+	t.Helper()
+	conn, err := net.Dial("unix", ce.broker.SocketPath(ws))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	conn.Write([]byte(line + "\n"))
+	answer, _ := bufio.NewReader(conn).ReadString('\n')
+	return strings.TrimSuffix(answer, "\n")
 }
