@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.1](https://github.com/krelinga/drydock/compare/v0.4.0...v0.4.1) (2026-10-06)
+
+
+### Bug Fixes
+
+* never close an event subscription twice when it starts after shutdown ([#54](https://github.com/krelinga/drydock/issues/54)) ([2a50c0e](https://github.com/krelinga/drydock/commit/2a50c0ee4c49b7660553dffaff0523b7f540d1fb))
+
 ## [0.4.0](https://github.com/krelinga/drydock/compare/v0.3.0...v0.4.0) (2026-10-06)
 
 
