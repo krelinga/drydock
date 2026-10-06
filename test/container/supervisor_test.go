@@ -2,6 +2,7 @@ package container_test
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -211,6 +212,18 @@ func TestSessionServerInARealContainer(t *testing.T) {
 	}
 	for _, v := range claudetest.Kind(events(), claudetest.EventViolation) {
 		t.Errorf("fakeclaude: %s", v.What)
+	}
+}
+
+// noLogin stores the identity a test volume really has — no one signed in —
+// so the supervisor defers at step 8 rather than run the Feature's real
+// `claude remote-control`, which a test must never do (a real binary, the
+// real service). It is also the container tier's check that a signed-out
+// fleet starts no server: step 8 still hands off, and the supervisor waits.
+func noLogin(t *testing.T, db *sql.DB, volume string) {
+	t.Helper()
+	if _, err := db.Exec(`INSERT INTO claude_identity (id, volume_name, state) VALUES (1, ?, 'absent')`, volume); err != nil {
+		t.Fatal(err)
 	}
 }
 
