@@ -115,7 +115,37 @@ type Config struct {
 	// directory mounted, and a tag can be moved to different content.
 	// Configuration so a host with a registry mirror can name its own copy.
 	CleanupImage string
+
+	// ClaudeVolume is the shared Claude credential volume (§7.1): the local
+	// Docker volume every workspace container mounts at CLAUDE_CONFIG_DIR,
+	// and the one the identity watch reads (§7.3). Configuration so a test
+	// Drydock never reads the real one; the design's name is the default.
+	ClaudeVolume string
+	// ClaudeBaseImage is the image Drydock builds its Claude image from —
+	// the short-lived container that runs `claude auth status --json`
+	// against the volume, read-only (§7.3), and that the login handshake
+	// will reuse (§7.2). Pinned by digest, as CleanupImage is; Claude Code
+	// itself is pinned by version (classify.ClaudeCodeVersion).
+	ClaudeBaseImage string
+	// IdentityInterval is how often the identity watch reads the volume
+	// (§7.3: six hours). It also runs at boot and on demand.
+	IdentityInterval time.Duration
+	// IdentityExpiringWindow is §7.3's warning window: a login that
+	// expires within it is `expiring` rather than `ok`. Three days, which
+	// is when Claude Code itself starts warning (§2.4).
+	IdentityExpiringWindow time.Duration
 }
+
+// DefaultClaudeVolume is the volume name design §6 step 6 mounts.
+const DefaultClaudeVolume = "drydock-claude-config"
+
+// DefaultClaudeBaseImage is node 22 on bookworm-slim by its multi-arch index
+// digest: npm is how Claude Code is installed at an exact version, and the
+// binary it installs needs glibc.
+const DefaultClaudeBaseImage = "node:22-bookworm-slim@sha256:43ac6c60b8f89723f746e8a92ce91abd5017e627ce1ddfe4238355d3a30b772c"
+
+// volumeNamePattern is Docker's own rule for a volume name.
+var volumeNamePattern = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_.-]+$`)
 
 // DefaultCleanupImage is busybox 1.37.0 by its multi-arch index digest. The
 // helper needs only `find` with -mindepth and -delete.
@@ -152,6 +182,11 @@ func Default() Config {
 		BotEmail:         "337840004+krelinga-drydock[bot]@users.noreply.github.com",
 		ProvisionTimeout: 30 * time.Minute,
 		CleanupImage:     DefaultCleanupImage,
+
+		ClaudeVolume:           DefaultClaudeVolume,
+		ClaudeBaseImage:        DefaultClaudeBaseImage,
+		IdentityInterval:       6 * time.Hour,
+		IdentityExpiringWindow: 72 * time.Hour,
 	}
 }
 
@@ -223,6 +258,22 @@ func (c Config) Validate() error {
 	}
 	if !cleanupImagePattern.MatchString(c.CleanupImage) {
 		return fmt.Errorf("cleanup image %q must be pinned by digest (name@sha256:<64 hex>): it runs as root with a host directory mounted", c.CleanupImage)
+	}
+	if !volumeNamePattern.MatchString(c.ClaudeVolume) {
+		return fmt.Errorf("claude volume %q must be a Docker volume name", c.ClaudeVolume)
+	}
+	// The Claude image reads the login every container runs on, as root
+	// with DAC_READ_SEARCH; a tag can be moved to different content.
+	if !cleanupImagePattern.MatchString(c.ClaudeBaseImage) {
+		return fmt.Errorf("claude base image %q must be pinned by digest (name@sha256:<64 hex>): it reads the shared login", c.ClaudeBaseImage)
+	}
+	if c.IdentityInterval < time.Minute {
+		return fmt.Errorf("identity interval %s is shorter than a minute: each check starts a container", c.IdentityInterval)
+	}
+	// Zero would make `expiring` unreachable, and the banner would go from
+	// nothing straight to "expired" — the one warning §2.4 says to give.
+	if c.IdentityExpiringWindow <= 0 {
+		return fmt.Errorf("identity expiring window %s must be positive", c.IdentityExpiringWindow)
 	}
 	return nil
 }

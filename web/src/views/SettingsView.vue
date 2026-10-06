@@ -1,7 +1,7 @@
 <script setup lang="ts">
 // /settings — the device list (design §13.2: "a device list in the UI, and
-// one button that kills all sessions") and the catalog refresh. Claude
-// identity and capacity join it in later phases.
+// one button that kills all sessions"), the shared Claude login (design §7.3)
+// and the catalog refresh. Capacity joins it in a later phase.
 //
 // The API offers two revocations, both of which include this device: sign out
 // here, or sign out everywhere. Neither is a surprise — the list marks which
@@ -15,6 +15,8 @@ import { relativeTime } from '../lib/time'
 import { useSessionStore } from '../stores/session'
 import { REFRESH_KEY, useCatalogStore } from '../stores/catalog'
 import { useStreamStore } from '../stores/stream'
+import { CHECK_KEY, useIdentityStore } from '../stores/identity'
+import { identitySentence } from '../lib/identity'
 
 const session = useSessionStore()
 const catalog = useCatalogStore()
@@ -35,6 +37,24 @@ async function refreshCatalog(): Promise<void> {
     await catalog.refresh()
   } catch (e) {
     if (session.status === 'signed-in') refreshError.value = describeError(e)
+  }
+}
+
+// The Claude identity (design §7.3). Loaded by the fleet banner on every
+// screen; this section renders the same reducer field in full. "Check now"
+// is a 202: in flight until the check's event lands.
+const identity = useIdentityStore()
+const id = computed(() => stream.entities.identity)
+const needsSignIn = computed(() => id.value !== null && id.value.state !== null && id.value.state !== 'ok')
+const checkFlight = computed(() => stream.inFlight[CHECK_KEY] ?? null)
+const checkError = ref<string | null>(null)
+
+async function checkNow(): Promise<void> {
+  checkError.value = null
+  try {
+    await identity.check()
+  } catch (e) {
+    if (session.status === 'signed-in') checkError.value = describeError(e)
   }
 }
 
@@ -150,6 +170,53 @@ async function signOut(everywhere: boolean): Promise<void> {
       </div>
     </section>
 
+    <!-- The shared Claude login (design §7.3, frontend §5). The fleet banner's
+         one Sign in to Claude lands here. -->
+    <section id="claude" class="block" aria-labelledby="claude-h" data-test="claude-identity">
+      <div class="sec-label"><span id="claude-h">Claude</span></div>
+      <p class="state-line" data-test="claude-state">{{ identitySentence(id) }}</p>
+      <dl v-if="id !== null" class="facts">
+        <template v-if="id.accountEmail">
+          <dt>Account</dt><dd data-test="claude-account">{{ id.accountEmail }}</dd>
+        </template>
+        <template v-if="id.expiresAt">
+          <dt>{{ id.state === 'expired' ? 'Expired' : 'Expires' }}</dt>
+          <dd data-test="claude-expires">{{ relativeTime(id.expiresAt) }}</dd>
+        </template>
+        <template v-if="id.loggedInAt">
+          <dt>First seen</dt><dd>{{ relativeTime(id.loggedInAt) }}</dd>
+        </template>
+        <template v-if="id.lastCheckedAt">
+          <dt>Checked</dt><dd data-test="claude-checked">{{ relativeTime(id.lastCheckedAt) }}</dd>
+        </template>
+        <dt>Volume</dt><dd class="mono">{{ id.volume }}</dd>
+      </dl>
+      <div v-if="id?.checkError" class="msg warn" role="status" data-test="claude-check-error">
+        <span class="glyph" aria-hidden="true">!</span>
+        <span>{{ id.checkError.message }} Last tried {{ relativeTime(id.checkError.at) }}.</span>
+      </div>
+      <!-- SEAM (Phase 5, the login handshake, frontend §6.2): the handshake view
+           mounts here. Until it exists nothing on this page can sign in, and it
+           says so rather than offering a button that does not. -->
+      <p v-if="needsSignIn" class="note" data-test="claude-sign-in-next">
+        Signing in from Drydock arrives with the login handshake, the next part of this phase.
+        One sign-in will cover every workspace: they all share this login.
+      </p>
+      <div class="action">
+        <button
+          type="button" class="btn" data-test="claude-check"
+          :disabled="checkFlight !== null" :aria-busy="checkFlight !== null" @click="checkNow"
+        >
+          <span v-if="checkFlight" class="spinner" aria-hidden="true" />
+          Check now
+        </button>
+        <p class="note">Drydock checks the login every six hours by itself.</p>
+      </div>
+      <div v-if="checkError" class="msg bad" role="alert" data-test="claude-check-refused">
+        <span class="glyph" aria-hidden="true">×</span><span>{{ checkError }}</span>
+      </div>
+    </section>
+
     <section class="block" aria-labelledby="catalog-h">
       <div class="sec-label"><span id="catalog-h">Repository catalog</span></div>
       <div class="action">
@@ -204,6 +271,14 @@ async function signOut(everywhere: boolean): Promise<void> {
 .action { display: flex; flex-direction: column; gap: 6px; align-items: flex-start; }
 .note { font-size: 12.5px; color: var(--ink-3); }
 .danger-text { color: var(--bad); border-color: var(--bad); }
+.state-line { font-size: 14px; font-weight: 500; }
+.facts {
+  margin: 0; display: grid; grid-template-columns: max-content 1fr; gap: 3px 12px;
+  font-size: 12.5px; color: var(--ink-2);
+}
+.facts dt { color: var(--ink-3); }
+.facts dd { margin: 0; overflow-wrap: anywhere; }
+.facts .mono { font-family: var(--mono); font-size: 12px; }
 .spinner {
   width: 12px; height: 12px; border-radius: 50%;
   border: 2px solid var(--line); border-top-color: var(--ink-2);

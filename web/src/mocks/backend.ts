@@ -2,7 +2,8 @@
 // /api/auth/session routes, GET /api/repos and its refresh, the workspace
 // routes (list, read, create, start, and Phase 6's stop, rebuild and delete,
 // a delete that sticks and its resume included), the four /api/secrets
-// routes with every refusal they can answer, the event stream with
+// routes with every refusal they can answer, GET /api/auth/claude and its
+// check (the identity half; the login half is null), the event stream with
 // Last-Event-ID replay and `resync`, and the gate's behaviour for everything
 // else, shaped exactly as internal/api writes them — the same codes, the same
 // statuses, the same Retry-After, the same 401-before-404 ordering for an
@@ -16,7 +17,7 @@
 
 import { http, HttpResponse, sse, type HttpHandler } from 'msw'
 import type {
-  ActionView, CatalogView, Device, InstallationView, PutSecretResult, RepoView, SecretMeta, SessionInfo, Stale, StaleWorkspace,
+  ActionView, CatalogView, Device, IdentityState, IdentityView, InstallationView, PutSecretResult, RepoView, SecretMeta, SessionInfo, Stale, StaleWorkspace,
   StepView, StreamEvent, Undeliverable, UndeliverableSecret, WorkspaceDetail, WorkspaceList, WorkspaceState, WorkspaceView,
 } from '../api/types'
 import { checkDescription, checkName, checkReach, checkValue, type SecretRefusal } from '../lib/secretRules'
@@ -121,6 +122,44 @@ export interface MockBackend {
    * stored secret can be delivered. GET /api/secrets reports it as is.
    */
   undeliverable: Undeliverable | null
+
+  /**
+   * The stored Claude identity internal/identity.Watch holds. Seeded ok and a
+   * month from expiry, so a spec about something else sees no banner; a spec
+   * moves it with `setIdentity`, which emits auth.identity as the watch does.
+   */
+  identity: IdentityView
+  /** How many POST /api/auth/claude/check requests arrived. */
+  identityChecks: number
+}
+
+/** A stored identity as the watch writes it: login details only beside a login. */
+export function identityView(state: IdentityState | null, expiresInMs = 30 * 86400e3): IdentityView {
+  const live = state === 'ok' || state === 'expiring' || state === 'expired'
+  const now = Date.now()
+  return {
+    state,
+    account_email: live ? 'operator@example.invalid' : null,
+    expires_at: live ? new Date(now + expiresInMs).toISOString() : null,
+    logged_in_at: live ? new Date(now - 20 * 86400e3).toISOString() : null,
+    last_checked_at: state === null ? null : new Date(now - 60e3).toISOString(),
+    volume: 'drydock-claude-config',
+    check_error: null,
+  }
+}
+
+/** Stores a new identity and announces it, as a check that saw it would. */
+export function setIdentity(b: MockBackend, view: IdentityView): StreamEvent {
+  b.identity = view
+  const level = view.state === 'blanked' || view.state === 'expired' ? 'error' : view.state === 'expiring' ? 'warn' : 'info'
+  return emit(b, 'auth.identity', { level, message: `Claude identity: ${view.state}`, data: { identity: view } })
+}
+
+/** A check that could not read its inputs: the stored state stands. */
+export function failIdentityCheck(b: MockBackend, message = 'Could not check the Claude login: Docker did not answer. The last known state is kept.'): StreamEvent {
+  const check_error = { at: new Date().toISOString(), problem: 'docker', message }
+  b.identity = { ...b.identity, check_error, last_checked_at: check_error.at }
+  return emit(b, 'auth.identity_check_failed', { level: 'warn', message, data: { check_error } })
 }
 
 export interface MockSecret {
@@ -260,6 +299,8 @@ function newBackendBare(now: number, overrides: Partial<MockBackend>): MockBacke
     refuseNextSecret: null,
     staleRestart: [],
     undeliverable: null,
+    identity: identityView('ok'),
+    identityChecks: 0,
     ...overrides,
   }
 }
@@ -1060,6 +1101,24 @@ export function handlersFor(b: MockBackend): HttpHandler[] {
         return envelope(400, 'confirm_mismatch', "To delete this workspace, confirm with the repository's full name, exactly.")
       }
       scheduleDelete(b, id)
+      return HttpResponse.json({}, { status: 202 })
+    }),
+
+    // The Claude identity (design §7.3, internal/api/claude_routes.go). The
+    // login half is null: the handshake is not built.
+    http.get('/api/auth/claude', ({ request }) => {
+      record(request)
+      if (!b.signedIn) return unauthenticated()
+      return HttpResponse.json({ identity: b.identity, login: null }, { headers: { 'Cache-Control': 'no-store' } })
+    }),
+
+    // A check reads the same stored state again — or, in a spec, whatever
+    // the spec set — and announces it, as the watch does after a 202.
+    http.post('/api/auth/claude/check', ({ request }) => {
+      record(request)
+      if (!b.signedIn) return unauthenticated()
+      b.identityChecks++
+      setTimeout(() => setIdentity(b, { ...b.identity, check_error: null, last_checked_at: new Date().toISOString() }), 0)
       return HttpResponse.json({}, { status: 202 })
     }),
 

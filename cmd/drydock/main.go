@@ -92,6 +92,10 @@ func serve(args []string) int {
 	fs.StringVar(&cfg.BotEmail, "bot-email", cfg.BotEmail, "git user.email in workspaces: <bot-user-id>+<app-slug>[bot]@users.noreply.github.com")
 	fs.DurationVar(&cfg.ProvisionTimeout, "provision-timeout", cfg.ProvisionTimeout, "how long one clone-to-running run may take")
 	fs.StringVar(&cfg.CleanupImage, "cleanup-image", cfg.CleanupImage, "image, pinned by digest, a delete runs as root to remove files the drydock user cannot")
+	fs.StringVar(&cfg.ClaudeVolume, "claude-volume", cfg.ClaudeVolume, "the shared Claude credential volume every workspace mounts (a local Docker volume, never NFS)")
+	fs.StringVar(&cfg.ClaudeBaseImage, "claude-base-image", cfg.ClaudeBaseImage, "image, pinned by digest, Drydock builds its Claude Code image from")
+	fs.DurationVar(&cfg.IdentityInterval, "identity-interval", cfg.IdentityInterval, "how often to check the shared Claude login")
+	fs.DurationVar(&cfg.IdentityExpiringWindow, "identity-expiring-window", cfg.IdentityExpiringWindow, "warn when the Claude login expires within this long")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}

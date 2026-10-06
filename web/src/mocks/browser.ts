@@ -45,12 +45,21 @@
 //   drydockMock.needsRestart(id)  a rotation reports that workspace as
 //                                 needs_supervisor_restart (Phase 5's hook)
 //   drydockMock.rotateElsewhere(name)  another device rotates a secret
+//
+// The shared Claude login (Phase 5, design §7.3):
+//
+//   drydockMock.identity('blanked')   the watch stores a new verdict and says so:
+//                                 ok | expiring | expired | blanked | absent. The
+//                                 fleet banner and every running card follow
+//   drydockMock.identity('expiring', 36 * 3600e3)   expiring, 36 hours out
+//   drydockMock.identityCheckFails()  a check could not read the volume; the
+//                                 stored state stands and Settings says why
 
 import { setupWorker } from 'msw/browser'
+import type { IdentityState } from '../api/types'
 import {
-  cloneScript, completeRefresh, emit, handlersFor, MOCK_PASSWORD, newBackend, nextWorkspaceId, recordSecretFetch,
-  scheduleDelete, scheduleStop,
-  secretMeta, secretUndeliverable,
+  cloneScript, completeRefresh, emit, failIdentityCheck, handlersFor, identityView, MOCK_PASSWORD, newBackend,
+  nextWorkspaceId, recordSecretFetch, scheduleDelete, scheduleStop, secretMeta, secretUndeliverable, setIdentity,
 } from './backend'
 
 /** The server's detail for each refusal dev:mock can force: what internal/secrets would say. */
@@ -128,6 +137,8 @@ export async function startMockWorker(): Promise<void> {
     },
     fetchSecrets(id: string) { return recordSecretFetch(backend, id) },
     needsRestart(id: string) { backend.staleRestart.push(id) },
+    identity(state: IdentityState, expiresInMs?: number) { return setIdentity(backend, identityView(state, expiresInMs)) },
+    identityCheckFails() { return failIdentityCheck(backend) },
     rotateElsewhere(name: string) {
       const s = backend.secrets[name]
       if (s === undefined) return

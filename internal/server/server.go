@@ -26,11 +26,14 @@ import (
 	"github.com/krelinga/drydock/internal/auth"
 	"github.com/krelinga/drydock/internal/broker"
 	"github.com/krelinga/drydock/internal/catalog"
+	"github.com/krelinga/drydock/internal/classify"
+	"github.com/krelinga/drydock/internal/claudeimage"
 	"github.com/krelinga/drydock/internal/clone"
 	"github.com/krelinga/drydock/internal/config"
 	"github.com/krelinga/drydock/internal/container"
 	"github.com/krelinga/drydock/internal/events"
 	"github.com/krelinga/drydock/internal/github"
+	"github.com/krelinga/drydock/internal/identity"
 	"github.com/krelinga/drydock/internal/provision"
 	"github.com/krelinga/drydock/internal/reconcile"
 	"github.com/krelinga/drydock/internal/secrets"
@@ -62,6 +65,11 @@ type Server struct {
 	// git remote, a remote env, a minimal config with --network=host — set
 	// between New and Serve.
 	Provisioner *provision.Provisioner
+	// Identity is the expiry watch over the shared Claude login (§7.3),
+	// always present: with no volume yet it reports absent, which is the
+	// first-run state. Its Source is a test's seam, set between New and
+	// Serve.
+	Identity *identity.Watch
 	// reconciled closes when boot reconciliation has finished, so a test
 	// can set up workspace rows reconciliation would otherwise move.
 	reconciled chan struct{}
@@ -167,6 +175,18 @@ func New(ctx context.Context, cfg config.Config, env sys.Env) (*Server, error) {
 		handlers[name] = h
 	}
 	for name, h := range (api.SecretRoutes{Store: secretRoutes}).Handlers() {
+		handlers[name] = h
+	}
+	// The Claude image is built on first need — the first check that finds
+	// a credential file — and reused; the file itself is read with the
+	// cleanup helper's busybox, so blanked and absent never wait on it.
+	s.Identity = &identity.Watch{DB: db.DB, Events: s.Events, Clock: env.Clock,
+		Volume: cfg.ClaudeVolume, Window: cfg.IdentityExpiringWindow, Interval: cfg.IdentityInterval,
+		Source: identity.DockerSource{Run: subproc.Exec{},
+			Image:     &claudeimage.Builder{Run: subproc.Exec{}, Base: cfg.ClaudeBaseImage, Version: classify.ClaudeCodeVersion},
+			FileImage: cfg.CleanupImage, Volume: cfg.ClaudeVolume, LabelPrefix: cfg.LabelPrefix},
+		Logf: func(f string, a ...any) { fmt.Fprintf(os.Stderr, f+"\n", a...) }}
+	for name, h := range (api.ClaudeRoutes{Watch: s.Identity}).Handlers() {
 		handlers[name] = h
 	}
 	for name, h := range (api.WorkspaceRoutes{Provisioner: s.Provisioner, Workspaces: s.Workspaces, Events: s.Events}).Handlers() {
@@ -280,6 +300,11 @@ func (s *Server) Serve(ctx context.Context) error {
 			fmt.Fprintf(os.Stderr, "drydock: secrets: %v\n", err)
 		}
 	}
+	watching := make(chan struct{})
+	go func() {
+		defer close(watching)
+		s.Identity.Run(ctx)
+	}()
 	refreshing := make(chan struct{})
 	go func() {
 		defer close(refreshing)
@@ -314,6 +339,7 @@ func (s *Server) Serve(ctx context.Context) error {
 	_ = s.preview.Shutdown(shutCtx)
 	<-reconciled // they may still be writing; the database closes after them
 	<-refreshing
+	<-watching
 	s.DB.Close()
 	if errors.Is(serveErr, http.ErrServerClosed) {
 		serveErr = nil

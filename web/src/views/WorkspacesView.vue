@@ -22,6 +22,7 @@ import { describeError } from '../api/messages'
 import ActionButton from '../components/ActionButton.vue'
 import MakeRoom from '../components/MakeRoom.vue'
 import WorkspaceAction from '../components/WorkspaceAction.vue'
+import WorkspaceIdentityNote from '../components/WorkspaceIdentityNote.vue'
 import { catalogEvent, useCatalogStore, type CatalogRow } from '../stores/catalog'
 import type { Workspace } from '../stores/reducer'
 import { cloneKey, useWorkspacesStore } from '../stores/workspaces'
@@ -77,10 +78,12 @@ function rowNote(r: CatalogRow): string | null {
               {{ r.repo?.fullName ?? r.workspace.fullName ?? r.workspace.id }}
             </RouterLink>
             <span class="state" :class="status(r.workspace).tone" data-test="running-state">
+              <WorkspaceIdentityNote :state="r.workspace.state" part="dot" />
               {{ status(r.workspace).line }}
             </span>
           </div>
           <p v-if="status(r.workspace).note" class="detail">{{ status(r.workspace).note }}</p>
+          <WorkspaceIdentityNote :state="r.workspace.state" part="waiting" />
           <WorkspaceAction :workspace="r.workspace" :action="status(r.workspace).action" />
         </li>
       </ul>
