@@ -298,5 +298,41 @@ install v0.0.2
 check "control: with the key restored, the re-run succeeds" [ "$rc" = 0 ] || printf '%s\n' "$out"
 check "and the secret still decrypts" grep -q '"rotated":false' <<<"$(put TEST_KEY install-test-value)"
 
+section "a first install with the App key, from nothing"
+# Every install above found /etc/drydock already there, made by the first
+# install, which had no App key. v0.2.0 wrote the key into that directory
+# before anything created it, so exactly this install failed. Take Drydock's
+# own files away, back to a host that never had it; Caddy's are left, since
+# they belong to the Caddy package and its Caddyfile is the installer's own.
+systemctl disable --now --quiet drydock
+rm -rf /etc/drydock /var/lib/drydock /usr/local/bin/drydock /usr/local/bin/drydock.previous \
+	/etc/systemd/system/drydock.service /etc/systemd/system/drydock.service.previous /etc/systemd/system/caddy.service.d/drydock.conf
+systemctl daemon-reload
+check "control: the host has no /etc/drydock" [ ! -e /etc/drydock ]
+check "control: nor a drydock binary" [ ! -e /usr/local/bin/drydock ]
+install v0.0.2 --ui-host "$UI" --cert /etc/ssl/drydock/ui.pem --key /etc/ssl/drydock/ui.key --ca-cert "$CA" \
+	--github-app-id 5189455 --github-app-key /root/app.pem
+check "it succeeds (and its own end-to-end 401 check passed)" [ "$rc" = 0 ]
+[ "$rc" = 0 ] || printf '%s\n' "$out"
+check "it reports a fresh install" grep -q "installed Drydock v0.0.2" <<<"$out"
+check "/etc/drydock is root's, 0755" [ "$(stat -c '%U %G %a' /etc/drydock)" = "root root 755" ]
+check "the App key is drydock's alone, mode 0400" [ "$(stat -c '%U %G %a' /etc/drydock/github-app.pem)" = "drydock drydock 400" ]
+check "and is the key given" cmp -s /root/app.pem /etc/drydock/github-app.pem
+check "the master key was created beside it" [ "$(stat -c '%U %G %a %s' "$SK")" = "drydock drydock 400 32" ]
+check "no temporary file was left behind" bash -c '! compgen -G "/etc/drydock/.*.??????" >/dev/null'
+check "drydock is given the key as a path" bash -c "tr '\\0' ' ' </proc/$(mainpid drydock)/cmdline | grep -q -- '--github-app-key=/etc/drydock/github-app.pem'"
+printf '%s\n' "$PW" | runuser -u drydock -- drydock passwd --db /var/lib/drydock/drydock.db >/dev/null
+jar=$(mktemp)
+code=$("${CURL[@]}" -o /dev/null -w '%{http_code}' -c "$jar" -H "Origin: https://$UI" \
+	-H 'Content-Type: application/json' -d "{\"password\":\"$PW\"}" "https://$UI/api/auth/session")
+check "sign-in works on the fresh install (204)" [ "$code" = 204 ]
+check "and the repo list is configured from the start (200)" [ "$(status -b "$jar" "https://$UI/api/repos")" = 200 ]
+pid_d=$(mainpid drydock)
+install v0.0.2 --github-app-id 5189455 --github-app-key /root/app.pem
+check "a re-run with the same key succeeds" [ "$rc" = 0 ]
+check "control: drydock was running before the re-run" [ "$pid_d" != 0 ]
+check "and the re-run restarts nothing" [ "$(mainpid drydock)" = "$pid_d" ]
+check "and leaves /etc/drydock as it was" [ "$(stat -c '%U %G %a' /etc/drydock)" = "root root 755" ]
+
 printf '\n%s\n' "$([ $fails = 0 ] && echo PASS || echo "$fails FAILED")"
 [ $fails = 0 ]

@@ -15,9 +15,7 @@ step 1 by hand and have the files it produces on your **controller** (the machin
 > way the runbook does, run the installer with the flags the runbook gives it, and then check what
 > the runbook checks. They never write a file the installer owns (the unit, the Caddyfile,
 > `/etc/drydock/*`), so an upgrade of the installer cannot be undone by a stale task here. When the
-> installer changes, this document and the runbook change with it. The one exception is
-> `/etc/drydock` itself, created exactly as the installer creates it, as the workaround for
-> [Known issue 5](first-deployment.md#0-known-issues--read-these-first) ([step 5](#5-install)).
+> installer changes, this document and the runbook change with it.
 
 Every YAML block below whose first line is `# file: <path>` is one file of the example layout, or
 a part of one. `test/ansible/check.sh` extracts exactly those blocks, assembles them, and runs
@@ -168,7 +166,7 @@ download task fails rather than installing something else.
 
 ```yaml
 # file: group_vars/drydock/vars.yml
-drydock_version: v0.2.0
+drydock_version: v0.2.1
 # Lowercase, fully qualified, with a dot (runbook §1.2).
 drydock_ui_host: drydock.example.com
 
@@ -641,18 +639,6 @@ when an installed `drydock version` differs from `drydock_version`, it stops `dr
       ansible.builtin.systemd_service:
         name: drydock
         state: started
-
-# Known issue 5: on a host where /etc/drydock does not exist yet, the
-# installer copies --github-app-key into it before creating it, and fails.
-# This is the directory exactly as the installer makes it. Remove this task
-# once Known issue 5 is fixed in the release you install.
-- name: Create /etc/drydock as the installer does (runbook Known issue 5)
-  ansible.builtin.file:
-    path: /etc/drydock
-    state: directory
-    owner: root
-    group: root
-    mode: "0755"
 
 - name: Checksum the installed App key (not its contents)
   ansible.builtin.stat:
