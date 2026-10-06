@@ -57,7 +57,9 @@ jobs:
         run: sudo apt-get update -q && sudo apt-get install -y -q --no-install-recommends libnss3-tools
       - run: npm ci
         working-directory: web
-      - run: npx playwright install --with-deps chromium
+      # Firefox and WebKit run engines.spec.ts: v0.2.1's UI sent `Origin: null`
+      # from Safari, which Chromium alone could never have shown.
+      - run: npx playwright install --with-deps chromium firefox webkit
         working-directory: web
       - run: test/browser/run.sh
       # A failed test leaves a Playwright trace: the page, the network, the

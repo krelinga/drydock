@@ -3,7 +3,7 @@
 // browser — so tracing on failure and per-test isolation of the cookie jar
 // come from Playwright rather than from this file.
 
-import { test as base, expect, type BrowserContext, type Page } from '@playwright/test'
+import { test as base, expect, firefox, webkit, type BrowserContext, type Page } from '@playwright/test'
 import { COOKIE, Stack, UI, type Seen } from './harness'
 
 export { expect }
@@ -21,7 +21,20 @@ export const test = base.extend<{ signedIn: Page }, { stack: Stack }>({
   // The Stack's Chromium, which trusts the CA through NSS and resolves the
   // test domains to its Caddy. Playwright's built-in `context` and `page`
   // are created from it.
-  browser: [async ({ stack }, use) => use(stack.browser), { scope: 'worker' }],
+  //
+  // The firefox and webkit projects run only engines.spec.ts, against the
+  // Stack's loopback front, so their browser is the plain engine: it needs
+  // neither the CA nor the resolver rules, and never ignores a certificate
+  // error because it is never shown a certificate.
+  browser: [
+    async ({ stack, browserName }, use) => {
+      if (browserName === 'chromium') return use(stack.browser)
+      const b = await (browserName === 'firefox' ? firefox : webkit).launch()
+      await use(b)
+      await b.close()
+    },
+    { scope: 'worker' },
+  ],
   // Every test starts with an empty tap, so "the server saw nothing" means
   // this test's requests and no one else's.
   page: async ({ page, stack }, use) => {
@@ -37,7 +50,18 @@ export const test = base.extend<{ signedIn: Page }, { stack: Stack }>({
   },
 })
 
-/** Signs in with a same-origin fetch from a page already on the UI origin. */
+/**
+ * Signs in with a same-origin fetch from a page already on the UI origin.
+ *
+ * A bare `fetch()` is mode `cors`, so it sends the page's Origin whatever the
+ * app's own client does: it cannot catch a client that sends `Origin: null`,
+ * as v0.2.1's did in Safari and Firefox. It is kept because it is the fixture
+ * for tests about cookies and cross-site requests, where how the sign-in was
+ * made is not the subject. The app's client is covered where it is the
+ * subject: ui.spec.ts and engines.spec.ts sign in through the real form and
+ * assert the Origin the server received, and engines.spec.ts does it in
+ * Chromium, Firefox and WebKit.
+ */
 export async function signIn(page: Page, password: string): Promise<number> {
   return page.evaluate(async (pw) => {
     const r = await fetch('/api/auth/session', {

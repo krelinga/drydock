@@ -60,13 +60,15 @@
   // One container at a time only -- two dockerds on one volume corrupts it.
   //
   // ms-playwright is the same idea for the browser tier: `playwright install`
-  // fetches ~114 MB of Chromium, and without this it is re-fetched on every
-  // rebuild. The browsers are deliberately not installed by a feature -- they
-  // are the postCreate lifecycle command below, `npm ci` in web/ and then
-  //   npx playwright install --with-deps chromium
-  // which picks the Chromium build web/package.json's pinned Playwright wants
-  // (a no-op download when the volume already holds it) plus the system
-  // libraries it needs. Enumerating those ~40 transitive apt packages in the
+  // fetches ~114 MB of Chromium, plus Firefox and WebKit (~100 MB each, for
+  // engines.spec.ts: v0.2.1's UI sent `Origin: null` from Safari, which
+  // Chromium alone could not show), and without this they are re-fetched on
+  // every rebuild. The browsers are deliberately not installed by a feature --
+  // they are the postCreate lifecycle command below, `npm ci` in web/ and then
+  //   npx playwright install --with-deps chromium firefox webkit
+  // which picks the builds web/package.json's pinned Playwright wants (a
+  // no-op download when the volume already holds them) plus the system
+  // libraries they need. Enumerating those ~40 transitive apt packages in the
   // feature above instead would be a list that goes stale silently.
   // The ms-playwright volume below makes Docker create /home/vscode/.cache as
   // root to host the mount point, which breaks every other user-level cache
@@ -76,7 +78,7 @@
   // rebuild instead of being pasted in again. Same root-owned-parent problem,
   // for /home/vscode/.config. 0700 because hosts.yml holds the token in plain
   // text: there is no keyring in this container.
-  "postCreateCommand": "sudo chown vscode:vscode /home/vscode/.cache /home/vscode/.cache/ms-playwright /home/vscode/.config /home/vscode/.config/gh && chmod 0700 /home/vscode/.config/gh && cd web && npm ci && npx playwright install --with-deps chromium",
+  "postCreateCommand": "sudo chown vscode:vscode /home/vscode/.cache /home/vscode/.cache/ms-playwright /home/vscode/.config /home/vscode/.config/gh && chmod 0700 /home/vscode/.config/gh && cd web && npm ci && npx playwright install --with-deps chromium firefox webkit",
 
   "mounts": [
     "source=drydock-dind-lib,target=/var/lib/docker,type=volume",

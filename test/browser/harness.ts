@@ -1,7 +1,9 @@
 // The browser tier's stack (testing §10.1): the real `drydock serve`, real
 // Caddy on the shipped Caddyfile, and Playwright's Chromium trusting a
 // throwaway CA through NSS — Spike 04's method, with nothing that disables
-// certificate validation anywhere.
+// certificate validation anywhere. Firefox and WebKit, which cannot be made
+// to trust that CA here, reach the same `drydock serve` through `front()`, a
+// plain-HTTP loopback front used by engines.spec.ts alone.
 //
 // Everything mutable lives under one temp root, removed at teardown:
 //
@@ -43,6 +45,8 @@ export const OTHER_PREVIEW_HOST = `xyz789.${PREVIEW_DOMAIN}`
 export const UI = `https://${UI_HOST}`
 export const PREVIEW = `https://${PREVIEW_HOST}`
 export const COOKIE = '__Host-drydock'
+/** The session cookie's name between a browser and the loopback front. */
+const LOOPBACK_COOKIE = 'drydock-loopback'
 
 export const REPO = path.resolve(__dirname, '..', '..')
 
@@ -54,6 +58,7 @@ export interface Seen {
   path: string
   host: string
   origin: string | null
+  referer: string | null
   /** The value of the session cookie, if one arrived. */
   session: string | null
   cookieNames: string[]
@@ -71,7 +76,13 @@ class Tap {
   private seq = 0
   private server: http.Server
 
-  constructor(readonly socket: 'api' | 'preview', listen: string, upstream: string) {
+  constructor(
+    readonly socket: 'api' | 'preview',
+    listen: string | { host: string; port: number },
+    upstream: string,
+    /** Rewrites forwarded headers, after the record is taken (the loopback front). */
+    rewrite?: { request?: (h: http.IncomingHttpHeaders) => void; response?: (h: http.IncomingHttpHeaders) => void },
+  ) {
     this.server = http.createServer((req, res) => {
       const cookies = parseCookies(req.headers.cookie)
       const rec: Seen = {
@@ -81,6 +92,7 @@ class Tap {
         path: req.url ?? '',
         host: req.headers.host ?? '',
         origin: header(req, 'origin'),
+        referer: header(req, 'referer'),
         session: cookies.get(COOKIE) ?? null,
         cookieNames: [...cookies.keys()],
         secFetchSite: header(req, 'sec-fetch-site'),
@@ -92,12 +104,16 @@ class Tap {
         responseHeaders: null,
       }
       this.seen.push(rec)
+      const headers = { ...req.headers }
+      rewrite?.request?.(headers)
       const up = http.request(
-        { socketPath: upstream, method: req.method, path: req.url, headers: req.headers },
+        { socketPath: upstream, method: req.method, path: req.url, headers },
         (ur) => {
           rec.status = ur.statusCode ?? null
           rec.responseHeaders = ur.headers
-          res.writeHead(ur.statusCode ?? 502, ur.headers)
+          const out = { ...ur.headers }
+          rewrite?.response?.(out)
+          res.writeHead(ur.statusCode ?? 502, out)
           // Streams each chunk as it arrives: SSE frames are not held here.
           ur.on('data', (c: Buffer) => res.write(c))
           ur.on('end', () => res.end())
@@ -111,7 +127,18 @@ class Tap {
       res.on('close', () => up.destroy())
       req.pipe(up)
     })
-    this.server.listen(listen)
+    this.listening = new Promise((r) => this.server.once('listening', r))
+    if (typeof listen === 'string') this.server.listen(listen)
+    else this.server.listen(listen.port, listen.host)
+  }
+
+  readonly listening: Promise<unknown>
+
+  /** The TCP port, for a tap listening on one. */
+  port(): number {
+    const a = this.server.address()
+    if (typeof a !== 'object' || !a) throw new Error('tap: not listening on TCP')
+    return a.port
   }
 
   clear(): void {
@@ -417,6 +444,48 @@ export class Stack {
     })
   }
 
+  private loopback: { url: string; tap: Tap } | null = null
+
+  /**
+   * The loopback front: the real Drydock (its embedded UI and its API) over
+   * plain HTTP on `http://127.0.0.1:<port>`, for the engines the TLS stack
+   * cannot serve — Playwright's Firefox and WebKit have no per-run trust store
+   * this tier can put its CA in, and certificate errors stay unignored
+   * (testing §10.1). 127.0.0.1 is a potentially trustworthy origin, so the
+   * `__Host-` cookie's `Secure` holds there too.
+   *
+   * It is a tap that records what the browser sent and then edits what it
+   * forwards: `Host` becomes the UI host, and an `Origin` that is *exactly*
+   * this front's origin becomes the UI origin. Anything else — `null`, a
+   * wrong port, none at all — is forwarded as it arrived, so the server's
+   * exact match still decides. What the browser sent is in `seen`, and that
+   * is what the engine specs assert on.
+   *
+   * The session cookie is renamed on the way out and back, and loses
+   * `Secure`: WebKit keeps no `Secure` cookie from an `http:` page, even on
+   * loopback, and a `__Host-` cookie cannot exist without it. The cookie's
+   * own rules are the TLS stack's subject (cookies.spec.ts), not this one's.
+   */
+  async front(): Promise<{ url: string; tap: Tap }> {
+    if (this.loopback) return this.loopback
+    let origin = ''
+    const tap = new Tap('api', { host: '127.0.0.1', port: 0 }, path.join(this.run, 'http.sock'), {
+      request: (h) => {
+        h.host = UI_HOST
+        if (h.origin === origin) h.origin = UI
+        if (h.cookie) h.cookie = h.cookie.replaceAll(`${LOOPBACK_COOKIE}=`, `${COOKIE}=`)
+      },
+      response: (h) => {
+        const sc = h['set-cookie']
+        if (sc) h['set-cookie'] = sc.map((c) => c.replace(`${COOKIE}=`, `${LOOPBACK_COOKIE}=`).replace(/;\s*Secure/i, ''))
+      },
+    })
+    await tap.listening
+    origin = `http://127.0.0.1:${tap.port()}`
+    this.loopback = { url: origin, tap }
+    return this.loopback
+  }
+
   /** A HOME with an empty NSS store: the control that proves trust is doing the work. */
   untrustedHome(): string {
     return makeHome(path.join(this.root, `home-untrusted-${randomBytes(3).toString('hex')}`), null)
@@ -455,6 +524,7 @@ export class Stack {
     await this.caddy?.stop().catch(() => {})
     await this.apiTap?.close().catch(() => {})
     await this.previewTap?.close().catch(() => {})
+    await this.loopback?.tap.close().catch(() => {})
     await this.stopDrydock().catch(() => {})
     if (process.env.DRYDOCK_BROWSER_KEEP) {
       console.error(`kept ${this.root}`)
