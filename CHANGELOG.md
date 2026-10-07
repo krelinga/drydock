@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.4.2](https://github.com/krelinga/drydock/compare/v0.4.1...v0.4.2) (2026-10-07)
+
+
+### Bug Fixes
+
+* bound identity checks, fix the credential volume's owner, and let an expired access token refresh ([#61](https://github.com/krelinga/drydock/issues/61)) ([ce7dcef](https://github.com/krelinga/drydock/commit/ce7dcef88d9130b93470b98ab93d0aeaf48bf077))
+* mount each workspace's broker socket directory so a restart does not strand it ([#59](https://github.com/krelinga/drydock/issues/59)) ([2f4cf85](https://github.com/krelinga/drydock/commit/2f4cf85812908555fe4c83ac77be3fca66088180))
+* never leave the old binary running after a refused key, and pin the docs to a real release ([#62](https://github.com/krelinga/drydock/issues/62)) ([4c313b0](https://github.com/krelinga/drydock/commit/4c313b09cfc14cea60408d0be08e4ac4cea738e4))
+* redact every supervisor log line and drop a removed repository's grants ([#56](https://github.com/krelinga/drydock/issues/56)) ([65a13ce](https://github.com/krelinga/drydock/commit/65a13ceb9c45bd353817de019e27325f9ffb8ab5))
+* require operator approval before a dev container config reaches the host ([#58](https://github.com/krelinga/drydock/issues/58)) ([cddbab3](https://github.com/krelinga/drydock/commit/cddbab3c40d31cc0584e227a9ae9c88bf66e8af6))
+* settle in-flight actions after a resync and refuse a secret create that would overwrite ([#60](https://github.com/krelinga/drydock/issues/60)) ([c6d117e](https://github.com/krelinga/drydock/commit/c6d117ee5e6e1b566b696a03ac13990071ab6091))
+
 ## [0.4.1](https://github.com/krelinga/drydock/compare/v0.4.0...v0.4.1) (2026-10-06)
 
 
