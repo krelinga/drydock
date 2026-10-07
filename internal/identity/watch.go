@@ -50,6 +50,13 @@ const (
 )
 
 // Live reports whether a state is a login on the volume, as opposed to none.
+//
+// Expired is live. The verdicts are dated by the credential file's
+// expiresAt, which is the access token's expiry: the refresh token beside
+// it is what keeps the login alive, and Claude Code renews an expired access
+// token from it by itself (Spike 00). A login whose refresh token is dead is
+// not expired but blanked — Claude Code tombstones the file when the server
+// rejects a refresh.
 func (s State) Live() bool { return s == OK || s == Expiring || s == Expired }
 
 func stateOf(s classify.IdentityState) State {
@@ -80,6 +87,22 @@ const (
 
 // DefaultInterval is §7.3's six hours.
 const DefaultInterval = 6 * time.Hour
+
+// DefaultTimeout bounds each read a check makes — the credential file, and
+// `auth status`. Either is a container that should be done in seconds; one
+// that is not was made to hang (a workspace can replace the file with a FIFO,
+// since every workspace mounts the volume read-write) or the daemon has
+// stopped answering. Configuration: config.IdentityCheckTimeout.
+const DefaultTimeout = 2 * time.Minute
+
+// DefaultBuildTimeout bounds the Claude image's first build, which needs the
+// network: separate from the reads', so a slow first build is not a hung
+// read and a hung read is not given a build's minutes.
+const DefaultBuildTimeout = 15 * time.Minute
+
+// sweepTimeout bounds removing a cut-off read's helper. It runs even when the
+// check's own context has ended — at shutdown above all — so it has its own.
+const sweepTimeout = 30 * time.Second
 
 // CheckError is the last check's failure, in Drydock's words.
 type CheckError struct {
@@ -113,6 +136,10 @@ type Watch struct {
 	// Window is the expiring threshold (configuration, §7.3).
 	Window   time.Duration
 	Interval time.Duration
+	// Timeout bounds each read (DefaultTimeout when zero); BuildTimeout the
+	// Source's Prepare (DefaultBuildTimeout). Both run on Clock.
+	Timeout      time.Duration
+	BuildTimeout time.Duration
 	// Logf is the service log. It receives Drydock's sentence and a detail
 	// that carries no input bytes.
 	Logf func(string, ...any)
@@ -126,11 +153,56 @@ type Watch struct {
 	// login is when a handshake (§7.2) just signed the volume in, consumed
 	// by the next check that finds a live login. Set by LoggedIn.
 	login *time.Time
+	// swept: the boot sweep of helpers an earlier process left has run. It
+	// runs inside the first check, under running, so it can never remove a
+	// helper of a check in flight.
+	swept bool
+
+	// base is what Trigger's checks run under; Shutdown cancels it and waits
+	// for them, so none outlives the database it writes to.
+	once     sync.Once
+	base     context.Context
+	stop     context.CancelFunc
+	triggers sync.WaitGroup
 }
 
-// Trigger starts a check in the background and returns at once.
+func (w *Watch) init() {
+	w.once.Do(func() { w.base, w.stop = context.WithCancel(context.Background()) })
+}
+
+// Trigger starts a check in the background and returns at once. It runs
+// under the watch's own context, which Shutdown ends.
 func (w *Watch) Trigger() {
-	go w.Check(context.Background())
+	w.init()
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.base.Err() != nil {
+		return
+	}
+	w.triggers.Add(1)
+	go func() {
+		defer w.triggers.Done()
+		w.Check(w.base)
+	}()
+}
+
+// Shutdown ends the checks Trigger started and waits up to wait for them —
+// each removes what it was running first — so none writes to a closed
+// database. Run's checks end with Run's context; a caller's Check with its.
+func (w *Watch) Shutdown(wait time.Duration) {
+	w.init()
+	w.mu.Lock()
+	w.stop()
+	w.mu.Unlock()
+	done := make(chan struct{})
+	go func() {
+		w.triggers.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(wait):
+	}
 }
 
 // LoggedIn is the login handshake telling the watch it just signed the volume
@@ -186,6 +258,12 @@ func (w *Watch) Run(ctx context.Context) {
 
 // Check runs one check, joining one already running. It returns the stored
 // view afterwards and the check's failure, if it failed.
+//
+// Joining is safe because a check always ends: each read is bounded by
+// Timeout and the image's build by BuildTimeout, both on Clock, and a read cut
+// off is followed by a sweep with its own bound. So a workspace that turns the
+// credential file into something that never ends costs one failed check —
+// reported, with the stored state kept — and never the checks after it.
 func (w *Watch) Check(ctx context.Context) (View, error) {
 	w.mu.Lock()
 	if w.running {
@@ -199,6 +277,8 @@ func (w *Watch) Check(ctx context.Context) (View, error) {
 		return w.Read(ctx)
 	}
 	w.running, w.done = true, make(chan struct{})
+	boot := !w.swept
+	w.swept = true
 	w.mu.Unlock()
 	defer func() {
 		w.mu.Lock()
@@ -207,8 +287,16 @@ func (w *Watch) Check(ctx context.Context) (View, error) {
 		w.mu.Unlock()
 	}()
 
+	if boot {
+		// Helpers an earlier process left: killed mid-read, or a read it
+		// cut off and could not clean up after.
+		w.sweep(ctx, "left by an earlier process")
+	}
 	id, err := w.read(ctx)
 	if err != nil {
+		// Whatever the read failed on, a helper may be left: a cut-off
+		// `docker run` client does not take its container with it.
+		w.sweep(ctx, "after a failed read")
 		if ctx.Err() != nil {
 			return View{}, ctx.Err()
 		}
@@ -217,9 +305,55 @@ func (w *Watch) Check(ctx context.Context) (View, error) {
 	return w.store(ctx, id)
 }
 
+// sweep removes the Source's helpers, if it leaves any, bounded on its own
+// even when ctx has ended — a check cut off by shutdown still cleans up.
+func (w *Watch) sweep(ctx context.Context, why string) {
+	s, ok := w.Source.(Sweeper)
+	if !ok {
+		return
+	}
+	sctx, cancel := sys.WithTimeout(context.WithoutCancel(ctx), w.Clock, sweepTimeout)
+	defer cancel()
+	n, err := s.Sweep(sctx)
+	switch {
+	case err != nil:
+		w.logf("drydock: identity: removing helper containers %s: %v", why, err)
+	case n > 0:
+		w.logf("drydock: identity: removed %d helper container(s) %s", n, why)
+	}
+}
+
+func (w *Watch) logf(f string, a ...any) {
+	if w.Logf != nil {
+		w.Logf(f, a...)
+	}
+}
+
+func durOr(d, def time.Duration) time.Duration {
+	if d > 0 {
+		return d
+	}
+	return def
+}
+
+// bounded runs one step of a check under its own timeout on the injected
+// clock. A step its timeout cut off is a ProblemTimeout, whatever error the
+// cut-off produced; one that ended because ctx did is ctx's.
+func bounded[T any](ctx context.Context, w *Watch, d time.Duration, what string, f func(context.Context) (T, error)) (T, error) {
+	tctx, cancel := sys.WithTimeout(ctx, w.Clock, d)
+	defer cancel()
+	v, err := f(tctx)
+	if err != nil && sys.TimedOut(tctx) && ctx.Err() == nil {
+		var zero T
+		return zero, &ReadError{Problem: ProblemTimeout, Detail: fmt.Sprintf("%s did not finish within %s", what, d)}
+	}
+	return v, err
+}
+
 // read is the two reads and the classifier, in the classifier's order.
 func (w *Watch) read(ctx context.Context) (classify.Identity, error) {
-	creds, err := w.Source.Credentials(ctx)
+	timeout := durOr(w.Timeout, DefaultTimeout)
+	creds, err := bounded(ctx, w, timeout, "reading the credential file", w.Source.Credentials)
 	if err != nil {
 		return classify.Identity{}, err
 	}
@@ -229,10 +363,25 @@ func (w *Watch) read(ctx context.Context) (classify.Identity, error) {
 		// Read even when the file looks blanked: the classifier decides,
 		// and it decides blanked without this — so a failure here is
 		// passed on as nil bytes, which can only matter for a live file.
-		status, statusErr = w.Source.AuthStatus(ctx)
+		if p, ok := w.Source.(Preparer); ok {
+			_, statusErr = bounded(ctx, w, durOr(w.BuildTimeout, DefaultBuildTimeout), "building the Claude image",
+				func(c context.Context) (struct{}, error) { return struct{}{}, p.Prepare(c) })
+			var re *ReadError
+			if errors.As(statusErr, &re) && re.Problem == ProblemTimeout {
+				// A build that ran out of time is the image's problem,
+				// not a hung read.
+				re.Problem = ProblemImage
+			}
+		}
+		if statusErr == nil {
+			status, statusErr = bounded(ctx, w, timeout, "claude auth status", w.Source.AuthStatus)
+		}
 		if statusErr != nil {
 			status = nil
 		}
+	}
+	if ctx.Err() != nil {
+		return classify.Identity{}, ctx.Err()
 	}
 	id, err := classify.ClassifyIdentityWithin(status, creds, w.Clock.Now(), w.Window)
 	if err != nil {
@@ -288,6 +437,8 @@ func sentence(p Problem) string {
 		return "Could not check the Claude login: claude auth status did not give a usable answer." + kept
 	case ProblemDisagree:
 		return "Could not check the Claude login: the credential file holds a login that Claude Code itself reports as signed out." + kept
+	case ProblemTimeout:
+		return "Could not check the Claude login: reading the shared volume did not finish in the time allowed, so it was stopped. Docker may not be answering, or something in a workspace replaced the credential file with one that cannot be read to its end." + kept
 	case ProblemForeign:
 		return "Could not check the Claude login: a Docker volume with the shared volume's name exists, but this Drydock did not make it, so no workspace mounts it and it is not read." + kept
 	}
@@ -301,9 +452,7 @@ func (w *Watch) fail(ctx context.Context, err error) (View, error) {
 	}
 	now := w.Clock.Now().UTC()
 	ce := &CheckError{At: now, Problem: re.Problem, Message: sentence(re.Problem)}
-	if w.Logf != nil {
-		w.Logf("drydock: identity: %s (%s)", ce.Message, re.Detail)
-	}
+	w.logf("drydock: identity: %s (%s)", ce.Message, re.Detail)
 	// §7.3: keep the state, update last_checked_at. No row yet means there
 	// is no state to keep, and none is invented.
 	if _, dbErr := w.DB.ExecContext(ctx, `UPDATE claude_identity SET last_checked_at = ? WHERE id = 1`, ts(now)); dbErr != nil {
@@ -407,7 +556,7 @@ func (w *Watch) store(ctx context.Context, id classify.Identity) (View, error) {
 
 func levelOf(s State) events.Level {
 	switch s {
-	case Blanked, Expired:
+	case Blanked:
 		return events.Error
 	case Expiring:
 		return events.Warn
@@ -424,7 +573,10 @@ func message(s State, id classify.Identity) string {
 	case Absent:
 		return "No one has signed in to Claude yet."
 	case Expired:
-		return "The Claude login has expired. Sign in again."
+		// The access token's expiry, not the login's: the refresh token
+		// beside it is live (a dead one is Blanked), and the next Claude
+		// Code to use the volume renews it (Spike 00). Not a fault.
+		return "Claude is signed in. The access token on the shared volume has lapsed; the next session server to start renews it."
 	case Expiring:
 		return "The Claude login expires " + id.ExpiresAt.UTC().Format("2006-01-02 15:04 MST") + ". Sign in again before then."
 	}

@@ -20,7 +20,6 @@ import (
 	"github.com/krelinga/drydock/internal/classify"
 	"github.com/krelinga/drydock/internal/claudetest"
 	"github.com/krelinga/drydock/internal/config"
-	"github.com/krelinga/drydock/internal/container"
 	"github.com/krelinga/drydock/internal/events"
 	"github.com/krelinga/drydock/internal/login"
 	"github.com/krelinga/drydock/internal/store"
@@ -64,8 +63,8 @@ func fakeInContainer(t *testing.T, accept string) ([]string, *claudetest.Fake) {
 
 func dockerLauncher(p, vol string, extra []string) login.DockerLauncher {
 	run := subproc.Exec{}
-	return login.DockerLauncher{Run: run, Volumes: container.Manager{Run: run, LabelPrefix: p},
-		Image: pinnedImage(config.DefaultCleanupImage), PrepImage: config.DefaultCleanupImage,
+	return login.DockerLauncher{Run: run, Volumes: manager(p),
+		Image:  pinnedImage(config.DefaultCleanupImage),
 		Volume: vol, LabelPrefix: p, UID: os.Getuid(), GID: os.Getgid(),
 		Entrypoint: "/opt/fake/claude", Extra: extra}
 }
@@ -364,7 +363,7 @@ func TestLoginManagerAgainstRealDocker(t *testing.T) {
 	// A volume another uid owns: refused, and nothing written.
 	other := vol + ".other"
 	t.Cleanup(func() { exec.Command("docker", "volume", "rm", "-f", other).Run() })
-	if _, err := (container.Manager{Run: subproc.Exec{}, LabelPrefix: p}).EnsureClaudeVolume(ctx, other); err != nil {
+	if _, err := (manager(p)).EnsureClaudeVolume(ctx, other); err != nil {
 		t.Fatal(err)
 	}
 	docker(t, "run", "--rm", "--network", "none", "--mount", "type=volume,source="+other+",target=/v",

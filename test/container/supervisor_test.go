@@ -84,7 +84,7 @@ func TestSessionServerInARealContainer(t *testing.T) {
 	db.ExecContext(ctx, `INSERT INTO repository (id, installation_id, full_name, default_branch) VALUES (7, 1, 'krelinga/repo', 'main')`)
 	db.ExecContext(ctx, `INSERT INTO workspace (id, repository_id, host_path, branch, state) VALUES (?, 7, ?, 'main', 'running')`, ws, folder)
 	log := events.New(db.DB, sys.RealClock{})
-	containers := container.Manager{Run: subproc.Exec{}, LabelPrefix: p}
+	containers := manager(p)
 	manager := func() *supervisor.Manager {
 		return &supervisor.Manager{DB: db.DB, Events: log, Env: sys.Env{Clock: sys.RealClock{}, Random: sys.CryptoRandom{}},
 			Runtime: supervisor.ContainerRuntime{Containers: containers, PTY: subproc.Exec{}},

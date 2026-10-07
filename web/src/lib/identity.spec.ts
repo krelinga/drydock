@@ -20,7 +20,6 @@ describe('the identity banner', () => {
   const cases: Array<[IdentityState, string, 'warn' | 'bad', boolean]> = [
     ['blanked', 'Signed out. Sign in again.', 'bad', false],
     ['absent', 'No one has signed in yet.', 'warn', false],
-    ['expired', 'The Claude login has expired. Sign in again.', 'bad', false],
   ]
   it.each(cases)('%s says %j', (state, title, tone, dismissible) => {
     const b = identityBanner(id(state), NOW)
@@ -52,8 +51,12 @@ describe('the identity banner', () => {
     expect(b.tone).toBe('warn')
   })
 
-  it('ok and not-loaded say nothing', () => {
+  it('ok, expired and not-loaded say nothing', () => {
     expect(identityBanner(id('ok'), NOW)).toBeNull()
+    // Expired is the access token's lapse, renewed by the next server from
+    // the live refresh token (design §7.3): not a fault, so no banner and
+    // no Sign in. The control is blanked, above, which has both.
+    expect(identityBanner(id('expired', { expiresAt: '2026-10-05T08:00:00Z' }), NOW)).toBeNull()
     expect(identityBanner(null, NOW)).toBeNull()
   })
 
@@ -78,7 +81,7 @@ describe('the card overlay', () => {
 
   it('a dot while expiring, the waiting line once a session cannot run, nothing when ok', () => {
     expect(cardOverlay(id('expiring'), 'running')?.kind).toBe('dot')
-    expect(cardOverlay(id('expired'), 'running')?.kind).toBe('waiting')
+    expect(cardOverlay(id('expired'), 'running')).toBeNull()
     expect(cardOverlay(id('absent'), 'running')?.kind).toBe('waiting')
     expect(cardOverlay(id('ok'), 'running')).toBeNull()
     expect(cardOverlay(null, 'running')).toBeNull()

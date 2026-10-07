@@ -69,3 +69,21 @@ func (c *FakeClock) Waiting() int {
 	defer c.mu.Unlock()
 	return len(c.waiters)
 }
+
+// Timer is After with a stop: the returned func removes the timer if it has
+// not fired, so a deadline that was not needed (sys.WithTimeout's, once its
+// work is done) is not left counted by Waiting.
+func (c *FakeClock) Timer(d time.Duration) (<-chan time.Time, func()) {
+	ch := c.After(d)
+	return ch, func() {
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		kept := c.waiters[:0]
+		for _, w := range c.waiters {
+			if (<-chan time.Time)(w.ch) != ch {
+				kept = append(kept, w)
+			}
+		}
+		c.waiters = kept
+	}
+}

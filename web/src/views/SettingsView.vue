@@ -180,7 +180,7 @@ async function signOut(everywhere: boolean): Promise<void> {
           <dt>Account</dt><dd data-test="claude-account">{{ id.accountEmail }}</dd>
         </template>
         <template v-if="id.expiresAt">
-          <dt>{{ id.state === 'expired' ? 'Expired' : 'Expires' }}</dt>
+          <dt>{{ id.state === 'expired' ? 'Access token lapsed' : 'Expires' }}</dt>
           <dd data-test="claude-expires">{{ relativeTime(id.expiresAt) }}</dd>
         </template>
         <template v-if="id.loggedInAt">

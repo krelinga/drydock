@@ -29,6 +29,21 @@ type Source interface {
 	AuthStatus(ctx context.Context) ([]byte, error)
 }
 
+// Preparer is a Source with slow work to do before AuthStatus — the Claude
+// image's first build, which needs the network and can take minutes. The
+// watch gives it its own, longer bound, so the reads' bound can be short.
+type Preparer interface {
+	Prepare(ctx context.Context) error
+}
+
+// Sweeper is a Source that leaves something behind when a read is cut off:
+// a helper container a killed `docker run` client does not take with it
+// (measured: the container outlives its client). The watch sweeps after any
+// read that failed, and once before its first check.
+type Sweeper interface {
+	Sweep(ctx context.Context) (int, error)
+}
+
 // ImageEnsurer is internal/claudeimage's Builder.
 type ImageEnsurer interface {
 	Ensure(ctx context.Context) (string, error)
@@ -46,6 +61,7 @@ const (
 	ProblemAuthStatus  Problem = "auth_status"    // claude auth status did not give a usable answer
 	ProblemDisagree    Problem = "disagree"       // the file says live, Claude Code says signed out
 	ProblemForeign     Problem = "foreign_volume" // a volume of the name exists, and this Drydock did not make it
+	ProblemTimeout     Problem = "timeout"        // a read did not finish in the time allowed
 	ProblemUnknown     Problem = "unknown"
 )
 
@@ -82,14 +98,35 @@ const maxRead = 64 << 10
 // credentialsScript is the one shell line the file read runs, inside the
 // helper. It is a constant: nothing from configuration or the volume is
 // interpolated. Exit 3 is "no file", which is the only way absent is ever
-// reported; any other failure of cat is an error, never absent.
-const credentialsScript = `f=` + Mount + `/.credentials.json; if [ -e "$f" ] || [ -L "$f" ]; then exec cat -- "$f"; fi; exit 3`
+// reported; any other failure is an error, never absent.
+//
+// Every workspace mounts the volume read-write, so what is at the path is
+// whatever any of them put there. Only a regular file is read, and only so
+// much of it: a symlink is refused before anything follows it (one to
+// /dev/zero never ends), anything else that is not a regular file — a FIFO
+// blocks its reader forever — is refused without being opened, and head reads
+// one byte past the cap, so an oversized file is refused by the caller rather
+// than read to its end. A file swapped for a FIFO between the test and the
+// read still blocks; the watch's timeout is what bounds that, and these tests
+// only make the common cases fail fast.
+const credentialsScript = `f=` + Mount + `/.credentials.json; ` +
+	`if [ -L "$f" ]; then exit 4; fi; ` +
+	`if [ ! -e "$f" ]; then exit 3; fi; ` +
+	`if [ ! -f "$f" ]; then exit 4; fi; ` +
+	`exec head -c ` + maxReadPlusOne + ` -- "$f"`
 
-const exitAbsent = 3
+// maxReadPlusOne is maxRead+1 as the script's text.
+const maxReadPlusOne = "65537"
+
+const (
+	exitAbsent     = 3
+	exitNotRegular = 4
+)
 
 var (
-	imageIDPattern = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
-	pinnedPattern  = regexp.MustCompile(`^[a-z0-9][a-z0-9./_:-]*@sha256:[0-9a-f]{64}$`)
+	imageIDPattern     = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
+	containerIDPattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
+	pinnedPattern      = regexp.MustCompile(`^[a-z0-9][a-z0-9./_:-]*@sha256:[0-9a-f]{64}$`)
 )
 
 // DockerSource reads the volume through a short-lived container.
@@ -150,8 +187,54 @@ func (d DockerSource) Credentials(ctx context.Context) ([]byte, error) {
 		return out, nil
 	case exitAbsent:
 		return nil, nil
+	case exitNotRegular:
+		return nil, &ReadError{Problem: ProblemCredentials, Detail: "the credential file is not a regular file (a symlink, a FIFO, a device or a directory), so it was not read"}
 	}
 	return nil, &ReadError{Problem: ProblemCredentials, Detail: fmt.Sprintf("reading the credential file exited %d", code)}
+}
+
+// Prepare implements Preparer: the Claude image, built if this host does not
+// have it.
+func (d DockerSource) Prepare(ctx context.Context) error {
+	if _, err := d.Image.Ensure(ctx); err != nil {
+		return &ReadError{Problem: ProblemImage, Detail: err.Error()}
+	}
+	return nil
+}
+
+// Sweep implements Sweeper: every container carrying this prefix's identity
+// label, removed by full id. Safe only because the watch runs one check at a
+// time and sweeps inside it: there is never a helper of another check's to
+// remove.
+func (d DockerSource) Sweep(ctx context.Context) (int, error) {
+	if d.LabelPrefix == "" {
+		return 0, errors.New("identity: no label prefix")
+	}
+	out, code, err := d.run(ctx, []string{"ps", "--all", "--quiet", "--no-trunc",
+		"--filter", "label=" + d.LabelPrefix + "." + LabelIdentity})
+	if err != nil {
+		return 0, err
+	}
+	if code != 0 {
+		return 0, &ReadError{Problem: ProblemDocker, Detail: fmt.Sprintf("docker ps exited %d", code)}
+	}
+	ids := strings.Fields(string(out))
+	if len(ids) == 0 {
+		return 0, nil
+	}
+	for _, id := range ids {
+		if !containerIDPattern.MatchString(id) {
+			return 0, &ReadError{Problem: ProblemDocker, Detail: "docker ps printed something that is not a container id"}
+		}
+	}
+	_, code, err = d.run(ctx, append([]string{"rm", "--force", "--"}, ids...))
+	if err != nil {
+		return 0, err
+	}
+	if code != 0 {
+		return 0, &ReadError{Problem: ProblemDocker, Detail: fmt.Sprintf("docker rm exited %d", code)}
+	}
+	return len(ids), nil
 }
 
 // AuthStatus implements Source. `auth status` exits 1 when it reports
@@ -263,11 +346,13 @@ func (d DockerSource) run(ctx context.Context, args []string) ([]byte, int, erro
 	var out bytes.Buffer
 	lim := &limited{buf: &out, max: maxRead}
 	res := d.Run.Run(ctx, subproc.Cmd{Name: "docker", Args: args, Stdout: lim, Stderr: discard{}})
-	if res.Err != nil {
-		return nil, 0, &ReadError{Problem: ProblemDocker, Detail: "docker could not be run: " + res.Err.Error()}
-	}
+	// Over the cap first: the copy stopping is what makes Run report an
+	// error, and the error is the size, not docker.
 	if lim.over {
 		return nil, 0, &ReadError{Problem: ProblemCredentials, Detail: fmt.Sprintf("a read returned more than %d bytes", maxRead)}
+	}
+	if res.Err != nil {
+		return nil, 0, &ReadError{Problem: ProblemDocker, Detail: "docker could not be run: " + res.Err.Error()}
 	}
 	return out.Bytes(), res.ExitCode, nil
 }
@@ -278,10 +363,15 @@ type limited struct {
 	over bool
 }
 
+// errTooLong stops the copy from the child's stdout: os/exec then closes the
+// pipe, so a child writing without end gets EPIPE rather than being read
+// forever into nothing.
+var errTooLong = errors.New("identity: output over the cap")
+
 func (l *limited) Write(p []byte) (int, error) {
-	if l.buf.Len()+len(p) > l.max {
+	if l.over || l.buf.Len()+len(p) > l.max {
 		l.over = true
-		return len(p), nil
+		return 0, errTooLong
 	}
 	return l.buf.Write(p)
 }

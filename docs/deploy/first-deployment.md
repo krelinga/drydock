@@ -1018,8 +1018,10 @@ account.
   sudo docker ps -a --filter label=drydock.login                           # empty
   ```
   The login runs as the `drydock` user, which is the user every workspace container runs as, so the
-  credential it writes is theirs to read. If the volume belongs to another user, the sign-in stops
-  before anything is written and says which two users.
+  credential it writes is theirs to read. Drydock gives the volume to that user when it first makes
+  it, and leaves a `.drydock-volume` directory in it so no image can change that later. If the
+  volume holds files that belong to another user, the sign-in stops before anything is written and
+  says which two users (see [11](#11-troubleshooting)).
 - [ ] **If the code was right and it does not say *Signed in.*:** the success match is the one
   part of the handshake measured from Claude Code's binary rather than from a real login (Spike 01).
   Note what the page said, run `journalctl -u drydock -b -o cat | grep login`, and report it. The
@@ -1240,4 +1242,8 @@ Drydock pulled: `sudo docker image ls`, and remove what you do not want.
 | `git push` in a container: `GitHub access unavailable …` | The workspace is not *Running* in Drydock (its socket is closed), or GitHub refused | Start it in the UI. A container started by hand with `docker start` gets no GitHub access, by design. |
 | Pushing a workflow file is rejected | The App lacks `workflows: write` | Add the permission on the App, then accept the new permissions on the installation |
 | Secret check prints `drydock: secrets unavailable: …`, exit 69 | Broker unreachable, or a stored secret no longer decrypts (a replaced master key) | **Secrets** lists any *undeliverable* secret. Restore the master key, or store those values again. |
+| Workspace fails at *preparing credentials*: *The shared Claude credential volume drydock-claude-config holds files that belong to uid N, not to Drydock's uid…*, or the sign-in says *…holds files that belong to uid N, and Drydock runs as uid M* | The volume was written by another user: made by hand, or by an earlier Drydock whose first workspace's remote user was not `vscode`. An empty volume is fixed by itself; one with files in it is not, because re-owning a login is a decision Drydock does not make for you | Re-own it to Drydock's user, keeping whatever login is in it: `sudo docker run --rm -v drydock-claude-config:/v busybox chown -R "$(id -u drydock):$(id -g drydock)" /v`. Then **Start** or **Rebuild** the workspace, or sign in again. |
+| Workspace fails at *starting the container*, and the journal's `workspace <id>` lines say `drydock feature: /home/vscode/.claude belongs to uid N (Drydock's), but the remote user … is uid M` | The repository's dev container runs as a user the dev container CLI did not move to Drydock's uid: its `devcontainer.json` sets `"updateRemoteUserUID": false`, or the image already has another user at Drydock's uid. That container could not read the shared login, so it alone is refused; every other workspace is unaffected | Remove `"updateRemoteUserUID": false` from the repository's configuration, or use an image without a user at Drydock's uid (`id -u drydock`). |
+| Settings: *Signed in. The access token has lapsed; the next session server to start renews it.* | Normal. The file records when the short-lived access token runs out, and Claude Code renews it from the stored login whenever it next runs | Nothing. Session servers still start. If the login itself has ended, the next start turns this into *Signed out. Sign in again.* |
+| Banner: *Could not check the Claude login: reading the shared volume did not finish in the time allowed…* | Docker stopped answering, or something in a workspace replaced `.credentials.json` on the shared volume with something that cannot be read to its end. The last known state is kept, and the next check runs as usual | `sudo docker ps` answers? Then look inside the volume: `sudo docker run --rm -v drydock-claude-config:/v:ro busybox ls -la /v`. A `.credentials.json` that is not a plain file is not Claude Code's: remove it and sign in again. |
 | A delete is stuck in *Deleting…* at a sub-step | A container still holds the mount, or the cleanup image cannot be pulled | The sub-step's detail. Press **Delete again**. A restart also resumes it. |

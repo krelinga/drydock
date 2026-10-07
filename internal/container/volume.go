@@ -43,8 +43,10 @@ var (
 
 // EnsureClaudeVolume makes the shared credential volume if it is absent —
 // local driver, labelled with this prefix — and checks the one it finds or
-// makes: refused if foreign, or not local. created says whether this call
-// made it. Safe to run concurrently and repeatedly: `docker volume create` of
+// makes: refused if foreign, or not local. Then it gives an empty volume to
+// Drydock's uid and marks it, so no image's directory ever decides its owner
+// (volumeowner.go), and refuses one another uid has written to
+// (ErrVolumeOwner). created says whether this call made it. Safe to run concurrently and repeatedly: `docker volume create` of
 // a name that exists is a no-op, and the check after it reads what is there.
 //
 // The volume is never removed by Drydock (Remove leaves named volumes): it
@@ -68,7 +70,10 @@ func (m Manager) EnsureClaudeVolume(ctx context.Context, name string) (created b
 		}
 		created = true
 	}
-	return created, m.checkClaudeVolume(ctx, name)
+	if err := m.checkClaudeVolume(ctx, name); err != nil {
+		return created, err
+	}
+	return created, m.ensureOwner(ctx, name)
 }
 
 // volumeExists lists volume names — one per line, no table — and compares

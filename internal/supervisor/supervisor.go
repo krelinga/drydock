@@ -21,9 +21,12 @@
 //     session holds the folder for minutes, and a signal to the local
 //     `devcontainer exec` does not reach the server at all (measured).
 //   - **A signed-out fleet is not a crash.** When the stored identity says
-//     no one can sign in a server — blanked, absent or expired (§7.3) — no
-//     server is started and no restart is spent; the supervisor waits in
-//     awaiting_login and starts again when the identity changes.
+//     there is no login on the volume — blanked or absent (§7.3) — no server
+//     is started and no restart is spent; the supervisor waits in
+//     awaiting_login and starts again when the identity changes. Expired is
+//     not one of them: it dates the access token, which the server renews
+//     from the refresh token beside it as it starts (Spike 00), so it is
+//     the one thing that can clear it.
 //   - **Sessions are observed, not owned.** Ids come only from OSC 8
 //     hyperlink targets (classify.ClassifyDiscovery), never from visible
 //     text the model might have printed.
@@ -74,7 +77,7 @@ const (
 	ReasonBackoff          Reason = "backoff"           // starting: restarting after an exit, after a pause
 	ReasonWaitRegistration Reason = "wait_registration" // the previous server's folder registration
 	ReasonNoOrganization   Reason = "no_organization"   // refusal: account record missing
-	ReasonSignedOut        Reason = "signed_out"        // the stored identity is blanked, absent or expired
+	ReasonSignedOut        Reason = "signed_out"        // the stored identity is blanked or absent (never expired: see signedOut)
 	ReasonNotTrusted       Reason = "not_trusted"       // refusal: the trust record is missing
 	ReasonBadCommandLine   Reason = "bad_command_line"  // refusal: Drydock's argv is wrong
 	ReasonHangRemoteDialog Reason = "hang_remote_dialog"
@@ -180,8 +183,8 @@ type Manager struct {
 	// Identity reports the stored Claude identity verdict (§7.3) and
 	// whether there is one: the server wires identity.Watch.Read. Nil reads
 	// claude_identity directly, the same row. Unknown
-	// never blocks a start: only a verdict that no one can sign a server
-	// in — blanked, absent, expired — does.
+	// never blocks a start: only a verdict that there is no login on the
+	// volume — blanked or absent — does. Expired does not: see signedOut.
 	Identity func(ctx context.Context) (state string, known bool)
 	// PidFile overrides container.RemoteControlPidFile, for a test whose
 	// "container" is the host.
@@ -501,9 +504,22 @@ func (m *Manager) identity(ctx context.Context) (string, bool) {
 }
 
 // signedOut: a verdict under which no server can run until someone signs in.
+//
+// Blanked and absent only. Expired means the credential file's expiresAt has
+// passed, and that dates the *access* token: the refresh token beside it is
+// live (a dead one is blanked — Claude Code tombstones the file on a refresh
+// the server rejects), and Claude Code renews an expired access token from
+// it on its own, under the volume's refresh lock (Spike 00, whose harness
+// seeds exactly that). The watch's own read is read-only and offline, so it
+// never refreshes; with every server parked on expired, nothing would, and
+// the fleet would wait for a full sign-in it does not need. So a server is
+// started under expired, and the one start renews the login for all of them.
+// If the refresh token is in fact dead, that start blanks the file, the next
+// check says blanked, and the refusal classifier and the restart budget
+// judge the start in between, as for any other exit.
 func signedOut(state string) bool {
 	switch identity.State(state) {
-	case identity.Blanked, identity.Absent, identity.Expired:
+	case identity.Blanked, identity.Absent:
 		return true
 	}
 	return false
@@ -515,8 +531,6 @@ func signedOutSentence(state string) string {
 		return "Claude was signed out on the shared volume, so no session server can run. Sign in again."
 	case "absent":
 		return "No one has signed in to Claude yet, so no session server can run."
-	case "expired":
-		return "The Claude login has expired, so no session server can run. Sign in again."
 	}
 	return "No session server can run until someone signs in to Claude."
 }

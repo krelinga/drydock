@@ -1,6 +1,6 @@
 {
   "id": "drydock",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "name": "Drydock",
   "description": "What a Drydock workspace needs inside its container: Claude Code at a pinned version, configured on Drydock's shared credential volume and checked fit for a headless Remote Control session; GitHub access through the per-workspace token broker (a git credential helper and a gh shim), the agent's commit identity, and the drydock/ branch guard; and the repository secrets granted to it, delivered before every command through CLAUDE_ENV_FILE.",
   "documentationURL": "https://github.com/krelinga/drydock/blob/main/docs/design/overall/drydock-design.md#11-the-devcontainer-feature",

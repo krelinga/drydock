@@ -18,7 +18,7 @@ func TestValidateRefusesABrokenIdentityWatch(t *testing.T) {
 		t.Fatalf("control: the defaults do not validate: %v", err)
 	}
 	if base.ClaudeVolume != "drydock-claude-config" || base.IdentityInterval != 6*time.Hour ||
-		base.IdentityExpiringWindow != 72*time.Hour {
+		base.IdentityExpiringWindow != 72*time.Hour || base.IdentityCheckTimeout != 2*time.Minute {
 		t.Errorf("defaults moved from the design's values (§6, §7.3): %q %s %s",
 			base.ClaudeVolume, base.IdentityInterval, base.IdentityExpiringWindow)
 	}
@@ -31,6 +31,8 @@ func TestValidateRefusesABrokenIdentityWatch(t *testing.T) {
 		"volume w/ comma": func(c *Config) { c.ClaudeVolume = "a,readonly=false" },
 		"zero window":     func(c *Config) { c.IdentityExpiringWindow = 0 },
 		"tiny interval":   func(c *Config) { c.IdentityInterval = time.Second },
+		"no check bound":  func(c *Config) { c.IdentityCheckTimeout = 0 },
+		"tiny check":      func(c *Config) { c.IdentityCheckTimeout = time.Second },
 	} {
 		c := base
 		mut(&c)

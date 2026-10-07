@@ -154,9 +154,11 @@ func (r *runState) resolveLockfile(w workspace.Workspace, configFile string) err
 // made if it is absent — local driver, labelled with this Drydock's prefix —
 // and checked either way. Every workspace mounts the same one at its
 // CLAUDE_CONFIG_DIR, so one login serves them all. It runs on every create,
-// start and rebuild and is a no-op once the volume is there; it never removes
-// or changes a volume, and refuses one this Drydock did not make or that is
-// not a plain local volume (container.EnsureClaudeVolume) — Claude Code's
+// start and rebuild and creates nothing once the volume is there; it never removes
+// a volume, gives an empty one to Drydock's uid and marks it so no image's
+// directory decides its owner, and refuses one this Drydock did not make,
+// that is not a plain local volume, or that another uid has written to
+// (container.EnsureClaudeVolume) — Claude Code's
 // refresh lock inside it needs mkdir to be atomic, which NFS and CIFS do not
 // give (Spike 00).
 func (r *runState) credentialVolume(ctx context.Context, _ workspace.Workspace) error {
@@ -169,6 +171,13 @@ func (r *runState) credentialVolume(ctx context.Context, _ workspace.Workspace) 
 	switch {
 	case errors.Is(err, container.ErrForeignVolume):
 		return workspace.Public(fmt.Sprintf("A Docker volume named %s exists but was not made by this Drydock, so it is not used as the shared Claude credential volume.", name), err)
+	case errors.Is(err, container.ErrVolumeOwner):
+		owner := "another uid"
+		var oe *container.VolumeOwnerError
+		if errors.As(err, &oe) {
+			owner = oe.OwnerName()
+		}
+		return workspace.Public(fmt.Sprintf("The shared Claude credential volume %s holds files that belong to %s, not to Drydock's uid, so no workspace could read a login written there. Drydock does not re-own a login on its own; see the deployment runbook.", name, owner), err)
 	case errors.Is(err, container.ErrVolumeNotLocal):
 		return workspace.Public(fmt.Sprintf("The shared Claude credential volume %s is not a plain local Docker volume. It must be: Claude Code's refresh lock is not safe on a network filesystem.", name), err)
 	case err != nil:

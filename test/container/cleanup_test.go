@@ -15,11 +15,9 @@ import (
 	"time"
 
 	"github.com/krelinga/drydock/internal/config"
-	"github.com/krelinga/drydock/internal/container"
 	"github.com/krelinga/drydock/internal/github/githubtest"
 	"github.com/krelinga/drydock/internal/provision"
 	"github.com/krelinga/drydock/internal/server"
-	"github.com/krelinga/drydock/internal/subproc"
 	"github.com/krelinga/drydock/internal/sys"
 )
 
@@ -198,7 +196,7 @@ func TestDeleteRemovesRootOwnedFiles(t *testing.T) {
 	os.WriteFile(sentinel, []byte("keep"), 0o600)
 	stray := docker(t, "run", "-d", "--label", p+".cleanup="+id, config.DefaultCleanupImage, "sleep", "600")
 	t.Cleanup(func() { exec.Command("docker", "rm", "-f", stray).Run() })
-	found, err := container.Manager{Run: subproc.Exec{}, LabelPrefix: p}.List(ctx)
+	found, err := manager(p).List(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}

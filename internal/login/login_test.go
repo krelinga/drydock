@@ -33,12 +33,22 @@ import (
 type recorder struct {
 	mu  sync.Mutex
 	ats []time.Time
+	// block makes LoggedIn wait for its context, as a check stuck behind a
+	// hung read would; ended gets that context's error.
+	block bool
+	ended chan error
 }
 
-func (r *recorder) LoggedIn(_ context.Context, at time.Time) error {
+func (r *recorder) LoggedIn(ctx context.Context, at time.Time) error {
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	r.ats = append(r.ats, at)
+	block := r.block
+	r.mu.Unlock()
+	if block {
+		<-ctx.Done()
+		r.ended <- ctx.Err()
+		return ctx.Err()
+	}
 	return nil
 }
 
@@ -623,5 +633,41 @@ func TestClassifierDecides(t *testing.T) {
 	}
 	if *aw.URL != want.AuthorizeURL {
 		t.Errorf("URL %q; want the classifier's %q", *aw.URL, want.AuthorizeURL)
+	}
+}
+
+// TestShutdownEndsThePostLoginCheck: the check a successful login asks the
+// watch for runs under the manager's own context, so a shutdown ends it
+// rather than leaving it running past the database it writes to (#37's
+// review: it ran on context.Background()). The control is that the check was
+// asked for at all, with the verdict's moment.
+func TestShutdownEndsThePostLoginCheck(t *testing.T) {
+	code := canary(t)
+	e := newEnv(t, accept(code), sys.RealClock{})
+	e.ids.block, e.ids.ended = true, make(chan error, 1)
+	ctx := context.Background()
+	v, err := e.m.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.next(t, phase(login.AwaitingCode))
+	if err := e.m.Submit(ctx, v.ID, []byte(code)); err != nil {
+		t.Fatal(err)
+	}
+	e.next(t, phase(login.Succeeded))
+	waitFor(t, func() bool { return len(e.ids.calls()) == 1 })
+
+	start := time.Now()
+	e.m.Shutdown(10 * time.Second)
+	if took := time.Since(start); took > 5*time.Second {
+		t.Errorf("Shutdown waited %v on the post-login check", took)
+	}
+	select {
+	case err := <-e.ids.ended:
+		if !errors.Is(err, context.Canceled) {
+			t.Errorf("the check ended with %v; want the shutdown's cancel", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the post-login check outlived the shutdown")
 	}
 }

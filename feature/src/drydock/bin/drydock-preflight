@@ -25,9 +25,13 @@
 #   * The volume is not on a network filesystem. Claude Code's refresh lock
 #     is a mkdir(2) lock in this directory, and NFS or CIFS do not give mkdir
 #     the atomicity it rests on (Spike 00).
-#   * The remote user — who runs this — is not root and owns the directory.
-#     Every container on the shared volume must run as the same user, or one
-#     cannot read the credential another wrote (mode 0600).
+#   * The remote user — who runs this — is not root, can reach the directory,
+#     and owns it. Drydock gives the volume to its own uid before any
+#     workspace mounts it, and the dev container CLI gives every remote user
+#     that uid (its updateRemoteUserUID, on by default); a remote user at any
+#     other uid could not read the credential the others share (mode 0600),
+#     so its container is refused here — that container alone — and the
+#     volume is left as it is (design §7.1, "Who owns it").
 #
 # Every failed check is reported, each on its own line naming what failed,
 # and then the command exits 1, which fails `devcontainer up`.
@@ -113,10 +117,14 @@ uid=$(id -u)
 user=$(id -un 2>/dev/null || echo "uid $uid")
 if [ "$uid" = 0 ]; then
 	fail "the dev container's remote user is root. Claude Code's sessions run as the remote user, and the shared credential volume belongs to the non-root user every workspace runs as (vscode in Drydock's own configuration); set remoteUser."
-elif [ -d "$want" ]; then
+elif [ ! -d "$want" ] || [ ! -x "$want" ]; then
+	# A parent the remote user cannot search (another user's 0750 home)
+	# hides the directory: report that, not a misleading owner.
+	fail "the remote user $user cannot reach $want, the shared credential volume's mount point. Every workspace's remote user must be able to use the shared Claude login (design §7.1)."
+else
 	owner=$(stat -c %u "$want")
 	if [ "$owner" != "$uid" ]; then
-		fail "$want belongs to uid $owner, but the remote user $user is uid $uid. Every container on the shared credential volume must run as the user it belongs to, or one cannot read the login another wrote."
+		fail "$want belongs to uid $owner (Drydock's), but the remote user $user is uid $uid, so it could not read the Claude login the other workspaces share. The dev container CLI gives the remote user Drydock's uid unless the configuration sets updateRemoteUserUID to false, or the image already has another user at that uid (design §7.1)."
 	elif [ ! -w "$want" ]; then
 		fail "$want is not writable by the remote user $user."
 	fi

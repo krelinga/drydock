@@ -25,6 +25,13 @@ case "$1 $2" in
     "$name" "$drv" "${label%%=*}" "${label#*=}" >"$d/$name.json"
   echo "$name" ;;
 "volume inspect") printf '[%s]\n' "$(cat "$d/$4.json")" ;;
+"run --rm")
+  # The owner helper: its answer is the test's, from owner-exit and
+  # owner-out beside the fake.
+  o=$(dirname "$0")
+  [ -e "$o/owner-out" ] && cat "$o/owner-out"
+  [ -e "$o/owner-exit" ] && exit "$(cat "$o/owner-exit")"
+  exit 0 ;;
 *) exit 64 ;;
 esac`
 
@@ -74,7 +81,7 @@ func creates(t *testing.T, dir string) [][]string {
 func TestEnsureClaudeVolumeCreatesOnce(t *testing.T) {
 	run, dir := fakes(t, map[string]string{"docker": fakeVolumes})
 	seedVolume(t, dir, "drydock-claude-config-old", `{"Name":"drydock-claude-config-old","Driver":"local","Labels":{"drydock.test.v.claude-config":"true"}}`)
-	m := Manager{Run: run, LabelPrefix: "drydock.test.v"}
+	m := Manager{Run: run, LabelPrefix: "drydock.test.v", CleanupImage: testCleanupImage, ClaudeUID: 1000, ClaudeGID: 1000}
 	ctx := context.Background()
 
 	created, err := m.EnsureClaudeVolume(ctx, "drydock-claude-config")
@@ -119,7 +126,7 @@ func TestEnsureClaudeVolumeRefusesForeignAndNetworkVolumes(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			run, dir := fakes(t, map[string]string{"docker": fakeVolumes})
 			seedVolume(t, dir, "v1", c.json)
-			created, err := Manager{Run: run, LabelPrefix: "drydock"}.EnsureClaudeVolume(context.Background(), "v1")
+			created, err := Manager{Run: run, LabelPrefix: "drydock", CleanupImage: testCleanupImage, ClaudeUID: 1000, ClaudeGID: 1000}.EnsureClaudeVolume(context.Background(), "v1")
 			if c.want == nil && err != nil {
 				t.Fatalf("refused: %v", err)
 			}
@@ -165,6 +172,91 @@ func TestArgsMountTheClaudeVolume(t *testing.T) {
 		s.ClaudeVolume = bad
 		if _, err := m.Args(s); err == nil {
 			t.Errorf("volume name %q accepted into --mount", bad)
+		}
+	}
+}
+
+// TestEnsureClaudeVolumeSetsItsOwner: after the volume is made and checked,
+// the owner helper runs over it — every time, since a workspace or a hand may
+// have emptied it — and its refusal (exit 4, the owner printed) is
+// ErrVolumeOwner naming both uids; any other failure is an error that is not
+// that one. The control is the helper exiting 0, which is no error. A foreign
+// or non-local volume is refused before any helper mounts it.
+func TestEnsureClaudeVolumeSetsItsOwner(t *testing.T) {
+	ctx := context.Background()
+	run, dir := fakes(t, map[string]string{"docker": fakeVolumes})
+	m := Manager{Run: run, LabelPrefix: "drydock", CleanupImage: testCleanupImage, ClaudeUID: 998, ClaudeGID: 997}
+	if _, err := m.EnsureClaudeVolume(ctx, "v1"); err != nil {
+		t.Fatalf("control: %v", err)
+	}
+	if n := strings.Count(dockerLog(t, dir), "\nrun\n"); n != 1 {
+		t.Fatalf("owner helper ran %d times; want once", n)
+	}
+
+	os.WriteFile(filepath.Join(dir, "owner-out"), []byte("1000\n"), 0o644)
+	os.WriteFile(filepath.Join(dir, "owner-exit"), []byte("4"), 0o644)
+	_, err := m.EnsureClaudeVolume(ctx, "v1")
+	var oe *VolumeOwnerError
+	if !errors.Is(err, ErrVolumeOwner) || !errors.As(err, &oe) || oe.OwnerName() != "uid 1000" || oe.UID != 998 {
+		t.Fatalf("a volume another uid wrote to: %v", err)
+	}
+	os.WriteFile(filepath.Join(dir, "owner-out"), []byte("--privileged\n"), 0o644)
+	if _, err := m.EnsureClaudeVolume(ctx, "v1"); !errors.As(err, &oe) || oe.OwnerName() != "another uid" {
+		t.Errorf("an owner that is not a uid: %v", err)
+	}
+	os.WriteFile(filepath.Join(dir, "owner-exit"), []byte("5"), 0o644)
+	if _, err := m.EnsureClaudeVolume(ctx, "v1"); err == nil || errors.Is(err, ErrVolumeOwner) {
+		t.Errorf("the helper failing: %v; want an error that is not ErrVolumeOwner", err)
+	}
+
+	// Foreign: refused before the helper mounts anything.
+	run, dir = fakes(t, map[string]string{"docker": fakeVolumes})
+	seedVolume(t, dir, "v2", `{"Name":"v2","Driver":"local","Labels":null}`)
+	m.Run = run
+	if _, err := m.EnsureClaudeVolume(ctx, "v2"); !errors.Is(err, ErrForeignVolume) {
+		t.Fatalf("foreign: %v", err)
+	}
+	if strings.Contains(dockerLog(t, dir), "\nrun\n") {
+		t.Error("the owner helper mounted a foreign volume")
+	}
+}
+
+func dockerLog(t *testing.T, dir string) string {
+	t.Helper()
+	b, _ := os.ReadFile(filepath.Join(dir, "docker.argv"))
+	return "\n" + string(b)
+}
+
+// TestOwnerArgs: the owner helper is root with exactly CHOWN, FOWNER and
+// DAC_OVERRIDE, no network, a read-only root, the volume alone, its own
+// label (never the workspace's), the uid and gid as integers in its
+// environment, and the constant script. Refused: root as the owner, an
+// unpinned image, a volume name that could add mount options. The control is
+// the argv itself.
+func TestOwnerArgs(t *testing.T) {
+	m := Manager{LabelPrefix: "drydock", CleanupImage: testCleanupImage, ClaudeUID: 998, ClaudeGID: 997}
+	args, err := m.OwnerArgs("drydock-claude-config")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "run --rm --label drydock.volume-owner=drydock-claude-config --network none --read-only" +
+		" --cap-drop ALL --cap-add CHOWN --cap-add FOWNER --cap-add DAC_OVERRIDE --security-opt no-new-privileges" +
+		" --user 0:0 --mount type=volume,source=drydock-claude-config,target=/claude" +
+		" --env DRYDOCK_UID=998 --env DRYDOCK_GID=997 --entrypoint sh " + testCleanupImage + " -c " + ownerScript
+	if got := strings.Join(args, " "); got != want {
+		t.Errorf("argv\n got %s\nwant %s", got, want)
+	}
+	for name, mut := range map[string]func(*Manager, *string){
+		"root":       func(m *Manager, _ *string) { m.ClaudeUID = 0 },
+		"no uid":     func(m *Manager, _ *string) { m.ClaudeUID = -1 },
+		"unpinned":   func(m *Manager, _ *string) { m.CleanupImage = "busybox:latest" },
+		"no prefix":  func(m *Manager, _ *string) { m.LabelPrefix = "" },
+		"bad volume": func(_ *Manager, v *string) { *v = "v,target=/etc" },
+	} {
+		mm, v := m, "drydock-claude-config"
+		mut(&mm, &v)
+		if _, err := mm.OwnerArgs(v); err == nil {
+			t.Errorf("%s: accepted", name)
 		}
 	}
 }

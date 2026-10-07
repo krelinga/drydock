@@ -51,7 +51,7 @@ func fakeDevcontainer(t *testing.T, origin string) subproc.Runner {
 	// argument of a volume command is the name (after "--", or name=<x>).
 	d := filepath.Join(dir, "docker")
 	if err := os.WriteFile(d, []byte(`#!/bin/sh
-case "$1" in ps|stop|rm) exit 0 ;; esac
+case "$1" in ps|stop|rm|run) exit 0 ;; esac
 for last; do :; done
 case "$1 $2" in
 "volume ls") if [ -e "$0.made" ]; then cat "$0.name"; fi ;;

@@ -217,13 +217,16 @@ install_claude() {
 install_claude
 
 # The shared credential volume's mount point, made in the image, owned by
-# the remote user, mode 0700. Docker copies a directory's owner and mode into
-# an empty volume the first time it is mounted over it, so this is what gives
-# a newly created volume its owner. The dev container CLI's UID update
-# re-owns only the remote user's home, which is why the directory is in
-# /home/vscode: with Drydock's minimal configuration, and any image whose
-# remote user is vscode, it is re-owned with the rest of that home.
-# drydock-preflight refuses a container whose remote user does not own it.
+# the remote user, mode 0700. It no longer decides the volume's owner:
+# Docker copies a directory's owner into a volume only while the volume is
+# empty, and Drydock gives a new volume to its own uid and leaves a marker in
+# it before any workspace mounts it (design §7.1) — because the CLI's UID
+# update re-owns only the remote user's home, so for a remote user that is
+# not vscode this directory kept the build-time uid, and the first such
+# workspace gave a fresh volume to the wrong uid. It still matters where
+# nothing has prepared the volume (this Feature's own tests).
+# drydock-preflight refuses a container whose remote user does not own the
+# volume.
 remote_user=${_REMOTE_USER:-root}
 mkdir -p "$CLAUDE_DIR"
 chmod 0700 "$CLAUDE_DIR"

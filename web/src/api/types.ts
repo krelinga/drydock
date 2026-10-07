@@ -349,7 +349,7 @@ export const IDENTITY_STATES: readonly IdentityState[] = ['ok', 'expiring', 'exp
 /** The last identity check's failure (internal/identity.CheckError). Drydock's own sentence. */
 export interface IdentityCheckError {
   at: string
-  /** docker | image | credentials | auth_status | disagree | foreign_volume | unknown */
+  /** docker | image | credentials | auth_status | disagree | foreign_volume | timeout | unknown */
   problem: string
   message: string
 }

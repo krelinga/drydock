@@ -134,9 +134,10 @@ func TestRestartKeepsTheEnvironment(t *testing.T) {
 }
 
 // A signed-out fleet starts nothing and spends nothing; signing in starts
-// the server that was waiting. The control is the same rig with ok.
+// the server that was waiting. The control is the same rig with ok. Expired
+// is not signed out (TestAnExpiredAccessTokenStillStarts).
 func TestASignedOutIdentityDefersTheStart(t *testing.T) {
-	for _, st := range []string{"blanked", "absent", "expired"} {
+	for _, st := range []string{"blanked", "absent"} {
 		t.Run(st, func(t *testing.T) {
 			r := newRig(t)
 			r.claude(claudetest.Step{Mode: claudetest.RCServe})
