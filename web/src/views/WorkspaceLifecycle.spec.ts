@@ -157,6 +157,34 @@ describe('Stop', () => {
     expect(runningCard(wrapper, WS_RUNNING).find('[data-test="action-error"]').exists()).toBe(false)
     expect(btn(runningCard(wrapper, WS_RUNNING), 'stop').attributes('disabled')).toBeDefined()
   })
+
+  it('a stop whose end fell in a resync gap stops spinning once the page refetches, and Stop works again (#20, #33)', async () => {
+    const b = freshBackend({ signedIn: true, scriptMode: 'manual' })
+    const { wrapper, pinia } = await mountApp(`/ws/${WS_RUNNING}`)
+    const es = FakeEventSource.latest().open().pipe(b)
+    await settle()
+    const card = () => wrapper.find('[data-test="ws-card"]')
+    await btn(card(), 'stop').trigger('click')
+    await settle()
+    playScript(b, WS_RUNNING, 1)
+    await settle()
+    expect(stopKey(WS_RUNNING) in useStreamStore(pinia).inFlight).toBe(true)
+    // The phone sleeps through the rest of the stop; the server says resync,
+    // and the page's own backstop refetches the workspace.
+    es.unpipe?.()
+    playScript(b, WS_RUNNING)
+    es.pipe(b).resync(b.events[b.events.length - 1]!.id)
+    await settle()
+    expect(wrapper.find('[data-test="ws-state"]').text()).toBe('Stopped')
+    expect(stopKey(WS_RUNNING) in useStreamStore(pinia).inFlight).toBe(false)
+    // Started again elsewhere and seen live: Stop is offered, enabled, and sends.
+    emit(b, 'workspace.state', { workspace_id: WS_RUNNING, data: { state: 'running', from: 'stopped' } })
+    await settle()
+    expect(btn(card(), 'stop').attributes('disabled')).toBeUndefined()
+    await btn(card(), 'stop').trigger('click')
+    await settle()
+    expect(sent(b, 'POST', `/api/workspaces/${WS_RUNNING}/stop`).length).toBe(2)
+  })
 })
 
 describe('Rebuild', () => {

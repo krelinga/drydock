@@ -114,6 +114,72 @@ func TestSecretPutAbsentEmptyAndNullValue(t *testing.T) {
 	}
 }
 
+// TestSecretCreateRefusesAStoredName is #29's server half, end to end through
+// the gate: `If-None-Match: *` makes the PUT a create, which refuses a stored
+// name 412 secret_exists with the value, the prose and the event log
+// untouched. Controls in the same function: the same create of a new name
+// lands, and a PUT without the header still replaces. Any other
+// If-None-Match is a bad request, and a create still needs a value.
+func TestSecretCreateRefusesAStoredName(t *testing.T) {
+	dir := t.TempDir()
+	key := make([]byte, 32)
+	rand.Read(key)
+	r := secretsServer(t, dir, key)
+	c := secretsClient{t, r, r.signIn(t)}
+	create := func(name, body string) (int, string) {
+		t.Helper()
+		resp := r.do(t, req{method: "PUT", path: "/api/secrets/" + name, body: body, origin: uiOrigin,
+			cookie: c.cookie, ifNoneMatch: "*"})
+		b, _ := io.ReadAll(resp.Body)
+		return resp.StatusCode, string(b)
+	}
+
+	if st, b := create("TEST_KEY", `{"value":"v-one","reach":"a scratch bucket"}`); st != 200 || !strings.Contains(b, `"created":true`) {
+		t.Fatalf("control: a create of a new name = %d %s", st, b)
+	}
+	c.call("PUT", "/api/secrets/TEST_KEY/grants", `{"repository_ids":[101]}`)
+	holds := func(v string) bool {
+		env, _, code := r.export(t, wsGranted)
+		return code == 0 && strings.Contains(env, "TEST_KEY="+v+"\n")
+	}
+	st, b := create("TEST_KEY", `{"value":"v-two","reach":"the new reach"}`)
+	if st != 412 || errCode(b) != api.CodeSecretExists {
+		t.Errorf("a create of a stored name = %d %s; want 412 %s", st, b, api.CodeSecretExists)
+	}
+	if strings.Contains(b, "v-two") || strings.Contains(b, "v-one") {
+		t.Errorf("the refusal carries a value: %s", b)
+	}
+	if !holds("v-one") {
+		t.Error("a refused create replaced the stored value")
+	}
+	if _, list := c.call("GET", "/api/secrets", ""); strings.Contains(list, "the new reach") || !strings.Contains(list, "a scratch bucket") {
+		t.Errorf("a refused create changed the prose: %s", list)
+	}
+
+	for _, inm := range []string{`"abc"`, `W/"x"`, `*, "y"`} {
+		resp := r.do(t, req{method: "PUT", path: "/api/secrets/TEST_KEY", body: `{"value":"v-three","reach":"r"}`,
+			origin: uiOrigin, cookie: c.cookie, ifNoneMatch: inm})
+		b, _ := io.ReadAll(resp.Body)
+		if resp.StatusCode != 400 || errCode(string(b)) != api.CodeBadRequest {
+			t.Errorf("If-None-Match %s = %d %s; want 400 %s", inm, resp.StatusCode, b, api.CodeBadRequest)
+		}
+	}
+	if st, b := create("NEW_KEY", `{"reach":"r"}`); st != 400 || errCode(b) != api.CodeSecretValueRequired {
+		t.Errorf("a create with no value = %d %s; want 400 %s", st, b, api.CodeSecretValueRequired)
+	}
+	if !holds("v-one") {
+		t.Error("a refused PUT replaced the stored value")
+	}
+
+	// Control: without the header the PUT is still create-or-replace.
+	if st, b := c.call("PUT", "/api/secrets/TEST_KEY", `{"value":"v-two","reach":"the new reach"}`); st != 200 || !strings.Contains(b, `"rotated":true`) {
+		t.Errorf("control: a replacing PUT = %d %s", st, b)
+	}
+	if !holds("v-two") {
+		t.Error("control: the replacing PUT did not reach the workspace")
+	}
+}
+
 // Each over-long or blank field gets its own code over HTTP (frontend §4.5
 // #14). Control: at the limit, accepted.
 func TestSecretProseCodesOverHTTP(t *testing.T) {

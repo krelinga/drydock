@@ -72,6 +72,7 @@ export type ErrorCode =
   | 'secret_description_too_long'
   | 'secret_description_invalid'
   | 'unknown_repository'
+  | 'secret_exists'
   | 'login_code_invalid'
   | 'login_not_awaiting_code'
   | 'login_ended'

@@ -32,6 +32,8 @@ func TestSupervisorRestartRoute(t *testing.T) {
 		{workspace.ErrInProgress, http.StatusConflict, CodeInProgress},
 		{workspace.ErrNotFound, http.StatusNotFound, CodeNotFound},
 		{provision.ErrNoSupervisor, http.StatusServiceUnavailable, CodeNotConfigured},
+		// Shutting down is `unavailable`, which the UI says as such, never `internal`.
+		{provision.ErrShuttingDown, http.StatusServiceUnavailable, CodeUnavailable},
 	} {
 		st := &stubRestarter{err: tc.err}
 		h := SupervisorRoutes{Provisioner: st, Workspaces: stubReader{}}.Handlers()["workspaces.supervisor"]

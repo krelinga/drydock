@@ -225,7 +225,7 @@ func TestLifecycleRoutesMapEachRefusalToItsCode(t *testing.T) {
 		{workspace.ErrAtCap, 409, CodeAtCapacity},
 		{provision.ErrNotConfigured, 503, CodeAppNotConfigured},
 		{provision.ErrConfirmMismatch, 400, CodeConfirmMismatch},
-		{provision.ErrShuttingDown, 503, CodeInternal},
+		{provision.ErrShuttingDown, 503, CodeUnavailable},
 	} {
 		p.err = c.err
 		for _, r := range [][2]string{{"POST", "/api/workspaces/W1/stop"}, {"POST", "/api/workspaces/W1/rebuild"},

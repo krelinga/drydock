@@ -287,6 +287,70 @@ func TestReachAndDescriptionCodes(t *testing.T) {
 	}
 }
 
+// TestCreateNeverReplaces is #29's review: New secret with a name already
+// stored silently replaced its value, reach and description. Create refuses
+// it with ErrExists and changes nothing — the delivered value, the reach and
+// the event log all stay as they were. Controls in the same function: Create
+// of a new name stores it, and Put of the same existing name still replaces
+// it. Then two creates of one name at once: exactly one lands.
+func TestCreateNeverReplaces(t *testing.T) {
+	e := newEnv(t)
+	ctx := context.Background()
+	r, err := e.s.Create(ctx, "NPM_TOKEN", "original", "publishes the old package", "")
+	if err != nil || !r.Created {
+		t.Fatalf("control: Create of a new name = %+v, %v", r, err)
+	}
+	e.s.SetGrants(ctx, "NPM_TOKEN", []int64{101}, false)
+	var before int
+	e.db.QueryRow(`SELECT count(*) FROM event`).Scan(&before)
+
+	if _, err := e.s.Create(ctx, "NPM_TOKEN", "another", "publishes the new package", "x"); !errors.Is(err, ErrExists) {
+		t.Fatalf("Create of a stored name = %v; want ErrExists", err)
+	}
+	if got, _ := e.s.Resolve(ctx, 101); names(got) != "NPM_TOKEN=original" {
+		t.Errorf("a refused create changed the delivered value: %q", names(got))
+	}
+	if m, _ := e.s.Get(ctx, "NPM_TOKEN"); m.Reach != "publishes the old package" || m.Description != "" {
+		t.Errorf("a refused create changed the prose: %+v", m)
+	}
+	var after int
+	e.db.QueryRow(`SELECT count(*) FROM event`).Scan(&after)
+	if after != before {
+		t.Errorf("a refused create wrote %d events", after-before)
+	}
+
+	// Control: the replacing write is still Put, and it still replaces.
+	if r := e.put(t, "NPM_TOKEN", "another"); !r.Rotated {
+		t.Errorf("control: Put of the stored name did not replace it: %+v", r)
+	}
+	if got, _ := e.s.Resolve(ctx, 101); names(got) != "NPM_TOKEN=another" {
+		t.Errorf("control: after Put, delivered %q", names(got))
+	}
+
+	// Two devices creating one name at once: one wins, the other is told.
+	for i := 0; i < 20; i++ {
+		name := fmt.Sprintf("RACE_%d", i)
+		errs := make(chan error, 2)
+		for _, v := range []string{"a", "b"} {
+			go func() { _, err := e.s.Create(ctx, name, v, "r", ""); errs <- err }()
+		}
+		won, lost := 0, 0
+		for range 2 {
+			switch err := <-errs; {
+			case err == nil:
+				won++
+			case errors.Is(err, ErrExists):
+				lost++
+			default:
+				t.Fatalf("a racing create: %v", err)
+			}
+		}
+		if won != 1 || lost != 1 {
+			t.Fatalf("%s: %d creates landed, %d refused; want exactly one of each", name, won, lost)
+		}
+	}
+}
+
 // PutProse keeps the stored value: the reach and description move, nothing
 // is rotated, nothing is stale, no secret.rotated, and the next delivery is
 // the old value byte for byte. Control in the same function: a Put with a

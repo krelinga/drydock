@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strings"
 
 	"github.com/krelinga/drydock/internal/secrets"
 )
@@ -17,6 +18,8 @@ type SecretStore interface {
 	// Undeliverable is nil when every stored secret can be delivered.
 	Undeliverable(ctx context.Context) (*secrets.Undeliverable, error)
 	Put(ctx context.Context, name, value, reach, description string) (secrets.PutResult, error)
+	// Create is Put that refuses a stored name with secrets.ErrExists.
+	Create(ctx context.Context, name, value, reach, description string) (secrets.PutResult, error)
 	PutProse(ctx context.Context, name, reach, description string) (secrets.PutResult, error)
 	Delete(ctx context.Context, name string) error
 	SetGrants(ctx context.Context, name string, repoIDs []int64, allRepos bool) (secrets.Meta, error)
@@ -126,9 +129,27 @@ func (o *optionalValue) UnmarshalJSON(b []byte) error {
 	return json.Unmarshal(b, &o.v)
 }
 
+// put is create-or-replace, unless the request says it is a create:
+// `If-None-Match: *` is HTTP's "only if nothing is there", and with it a
+// stored name is refused `412 secret_exists` with nothing written. The UI's
+// New secret sends it, so a name typed on that form can never silently
+// replace a secret's value, reach and description — the check is in the
+// write's own transaction, which is what also covers a second device
+// creating the same name meanwhile. Any other If-None-Match is a bad
+// request: there are no ETags here to match. A create needs a value; with
+// none it is secret_value_required, as for any new name.
 func (sr SecretRoutes) put(w http.ResponseWriter, r *http.Request) {
 	if !sr.ready(w) {
 		return
+	}
+	createOnly := false
+	if inm, ok := r.Header["If-None-Match"]; ok {
+		if len(inm) != 1 || strings.TrimSpace(inm[0]) != "*" {
+			WriteError(w, http.StatusBadRequest, CodeBadRequest,
+				"If-None-Match is only understood as *: create, never replace.", "")
+			return
+		}
+		createOnly = true
 	}
 	var body struct {
 		Value       optionalValue `json:"value"`
@@ -140,9 +161,15 @@ func (sr SecretRoutes) put(w http.ResponseWriter, r *http.Request) {
 	}
 	var res secrets.PutResult
 	var err error
-	if body.Value.set {
+	switch {
+	case createOnly && !body.Value.set:
+		err = &secrets.Invalid{Code: secrets.CodeValueRequired, Message: "A new secret needs a value.",
+			Detail: "A create has no stored value to keep."}
+	case createOnly:
+		res, err = sr.Store.Create(r.Context(), r.PathValue("name"), body.Value.v, body.Reach, body.Description)
+	case body.Value.set:
 		res, err = sr.Store.Put(r.Context(), r.PathValue("name"), body.Value.v, body.Reach, body.Description)
-	} else {
+	default:
 		res, err = sr.Store.PutProse(r.Context(), r.PathValue("name"), body.Reach, body.Description)
 	}
 	body.Value = optionalValue{}
@@ -192,6 +219,9 @@ func writeSecretError(w http.ResponseWriter, err error) bool {
 	switch {
 	case errors.As(err, &inv):
 		WriteError(w, http.StatusBadRequest, inv.Code, inv.Message, inv.Detail)
+	case errors.Is(err, secrets.ErrExists):
+		WriteError(w, http.StatusPreconditionFailed, CodeSecretExists, "A secret by that name already exists.",
+			"Nothing was changed. Edit that secret to replace its value.")
 	case errors.Is(err, secrets.ErrNotFound):
 		WriteError(w, http.StatusNotFound, CodeNotFound, "There is no secret by that name.", "")
 	default:

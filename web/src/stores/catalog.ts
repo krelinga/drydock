@@ -137,11 +137,11 @@ export const useCatalogStore = defineStore('catalog', {
     async fetchOnce(): Promise<void> {
       const stream = useStreamStore()
       // Everything at or below this id is committed, so the body reflects it.
-      const at = stream.lastEventId
+      const { at, tick } = stream.snapshotTag()
       if (this.status !== 'ready') this.status = 'loading'
       try {
         const view = await api.get<CatalogView>('/api/repos')
-        stream.dispatch({ type: 'snapshot', at, view })
+        stream.snapshot({ type: 'snapshot', at, view }, tick)
         this.status = 'ready'
         this.error = null
       } catch (e) {

@@ -95,6 +95,8 @@ type req struct {
 	method, path, body string
 	origin, host, ip   string
 	cookie             string
+	// ifNoneMatch, when set, is sent as If-None-Match: the secret create.
+	ifNoneMatch string
 }
 
 func (r *running) do(t *testing.T, q req) *http.Response {
@@ -113,6 +115,9 @@ func (r *running) do(t *testing.T, q req) *http.Response {
 	}
 	if q.origin != "" {
 		hr.Header.Set("Origin", q.origin)
+	}
+	if q.ifNoneMatch != "" {
+		hr.Header.Set("If-None-Match", q.ifNoneMatch)
 	}
 	ip := q.ip
 	if ip == "" {

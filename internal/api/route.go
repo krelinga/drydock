@@ -232,6 +232,9 @@ var Table = []Route{
 	{
 		Method: "PUT", Pattern: "/api/secrets/{name}", Mux: MuxAPI,
 		Auth: AuthRequired, Mutating: true,
+		// Create-or-replace; with If-None-Match: * a create that refuses a
+		// stored name (412 secret_exists). One route either way, so every
+		// meta-test covers both.
 		Name: "secrets.put", Doc: "PUT /api/secrets/:name",
 	},
 	{

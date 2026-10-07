@@ -36,7 +36,18 @@
 // same code and detail, rendered through the same lookup as the server's
 // refusal. The server still checks everything; its refusal lands on the same
 // field, in the same words.
+//
+// Creating never replaces (#29's review). The PUT is create-or-replace, and
+// on a write-only store a replace typed into New secret is a value lost for
+// good, a reach rewritten and every granted repository handed something
+// else, with nothing asked. So create mode refuses a name the loaded list
+// already holds, as it is typed, and points at that secret's own page, where
+// replacing the value is the labelled act; and it sends the PUT as a create
+// (`If-None-Match: *`), which the server refuses `412 secret_exists` — the
+// real guard, since a second device can store the name after this list was
+// loaded.
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
+import { RouterLink } from 'vue-router'
 import { ApiError } from '../../api/client'
 import { describeError, sentenceFor } from '../../api/messages'
 import {
@@ -71,6 +82,8 @@ const description = ref(props.initial?.description ?? '')
 type Field = 'name' | 'value' | 'reach' | 'description' | 'form'
 const errors = ref<Partial<Record<Field, string>>>({})
 const nameTouched = ref(false)
+/** The server refused this name as taken: someone stored it after the list here was loaded. */
+const refusedExists = ref(false)
 
 // A refusal stands until its field is edited; then the live check (or the
 // next save) is what speaks.
@@ -80,7 +93,10 @@ function clear(f: Field): void {
   delete next[f]
   errors.value = next
 }
-watch(name, () => clear('name'))
+watch(name, () => {
+  clear('name')
+  refusedExists.value = false
+})
 watch(value, () => clear('value'))
 watch(reach, () => clear('reach'))
 watch(description, () => clear('description'))
@@ -91,8 +107,14 @@ const say = (r: SecretRefusal) => sentenceFor(r.code, r.detail) ?? r.code
 // pasted newline is refused before anything is sent. An invalid name waits
 // for the field to be left — "not starting with a digit" while typing the
 // first letter is noise.
+/** Create mode, and the loaded list already holds a secret by this name. */
+const existing = computed(() => props.mode === 'create' && name.value !== '' && secrets.byName(name.value) !== undefined)
+/** Whether to offer that secret's own page, where replacing its value is an explicit act. */
+const offerEdit = computed(() => props.mode === 'create' && name.value !== '' && (existing.value || refusedExists.value))
+
 const liveName = computed(() => {
   if (props.mode !== 'create' || name.value === '') return null
+  if (existing.value) return sentenceFor('secret_exists', '') ?? 'secret_exists'
   const r = checkName(name.value)
   if (r === null) return null
   return r.code === 'secret_name_reserved' || nameTouched.value ? say(r) : null
@@ -109,7 +131,7 @@ const flight = computed(() => stream.inFlight[putKey(name.value)] ?? null)
 const keepValue = computed(() => props.mode === 'edit' && value.value === '')
 
 function fieldFor(code: string): Field {
-  if (code.startsWith('secret_name_')) return 'name'
+  if (code.startsWith('secret_name_') || code === 'secret_exists') return 'name'
   if (code.startsWith('secret_value_')) return 'value'
   if (code.startsWith('secret_reach_')) return 'reach'
   if (code.startsWith('secret_description_')) return 'description'
@@ -129,17 +151,20 @@ async function save(): Promise<void> {
     ['description', checkDescription(description.value)],
   ]
   for (const [f, r] of checks) if (r !== null) found[f] = say(r)
+  if (existing.value && found.name === undefined) found.name = sentenceFor('secret_exists', '') ?? 'secret_exists'
   errors.value = found
   if (Object.keys(found).length > 0) return
 
   try {
-    const outcome = await secrets.put(name.value, keepValue.value ? null : value.value, reach.value, description.value)
+    const outcome = await secrets.put(
+      name.value, keepValue.value ? null : value.value, reach.value, description.value, props.mode === 'create')
     value.value = ''
     emit('saved', name.value, outcome)
   } catch (e) {
     if (session.status !== 'signed-in') return // the 401 path has it
     const code = e instanceof ApiError ? e.code : ''
     errors.value = { [fieldFor(code)]: describeError(e) }
+    refusedExists.value = code === 'secret_exists'
   }
 }
 
@@ -164,6 +189,10 @@ onBeforeUnmount(() => {
       </p>
       <p v-if="errors.name || liveName" class="msg bad" role="alert" data-test="name-error">
         <span class="glyph" aria-hidden="true">×</span><span>{{ errors.name ?? liveName }}</span>
+      </p>
+      <p v-if="offerEdit" class="help" data-test="edit-existing">
+        <RouterLink :to="{ name: 'secret', params: { name } }">Edit {{ name }} instead</RouterLink>
+        — its value is replaced there only if you type a new one.
       </p>
     </div>
 

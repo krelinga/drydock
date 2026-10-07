@@ -82,11 +82,11 @@ export const useSecretsStore = defineStore('secrets', {
     /** @internal */
     async fetchOnce(): Promise<void> {
       const stream = useStreamStore()
-      const at = stream.lastEventId
+      const { at, tick } = stream.snapshotTag()
       if (this.status !== 'ready') this.status = 'loading'
       try {
         const view = await api.get<SecretList>('/api/secrets')
-        stream.dispatch({ type: 'secrets', at, view })
+        stream.snapshot({ type: 'secrets', at, view }, tick)
         this.status = 'ready'
         this.error = null
       } catch (e) {
@@ -111,15 +111,22 @@ export const useSecretsStore = defineStore('secrets', {
      * handles the credential. That is not the same request as an empty
      * string, which the server refuses — so null is the only spelling of
      * "keep", and the key is absent rather than null or "".
+     *
+     * `create` sends `If-None-Match: *`: the server stores the secret only
+     * if no secret by that name exists, and otherwise refuses it `412
+     * secret_exists` with nothing written. New secret always sends it, so a
+     * name typed there can never replace a value that will never be shown
+     * again — even one another device stored a moment ago, which the form's
+     * own check against the loaded list cannot see (frontend §6.4).
      */
-    async put(name: string, value: string | null, reach: string, description: string): Promise<PutOutcome> {
+    async put(name: string, value: string | null, reach: string, description: string, create = false): Promise<PutOutcome> {
       const stream = useStreamStore()
       const key = putKey(name)
       if (key in stream.inFlight) throw new api.ApiError(409, 'in_progress')
       stream.begin(key, () => false)
       try {
         const body = value === null ? { reach, description } : { value, reach, description }
-        const res = await api.sendForResult<PutSecretResult>('PUT', path(name), body)
+        const res = await api.sendForResult<PutSecretResult>('PUT', path(name), body, create ? { 'If-None-Match': '*' } : {})
         // The metadata in `res.secret` is not applied: its event is.
         return {
           created: res.created === true,

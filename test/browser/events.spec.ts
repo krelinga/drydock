@@ -29,6 +29,11 @@ test('an event reaches a real EventSource through Caddy while the stream stays o
   expect(stream.acceptEncoding).toMatch(/zstd|gzip/)
   const encoding = (await response).headers()['content-encoding'] ?? 'identity'
   test.info().annotations.push({ type: 'content-encoding', description: encoding })
+  // And Caddy did compress it: this is the encoder path the latency bound
+  // below is about. A Caddy bump or a Caddyfile change that stopped `encode`
+  // matching text/event-stream would leave the bound passing on `identity`,
+  // testing nothing it claims to (#35's review).
+  expect(encoding).toMatch(/^(zstd|gzip)$/)
 
   const name = unique('SSE')
   const t0 = Date.now()

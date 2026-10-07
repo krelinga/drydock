@@ -62,7 +62,7 @@ func (sr SupervisorRoutes) restart(w http.ResponseWriter, r *http.Request) {
 	case errors.Is(err, provision.ErrNoSupervisor):
 		WriteError(w, http.StatusServiceUnavailable, CodeNotConfigured, "No session supervisor is configured.", "")
 	case errors.Is(err, provision.ErrShuttingDown):
-		WriteError(w, http.StatusServiceUnavailable, CodeInternal, "Drydock is shutting down.", "")
+		WriteError(w, http.StatusServiceUnavailable, CodeUnavailable, "Drydock is shutting down.", "")
 	default:
 		WriteError(w, http.StatusInternalServerError, CodeInternal, "Could not restart the session server.", "")
 	}

@@ -25,6 +25,11 @@ import (
 // ErrNotFound is a name with no secret.
 var ErrNotFound = errors.New("secrets: no such secret")
 
+// ErrExists is Create's refusal: a secret by that name is already stored.
+// A create must never replace one — the old value cannot be shown again, so
+// it could not be recovered (frontend §6.4).
+var ErrExists = errors.New("secrets: a secret by that name already exists")
+
 // StaleKind is which kind of stale a live workspace is after a rotation
 // (§10.3, frontend §4.5 #5). The UI must not infer it: guessing wrong is the
 // twenty minutes of confusion the §10.3 warning is about.
@@ -310,7 +315,16 @@ type StaleWorkspace struct {
 // Every field is validated before anything is written; a refused write
 // changes nothing.
 func (s *Store) Put(ctx context.Context, name, value, reach, description string) (PutResult, error) {
-	return s.put(ctx, name, &value, reach, description)
+	return s.put(ctx, name, &value, reach, description, false)
+}
+
+// Create stores a new secret and refuses, with ErrExists and nothing
+// written, a name that is already stored: the PUT with If-None-Match: *.
+// The check is inside the write's transaction, so two devices creating the
+// same name at once cannot both land; the second is refused rather than
+// silently replacing the first's value, reach and description.
+func (s *Store) Create(ctx context.Context, name, value, reach, description string) (PutResult, error) {
+	return s.put(ctx, name, &value, reach, description, true)
 }
 
 // PutProse replaces an existing secret's reach and description and keeps its
@@ -320,12 +334,12 @@ func (s *Store) Put(ctx context.Context, name, value, reach, description string)
 // with no secret is refused with CodeValueRequired: a new secret has no value
 // to keep.
 func (s *Store) PutProse(ctx context.Context, name, reach, description string) (PutResult, error) {
-	return s.put(ctx, name, nil, reach, description)
+	return s.put(ctx, name, nil, reach, description, false)
 }
 
 // put is both: value nil keeps the stored one, and is not the same as "",
-// which ValidateValue refuses.
-func (s *Store) put(ctx context.Context, name string, value *string, reach, description string) (PutResult, error) {
+// which ValidateValue refuses. createOnly refuses a stored name (Create).
+func (s *Store) put(ctx context.Context, name string, value *string, reach, description string, createOnly bool) (PutResult, error) {
 	checks := []error{ValidateName(name), nil, ValidateReach(reach), ValidateDescription(description)}
 	if value != nil {
 		checks[1] = ValidateValue(*value)
@@ -365,6 +379,8 @@ func (s *Store) put(ctx context.Context, name string, value *string, reach, desc
 		res.Created = true
 	case err != nil:
 		return PutResult{}, err
+	case createOnly:
+		return PutResult{}, ErrExists
 	default:
 		// No value, or an unchanged one: only the prose moves, and nothing
 		// is stale. A row that no longer opens (a replaced master key) is

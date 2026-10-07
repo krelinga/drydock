@@ -25,7 +25,8 @@ export class FakeEventSource extends EventTarget {
 
   readyState = FakeEventSource.CONNECTING
   closed = false
-  private unpipe: (() => void) | null = null
+  /** Stops delivering what `pipe` delivered: a spec cutting the stream so events fall in a gap. */
+  unpipe: (() => void) | null = null
 
   constructor(readonly url: string) {
     super()

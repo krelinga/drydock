@@ -365,6 +365,24 @@ func (s *Server) supervisorLogs(id string, n int) ([]api.LogLine, bool, bool) {
 	return out, truncated, held
 }
 
+// reconcileWarning is the boot reconciliation's failure in Drydock's words:
+// "nothing was changed" only when nothing was (reconcile.ErrNothingChanged),
+// and otherwise how many workspaces could not be reconciled while the rest
+// were. docker's stderr stays in the journal.
+func reconcileWarning(err error) string {
+	var p *reconcile.Partial
+	switch {
+	case errors.Is(err, reconcile.ErrNothingChanged):
+		return "Could not reconcile workspaces with Docker at startup; nothing was changed. See the service log."
+	case errors.As(err, &p) && len(p.Errs) == 1:
+		return "Reconciled workspaces with Docker at startup, but one could not be. See the service log."
+	case errors.As(err, &p):
+		return fmt.Sprintf("Reconciled workspaces with Docker at startup, but %d could not be. See the service log.", len(p.Errs))
+	default:
+		return "Reconciling workspaces with Docker at startup failed part-way. See the service log."
+	}
+}
+
 // Serve runs both muxes until ctx is cancelled, then shuts down gracefully.
 func (s *Server) Serve(ctx context.Context) error {
 	// Everything started below ends on ctx, and shutdown waits for each of
@@ -382,8 +400,7 @@ func (s *Server) Serve(ctx context.Context) error {
 		defer close(reconciled)
 		if _, err := s.Reconciler.Run(ctx); err != nil && ctx.Err() == nil {
 			fmt.Fprintf(os.Stderr, "drydock: reconcile: %v\n", err)
-			s.Events.Emit(ctx, "", events.Warn, "system.reconcile",
-				"Could not reconcile workspaces with Docker at startup; nothing was changed. See the service log.", nil)
+			s.Events.Emit(ctx, "", events.Warn, "system.reconcile", reconcileWarning(err), nil)
 		}
 		// Then the cleanup helpers an interrupted delete left (§6): after
 		// reconciliation, whose resumed deletes have finished by now, and by

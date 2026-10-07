@@ -175,22 +175,46 @@ type Reconciler struct {
 	Busy func(workspaceID string) bool
 }
 
+// ErrNothingChanged is wrapped by Run's error when it stopped before acting:
+// the containers or the rows could not be read, so no action was applied.
+// Only this error may be reported as "nothing was changed".
+var ErrNothingChanged = errors.New("reconcile: nothing was changed")
+
+// Partial is Run's error when it applied the plan but some actions failed.
+// Every other action was applied, so it must never be reported as "nothing
+// was changed": a resumed delete that sticks made every boot say so while
+// the same run adopted or stopped other rows.
+type Partial struct {
+	// Applied counts the actions that succeeded; Errs holds one error per
+	// action that failed.
+	Applied int
+	Errs    []error
+}
+
+func (p *Partial) Error() string {
+	return fmt.Sprintf("reconcile: %d of %d actions failed: %v",
+		len(p.Errs), p.Applied+len(p.Errs), errors.Join(p.Errs...))
+}
+
+func (p *Partial) Unwrap() []error { return p.Errs }
+
 // Run lists containers, plans, and applies every action, continuing past a
 // failed one so one bad row cannot stop the rest from being reconciled. It
-// returns the plan and every error joined.
+// returns the plan, and an error wrapping ErrNothingChanged when it could not
+// read what it reconciles, or a *Partial when some actions failed.
 func (r *Reconciler) Run(ctx context.Context) ([]Action, error) {
 	found, err := r.Containers.List(ctx)
 	if err != nil {
 		// Without the list, every running row would look absent and be
 		// marked stopped. Refuse to guess: change nothing.
-		return nil, fmt.Errorf("reconcile: cannot list containers, so nothing was changed: %w", err)
+		return nil, fmt.Errorf("cannot list containers: %w: %w", ErrNothingChanged, err)
 	}
 	rows, err := r.Workspaces.List(ctx)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("cannot read the workspaces: %w: %w", ErrNothingChanged, err)
 	}
 	plan := Plan(rows, found)
-	var errs []error
+	var p Partial
 	for _, a := range plan {
 		// Asked per action, after the rows were read: a run that started
 		// since is in the plan only if its row was, and is busy by now.
@@ -198,10 +222,15 @@ func (r *Reconciler) Run(ctx context.Context) ([]Action, error) {
 			continue
 		}
 		if err := r.apply(ctx, a); err != nil {
-			errs = append(errs, fmt.Errorf("%s %s: %w", a.Kind, a.WorkspaceID, err))
+			p.Errs = append(p.Errs, fmt.Errorf("%s %s: %w", a.Kind, a.WorkspaceID, err))
+		} else {
+			p.Applied++
 		}
 	}
-	return plan, errors.Join(errs...)
+	if len(p.Errs) > 0 {
+		return plan, &p
+	}
+	return plan, nil
 }
 
 func (r *Reconciler) apply(ctx context.Context, a Action) error {

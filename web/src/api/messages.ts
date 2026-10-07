@@ -55,6 +55,7 @@ const SENTENCES: Record<string, string> = {
   secret_description_too_long: 'The description is too long: at most 4000 bytes.',
   secret_description_invalid: 'The description must be text.',
   unknown_repository: 'That repository is not in the catalog.',
+  secret_exists: 'A secret by this name already exists, and a new secret never replaces it. Nothing was changed.',
   // Design §7.2's refusals. None can say anything about the code itself:
   // the code goes up and nothing about it comes back (frontend §2.5).
   login_code_invalid: 'That looks like only part of the code. Copy the whole code Claude shows, both sides of the #.',

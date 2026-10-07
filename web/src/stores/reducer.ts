@@ -792,6 +792,11 @@ function withAction(prev: Workspace, ev: StreamEvent): Workspace {
 export function liveAction(w: Workspace): ActionRun | null {
   const run = w.action
   if (run === null || run.eventId <= w.stateEventId) return null
+  // A snapshot newer than the run whose last sub-step failed: a run ends at
+  // its first failure, so this one is over, even though the events that
+  // ended it — the failure and the annotation after it — fell in a gap.
+  const la = w.lastAction
+  if (la !== null && la.at > run.eventId && la.status === 'failed') return null
   if (run.name === 'stop' && w.state !== 'running') return null
   if (run.name === 'delete' && w.state !== 'deleting') return null
   return run

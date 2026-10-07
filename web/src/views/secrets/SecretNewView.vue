@@ -2,10 +2,21 @@
 // /secrets/new (frontend §5, §6.4). The form, then the secret's own page —
 // where its grants start empty and say so, because storing a secret grants
 // it to nothing (design §10.1).
+import { onMounted } from 'vue'
 import { RouterLink, useRouter } from 'vue-router'
+import { useStreamRefetch } from '../../lib/refetch'
+import { useSecretsStore } from '../../stores/secrets'
 import SecretForm from './SecretForm.vue'
 
 const router = useRouter()
+const secrets = useSecretsStore()
+
+// The form refuses a name this list already holds (#29), so it is loaded
+// here and kept current, not left to the banner that happens to load it too.
+onMounted(() => {
+  void secrets.load()
+})
+useStreamRefetch({ refetch: () => secrets.load() })
 
 function saved(name: string): void {
   void router.replace({ name: 'secret', params: { name } })

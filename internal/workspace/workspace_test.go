@@ -3,6 +3,7 @@ package workspace
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -176,6 +177,113 @@ func TestConcurrentMovesHaveOneWinner(t *testing.T) {
 	}
 	if won == 0 || last != string(got.State) {
 		t.Errorf("%d winners; the row says %s, the last event says %s", won, got.State, last)
+	}
+}
+
+// TestStateEventsArePublishedInCommitOrder is the race a post-merge review
+// found (#12): a provisioning run's Move(running) and a delete's
+// Move(deleting), which startDelete deliberately allows to overlap. When a
+// move committed its row and then appended its event as two steps, the
+// delete could read `running`, commit `deleting` and publish it in between,
+// and the stream then ended on `running` while the row said `deleting` —
+// every following client showed Stop on a workspace being deleted. Both
+// moves are one events.Commit now, so the newest workspace.state, in the
+// table and as published, is the row's state every time.
+//
+// Many rounds of several pairs at once, because the window it closes is a
+// few microseconds wide. Mutation-checked: with Move's UPDATE committed
+// before its event is appended, this fails within a few hundred rounds.
+func TestStateEventsArePublishedInCommitOrder(t *testing.T) {
+	ctx := context.Background()
+	f := newFixture(t)
+	f.store.Cap = 0
+	const pairs = 8
+	rounds := 400
+	if testing.Short() {
+		rounds = 40
+	}
+	sub := f.events.Subscribe()
+	defer f.events.Cancel(sub)
+	lastPublished := map[string]string{}
+	drain := func() {
+		for {
+			select {
+			case e, ok := <-sub.C:
+				if !ok {
+					t.Fatal("the subscription was cut off; the test reads too slowly")
+				}
+				if e.Kind == KindState {
+					var d struct{ State string }
+					json.Unmarshal(e.Data, &d)
+					lastPublished[e.WorkspaceID] = d.State
+				}
+			default:
+				return
+			}
+		}
+	}
+	// A positive control on the reader: it sees the states published.
+	positive := false
+	for round := 0; round < rounds; round++ {
+		ws := make([]Workspace, pairs)
+		for i := range ws {
+			ws[i] = f.create(t, int64(i+1))
+			for _, to := range []State{Cloning, Building} {
+				if _, err := f.store.Move(ctx, ws[i].ID, to, ""); err != nil {
+					t.Fatal(err)
+				}
+			}
+		}
+		drain()
+		var wg sync.WaitGroup
+		for _, w := range ws {
+			wg.Add(2)
+			go func() { // the provisioning run finishing
+				defer wg.Done()
+				f.store.Move(ctx, w.ID, Running, "")
+			}()
+			go func() { // the delete, asked the moment the card says running
+				defer wg.Done()
+				for {
+					got, err := f.store.Get(ctx, w.ID)
+					if err != nil {
+						t.Error(err)
+						return
+					}
+					if got.State == Running {
+						break
+					}
+				}
+				if _, err := f.store.Move(ctx, w.ID, Deleting, ""); err != nil {
+					t.Error(err)
+				}
+			}()
+		}
+		wg.Wait()
+		drain()
+		for _, w := range ws {
+			got, err := f.store.Get(ctx, w.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got.State != Deleting {
+				t.Fatalf("round %d: the row is %s; the delete's move did not land", round, got.State)
+			}
+			positive = positive || lastPublished[w.ID] != ""
+			if lastPublished[w.ID] != string(got.State) {
+				t.Fatalf("round %d: the row says %s, the newest published workspace.state says %q", round,
+					got.State, lastPublished[w.ID])
+			}
+			if err := f.store.Remove(ctx, w.ID); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if t.Failed() {
+			return
+		}
+	}
+	if !positive {
+		t.Fatal("no workspace.state was ever published: the check above compared nothing")
 	}
 }
 
@@ -651,5 +759,103 @@ func TestANoteIsDoneWithADetail(t *testing.T) {
 	}
 	if _, err := f.store.View(ctx, "01JABCDEFGHJKMNPQRSTVWXYZ0"); !errors.Is(err, ErrNotFound) {
 		t.Errorf("View of no workspace: %v", err)
+	}
+}
+
+// TestViewsReadOnlyLiveHistoryAndSkipAMalformedEvent is #39's review: the
+// list read every step, action, supervisor and session event ever written,
+// deleted workspaces' included, and one unreadable event made the whole list
+// a 500. Now a deleted workspace's events are not read at all (its malformed
+// event is never even seen, so nothing is logged for it), a live one's
+// malformed event is skipped and logged, and the list still answers — with
+// the well-formed step beside it, which is the positive control.
+func TestViewsReadOnlyLiveHistoryAndSkipAMalformedEvent(t *testing.T) {
+	ctx := context.Background()
+	f := newFixture(t)
+	var logged []string
+	f.store.Logf = func(format string, args ...any) { logged = append(logged, fmt.Sprintf(format, args...)) }
+
+	gone := f.create(t, 1)
+	if _, err := f.store.Move(ctx, gone.ID, Deleting, ""); err != nil {
+		t.Fatal(err)
+	}
+	live := f.create(t, 2)
+	if err := f.store.stepEvent(ctx, live.ID, StepClone, "done", events.Info, ""); err != nil {
+		t.Fatal(err)
+	}
+	// Malformed rows, as only a bug or a hand edit could write them: the
+	// log's own Append refuses data that is not an object.
+	for _, ws := range []string{gone.ID, live.ID} {
+		for _, kind := range []string{KindStep, KindAction, KindSupervisor} {
+			if _, err := f.store.DB.ExecContext(ctx,
+				`INSERT INTO event (workspace_id, level, kind, message, data, at) VALUES (?, 'info', ?, 'x', ?, ?)`,
+				ws, kind, `{"step": 7`, "2026-10-04T12:00:00Z"); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if err := f.store.Remove(ctx, gone.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	vs, err := f.store.Views(ctx)
+	if err != nil {
+		t.Fatalf("one malformed event failed the whole list: %v", err)
+	}
+	if len(vs) != 1 || vs[0].ID != live.ID {
+		t.Fatalf("listed %+v; want only %s", vs, live.ID)
+	}
+	if got := vs[0].Steps[StepClone]; got.Status != "done" {
+		t.Errorf("the well-formed step is %+v; want done", got)
+	}
+	if vs[0].LastAction != nil || vs[0].Supervisor != nil {
+		t.Errorf("a malformed event was reported as %+v / %+v; want nothing known", vs[0].LastAction, vs[0].Supervisor)
+	}
+	// The malformed step has no readable name, so it is its own group: it
+	// is skipped, and the clone step's group still reports its newest event.
+	if len(logged) != 3 {
+		t.Errorf("logged %d skips; want the live workspace's 3:\n%s", len(logged), strings.Join(logged, "\n"))
+	}
+	for _, l := range logged {
+		if strings.Contains(l, gone.ID) {
+			t.Errorf("a deleted workspace's history was read: %s", l)
+		}
+		if !strings.Contains(l, live.ID) {
+			t.Errorf("a skip does not name its workspace: %s", l)
+		}
+	}
+	if _, err := f.store.View(ctx, live.ID); err != nil {
+		t.Errorf("the detail view failed on the same event: %v", err)
+	}
+
+	// The bound itself, read off the query the list runs: a second clone
+	// event for the live workspace replaces the first in the result (newest
+	// per step), and nothing of the deleted workspace's is selected.
+	if err := f.store.stepEvent(ctx, live.ID, StepClone, "failed", events.Error, ""); err != nil {
+		t.Fatal(err)
+	}
+	q, args := latestEvents()
+	rows, err := f.store.DB.QueryContext(ctx, q, args...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	clones, n := 0, 0
+	for rows.Next() {
+		var ws, kind, at string
+		var data sql.NullString
+		if err := rows.Scan(&ws, &kind, &data, &at); err != nil {
+			t.Fatal(err)
+		}
+		n++
+		if ws == gone.ID {
+			t.Errorf("the list's query read the deleted workspace's %s event", kind)
+		}
+		if kind == KindStep && strings.Contains(data.String, `"clone"`) {
+			clones++
+		}
+	}
+	if n == 0 || clones != 1 {
+		t.Errorf("the query returned %d rows with %d clone step events; want rows, and the newest clone event alone", n, clones)
 	}
 }
