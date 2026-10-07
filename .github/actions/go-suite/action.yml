@@ -9,8 +9,9 @@
 # history (fetch-depth: 0): test/docs reads the commits since the last
 # release. Its tools:
 #   Go          from go.mod
-#   Caddy       pinned below; the devcontainer's feature takes the latest, so
-#               bump this when a rebuild moves it
+#   Caddy       pinned in install-caddy.sh, which the browser job also runs;
+#               the devcontainer's feature takes the latest, so bump it when
+#               a rebuild moves it
 #   devcontainer CLI   the container tier runs real `devcontainer up`, pinned
 #               to the corpus's version
 #   socat       the broker's in-container clients are tested over both
@@ -21,9 +22,6 @@ name: go-suite
 description: Install the Go suite's tools and run gofmt, go vet and go test with every DRYDOCK_REQUIRE_* flag CI sets.
 
 inputs:
-  run-suite:
-    description: "'false' installs the tools (Go and Caddy are what the browser tier needs) without running the suite."
-    default: "true"
   pr-title:
     description: "A pull request's title: the squash commit release-please will read, for test/docs's check that the deploy docs name only real or pending releases. Empty outside a PR."
     default: ""
@@ -35,20 +33,10 @@ runs:
       with:
         go-version-file: go.mod
 
+    # The pin is in the script, which the browser job runs too.
     - name: Install Caddy
       shell: bash
-      env:
-        CADDY_VERSION: 2.11.7
-      run: |
-        dir=$(mktemp -d)
-        base=https://github.com/caddyserver/caddy/releases/download/v$CADDY_VERSION
-        tarball=caddy_${CADDY_VERSION}_linux_amd64.tar.gz
-        (cd "$dir" &&
-          curl -fsSLO "$base/$tarball" -fsSLO "$base/caddy_${CADDY_VERSION}_checksums.txt" &&
-          grep " $tarball\$" "caddy_${CADDY_VERSION}_checksums.txt" | sha512sum -c -)
-        sudo tar -xzf "$dir/$tarball" -C /usr/local/bin caddy
-        rm -rf "$dir"
-        caddy version
+      run: '"$GITHUB_ACTION_PATH/install-caddy.sh"'
 
     - name: Install the devcontainer CLI
       shell: bash
@@ -62,12 +50,10 @@ runs:
       run: sudo apt-get update -q && sudo apt-get install -y -q --no-install-recommends socat netcat-openbsd
 
     - name: gofmt
-      if: inputs.run-suite == 'true'
       shell: bash
       run: test -z "$(gofmt -l . | tee /dev/stderr)"
 
     - name: go vet
-      if: inputs.run-suite == 'true'
       shell: bash
       run: go vet ./...
 
@@ -77,7 +63,6 @@ runs:
     # release that test/docs reads (the checkout needs fetch-depth: 0), and
     # socat and nc, without which the broker's argv sweep is skipped.
     - name: go test
-      if: inputs.run-suite == 'true'
       shell: bash
       env:
         DRYDOCK_REQUIRE_CADDY: "1"
