@@ -414,6 +414,21 @@ func TestLoginManagerAgainstRealDocker(t *testing.T) {
 // milliseconds after the CLI is gone, longer on a busy daemon). It writes
 // dir/started when `run` is asked for, and dir/created, holding the
 // container's id, once the late create has landed.
+//
+// The CLI is the session leader of the login's PTY, so its death hangs up
+// the terminal and SIGHUPs the terminal's foreground process group, which is
+// the wrapper's own. A child forked with `&` stays in that group until setsid
+// moves it out. So `started` is written only after the late create's process
+// has reported from its own session through dir/ready, a FIFO the wrapper
+// blocks on. Writing `started` before the fork let a cancel that arrived in
+// the gap kill the child along with the CLI, and the create never ran. That
+// was CI's `created never appeared; create said ""`. The wrapper sleeps
+// before the fork on purpose. The sleep stands in for a slow fork on a busy
+// runner, so every run depends on the handshake instead of usually winning
+// the race.
+//
+// Each stage leaves a file (detached, creating, create.err), so a failure
+// says how far the late create got.
 func slowCreate(t *testing.T, delay time.Duration) (bin, dir string) {
 	t.Helper()
 	real, err := exec.LookPath("docker")
@@ -422,13 +437,18 @@ func slowCreate(t *testing.T, delay time.Duration) (bin, dir string) {
 	}
 	dir = t.TempDir()
 	bin = filepath.Join(t.TempDir(), "docker")
+	// The detached part: $0 is dir, $1 the delay, the rest the run's args.
+	late := `: >"$0/detached"; echo ok >"$0/ready"; sleep "$1"; shift; : >"$0/creating"; ` +
+		real + ` create "$@" >"$0/created.tmp" 2>"$0/create.err" && mv "$0/created.tmp" "$0/created"`
 	script := `#!/bin/sh
 d=` + dir + `
 if [ "$1" = run ]; then
 	shift
+	mkfifo "$d/ready" || exit 125
+	(sleep 0.2; exec setsid sh -c '` + late + `' "$d" ` +
+		strconv.FormatFloat(delay.Seconds(), 'f', 3, 64) + ` "$@" </dev/null >/dev/null 2>&1) &
+	read -r _ <"$d/ready"
 	: >"$d/started"
-	setsid sh -c 'sleep "$1"; shift; ` + real + ` create "$@" >"$0/created.tmp" 2>"$0/create.err" && mv "$0/created.tmp" "$0/created"' "$d" ` +
-		strconv.FormatFloat(delay.Seconds(), 'f', 3, 64) + ` "$@" </dev/null >/dev/null 2>&1 &
 	exec sleep 600
 fi
 exec ` + real + ` "$@"
@@ -439,7 +459,9 @@ exec ` + real + ` "$@"
 	return bin, dir
 }
 
-// waitFile waits for path to exist and returns its contents.
+// waitFile waits for path to exist and returns its contents. At the
+// deadline it says which of slowCreate's stages were reached and what the
+// create wrote to stderr.
 func waitFile(t *testing.T, path string, within time.Duration) string {
 	t.Helper()
 	for deadline := time.Now().Add(within); ; time.Sleep(20 * time.Millisecond) {
@@ -447,8 +469,18 @@ func waitFile(t *testing.T, path string, within time.Duration) string {
 			return strings.TrimSpace(string(b))
 		}
 		if time.Now().After(deadline) {
-			errs, _ := os.ReadFile(filepath.Join(filepath.Dir(path), "create.err"))
-			t.Fatalf("%s never appeared; create said %q", path, errs)
+			d := filepath.Dir(path)
+			var reached []string
+			for _, stage := range []string{"started", "detached", "creating"} {
+				if _, err := os.Stat(filepath.Join(d, stage)); err == nil {
+					reached = append(reached, stage)
+				}
+			}
+			said := "nothing (no create.err)"
+			if errs, err := os.ReadFile(filepath.Join(d, "create.err")); err == nil {
+				said = strconv.Quote(string(errs))
+			}
+			t.Fatalf("%s never appeared within %s; stages reached %v; create said %s", path, within, reached, said)
 		}
 	}
 }
@@ -510,7 +542,7 @@ func TestLoginCancelDuringCreate(t *testing.T) {
 		t.Fatal(err)
 	}
 	next(m, login.Cancelled)
-	created := waitFile(t, filepath.Join(dir, "created"), 30*time.Second)
+	created := waitFile(t, filepath.Join(dir, "created"), 2*time.Minute)
 	if !regexp.MustCompile(`^[0-9a-f]{64}$`).MatchString(created) {
 		t.Fatalf("control: the late create made %q", created)
 	}
