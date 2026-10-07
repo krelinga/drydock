@@ -244,24 +244,28 @@ func (p *Provisioner) deleteJob(ctx context.Context, id string) error {
 			if err != nil {
 				return workspace.Public("Drydock could not list the workspace's containers.", err)
 			}
-			if len(ids) == 0 {
-				return workspace.Note("No container to remove.")
+			var said string
+			switch len(ids) {
+			case 0:
+				said = "No container to remove."
+			default:
+				if err := p.Containers.Remove(ctx, ids); err != nil {
+					return workspace.Public("docker could not remove the workspace's containers.", err)
+				}
+				// Docker is the truth: gone means not listed any more.
+				left, err := p.Containers.Find(ctx, id)
+				if err != nil {
+					return workspace.Public("Drydock could not list the workspace's containers.", err)
+				}
+				if len(left) > 0 {
+					return workspace.Public("A container carrying the workspace's label is still there.", container.ErrStillThere)
+				}
+				said = "Removed its container."
+				if len(ids) > 1 {
+					said = fmt.Sprintf("Removed %d containers.", len(ids))
+				}
 			}
-			if err := p.Containers.Remove(ctx, ids); err != nil {
-				return workspace.Public("docker could not remove the workspace's containers.", err)
-			}
-			// Docker is the truth: gone means not listed any more.
-			left, err := p.Containers.Find(ctx, id)
-			if err != nil {
-				return workspace.Public("Drydock could not list the workspace's containers.", err)
-			}
-			if len(left) > 0 {
-				return workspace.Public("A container carrying the workspace's label is still there.", container.ErrStillThere)
-			}
-			if len(ids) == 1 {
-				return workspace.Note("Removed its container.")
-			}
-			return workspace.Note(fmt.Sprintf("Removed %d containers.", len(ids)))
+			return workspace.Note(said + " " + p.removeBuiltImages(ctx, w))
 		}},
 		// The socket and its directory: the containers are gone, so no mount
 		// names the directory any more.
@@ -306,6 +310,25 @@ func (p *Provisioner) deleteJob(ctx context.Context, id string) error {
 		p.ForgetSupervisor(id)
 	}
 	return nil
+}
+
+// removeBuiltImages removes the images `up` built for the workspace once its
+// containers are gone, and returns the sentence the containers sub-step adds.
+// It never fails the delete: an image left behind costs disk, not
+// correctness, and the one reason Docker refuses — another container made
+// from it — is a reason to keep it. The raw error goes to the journal only.
+func (p *Provisioner) removeBuiltImages(ctx context.Context, w workspace.Workspace) string {
+	removed, err := p.Containers.RemoveBuiltImages(ctx, w.HostPath)
+	switch {
+	case err != nil:
+		p.logf("drydock: workspace %s: removing its built images: %v", w.ID, err)
+		return "Its built images could not all be removed; they stay on the daemon."
+	case len(removed) == 0:
+		return "No built image to remove."
+	case len(removed) == 1:
+		return "Removed its built image."
+	}
+	return fmt.Sprintf("Removed its %d built images.", len(removed))
 }
 
 // KindHelpersSwept is the system event the boot sweep writes when it removed

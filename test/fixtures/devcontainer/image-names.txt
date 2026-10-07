@@ -1,0 +1,3 @@
+cli 0.89.0
+folder /tmp/drydock-measure/ws/01JABCDEFGHJKMNPQRSTVWXYZ0/repo
+image vsc-repo-1f50303b6e8439ac18eed67f04af6e93c5b7e7b2bec05f97a3aec3472f6be9ac-features

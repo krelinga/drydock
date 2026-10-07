@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -12,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/krelinga/drydock/internal/container"
 	"github.com/krelinga/drydock/internal/reconcile"
 	"github.com/krelinga/drydock/internal/workspace"
 )
@@ -83,6 +85,20 @@ run)
     exit 0
   fi
   find "$src" -mindepth 1 -delete ;;
+image)
+  # Images as names, one per line, all at :latest. ls prints those its
+  # reference filters name exactly; rm removes the names given after --.
+  im="$dir/images"; touch "$im"
+  case "$2" in
+  ls)
+    for a in "$@"; do
+      case "$a" in reference=*) grep -Fx -- "${a#reference=}" "$im" | sed 's/$/:latest/' ;; esac
+    done ;;
+  rm)
+    while [ "$1" != -- ]; do shift; done; shift
+    for n; do grep -Fxv -- "${n%:latest}" "$im" > "$im.t"; mv "$im.t" "$im"; done ;;
+  *) exit 64 ;;
+  esac ;;
 volume)
   # Volumes as files, vols/<name>.json being what inspect prints; create of
   # an existing name is a no-op, as the real one is.
@@ -107,10 +123,16 @@ esac
 // reattaches to it, or makes one — and with --remove-existing-container it
 // removes the old one first, so a rebuild gets a new id.
 func registeringUp(dir string) string {
-	return `ws=; prev=
+	return `ws=; prev=; folder=
 for a in "$@"; do
   if [ "$prev" = --id-label ]; then case "$a" in *.workspace=*) ws=${a#*.workspace=} ;; esac; fi
+  [ "$prev" = --workspace-folder ] && folder=$a
   prev=$a
+done
+# The images the real CLI builds, named as it names them (container.BuiltImages).
+im='` + dir + `/images'; touch "$im"
+for n in "vsc-repo-$(printf '%s' "$folder" | sha256sum | cut -c1-64)-features" "vsc-repo-$(printf '%s' "$folder" | sha256sum | cut -c1-64)-features-uid"; do
+  grep -Fxq -- "$n" "$im" || echo "$n" >> "$im"
 done
 st='` + dir + `/containers'; touch "$st"
 case " $* " in *" --remove-existing-container "*) awk -v ws="$ws" '$2!=ws' "$st" > "$st.t"; mv "$st.t" "$st" ;; esac
@@ -167,6 +189,24 @@ func (e *env) actions(t *testing.T, id string) []string {
 		out = append(out, d.Action+":"+d.Step+":"+d.Status)
 	}
 	return out
+}
+
+// actionDetail is the detail of the workspace's last finished action event
+// for this action and sub-step.
+func (e *env) actionDetail(t *testing.T, id, action, step string) string {
+	t.Helper()
+	evs, err := e.log.ForWorkspace(context.Background(), id, 1000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, ev := range evs { // newest first
+		var d struct{ Action, Step, Status, Detail string }
+		if ev.Kind == KindAction && json.Unmarshal(ev.Data, &d) == nil &&
+			d.Action == action && d.Step == step && d.Status != "started" {
+			return d.Detail
+		}
+	}
+	return ""
 }
 
 func (e *env) kinds(t *testing.T, id, kind string) int {
@@ -562,6 +602,18 @@ func TestDeleteRemovesEverything(t *testing.T) {
 	os.WriteFile(filepath.Join(outside, "precious"), []byte("keep"), 0o600)
 	os.Symlink(outside, filepath.Join(e.root, v.ID, "repo", "link-out"))
 	os.Symlink(filepath.Join(outside, "precious"), filepath.Join(e.root, v.ID, "repo", "file-link"))
+	mine, err := container.BuiltImages(filepath.Join(e.root, v.ID, "repo"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	other, _ := container.BuiltImages(filepath.Join(e.root, "01JABCDEFGHJKMNPQRSTVWXYZ0", "repo"))
+	foreign := []string{other[1], mine[1] + "-x"}
+	f, _ = os.OpenFile(filepath.Join(e.cli.dir, "images"), os.O_APPEND|os.O_WRONLY, 0)
+	f.WriteString(strings.Join(foreign, "\n") + "\n")
+	f.Close()
+	if b, _ := os.ReadFile(filepath.Join(e.cli.dir, "images")); !strings.Contains(string(b), mine[1]+"\n") {
+		t.Fatalf("setup: up built no image named as the CLI names it: %q", b)
+	}
 
 	for _, bad := range []string{"", "krelinga/alph", "Krelinga/Alpha", " krelinga/alpha", "krelinga/alpha ", "alpha"} {
 		if err := e.p.Delete(ctx, v.ID, bad); !errors.Is(err, ErrConfirmMismatch) {
@@ -591,6 +643,14 @@ func TestDeleteRemovesEverything(t *testing.T) {
 	}
 	if cs := e.containers(t, v.ID); len(cs) != 0 {
 		t.Errorf("containers left: %v", cs)
+	}
+	// The images up built for this workspace are gone; any other image —
+	// another workspace's, or a name that merely starts like one — is not.
+	if b, _ := os.ReadFile(filepath.Join(e.cli.dir, "images")); strings.Join(strings.Fields(string(b)), " ") != strings.Join(foreign, " ") {
+		t.Errorf("images after the delete: %q; want only %q", strings.Fields(string(b)), foreign)
+	}
+	if d := e.actionDetail(t, v.ID, ActDelete, SubContainers); !strings.Contains(d, "Removed its 2 built images.") {
+		t.Errorf("the containers sub-step said %q", d)
 	}
 	var rm []string
 	for _, c := range e.cli.callsTo(t, "docker") {
@@ -862,7 +922,7 @@ func TestDeleteIsResumableAfterEverySubStep(t *testing.T) {
 			p2 := &Provisioner{Workspaces: e.p.Workspaces, Events: e.log, Broker: b2,
 				Cloner: e.p.Cloner, Containers: e.p.Containers, Logf: t.Logf}
 			rec := &reconcile.Reconciler{Workspaces: e.p.Workspaces, Events: e.log, Containers: e.p.Containers,
-				Busy: p2.Owns,
+				Exclusive: p2.Unowned,
 				Delete: func(ctx context.Context, w workspace.Workspace, _ string) error {
 					return p2.ResumeDelete(ctx, w.ID)
 				}}
@@ -1290,5 +1350,132 @@ func TestSweepHelpersSkipsAJobInFlight(t *testing.T) {
 	// Nothing left: nothing removed, nothing written.
 	if n, err := e.p.SweepHelpers(ctx); err != nil || n != 0 {
 		t.Errorf("an empty sweep = %d, %v", n, err)
+	}
+}
+
+// TestReconciliationActsUnderTheJobLock: boot reconciliation runs beside
+// serving, and decides and acts on a workspace in one call (Unowned) under
+// the lock every job starts under. A stop asked while it acts waits, then
+// sees what it did — here, the row reconciliation marked stopped, so the
+// stop is refused rather than started against it and failing. With the check
+// and the act apart (as Busy then apply were), the stop started between them
+// and reconciliation's move then broke it. The controls: a stop with nothing
+// held is answered at once; and a workspace this process already has a job
+// for is not acted on at all.
+func TestReconciliationActsUnderTheJobLock(t *testing.T) {
+	ctx := context.Background()
+	e := lifecycleEnv(t)
+	v := e.running(t, alpha)
+
+	// Control: the process that ran it owns it, and does not act on it.
+	if ran, err := e.p.Unowned(v.ID, func() error { t.Error("acted on an owned workspace"); return nil }); ran || err != nil {
+		t.Errorf("Unowned of an owned workspace = %v, %v", ran, err)
+	}
+
+	// The restart: a fresh process, which has started no job.
+	p2 := &Provisioner{Workspaces: e.p.Workspaces, Events: e.log, Broker: &stubBroker{},
+		Cloner: e.p.Cloner, Containers: e.p.Containers, Logf: t.Logf}
+
+	// Control: with nothing held, a stop is answered at once.
+	answered := make(chan error, 1)
+	go func() { answered <- p2.Stop(ctx, "01JABCDEFGHJKMNPQRSTVWXYZ0") }()
+	select {
+	case err := <-answered:
+		if !errors.Is(err, workspace.ErrNotFound) {
+			t.Errorf("control: stop of no workspace = %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("control: a stop with nothing held was not answered")
+	}
+
+	stopped := make(chan error, 1)
+	ran, err := p2.Unowned(v.ID, func() error {
+		go func() { stopped <- p2.Stop(ctx, v.ID) }()
+		select {
+		case err := <-stopped:
+			return fmt.Errorf("a stop was answered (%v) while reconciliation held the workspace", err)
+		case <-time.After(300 * time.Millisecond):
+		}
+		// Reconciliation's mark_stopped: Docker said the container exited.
+		_, err := p2.Workspaces.Move(ctx, v.ID, workspace.Stopped, "Its container had exited when Drydock started.")
+		return err
+	})
+	if !ran || err != nil {
+		t.Fatalf("Unowned = %v, %v", ran, err)
+	}
+	if err := <-stopped; !errors.Is(err, workspace.ErrInProgress) {
+		t.Errorf("the stop asked during reconciliation = %v; want ErrInProgress, refused against the stopped row", err)
+	}
+	p2.wg.Wait()
+	if got := e.view(t, v.ID); got.State != workspace.Stopped || !strings.Contains(deref(got.StateDetail), "had exited") {
+		t.Errorf("after: %s %q", got.State, deref(got.StateDetail))
+	}
+	if acts := e.actions(t, v.ID); len(acts) != 0 {
+		t.Errorf("a stop ran against the reconciled row: %v", acts)
+	}
+}
+
+// TestBootFollowUpsReadTheRowUnderTheLock: after reconciliation, boot opens
+// running workspaces' broker sockets and starts their session servers, from a
+// list read first. A stop that finishes after that read leaves nothing in
+// flight and the row stopped, so each decides from the row read again under
+// the lock. Here the row is stopped while each waits for the lock; neither
+// acts. The control is the same calls with the row running: both act.
+func TestBootFollowUpsReadTheRowUnderTheLock(t *testing.T) {
+	ctx := context.Background()
+	e := lifecycleEnv(t)
+	v := e.running(t, alpha)
+
+	fresh := func() (*Provisioner, *stubBroker, *[]string) {
+		b := &stubBroker{}
+		var started []string
+		p := &Provisioner{Workspaces: e.p.Workspaces, Events: e.log, Broker: b,
+			Cloner: e.p.Cloner, Containers: e.p.Containers, Logf: t.Logf,
+			StartSupervisor: func(_ context.Context, w workspace.Workspace) error {
+				started = append(started, w.ID)
+				return nil
+			}}
+		return p, b, &started
+	}
+
+	// Control: running, and nothing in the way.
+	p, b, started := fresh()
+	if err := p.ReopenSockets(ctx); err != nil || !b.isOpen(v.ID) {
+		t.Errorf("control: ReopenSockets = %v, open %v", err, b.isOpen(v.ID))
+	}
+	if err := p.ResumeSupervisors(ctx); err != nil || len(*started) != 1 {
+		t.Errorf("control: ResumeSupervisors = %v, started %v", err, *started)
+	}
+
+	for name, call := range map[string]func(p *Provisioner) error{
+		"sockets":     func(p *Provisioner) error { return p.ReopenSockets(ctx) },
+		"supervisors": func(p *Provisioner) error { return p.ResumeSupervisors(ctx) },
+	} {
+		if _, err := e.p.Workspaces.Move(ctx, v.ID, workspace.Running, ""); err != nil {
+			var ill workspace.ErrIllegalMove
+			if !errors.As(err, &ill) {
+				t.Fatal(err)
+			}
+		}
+		p, b, started := fresh()
+		p.mu.Lock()
+		done := make(chan error, 1)
+		go func() { done <- call(p) }()
+		time.Sleep(200 * time.Millisecond) // it has read the list, and waits for the lock
+		if _, err := p.Workspaces.Move(ctx, v.ID, workspace.Stopped, ""); err != nil {
+			t.Fatal(err)
+		}
+		p.mu.Unlock()
+		if err := <-done; err != nil {
+			t.Errorf("%s: %v", name, err)
+		}
+		if b.isOpen(v.ID) || len(*started) != 0 {
+			t.Errorf("%s acted on a workspace stopped since its list: open %v, started %v", name, b.isOpen(v.ID), *started)
+		}
+		// Back to running for the next case: stopped → running is not a
+		// legal move, so through building.
+		if _, err := e.p.Workspaces.Move(ctx, v.ID, workspace.Building, ""); err != nil {
+			t.Fatal(err)
+		}
 	}
 }

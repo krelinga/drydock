@@ -44,6 +44,51 @@ func (p *Provisioner) RestartSupervisor(ctx context.Context, id string) error {
 	return nil
 }
 
+// stillRunning re-reads the workspace (p.mu held) and reports whether it is
+// still running, refreshing w. A failed read is not running: boot's
+// follow-ups act only on what they can confirm.
+func (p *Provisioner) stillRunning(ctx context.Context, w *workspace.Workspace) bool {
+	cur, err := p.Workspaces.Get(ctx, w.ID)
+	if err != nil || cur.State != workspace.Running {
+		return false
+	}
+	*w = cur
+	return true
+}
+
+// ReopenSockets opens the broker socket of every running workspace with no
+// job in flight, after a restart: after reconciliation, so the set is the one
+// Docker confirmed. A stopped workspace has no container to mount it into,
+// and stop closed it (§9.1: access follows Drydock's state); start opens it
+// again at step 5. A workspace mid-provision is this process's own run, whose
+// step 5 opens it; a deleting one is having its socket removed. Each is
+// decided and opened under the lock every job starts under, from the row read
+// again there — boot runs beside serving, and a stop that finished after the
+// list was read has closed the socket this would otherwise open again.
+func (p *Provisioner) ReopenSockets(ctx context.Context) error {
+	if p.Broker == nil {
+		return nil
+	}
+	all, err := p.Workspaces.List(ctx)
+	if err != nil {
+		return err
+	}
+	var errs []error
+	for _, w := range all {
+		if w.State != workspace.Running {
+			continue
+		}
+		p.mu.Lock()
+		if p.active[w.ID] == nil && !p.closed && p.stillRunning(ctx, &w) {
+			if err := p.Broker.Open(ctx, w.ID); err != nil {
+				errs = append(errs, err)
+			}
+		}
+		p.mu.Unlock()
+	}
+	return errors.Join(errs...)
+}
+
 // ResumeSupervisors is boot adoption's half of §6's first reconciliation row
 // ("Adopt. Restart the supervisor"): every running workspace with no job in
 // flight gets its session server started — which first stops the one an
@@ -78,6 +123,12 @@ func (p *Provisioner) ResumeSupervisors(ctx context.Context) error {
 		}
 		p.mu.Lock()
 		busy := p.active[w.ID] != nil || p.closed
+		if !busy {
+			// Read again under the lock: the list is from before, and a
+			// stop asked since may have finished, leaving nothing in flight
+			// and a stopped row.
+			busy = !p.stillRunning(ctx, &w)
+		}
 		var serr error
 		switch {
 		case busy:

@@ -5,10 +5,12 @@ package supervisor
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -77,6 +79,54 @@ while :; do sleep 0.05; done
 	}
 	if took < grace {
 		t.Errorf("SIGKILL after %v, inside the %v grace period", took, grace)
+	}
+}
+
+// A stop whose context is cancelled during the SIGTERM grace period sends no
+// SIGKILL, and its log says so rather than "sending SIGKILL". The control is
+// the same stubborn server stopped with a live context, whose log does say
+// it and whose docker log has the KILL (TestSIGKILLOnlyAfterTheTimeout covers
+// the order; this re-checks the wording against the same rig).
+func TestACancelledStopSaysItSentNoSIGKILL(t *testing.T) {
+	for _, cancelled := range []bool{true, false} {
+		r := newRig(t, func(_ *rig, p *Policy) { p.StopTimeout = 700 * time.Millisecond })
+		var mu sync.Mutex
+		var logged []string
+		r.m.Logf = func(format string, args ...any) {
+			mu.Lock()
+			logged = append(logged, fmt.Sprintf(format, args...))
+			mu.Unlock()
+			t.Logf(format, args...)
+		}
+		r.script("claude", `trap '' TERM
+printf 'Environment ID: env_01STUBBORN0000000000000000\r\n    Capacity: 0/4 · x\r\n'
+while :; do sleep 0.05; done
+`)
+		r.start()
+		r.waitState(Serving, ReasonServing)
+		ctx, cancel := context.WithCancel(context.Background())
+		if cancelled {
+			time.AfterFunc(200*time.Millisecond, cancel)
+		}
+		err := r.m.Stop(ctx, wsID)
+		cancel()
+		mu.Lock()
+		text := strings.Join(logged, "\n")
+		mu.Unlock()
+		kills := strings.Contains(r.dockerLog(), "rc.pid KILL")
+		if cancelled {
+			if err == nil {
+				t.Error("a cancelled stop reported success")
+			}
+			if strings.Contains(text, "sending SIGKILL") || kills {
+				t.Errorf("a cancelled stop claimed or sent a SIGKILL (sent %v):\n%s", kills, text)
+			}
+			if !strings.Contains(text, "SIGKILL was not sent") {
+				t.Errorf("a cancelled stop did not say it sent no SIGKILL:\n%s", text)
+			}
+		} else if !strings.Contains(text, "sending SIGKILL") || !kills {
+			t.Errorf("control: a stop that timed out logged %q and sent KILL %v", text, kills)
+		}
 	}
 }
 

@@ -221,6 +221,7 @@ lowercase() {
 }
 
 validate_config() {
+	local here="$1"
 	if [ -z "${UI_HOST:-}" ] || [ -z "${UI_CERT:-}" ] || [ -z "${UI_KEY:-}" ]; then
 		usage >&2
 		die "a first install needs --ui-host, --cert and --key"
@@ -248,11 +249,13 @@ validate_config() {
 			[ -f "$f" ] || die "no such file: $f"
 		done
 		# The whole cross-site boundary rests on these being different
-		# registrable domains (port forwarding §4); Drydock refuses this too,
-		# but failing here leaves nothing half-installed.
-		if [ "$PREVIEW_DOMAIN" = "$UI_HOST" ] || [[ "$PREVIEW_DOMAIN" == *".$UI_HOST" ]] || [[ "$UI_HOST" == *".$PREVIEW_DOMAIN" ]]; then
-			die "--preview-domain must be a different registrable domain from --ui-host, not a parent or child of it"
-		fi
+		# registrable domains (port forwarding §4): not equal, parent, child
+		# or sibling. Drydock refuses this too, but failing here leaves
+		# nothing half-installed. The bundle's own binary decides, by the
+		# Public Suffix List `serve` uses, rather than a copy of it in shell.
+		local why
+		why=$("$here/drydock" check-preview-domain --ui-host "$UI_HOST" --preview-domain "$PREVIEW_DOMAIN" 2>&1) ||
+			die "--preview-domain refused: ${why#drydock check-preview-domain: }"
 		;;
 	*) die "--preview-domain, --preview-cert and --preview-key go together: give all three or none" ;;
 	esac
@@ -870,7 +873,7 @@ install_bundle() {
 	# Checks: each can refuse, and none changes anything.
 	check_prerequisites
 	load_config
-	validate_config
+	validate_config "$here"
 	check_caddy_can_read "$UI_CERT" "$UI_KEY"
 	[ -n "${PREVIEW_DOMAIN:-}" ] && check_caddy_can_read "$PREVIEW_CERT" "$PREVIEW_KEY"
 	caddyfile_policy

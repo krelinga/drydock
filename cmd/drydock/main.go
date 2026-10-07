@@ -1,8 +1,10 @@
-// Command drydock is the whole server: one binary, four subcommands.
+// Command drydock is the whole server: one binary, five subcommands.
 //
 //	drydock serve         [flags]   run the front door on its two Unix sockets
 //	drydock passwd        [flags]   set the operator password
 //	drydock count-secrets [flags]   print how many secrets are stored (read-only)
+//	drydock check-preview-domain [flags]
+//	                                refuse a preview domain same-site with the UI
 //	drydock version                 print the release this binary was built from
 //
 // There is deliberately nothing else. In particular there is no flag that binds a
@@ -48,6 +50,8 @@ func main() {
 		os.Exit(passwd(os.Args[2:], os.Stdin, os.Stdout, os.Stderr))
 	case "count-secrets":
 		os.Exit(countSecrets(os.Args[2:], os.Stdout, os.Stderr))
+	case "check-preview-domain":
+		os.Exit(checkPreviewDomain(os.Args[2:], os.Stderr))
 	case "version", "--version":
 		fmt.Println(version)
 	case "-h", "--help", "help":
@@ -64,7 +68,9 @@ func usage(w io.Writer) {
   drydock serve         [flags]   run the front door on its two Unix sockets
   drydock passwd        [flags]   set the operator password (ends every session)
   drydock count-secrets [flags]   print how many secrets are stored (read-only; for the installer)
-  drydock version                 print the release this binary was built from
+  drydock check-preview-domain [flags]
+                                  refuse a preview domain same-site with the UI host (for the installer)
+  drydock version               print the release this binary was built from
 
 Run any of them with -h for its flags.
 `)

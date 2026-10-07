@@ -167,12 +167,19 @@ func (cr ClaudeRoutes) cancel(w http.ResponseWriter, r *http.Request) {
 // codeFromBody takes the code out of {"code": "..."}: strictly one object
 // with exactly that one string field. The value is copied out of the body
 // as bytes — a valid code is printable ASCII with no quote or backslash, so
-// its JSON spelling is itself — and only a value with escapes goes through a
-// string, which the shape check then refuses anyway.
+// its JSON spelling is itself — and a value with any escape is refused, so
+// the code never passes through a string.
 func codeFromBody(body []byte) ([]byte, bool) {
 	var raw map[string]json.RawMessage
-	dec := json.NewDecoder(bytes.NewReader(body))
-	if err := dec.Decode(&raw); err != nil || dec.More() {
+	// Each RawMessage is the decoder's own copy of its bytes: zeroed too.
+	defer func() {
+		for _, v := range raw {
+			wipe(v)
+		}
+	}()
+	// Unmarshal rather than a Decoder, which would read the body into a
+	// buffer of its own that nothing zeroes; it refuses trailing data too.
+	if err := json.Unmarshal(body, &raw); err != nil {
 		return nil, false
 	}
 	v, ok := raw["code"]
@@ -180,14 +187,12 @@ func codeFromBody(body []byte) ([]byte, bool) {
 		return nil, false
 	}
 	inner := v[1 : len(v)-1]
-	if bytes.IndexByte(inner, '\\') < 0 {
-		return bytes.Clone(inner), true
-	}
-	var s string
-	if err := json.Unmarshal(v, &s); err != nil {
+	// Any escape is refused: decoding one would need a string, an immutable
+	// copy no one can zero, and no valid code needs one.
+	if bytes.IndexByte(inner, '\\') >= 0 {
 		return nil, false
 	}
-	return []byte(s), true
+	return bytes.Clone(inner), true
 }
 
 // codeRule names the shape rule a code broke, for the refusal's detail.

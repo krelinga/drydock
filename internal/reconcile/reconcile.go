@@ -160,19 +160,27 @@ type Reconciler struct {
 	Containers Lister
 	// OnAdopt restarts a running workspace's supervisor. Nil until the
 	// supervisor exists (Phase 5); adoption still records the container.
+	// It runs inside Exclusive, so it must not take the provisioner's lock.
+	// Drydock leaves it nil: provision.ResumeSupervisors does this after
+	// reconciliation.
 	OnAdopt func(ctx context.Context, w workspace.Workspace) error
 	// Delete finishes a delete. Nil until deletion exists (Phase 6); the
 	// workspace then stays in deleting, which is safe: it is persisted
 	// precisely so a later run can resume it.
 	Delete func(ctx context.Context, w workspace.Workspace, containerID string) error
-	// Busy reports a workspace this process has provisioned, or is
-	// provisioning. Its actions are skipped: reconciliation is about what
-	// happened before this process started, and it runs beside serving, so
-	// a create in the first seconds after boot is pending or building
-	// because it is being provisioned, not because a restart interrupted it
-	// — and marking it failed would race the run that owns it, or undo one
-	// that finished between the listing and the action. Nil means none.
-	Busy func(workspaceID string) bool
+	// Exclusive runs act only if this process has started no job for the
+	// workspace — provisioned it, or is provisioning, stopping or deleting
+	// it — and reports whether it ran, deciding and acting under the lock
+	// every job starts under (provision.Provisioner.Unowned). Reconciliation
+	// is about what happened before this process started, and it runs
+	// beside serving, so a create in the first seconds after boot is pending
+	// or building because it is being provisioned, not because a restart
+	// interrupted it; and a stop or start asked while reconciliation runs
+	// must not have its workspace acted on from a plan made before it. A
+	// check followed by the act left a window between them in which such a
+	// job could start; one call holding the lock across both has none. Nil
+	// means nothing is ever busy, and act runs directly.
+	Exclusive func(workspaceID string, act func() error) (ran bool, err error)
 }
 
 // ErrNothingChanged is wrapped by Run's error when it stopped before acting:
@@ -216,14 +224,13 @@ func (r *Reconciler) Run(ctx context.Context) ([]Action, error) {
 	plan := Plan(rows, found)
 	var p Partial
 	for _, a := range plan {
-		// Asked per action, after the rows were read: a run that started
-		// since is in the plan only if its row was, and is busy by now.
-		if r.Busy != nil && a.WorkspaceID != "" && r.Busy(a.WorkspaceID) {
-			continue
-		}
-		if err := r.apply(ctx, a); err != nil {
+		// Asked per action, after the rows were read: a job that started
+		// since is in the plan only if its row was, and owns it by now.
+		ran, err := r.exclusive(ctx, a)
+		switch {
+		case err != nil:
 			p.Errs = append(p.Errs, fmt.Errorf("%s %s: %w", a.Kind, a.WorkspaceID, err))
-		} else {
+		case ran:
 			p.Applied++
 		}
 	}
@@ -231,6 +238,24 @@ func (r *Reconciler) Run(ctx context.Context) ([]Action, error) {
 		return plan, &p
 	}
 	return plan, nil
+}
+
+// exclusive applies a under Exclusive. A resumed delete is the exception: it
+// is the provisioner's own job, which takes the lock itself, so it is only
+// checked under the lock and then run outside it. That leaves no window that
+// matters: a deleting row can only be deleted, and a delete asked while one
+// runs joins it rather than starting a second.
+func (r *Reconciler) exclusive(ctx context.Context, a Action) (bool, error) {
+	if r.Exclusive == nil || a.WorkspaceID == "" {
+		return true, r.apply(ctx, a)
+	}
+	if a.Kind == ResumeDelete {
+		if ran, _ := r.Exclusive(a.WorkspaceID, func() error { return nil }); !ran {
+			return false, nil
+		}
+		return true, r.apply(ctx, a)
+	}
+	return r.Exclusive(a.WorkspaceID, func() error { return r.apply(ctx, a) })
 }
 
 func (r *Reconciler) apply(ctx context.Context, a Action) error {

@@ -242,7 +242,7 @@ func (c *Catalog) refresh(ctx context.Context) (Result, error) {
 	// release, or by a delete cut off before its transaction, is swept
 	// here). A repository that comes back is then granted nothing: default
 	// deny (§10.1) is the right state for one the operator last saw leave.
-	dropped, err := store.DropReleasedRepositories(ctx, tx)
+	_, dropped, err := store.DropReleasedRepositories(ctx, tx)
 	if err != nil {
 		return Result{}, err
 	}

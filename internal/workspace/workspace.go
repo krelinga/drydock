@@ -305,10 +305,28 @@ func (s *Store) Remove(ctx context.Context, id string) error {
 			}
 			return nil, ErrIllegalMove{From: w.State, To: "removed"}
 		}
-		if dropped, err = store.DropReleasedRepositories(ctx, tx); err != nil {
+		var repos []int64
+		if repos, dropped, err = store.DropReleasedRepositories(ctx, tx); err != nil {
 			return nil, err
 		}
-		return one(events.NewEvent(id, events.Info, KindGone, "Workspace deleted.", map[string]any{}))
+		gone, err := events.NewEvent(id, events.Info, KindGone, "Workspace deleted.", map[string]any{})
+		if err != nil {
+			return nil, err
+		}
+		if len(repos) == 0 {
+			return []events.Event{gone}, nil
+		}
+		// The repository rows went in this commit, so the event saying so
+		// does too: a repo.* event is what makes an open catalog refetch,
+		// and without one it showed the removed repository until the next
+		// refresh.
+		removed, err := events.NewEvent("", events.Info, store.KindRepositoriesRemoved,
+			"A repository removed from the GitHub App's installation was released by its last workspace.",
+			map[string]any{"repository_ids": repos})
+		if err != nil {
+			return nil, err
+		}
+		return []events.Event{gone, removed}, nil
 	})
 	if err == nil && dropped > 0 && s.GrantsDropped != nil {
 		s.GrantsDropped()

@@ -300,15 +300,26 @@ func TestResumeDelete(t *testing.T) {
 
 // TestRunLeavesThisProcessesRunsAlone: reconciliation runs beside serving,
 // so a workspace this process is provisioning is mid-provision because it
-// is being provisioned. Busy skips it; the control is a row in the same
-// state, not busy, marked interrupted by the same run.
+// is being provisioned. Exclusive declines it; the control is a row in the
+// same state, not busy, marked interrupted by the same run — inside its
+// Exclusive call, not after it.
 func TestRunLeavesThisProcessesRunsAlone(t *testing.T) {
 	ctx := context.Background()
 	e := newEnv(t)
 	mine := e.walk(t, workspace.Cloning, workspace.Building)
 	stale := e.walk(t, workspace.Cloning, workspace.Building)
+	var inside workspace.State // the stale row's state as its act returned
 	r := &Reconciler{Workspaces: e.ws, Events: e.log, Containers: fakeLister{},
-		Busy: func(id string) bool { return id == mine.ID }}
+		Exclusive: func(id string, act func() error) (bool, error) {
+			if id == mine.ID {
+				return false, nil
+			}
+			err := act()
+			if w, gerr := e.ws.Get(ctx, id); gerr == nil && id == stale.ID {
+				inside = w.State
+			}
+			return true, err
+		}}
 	if _, err := r.Run(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -317,5 +328,8 @@ func TestRunLeavesThisProcessesRunsAlone(t *testing.T) {
 	}
 	if w, _ := e.ws.Get(ctx, stale.ID); w.State != workspace.Failed {
 		t.Errorf("control: an interrupted workspace is %s, want failed", w.State)
+	}
+	if inside != workspace.Failed {
+		t.Errorf("the interrupted workspace was %q when its Exclusive call returned: the act ran outside the lock", inside)
 	}
 }

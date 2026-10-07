@@ -36,11 +36,18 @@ type Broker struct {
 	// Secrets answers GET-SECRETS. Nil when no master key is configured,
 	// and then there are no secrets: every workspace gets count=0.
 	Secrets SecretSource
+	// Logf, if set, is the journal: a grant or an access that could not be
+	// recorded is written there (never the token or a value), since the
+	// answer the client gets is only "unavailable".
+	Logf func(format string, args ...any)
 
 	mu        sync.Mutex
 	listeners map[string]net.Listener
-	minted    map[string]time.Time // workspace|scope → expiry last recorded
-	wg        sync.WaitGroup
+	// recordMu guards minted: workspace|scope → the expiry of the token
+	// whose token_grant row is written.
+	recordMu sync.Mutex
+	minted   map[string]time.Time
+	wg       sync.WaitGroup
 }
 
 // requestTimeout bounds a connection: a client that connects and says
@@ -350,6 +357,7 @@ func (b *Broker) secrets(ctx context.Context, wsID string) string {
 	// Recorded before it is sent, and not sent if it cannot be recorded:
 	// "which workspaces ever held this?" (§10.4) has no other answer.
 	if err := b.Secrets.RecordAccess(ctx, wsID, got); err != nil {
+		b.logf("drydock: broker: workspace %s: secret_access could not be recorded, so no secrets were served: %v", wsID, err)
 		return errLine(ReasonUnavailable)
 	}
 	names := make([]string, len(got))
@@ -413,37 +421,63 @@ func (b *Broker) token(ctx context.Context, wsID string, scope Scope) string {
 			map[string]any{"scope": scope, "reason": reason, "permissions": scope.Permissions()})
 		return errLine(reason)
 	}
-	b.record(ctx, wsID, bd.repositoryID, scope, tok)
+	if err := b.record(ctx, wsID, bd.repositoryID, scope, tok); err != nil {
+		b.logf("drydock: broker: workspace %s: the %s token's token_grant could not be recorded, so it was not served: %v", wsID, scope, err)
+		// Never served unrecorded (see record): the next request retries.
+		return errLine(ReasonUnavailable)
+	}
 	return okToken(tok.Value(), tok.ExpiresAt)
+}
+
+func (b *Broker) logf(format string, args ...any) {
+	if b.Logf != nil {
+		b.Logf(format, args...)
+	}
 }
 
 // record writes a token_grant row and a token.issued event the first time a
 // token is served, not on every cache hit: the row says a token was minted
 // (§4), and twenty `gh` calls on one cached token are one grant.
-func (b *Broker) record(ctx context.Context, wsID string, repoID int64, scope Scope, tok github.Token) {
+//
+// The token is marked recorded only once its row is written, and record's
+// error stops it being served (token answers unavailable). The row is the
+// only answer to "which workspaces held a token for this repository, and
+// when?" — GitHub's own log names the App, not the workspace — so a token
+// served without one is a hole in that history, exactly as secret_access is
+// for secrets (§10.4), which refuse to answer when they cannot record. The
+// cost is small: a database that cannot take one row is failing everything
+// else too, and the next request retries the write (the token itself is in
+// the client's cache, so it costs GitHub nothing). recordMu makes the check,
+// the write and the mark one step, so concurrent requests for one token
+// write one row.
+func (b *Broker) record(ctx context.Context, wsID string, repoID int64, scope Scope, tok github.Token) error {
 	k := wsID + "|" + string(scope)
-	b.mu.Lock()
-	if b.minted == nil {
-		b.minted = map[string]time.Time{}
-	}
+	b.recordMu.Lock()
+	defer b.recordMu.Unlock()
 	if b.minted[k].Equal(tok.ExpiresAt) {
-		b.mu.Unlock()
-		return
+		return nil
 	}
-	b.minted[k] = tok.ExpiresAt
-	b.mu.Unlock()
 
 	now := b.Env.Clock.Now().UTC()
 	id, err := workspace.NewID(now, b.Env.Random)
 	if err != nil {
-		return
+		return err
 	}
 	perms, _ := json.Marshal(scope.Permissions())
-	b.DB.ExecContext(ctx, `INSERT INTO token_grant (id, workspace_id, repository_id, permissions, issued_at, expires_at, requested_by)
+	if _, err := b.DB.ExecContext(ctx, `INSERT INTO token_grant (id, workspace_id, repository_id, permissions, issued_at, expires_at, requested_by)
 		VALUES (?, ?, ?, ?, ?, ?, ?)`, id, wsID, repoID, string(perms),
-		now.Format(time.RFC3339Nano), tok.ExpiresAt.UTC().Format(time.RFC3339Nano), scope.requestedBy())
+		now.Format(time.RFC3339Nano), tok.ExpiresAt.UTC().Format(time.RFC3339Nano), scope.requestedBy()); err != nil {
+		return err
+	}
+	if b.minted == nil {
+		b.minted = map[string]time.Time{}
+	}
+	b.minted[k] = tok.ExpiresAt
+	// The row is the record; the event is a courtesy to the live view, and
+	// a failure to publish it does not unrecord the token.
 	b.Events.Emit(ctx, wsID, events.Info, "token.issued", fmt.Sprintf("Issued a %s token.", scope),
 		map[string]any{"scope": scope, "expires_at": tok.ExpiresAt.UTC()})
+	return nil
 }
 
 // reasonFor maps a GitHub failure to the protocol's closed set. A 429, or a
