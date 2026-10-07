@@ -610,8 +610,8 @@ when an installed `drydock version` differs from `drydock_version`, it stops `dr
 `/var/lib/drydock/drydock.db` to `/root/drydock.db.<timestamp>` (root, `0600`), and starts it again.
 It does the same when the running `drydock` is not the installed binary (the file it executes has
 another inode): an earlier run was cut off after it replaced the binary, or an installer before
-v0.4.2 refused a `--secrets-key` after doing so. The installer restarts that process onto the
-installed binary, which is the upgrade, so it gets an upgrade's backup.
+v0.4.2 refused a `--secrets-key` after doing so. Restarting that process onto the
+installed binary is the upgrade, so it gets an upgrade's backup first; the backup's own stop and start do the restart (the installer would otherwise).
 
 ```yaml
 # file: roles/drydock/tasks/install.yml

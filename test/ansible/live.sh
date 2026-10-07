@@ -261,8 +261,7 @@ play "${KEYSRC4[@]}"
 n=$run
 check "the run after an interrupted upgrade succeeds" [ "$rc" = 0 ]
 check "it backed up the database, though the file already read v0.0.4" [ "$(backups)" = $((b + 1)) ]
-check "the installer restarted what was running" grep -q "drydock is running v0.0.3, not the installed /usr/local/bin/drydock (v0.0.4)" "$work/run$n.log"
-check "and reported the upgrade" grep -q "upgraded Drydock v0.0.3 -> v0.0.4" "$work/run$n.log"
+check "the backup's restart moved drydock onto v0.0.4, so the installer found it current" grep -q "Drydock v0.0.4 is installed and current" "$work/run$n.log"
 check "drydock runs the installed file" runs_installed
 b=$(backups)
 play "${KEYSRC4[@]}"
