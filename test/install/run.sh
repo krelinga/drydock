@@ -21,11 +21,12 @@ cleanup() {
 trap cleanup EXIT
 
 arch=$(go env GOARCH)
-# Two real releases, for an upgrade, and a third whose binary cannot start,
-# for the rollback.
-"$root/deploy/package.sh" v0.0.1 "$work/releases/v0.0.1" "$arch" >/dev/null
-"$root/deploy/package.sh" v0.0.2 "$work/releases/v0.0.2" "$arch" >/dev/null
-"$root/deploy/package.sh" v0.0.3 "$work/releases/v0.0.3" "$arch" >/dev/null
+# Real releases for upgrades (v0.0.1, v0.0.2, and v0.0.4 and v0.0.5 for the
+# upgrades a refused key or an interrupted run leaves unfinished), and v0.0.3,
+# whose binary cannot start, for the rollback.
+for v in v0.0.1 v0.0.2 v0.0.3 v0.0.4 v0.0.5; do
+	"$root/deploy/package.sh" "$v" "$work/releases/$v" "$arch" >/dev/null
+done
 broken="$work/broken/drydock"
 mkdir -p "$broken"
 tar -xzf "$work/releases/v0.0.3/drydock_linux_$arch.tar.gz" -C "$work/broken"

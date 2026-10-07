@@ -5,7 +5,9 @@
 # ci.yml with the broker in #16 and never reached the release job, so v0.2.0's
 # release failed the socat half of the broker client tests.)
 #
-# Expects the code under test checked out at the workspace root. Its tools:
+# Expects the code under test checked out at the workspace root, with its
+# history (fetch-depth: 0): test/docs reads the commits since the last
+# release. Its tools:
 #   Go          from go.mod
 #   Caddy       pinned below; the devcontainer's feature takes the latest, so
 #               bump this when a rebuild moves it
@@ -22,6 +24,9 @@ inputs:
   run-suite:
     description: "'false' installs the tools (Go and Caddy are what the browser tier needs) without running the suite."
     default: "true"
+  pr-title:
+    description: "A pull request's title: the squash commit release-please will read, for test/docs's check that the deploy docs name only real or pending releases. Empty outside a PR."
+    default: ""
 
 runs:
   using: composite
@@ -65,11 +70,14 @@ runs:
 
     # Without DRYDOCK_REQUIRE_CADDY a missing caddy is a skip, which would be a
     # silent pass of the one test of the LAN-facing surface; likewise Docker
-    # and the container tier (test/container).
+    # and the container tier (test/container), and the commits since the last
+    # release that test/docs reads (the checkout needs fetch-depth: 0).
     - name: go test
       if: inputs.run-suite == 'true'
       shell: bash
       env:
         DRYDOCK_REQUIRE_CADDY: "1"
         DRYDOCK_REQUIRE_DOCKER: "1"
+        DRYDOCK_REQUIRE_RELEASE_HISTORY: "1"
+        DRYDOCK_PR_TITLE: ${{ inputs.pr-title }}
       run: go test ./...

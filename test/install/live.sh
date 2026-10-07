@@ -12,6 +12,11 @@
 # them from a local web server the way GitHub serves a published release, with
 # the installer's DRYDOCK_DOWNLOAD_BASE pointed at it — the same route run.sh
 # uses. The bytes installed are the bytes uploaded; only the host differs.
+# With --dir it also runs the README's upgrade: the release that is Latest on
+# GitHub (the previous one, while this is a draft) is installed, given a
+# password and a secret, and upgraded by these assets' one-liner with no
+# flags — a fresh install alone never meets a schema, unit or setting the
+# previous release left behind.
 set -euo pipefail
 usage() { echo "usage: $0 [--dir DIR] vX.Y.Z|latest" >&2; exit 2; }
 dir=""

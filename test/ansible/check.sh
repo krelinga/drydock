@@ -2,7 +2,9 @@
 # Keeps docs/deploy/first-deployment-ansible.md honest: extracts every ```yaml
 # block whose first line is "# file: <path>", assembles them (blocks naming the
 # same path are concatenated in document order) into the example layout, and
-# runs ansible-playbook --syntax-check and ansible-lint on the result.
+# runs ansible-playbook --syntax-check and ansible-lint on the result, then
+# runs §7.1's journal assertion on localhost against healthy and failing
+# journals given as data.
 #
 #   test/ansible/check.sh            # syntax-check, and lint if ansible-lint is installed
 #   test/ansible/check.sh OUTDIR     # also leave the assembled layout in OUTDIR
@@ -14,11 +16,13 @@ here=$(cd "$(dirname "$0")" && pwd)
 root=$(cd "$here/../.." && pwd)
 doc="$root/docs/deploy/first-deployment-ansible.md"
 
+tmp_out=""
 if [ $# -ge 1 ]; then
 	out="$1"
 	mkdir -p "$out"
 else
 	out=$(mktemp -d)
+	tmp_out=$out
 	trap 'rm -rf "$out"' EXIT
 fi
 
@@ -78,4 +82,44 @@ elif [ "${DRYDOCK_REQUIRE_ANSIBLE_LINT:-0}" = 1 ]; then
 else
 	echo "--- ansible-lint not installed: skipped"
 fi
+
+# The journal assertion (verify.yml, tag drydock_verify_journal) against
+# journals given as data, on localhost: the only task the tag selects is the
+# assertion, so drydock_journal is the extra var. It is an allowlist, so a
+# failure line it was never told about fails it as surely as a listed one —
+# #43 was a denylist that let `drydock: broker:` through. Each refusal sits
+# beside the healthy journals passing.
+echo "--- the journal assertion"
+jc=$(mktemp -d)
+trap 'rm -rf "$jc" ${tmp_out:+"$tmp_out"}' EXIT
+printf -- '- name: The journal assertion alone\n  hosts: localhost\n  connection: local\n  gather_facts: false\n  tasks:\n    - name: Verify\n      ansible.builtin.import_tasks: %s/roles/drydock/tasks/verify.yml\n' "$out" >"$jc/play.yml"
+serving='drydock: serving on /run/drydock/http.sock and /run/drydock/preview.sock'
+journal_fails=0
+journal() { # journal WANT(pass|fail) DESCRIPTION LINE...
+	local want="$1" what="$2" got=pass
+	shift 2
+	python3 -c 'import json, sys; l = sys.argv[1:]; print(json.dumps({"drydock_journal": {"stdout": "\n".join(l), "stdout_lines": l}}))' "$@" >"$jc/vars.json"
+	ansible-playbook -i localhost, "$jc/play.yml" --tags drydock_verify_journal -e "@$jc/vars.json" >"$jc/out.log" 2>&1 </dev/null || got=fail
+	# A failure must be the assertion's, not the play's.
+	if [ "$got" = fail ] && ! grep -q 'FAILED! => {"assertion"' "$jc/out.log"; then
+		got="fail outside the assertion"
+	fi
+	if [ "$got" = "$want" ]; then
+		echo "ok   $what: the assertion says $want"
+	else
+		echo "FAIL $what: the assertion says $got, want $want"
+		tail -20 "$jc/out.log"
+		journal_fails=$((journal_fails + 1))
+	fi
+}
+journal pass "control: the serving line alone" "$serving"
+journal pass "control: with the benign login sweep" "$serving" "drydock: login: removed 2 leftover login container(s)"
+journal fail "no serving line" "drydock: login: removed 2 leftover login container(s)"
+journal fail "a broker failure" "$serving" "drydock: broker: reopening the sockets: permission denied"
+journal fail "a session-server failure" "$serving" "drydock: session servers: x"
+journal fail "a catalog refresh failure" "$serving" "drydock: catalog refresh: github: GET /app/installations: 401"
+journal fail "a line nobody has listed yet" "$serving" "drydock: something new: went wrong"
+journal fail "a panic" "$serving" "panic: runtime error" "goroutine 1 [running]:"
+journal fail "a failed login sweep" "$serving" "drydock: login: sweeping leftover login containers: docker: x"
+[ "$journal_fails" = 0 ] || exit 1
 echo PASS

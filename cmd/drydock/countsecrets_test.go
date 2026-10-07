@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
+	"database/sql"
 	"errors"
 	"os"
 	"path/filepath"
@@ -74,37 +75,80 @@ func TestCountSecretsWritesNothing(t *testing.T) {
 		t.Error("count-secrets created the database it was asked about")
 	}
 
-	// A database from before the secret table: user_version 0 and one
-	// unrelated table. A migration would add the secret table.
-	old := filepath.Join(dir, "old.db")
-	db, err := store.OpenAdmin(context.Background(), old)
-	if err != nil {
-		t.Fatal(err)
-	}
-	db.Close()
-	raw, err := os.ReadFile(old)
-	if err != nil {
-		t.Fatal(err)
-	}
+	// A database from before the secret table: WAL mode, user_version 0 and
+	// one unrelated table, with a row in it. A migration would add the secret
+	// table and set user_version.
 	pre := filepath.Join(dir, "pre.db")
-	if err := os.WriteFile(pre, nil, 0o600); err != nil {
+	raw, err := sql.Open("sqlite", "file:"+pre)
+	if err != nil {
 		t.Fatal(err)
 	}
+	for _, q := range []string{`PRAGMA journal_mode = WAL`, `CREATE TABLE legacy_note (id INTEGER PRIMARY KEY, body TEXT)`,
+		`INSERT INTO legacy_note VALUES (1, 'x')`} {
+		if _, err := raw.Exec(q); err != nil {
+			t.Fatalf("%s: %v", q, err)
+		}
+	}
+	raw.Close()
+	preSum := fileSum(t, pre)
 	if out, errOut, rc := runCount(t, pre); rc != 0 || out != "0\n" {
 		t.Errorf("a database with no secret table: %q, rc %d, %s; want 0", out, rc, errOut)
 	}
-	if st, _ := os.Stat(pre); st.Size() != 0 {
-		t.Error("count-secrets wrote to a database with no schema: it migrated")
+	if fileSum(t, pre) != preSum {
+		t.Error("count-secrets changed a database with no secret table: it migrated")
 	}
+	check, err := sql.Open("sqlite", "file:"+pre+"?mode=ro")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var version, tables, rows int
+	check.QueryRow(`PRAGMA user_version`).Scan(&version)
+	check.QueryRow(`SELECT count(*) FROM sqlite_schema WHERE name = 'secret'`).Scan(&tables)
+	check.QueryRow(`SELECT count(*) FROM legacy_note`).Scan(&rows)
+	check.Close()
+	if rows != 1 {
+		t.Fatalf("control: the older database reads %d rows of its table; want 1", rows)
+	}
+	if version != 0 || tables != 0 {
+		t.Errorf("after the question: user_version %d, secret tables %d; want 0 and 0", version, tables)
+	}
+	sidecarsHoldNothing(t, pre)
 
-	// And a full database's bytes are unchanged by the question.
-	before := sha256.Sum256(raw)
-	if out, _, rc := runCount(t, old); rc != 0 || out != "0\n" {
-		t.Errorf("control: the migrated database answers %q, rc %d", out, rc)
+	// And a current database's bytes are unchanged by the question, with a
+	// secret in it (the control: the question did read it).
+	cur := filepath.Join(dir, "current.db")
+	db, err := store.Open(context.Background(), cur)
+	if err != nil {
+		t.Fatal(err)
 	}
-	raw, _ = os.ReadFile(old)
-	if sha256.Sum256(raw) != before {
+	putSecret(t, db, "TEST_KEY")
+	db.Close()
+	curSum := fileSum(t, cur)
+	if out, _, rc := runCount(t, cur); rc != 0 || out != "1\n" {
+		t.Errorf("control: the current database answers %q, rc %d; want 1", out, rc)
+	}
+	if fileSum(t, cur) != curSum {
 		t.Error("count-secrets changed the database file")
+	}
+	sidecarsHoldNothing(t, cur)
+}
+
+func fileSum(t *testing.T, path string) [32]byte {
+	t.Helper()
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return sha256.Sum256(b)
+}
+
+// sidecarsHoldNothing: reading a cleanly closed WAL database makes SQLite
+// create its -shm index and an empty -wal (see countSecrets). Nothing may be
+// written into the -wal: that would be a write to the database.
+func sidecarsHoldNothing(t *testing.T, path string) {
+	t.Helper()
+	if st, err := os.Stat(path + "-wal"); err == nil && st.Size() != 0 {
+		t.Errorf("%s-wal holds %d bytes after the question; want none", filepath.Base(path), st.Size())
 	}
 }
 
@@ -125,6 +169,33 @@ func TestCountSecretsFailsClosed(t *testing.T) {
 	}
 	if out, _, rc := runCount(t, dir); rc == 0 || out != "" {
 		t.Errorf("a directory: %q, rc %d; want an error", out, rc)
+	}
+
+	// An empty file is no database Drydock left (it migrates on open), so
+	// it is not "no secrets" — beside the control that the same path, once
+	// a database, answers.
+	empty := filepath.Join(dir, "empty.db")
+	if err := os.WriteFile(empty, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	out, errOut, rc = runCount(t, empty)
+	if rc == 0 || out != "" {
+		t.Errorf("an empty file: %q, rc %d; want an error and nothing on stdout", out, rc)
+	}
+	if !strings.Contains(errOut, "empty file") {
+		t.Errorf("stderr = %q; want it to say the file is empty", errOut)
+	}
+	if st, _ := os.Stat(empty); st.Size() != 0 {
+		t.Error("count-secrets wrote to the empty file")
+	}
+	os.Remove(empty)
+	db, err := store.Open(context.Background(), empty)
+	if err != nil {
+		t.Fatal(err)
+	}
+	db.Close()
+	if out, errOut, rc := runCount(t, empty); rc != 0 || out != "0\n" {
+		t.Errorf("control: a database at that path answers %q, rc %d, %s; want 0", out, rc, errOut)
 	}
 	var o, e bytes.Buffer
 	if rc := countSecrets([]string{"--db", junk, "extra"}, &o, &e); rc != 2 {
