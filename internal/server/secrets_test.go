@@ -111,7 +111,7 @@ func secretsServer(t *testing.T, dir string, masterKey []byte, seed ...string) *
 			t.Fatal(err)
 		}
 	}
-	r := &running{cfg: cfg, srv: srv, client: unixClient(cfg.APISocket)}
+	r := &running{cfg: cfg, srv: srv, client: unixClient(cfg.APISocket), gh: f}
 	for _, ws := range []string{wsGranted, wsUngranted} {
 		deadline := time.Now().Add(5 * time.Second)
 		for {
@@ -372,6 +372,160 @@ func TestSecretsCanarySweep(t *testing.T) {
 		if strings.HasPrefix(what, "the master key") && (strings.Contains(string(self), needle) || strings.Contains(env, needle)) {
 			t.Errorf("an environment holds %s", what)
 		}
+	}
+}
+
+// §4: a repository the installation drops takes its secret grants with it,
+// and one that comes back is granted nothing — including when a workspace
+// held it at the drop. Then §12 keeps the grants while that workspace lives
+// (it keeps working on what it already has), and its delete releases them.
+// Through the real server: the catalog's refresh, the delete's Remove, and
+// the broker's GET-SECRETS over a socket, so a grant the tables no longer
+// hold but the broker's decrypted snapshot still does is caught too.
+//
+// Controls in the same function: the held workspace still receives the
+// secret after the drop, the other repository's workspace receives it
+// throughout, and the history (secret_access) of the deleted workspace is
+// kept.
+func TestReleasedRepositoryGrantsDoNotRevive(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	masterKey := make([]byte, 32)
+	rand.Read(masterKey)
+	r := secretsServer(t, dir, masterKey)
+	value := "deploy-" + randomAlnum(24)
+	if _, err := r.srv.Secrets.Put(ctx, "DEPLOY_KEY", value, "deploys krelinga/alpha", ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.srv.Secrets.SetGrants(ctx, "DEPLOY_KEY", []int64{101, 202}, false); err != nil {
+		t.Fatal(err)
+	}
+	holds := func(ws string) bool {
+		t.Helper()
+		env, stderr, code := r.export(t, ws)
+		if code != 0 || stderr != "" {
+			t.Fatalf("export for %s: exit %d, stderr %q", ws, code, stderr)
+		}
+		return strings.Contains(env, "DEPLOY_KEY="+value+"\n")
+	}
+	refresh := func() {
+		t.Helper()
+		if _, err := r.srv.Catalog.Refresh(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	grantsOn := func(repo int64) int {
+		t.Helper()
+		var n int
+		if err := r.srv.DB.QueryRowContext(ctx, `SELECT count(*) FROM secret_grant WHERE repository_id = ?`, repo).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	if !holds(wsGranted) || !holds(wsUngranted) {
+		t.Fatal("control: a granted workspace did not receive the secret")
+	}
+	alpha := r.gh.Installations[0].Repos[0]
+
+	// The installation drops alpha while its workspace holds it: kept (§12).
+	r.gh.Mu.Lock()
+	r.gh.Installations[0].Repos = r.gh.Installations[0].Repos[1:]
+	r.gh.Mu.Unlock()
+	refresh()
+	if !holds(wsGranted) {
+		t.Error("control: the holding workspace lost its secrets when its repository left the installation (§12)")
+	}
+
+	// The workspace is deleted — the delete's last step — which releases it.
+	if _, err := r.srv.DB.ExecContext(ctx, `UPDATE workspace SET state = 'deleting' WHERE id = ?`, wsGranted); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.srv.Workspaces.Remove(ctx, wsGranted); err != nil {
+		t.Fatal(err)
+	}
+	if n := grantsOn(101); n != 0 {
+		t.Errorf("the released repository still has %d grants after its workspace's delete", n)
+	}
+	refresh()
+
+	// Re-added, and cloned again: granted nothing.
+	r.gh.Mu.Lock()
+	r.gh.Installations[0].Repos = append(r.gh.Installations[0].Repos, alpha)
+	r.gh.Mu.Unlock()
+	refresh()
+	const wsAgain = "01JCCCCCCCCCCCCCCCCCCCCCCC"
+	if _, err := r.srv.DB.ExecContext(ctx, `INSERT INTO workspace (id, repository_id, host_path, branch, state)
+		VALUES (?, 101, '/z', 'main', 'running')`, wsAgain); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.srv.Broker.Open(ctx, wsAgain); err != nil {
+		t.Fatal(err)
+	}
+	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(10 * time.Millisecond) {
+		if _, err := os.Stat(r.srv.Broker.SocketPath(wsAgain)); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("no broker socket for the re-added repository's workspace")
+		}
+	}
+	if holds(wsAgain) {
+		t.Error("a grant revived: the re-added repository's new workspace received the secret")
+	}
+	if n := grantsOn(101); n != 0 {
+		t.Errorf("the re-added repository has %d grants", n)
+	}
+	if !holds(wsUngranted) || grantsOn(202) != 1 {
+		t.Error("control: the still-installed repository lost its grant across the refreshes")
+	}
+	var history int
+	r.srv.DB.QueryRowContext(ctx, `SELECT count(*) FROM secret_access WHERE workspace_id = ?`, wsGranted).Scan(&history)
+	if history == 0 {
+		t.Error("the deleted workspace's secret_access history is gone")
+	}
+
+	// The refresh's own sweep: beta is dropped while held, and its workspace
+	// row then vanishes without Remove — as a release before this fix left
+	// such rows. The next refresh deletes the grant, and the broker must
+	// not keep serving it from its snapshot to beta's next workspace.
+	beta := r.gh.Installations[0].Repos[0]
+	r.gh.Mu.Lock()
+	r.gh.Installations[0].Repos = r.gh.Installations[0].Repos[1:]
+	r.gh.Mu.Unlock()
+	refresh()
+	if !holds(wsUngranted) {
+		t.Error("control: beta's workspace lost its secrets when beta left the installation (§12)")
+	}
+	r.srv.Broker.Close(wsUngranted)
+	if _, err := r.srv.DB.ExecContext(ctx, `DELETE FROM workspace WHERE id = ?`, wsUngranted); err != nil {
+		t.Fatal(err)
+	}
+	refresh()
+	if n := grantsOn(202); n != 0 {
+		t.Errorf("the released repository beta still has %d grants after a refresh", n)
+	}
+	r.gh.Mu.Lock()
+	r.gh.Installations[0].Repos = append(r.gh.Installations[0].Repos, beta)
+	r.gh.Mu.Unlock()
+	refresh()
+	const wsBetaAgain = "01JDDDDDDDDDDDDDDDDDDDDDDD"
+	if _, err := r.srv.DB.ExecContext(ctx, `INSERT INTO workspace (id, repository_id, host_path, branch, state)
+		VALUES (?, 202, '/w', 'main', 'running')`, wsBetaAgain); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.srv.Broker.Open(ctx, wsBetaAgain); err != nil {
+		t.Fatal(err)
+	}
+	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(10 * time.Millisecond) {
+		if _, err := os.Stat(r.srv.Broker.SocketPath(wsBetaAgain)); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("no broker socket for beta's new workspace")
+		}
+	}
+	if holds(wsBetaAgain) {
+		t.Error("a grant revived: re-added beta's new workspace received the secret")
 	}
 }
 

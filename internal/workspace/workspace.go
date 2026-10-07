@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/krelinga/drydock/internal/events"
+	"github.com/krelinga/drydock/internal/store"
 	"github.com/krelinga/drydock/internal/sys"
 )
 
@@ -34,6 +35,11 @@ type Store struct {
 	Root string
 	// Cap is the concurrent-container cap (config.ContainerCap).
 	Cap int
+	// GrantsDropped is called after a Remove commits that deleted secret
+	// grants — its repository had left the installation, and this workspace
+	// was what held it — so the secrets store rebuilds the snapshot the
+	// broker serves from (secrets.Store.Invalidate).
+	GrantsDropped func()
 }
 
 var (
@@ -248,7 +254,10 @@ func (s *Store) ClearDetail(ctx context.Context, id string, want State) (cleared
 // "which workspaces ever held this secret?" (§10.4) is asked after the fact,
 // and a deleted workspace is exactly one whose history that question needs.
 // The supervisor row (§4) references the workspace, so it goes in the same
-// transaction — it describes a process, and the process is gone.
+// transaction — it describes a process, and the process is gone. So does its
+// repository's row, with that repository's secret grants, when the
+// installation has dropped the repository: this workspace was the one thing
+// keeping them (§4, §12), and a repository re-added later is granted nothing.
 func (s *Store) Remove(ctx context.Context, id string) error {
 	tx, err := s.DB.BeginTx(ctx, nil)
 	if err != nil {
@@ -273,8 +282,15 @@ func (s *Store) Remove(ctx context.Context, id string) error {
 		}
 		return ErrIllegalMove{From: w.State, To: "removed"}
 	}
+	dropped, err := store.DropReleasedRepositories(ctx, tx)
+	if err != nil {
+		return err
+	}
 	if err := tx.Commit(); err != nil {
 		return err
+	}
+	if dropped > 0 && s.GrantsDropped != nil {
+		s.GrantsDropped()
 	}
 	_, err = s.Events.Emit(ctx, id, events.Info, KindGone, "Workspace deleted.", map[string]any{})
 	return err

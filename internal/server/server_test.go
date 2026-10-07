@@ -37,6 +37,8 @@ type running struct {
 	cfg    config.Config
 	srv    *Server
 	client *http.Client
+	// gh is the fake GitHub, for a test that changes the installation.
+	gh *githubtest.Fake
 }
 
 func testConfig(t *testing.T, dir string) config.Config {

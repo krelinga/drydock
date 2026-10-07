@@ -248,12 +248,7 @@ func (s *sup) runOnce(ctx context.Context) outcome {
 				open = false
 				break
 			}
-			now := m.clock().Now()
-			var redact []string
-			if m.Redact != nil {
-				redact = m.Redact(ctx, s.ws)
-			}
-			s.log.Write(now, b, redact)
+			s.log.Write(m.clock().Now(), b)
 			tail = keepTail(append(tail, b...), refusalTail)
 			window = keepTail(append(window, b...), discoveryWindow)
 			s.heartbeat(ctx)
@@ -271,7 +266,7 @@ func (s *sup) runOnce(ctx context.Context) outcome {
 			hang = hangReason(visible(tail))
 			// The prompt has no line end; put it in the log now, so the log
 			// shows what the server is waiting at.
-			s.log.Flush(m.clock().Now(), nil)
+			s.log.Flush(m.clock().Now())
 			go m.terminate(context.WithoutCancel(ctx), s.ws, proc, procDone)
 		case <-cancelled:
 			cancelled = nil
@@ -295,7 +290,7 @@ func (s *sup) runOnce(ctx context.Context) outcome {
 	}
 	proc.Wait()
 	master.Close()
-	s.log.Flush(m.clock().Now(), nil)
+	s.log.Flush(m.clock().Now())
 
 	if s.isStopping() {
 		return outcome{kind: outStopped}

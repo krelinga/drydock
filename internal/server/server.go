@@ -19,6 +19,7 @@ import (
 	"os/user"
 	"path/filepath"
 	"strconv"
+	"sync"
 	"syscall"
 	"time"
 
@@ -82,10 +83,14 @@ type Server struct {
 	// reconciled closes when boot reconciliation has finished, so a test
 	// can set up workspace rows reconciliation would otherwise move.
 	reconciled chan struct{}
-	api        *http.Server
-	preview    *http.Server
-	apiLn      net.Listener
-	prevLn     net.Listener
+	// repoOf caches each workspace's repository id for secretValues: it is
+	// fixed for the workspace's life, so the log's per-read path asks the
+	// database once per workspace, not once per terminal read.
+	repoOf  sync.Map // workspace id → int64
+	api     *http.Server
+	preview *http.Server
+	apiLn   net.Listener
+	prevLn  net.Listener
 }
 
 // New opens the store (taking the single-instance lock), builds both muxes,
@@ -178,6 +183,10 @@ func New(ctx context.Context, cfg config.Config, env sys.Env) (*Server, error) {
 		// A granted secret's value a session server prints is masked in its
 		// log as it is written (§13.5: redact by default).
 		s.Supervisor.Redact = s.secretValues
+		// A removed repository's grants are deleted when nothing holds it
+		// any more (§4), by a workspace's removal or by a refresh; the
+		// broker's snapshot must not outlive them.
+		s.Workspaces.GrantsDropped = s.Secrets.Invalidate
 	}
 	var repoCatalog api.RepoCatalog
 	if cfg.GitHubAppID != 0 {
@@ -193,6 +202,7 @@ func New(ctx context.Context, cfg config.Config, env sys.Env) (*Server, error) {
 		s.Broker = &broker.Broker{Dir: cfg.BrokerDir, GitHub: gh, DB: db.DB, Events: s.Events, Env: env}
 		if s.Secrets != nil {
 			s.Broker.Secrets = s.Secrets
+			s.Catalog.GrantsDropped = s.Secrets.Invalidate
 		}
 		repoCatalog = s.Catalog
 		s.Provisioner.Broker = s.Broker
@@ -317,14 +327,25 @@ const provisionShutdownWait = 20 * time.Second
 const supervisorDetachWait = 10 * time.Second
 
 // secretValues are the values of the secrets a workspace's repository is
-// granted, for its session server's log to mask. Read from the broker's
-// snapshot: no decryption per call (§10.3).
+// granted, for its session server's log to mask. Asked on every terminal
+// read, so it touches the database at most once per workspace: the
+// repository id is cached (a workspace never changes repository), and the
+// values come from the broker's snapshot, which is no cache to go stale — a
+// secret write or a grant change rebuilds it, so a value granted a moment
+// ago is masked from the next read on (§10.3: no decryption per call).
 func (s *Server) secretValues(ctx context.Context, workspaceID string) []string {
-	w, err := s.Workspaces.Get(ctx, workspaceID)
-	if err != nil {
-		return nil
+	var repo int64
+	if v, ok := s.repoOf.Load(workspaceID); ok {
+		repo = v.(int64)
+	} else {
+		w, err := s.Workspaces.Get(ctx, workspaceID)
+		if err != nil {
+			return nil
+		}
+		repo = w.RepositoryID
+		s.repoOf.Store(workspaceID, repo)
 	}
-	entries, err := s.Secrets.Resolve(ctx, w.RepositoryID)
+	entries, err := s.Secrets.Resolve(ctx, repo)
 	if err != nil {
 		return nil
 	}
