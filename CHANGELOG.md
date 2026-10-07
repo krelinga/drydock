@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.4.3](https://github.com/krelinga/drydock/compare/v0.4.2...v0.4.3) (2026-10-07)
+
+
+### Bug Fixes
+
+* close the low-severity findings from the post-merge review ([#63](https://github.com/krelinga/drydock/issues/63)) ([fdceed9](https://github.com/krelinga/drydock/commit/fdceed97f1d9deb7caa5ea8116ab544fd4e89d17))
+* never leave a login container behind after a cancel, and stop the login PTY test racing docker ps ([#65](https://github.com/krelinga/drydock/issues/65)) ([de507f9](https://github.com/krelinga/drydock/commit/de507f9418eb686030b163e574684971fd02ae7d))
+
 ## [0.4.2](https://github.com/krelinga/drydock/compare/v0.4.1...v0.4.2) (2026-10-07)
 
 
