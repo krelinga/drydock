@@ -190,3 +190,41 @@ func TestDiedUnobserved(t *testing.T) {
 		t.Errorf("reconcile started the container (%s): nothing starts itself", status)
 	}
 }
+
+// TestLegacyBrokerMountAsDockerReportsIt: a container made the way a Drydock
+// before the directory mount made it — the socket file bind-mounted at
+// /run/drydock/broker.sock — is reported legacy from what docker inspect
+// really says, stopped as well as running; one with the directory mounted at
+// /run/drydock, the control, is not.
+func TestLegacyBrokerMountAsDockerReportsIt(t *testing.T) {
+	needDocker(t)
+	ctx := context.Background()
+	p := prefix(t)
+	dir, err := os.MkdirTemp("", "ddm")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(dir) })
+	sock := filepath.Join(dir, "broker.sock")
+	os.WriteFile(sock, nil, 0o600) // a file mount's source must exist; inspect needs no listener
+	m := container.Manager{Run: subproc.Exec{}, LabelPrefix: p}
+	for _, c := range []struct {
+		mount  string
+		legacy bool
+	}{
+		{"type=bind,source=" + sock + ",target=" + container.LegacyBrokerMountPoint, true},
+		{"type=bind,source=" + dir + ",target=" + container.BrokerMountPoint, false},
+	} {
+		id, _ := workspace.NewID(time.Now(), rand.Reader)
+		cid := docker(t, "run", "-d", "--label", p+".workspace="+id, "--mount", c.mount, image, "sleep", "300")
+		for _, phase := range []string{"running", "stopped"} {
+			if phase == "stopped" {
+				docker(t, "stop", "-t", "1", cid)
+			}
+			got, err := m.LegacyBrokerMount(ctx, id)
+			if err != nil || got != c.legacy {
+				t.Errorf("%s, %s: LegacyBrokerMount = %v, %v; want %v", c.mount, phase, got, err, c.legacy)
+			}
+		}
+	}
+}

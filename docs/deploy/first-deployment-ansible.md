@@ -1084,6 +1084,13 @@ With `drydock_secrets_key_src` set, the installed key matches it, so nothing is 
 Changing a certificate, the CA, or the App key works the same way: change the file or the variable
 and re-run.
 
+**Upgrading from v0.4.1 or earlier, Rebuild each workspace once**, from the UI. Those releases
+mounted each workspace's broker socket as a file, which the upgrade's restart strands; the reasons,
+the symptoms (`exit 69`, git and `gh` failing with *GitHub access unavailable*) and a loop that
+lists the containers still needing it are in
+[runbook §10.1](first-deployment.md#101-upgrade). A play should not rebuild workspaces: a rebuild
+replaces a container someone may be working in.
+
 ### 10.2 Roll back
 
 - **Automatic:** when a new binary does not start, the installer restores the previous binary (and

@@ -130,6 +130,20 @@ rm -rf /srv/drydock/ws/probe /srv/drydock/ws/.probe
 check "the boot reconciliation reached Docker too" bash -c "! journalctl -u drydock -o cat | grep -q 'drydock: reconcile'"
 check "control: that is the service's journal" bash -c "journalctl -u drydock -o cat | grep -q 'serving on'"
 
+section "a workspace's broker directory survives a restart"
+# A running container bind-mounts /run/drydock/sock/<id>, which pins that
+# directory's inode; if systemd removed the runtime directory on the stop,
+# the restarted service would put its socket in a new directory the container
+# cannot see.
+mkdir -p /run/drydock/sock/01JINSTALLTESTAAAAAAAAAAAA # not install(1): install() is the scenario's own
+chown -R drydock:drydock /run/drydock/sock && chmod 0700 /run/drydock/sock
+ino=$(stat -c %i /run/drydock/sock/01JINSTALLTESTAAAAAAAAAAAA)
+pid=$(mainpid drydock)
+systemctl restart drydock
+check "control: the service restarted" [ "$(mainpid drydock)" != "$pid" ]
+check "the directory is the same inode after it" [ "$(stat -c %i /run/drydock/sock/01JINSTALLTESTAAAAAAAAAAAA 2>/dev/null)" = "$ino" ]
+rm -rf /run/drydock/sock/01JINSTALLTESTAAAAAAAAAAAA
+
 printf '%s\n' "$PW" | runuser -u drydock -- drydock passwd --db /var/lib/drydock/drydock.db >/dev/null
 jar=$(mktemp)
 code=$("${CURL[@]}" -o /dev/null -w '%{http_code}' -c "$jar" -H "Origin: https://$UI" \

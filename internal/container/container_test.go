@@ -164,6 +164,51 @@ EOF
 	}
 }
 
+// A container a Drydock before the directory mount made has the socket
+// mounted as a file; one made now has the directory. The first is reported
+// legacy, by List and by LegacyBrokerMount, and the second — the control —
+// is not; nor is a container with no broker mount at all, nor a volume that
+// happens to sit at the old path.
+func TestLegacyBrokerMountIsReadFromInspect(t *testing.T) {
+	const old, cur, none = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+		"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+	labels := `"Config":{"Labels":{"drydock.workspace":"` + wsID + `"}}`
+	inspect := map[string]string{
+		old: `{"Id":"` + old + `","State":{"Running":true},` + labels + `,"Mounts":[
+		  {"Type":"bind","Source":"/run/drydock/sock/` + wsID + `.sock","Destination":"/run/drydock/broker.sock"},
+		  {"Type":"volume","Name":"drydock-claude-config","Destination":"/home/vscode/.claude"}]}`,
+		cur: `{"Id":"` + cur + `","State":{"Running":true},` + labels + `,"Mounts":[
+		  {"Type":"bind","Source":"/run/drydock/sock/` + wsID + `","Destination":"/run/drydock","RW":false}]}`,
+		none: `{"Id":"` + none + `","State":{"Running":true},` + labels + `,"Mounts":[
+		  {"Type":"volume","Name":"x","Destination":"/run/drydock/broker.sock"}]}`,
+	}
+	for _, c := range []struct {
+		id     string
+		legacy bool
+	}{{old, true}, {cur, false}, {none, false}} {
+		body := `case "$1" in ps) echo ` + c.id + `;; inspect) cat <<'EOF'
+[` + inspect[c.id] + `]
+EOF
+;; esac`
+		run, _ := fakes(t, map[string]string{"docker": body})
+		m := Manager{Run: run, LabelPrefix: "drydock"}
+		got, err := m.LegacyBrokerMount(context.Background(), wsID)
+		if err != nil || got != c.legacy {
+			t.Errorf("container %.3s: LegacyBrokerMount %v, %v; want %v", c.id, got, err, c.legacy)
+		}
+		found, err := m.List(context.Background())
+		if err != nil || len(found) != 1 || found[0].LegacyBrokerMount != c.legacy {
+			t.Errorf("container %.3s: List %+v, %v", c.id, found, err)
+		}
+	}
+	// No container at all is not legacy, and needs no inspect.
+	run, _ := fakes(t, map[string]string{"docker": `[ "$1" = inspect ] && exit 9; true`})
+	if got, err := (Manager{Run: run, LabelPrefix: "drydock"}).LegacyBrokerMount(context.Background(), wsID); got || err != nil {
+		t.Errorf("no container: %v, %v", got, err)
+	}
+}
+
 func TestListWithNothingFoundSkipsInspect(t *testing.T) {
 	run, dir := fakes(t, map[string]string{"docker": `[ "$1" = inspect ] && exit 9; true`})
 	found, err := Manager{Run: run, LabelPrefix: "drydock"}.List(context.Background())
@@ -197,7 +242,7 @@ func TestListReportsDockerFailure(t *testing.T) {
 func TestArgsMountTheBrokerAndPassFeatures(t *testing.T) {
 	m := Manager{LabelPrefix: "drydock"}
 	s := spec()
-	s.BrokerSocket = "/run/drydock/sock/" + wsID + ".sock"
+	s.BrokerDir = "/run/drydock/sock/" + wsID
 	s.Features = map[string]map[string]any{"ghcr.io/krelinga/drydock/drydock:0": {"botName": "x[bot]"}}
 	s.RemoteEnv = map[string]string{"B": "2", "A": "1"}
 	args, err := m.Args(s)
@@ -206,7 +251,7 @@ func TestArgsMountTheBrokerAndPassFeatures(t *testing.T) {
 	}
 	got := strings.Join(args, " ")
 	for _, want := range []string{
-		"--mount type=bind,source=/run/drydock/sock/" + wsID + ".sock,target=/run/drydock/broker.sock",
+		"--mount type=bind,source=/run/drydock/sock/" + wsID + ",target=/run/drydock",
 		`--additional-features {"ghcr.io/krelinga/drydock/drydock:0":{"botName":"x[bot]"}}`,
 		"--remote-env A=1 --remote-env B=2", // sorted, so the argv is stable
 	} {
@@ -222,14 +267,14 @@ func TestArgsMountTheBrokerAndPassFeatures(t *testing.T) {
 func TestArgsRefuseAnInjectableMount(t *testing.T) {
 	m := Manager{LabelPrefix: "drydock"}
 	for _, bad := range []string{
-		"/tmp/x.sock,target=/host,source=/",
-		"/tmp/a=b.sock",
-		"relative.sock",
+		"/tmp/x,target=/host,source=/",
+		"/tmp/a=b",
+		"relative",
 	} {
 		s := spec()
-		s.BrokerSocket = bad
+		s.BrokerDir = bad
 		if _, err := m.Args(s); err == nil {
-			t.Errorf("socket path %q accepted", bad)
+			t.Errorf("broker directory %q accepted", bad)
 		}
 	}
 	s := spec()

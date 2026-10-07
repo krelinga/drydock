@@ -179,6 +179,10 @@ func (r *runState) credentialVolume(ctx context.Context, _ workspace.Workspace) 
 	return workspace.Note(fmt.Sprintf("The shared Claude credential volume %s is there.", name))
 }
 
+// errLegacyMount is the journal's half of LegacyMountSentence.
+var errLegacyMount = errors.New("the container has the broker socket bind-mounted as a file (" +
+	container.LegacyBrokerMountPoint + "); only a rebuild replaces the mount")
+
 // brokerSocket is §6 step 5: the workspace's token-broker socket.
 func (r *runState) brokerSocket(ctx context.Context, w workspace.Workspace) error {
 	if err := r.p.Broker.Open(ctx, w.ID); err != nil {
@@ -199,6 +203,20 @@ func (r *runState) up(ctx context.Context, w workspace.Workspace) error {
 	if err != nil {
 		return err
 	}
+	// A start reuses the existing container, mounts and all. One an earlier
+	// Drydock made has the broker socket mounted as a file that no longer
+	// exists, and docker would refuse it with a message about a bind source;
+	// say what it is and what fixes it instead. A rebuild replaces the
+	// container, so it needs no look.
+	if !r.removeExisting && r.p.Broker != nil {
+		legacy, err := r.p.Containers.LegacyBrokerMount(ctx, w.ID)
+		if err != nil {
+			return workspace.Public("Drydock could not inspect the workspace's existing container.", err)
+		}
+		if legacy {
+			return workspace.Public(LegacyMountSentence, errLegacyMount)
+		}
+	}
 	before := snapshotLockfile(r.lockPath)
 	// A TMPDIR of the workspace's own, beside the clone: the CLI stages
 	// Features under $TMPDIR in a folder named by the millisecond, which
@@ -211,7 +229,7 @@ func (r *runState) up(ctx context.Context, w workspace.Workspace) error {
 	res, stderr, err := r.p.Containers.Up(ctx, container.UpSpec{
 		WorkspaceID: w.ID, RepositoryID: w.RepositoryID, FullName: fullName, Branch: w.Branch,
 		Folder:         w.HostPath,
-		BrokerSocket:   r.p.Broker.SocketPath(w.ID),
+		BrokerDir:      r.p.Broker.SocketDir(w.ID),
 		ClaudeVolume:   r.p.ClaudeVolume,
 		Features:       map[string]map[string]any{r.p.Feature: r.p.FeatureOptions},
 		RemoteEnv:      r.remoteEnv(w, fullName),

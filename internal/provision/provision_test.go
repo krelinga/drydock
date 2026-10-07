@@ -43,11 +43,14 @@ const claudeVolume = "drydock-test-claude-config"
 // business and has its own tests; here what matters is that the step opens
 // it and up mounts its path.
 type stubBroker struct {
-	mu     sync.Mutex
-	opened []string
-	closed []string
-	open   map[string]bool
-	err    error
+	mu      sync.Mutex
+	opened  []string
+	closed  []string
+	removed []string
+	// removeErr is what Remove returns, after recording the removal.
+	removeErr error
+	open      map[string]bool
+	err       error
 }
 
 func (b *stubBroker) Close(id string) error {
@@ -84,7 +87,16 @@ func (b *stubBroker) Open(_ context.Context, id string) error {
 	}
 	return b.err
 }
-func (b *stubBroker) SocketPath(id string) string { return "/run/drydock/sock/" + id + ".sock" }
+func (b *stubBroker) SocketDir(id string) string { return "/run/drydock/sock/" + id }
+
+// Remove is Close plus the directory; removals records which.
+func (b *stubBroker) Remove(id string) error {
+	b.Close(id)
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.removed = append(b.removed, id)
+	return b.removeErr
+}
 
 // fakeCLI is a fake devcontainer binary: it records each invocation's argv
 // (one argument per line, then "--") and runs the body for its subcommand.
@@ -352,7 +364,7 @@ func TestRepositoryWithAConfigReachesRunning(t *testing.T) {
 	if got := flag(up, "--workspace-folder"); len(got) != 1 || got[0] != filepath.Join(e.root, v.ID, "repo") {
 		t.Errorf("--workspace-folder %v", got)
 	}
-	if got := flag(up, "--mount"); len(got) != 2 || got[0] != "type=bind,source=/run/drydock/sock/"+v.ID+".sock,target="+container.BrokerMountPoint ||
+	if got := flag(up, "--mount"); len(got) != 2 || got[0] != "type=bind,source=/run/drydock/sock/"+v.ID+",target="+container.BrokerMountPoint ||
 		got[1] != "type=volume,source="+claudeVolume+",target=/home/vscode/.claude" {
 		t.Errorf("--mount %v", got)
 	}

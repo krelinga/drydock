@@ -57,7 +57,14 @@ func testConfig(t *testing.T, dir string) config.Config {
 	c.APISocket = filepath.Join(dir, "run", "http.sock")
 	c.PreviewSocket = filepath.Join(dir, "run", "preview.sock")
 	c.SocketGroup = g.Name
-	c.BrokerDir = filepath.Join(dir, "run", "sock")
+	// Short: <dir>/<id>/broker.sock must fit a Unix socket's 107 bytes, and
+	// t.TempDir paths named after a long test do not leave room for it.
+	short, err := os.MkdirTemp("", "dds")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(short) })
+	c.BrokerDir = filepath.Join(short, "sock")
 	c.LabelPrefix = "drydock.test.server"
 	c.WorkspaceRoot = filepath.Join(dir, "ws") // never the real /srv/drydock
 	// Never the real login: a volume nobody creates, so the watch reports

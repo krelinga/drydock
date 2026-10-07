@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net"
 	"net/http"
 	"os"
@@ -151,14 +152,141 @@ func TestParse(t *testing.T) {
 	}
 }
 
-// The socket's mode is 0666 and its directory's 0700: the directory keeps
-// host users out, and the mount decides which container reaches it.
+// The socket's mode is 0666, its workspace's directory 0755 and the parent
+// 0700: the parent keeps host users out, and the mount decides which
+// container reaches which directory. Each workspace's directory holds its
+// own socket and nothing else — not the other workspace's, and no staging
+// leftover — since that directory is all its container sees.
 func TestSocketPermissions(t *testing.T) {
 	e := newEnv(t)
 	st, _ := os.Stat(e.b.SocketPath(wsA))
+	wsDir, _ := os.Stat(e.b.SocketDir(wsA))
 	dir, _ := os.Stat(e.b.Dir)
-	if st.Mode().Perm() != 0o666 || st.Mode()&os.ModeSocket == 0 || dir.Mode().Perm() != 0o700 {
-		t.Errorf("socket %v, directory %v", st.Mode(), dir.Mode())
+	if st.Mode().Perm() != 0o666 || st.Mode()&os.ModeSocket == 0 || !wsDir.IsDir() || wsDir.Mode().Perm() != 0o755 || dir.Mode().Perm() != 0o700 {
+		t.Errorf("socket %v, workspace directory %v, directory %v", st.Mode(), wsDir.Mode(), dir.Mode())
+	}
+	if filepath.Dir(e.b.SocketPath(wsA)) != e.b.SocketDir(wsA) || e.b.SocketDir(wsA) == e.b.SocketDir(wsB) ||
+		filepath.Dir(e.b.SocketDir(wsA)) != e.b.Dir {
+		t.Errorf("layout: %s, %s", e.b.SocketPath(wsA), e.b.SocketDir(wsB))
+	}
+	for _, ws := range []string{wsA, wsB} {
+		entries, err := os.ReadDir(e.b.SocketDir(ws))
+		if err != nil || len(entries) != 1 || entries[0].Name() != SocketName {
+			t.Errorf("%s's directory holds %v (%v); want only %s", ws, entries, err, SocketName)
+		}
+	}
+	all, _ := os.ReadDir(e.b.Dir)
+	if len(all) != 2 {
+		t.Errorf("the broker directory holds %v; want one directory per workspace and nothing else", all)
+	}
+}
+
+// TestRestartKeepsTheDirectory is the bug a file mount had (#16's review): a
+// container's bind mount pins an inode, so a restart must leave the
+// workspace's directory the same inode and put the new socket inside it. An
+// fd held on the directory stands in for the mount here — a path through
+// /proc/self/fd/N resolves in the directory that fd names, as a mount does —
+// and it reaches the new process's socket. The container tier repeats this
+// with a real mount (test/container).
+func TestRestartKeepsTheDirectory(t *testing.T) {
+	ctx := context.Background()
+	e := newEnv(t)
+	held, err := os.Open(e.b.SocketDir(wsA))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer held.Close()
+	viaMount := filepath.Join("/proc/self/fd", fmt.Sprint(held.Fd()), SocketName)
+	ping := func() (string, error) {
+		conn, err := net.Dial("unix", viaMount)
+		if err != nil {
+			return "", err
+		}
+		defer conn.Close()
+		conn.Write([]byte("PING\n"))
+		answer, _ := bufio.NewReader(conn).ReadString('\n')
+		return strings.TrimSpace(answer), nil
+	}
+	// Control: the held directory reaches the socket before the restart.
+	if got, err := ping(); got != "OK" {
+		t.Fatalf("control: %q %v", got, err)
+	}
+	var before syscall.Stat_t
+	syscall.Stat(e.b.SocketDir(wsA), &before)
+
+	// A restart: everything closed, as at shutdown, then a fresh broker on
+	// the same directory, as the next process.
+	e.b.CloseAll()
+	if got, err := ping(); err == nil {
+		t.Fatalf("the socket answered %q after shutdown", got)
+	}
+	next := &Broker{Dir: e.b.Dir, GitHub: e.b.GitHub, DB: e.b.DB, Events: e.b.Events, Env: e.b.Env, Secrets: e.b.Secrets}
+	t.Cleanup(next.CloseAll)
+	if err := next.Open(ctx, wsA); err != nil {
+		t.Fatal(err)
+	}
+	var after syscall.Stat_t
+	syscall.Stat(next.SocketDir(wsA), &after)
+	if before.Ino != after.Ino {
+		t.Errorf("the workspace's directory was recreated (inode %d → %d): a running container's mount names the old one", before.Ino, after.Ino)
+	}
+	if got, err := ping(); got != "OK" {
+		t.Errorf("after the restart, through the held directory: %q %v", got, err)
+	}
+}
+
+// Remove takes the workspace's directory with its socket and whatever the
+// container put beside it — a symlink as a link, never its target. What it
+// cannot remove is ErrLeftover.
+func TestRemoveTakesTheDirectory(t *testing.T) {
+	e := newEnv(t)
+	if err := e.b.Remove(wsA); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Lstat(e.b.SocketDir(wsA)); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("the directory survived Remove: %v", err)
+	}
+	if err := e.b.Remove(wsA); err != nil {
+		t.Errorf("Remove of a removed workspace: %v", err)
+	}
+	// Control: B is untouched and still answers.
+	if got := e.ask(t, wsB, "PING"); got != "OK" {
+		t.Errorf("removing A affected B: %q", got)
+	}
+	// What a container's root leaves: a file, and a symlink out of the
+	// directory. Both go; the symlink's target stays.
+	outside := filepath.Join(t.TempDir(), "precious")
+	os.WriteFile(outside, []byte("keep"), 0o600)
+	os.WriteFile(filepath.Join(e.b.SocketDir(wsB), "stray"), nil, 0o600)
+	os.Symlink(outside, filepath.Join(e.b.SocketDir(wsB), "link"))
+	if err := e.b.Remove(wsB); err != nil {
+		t.Errorf("Remove with a stray file and a symlink: %v", err)
+	}
+	if _, err := os.Lstat(e.b.SocketDir(wsB)); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("the directory survived: %v", err)
+	}
+	if b, err := os.ReadFile(outside); err != nil || string(b) != "keep" {
+		t.Errorf("a symlink's target was removed: %v", err)
+	}
+	// One it cannot empty — here a directory it may not write, as root's
+	// would be to Drydock — is ErrLeftover.
+	ctx := context.Background()
+	e.b.Open(ctx, wsB)
+	locked := filepath.Join(e.b.SocketDir(wsB), "locked")
+	os.Mkdir(locked, 0o700)
+	os.WriteFile(filepath.Join(locked, "f"), nil, 0o600)
+	os.Chmod(locked, 0o500)
+	t.Cleanup(func() { os.Chmod(locked, 0o700) })
+	if os.Geteuid() != 0 {
+		if err := e.b.Remove(wsB); !errors.Is(err, ErrLeftover) {
+			t.Errorf("Remove of a directory it cannot empty = %v, want ErrLeftover", err)
+		}
+		if _, err := os.Lstat(e.b.SocketPath(wsB)); !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("the socket survived a Remove that left something: %v", err)
+		}
+	}
+	if err := e.b.Remove("../../etc"); err == nil {
+		t.Error("Remove took a non-workspace id")
 	}
 }
 
@@ -421,23 +549,67 @@ func TestCloseRemovesASocketItIsNotServing(t *testing.T) {
 	if err := e.b.Close("../../etc/passwd"); err == nil {
 		t.Error("Close took a non-workspace id")
 	}
-}
-
-func TestOpenReplacesAStaleSocketButNothingElse(t *testing.T) {
-	ctx := context.Background()
-	e := newEnv(t)
-	e.b.Close(wsA)
-	// A socket left behind by a crash: a listener that is gone.
-	l, _ := net.Listen("unix", e.b.SocketPath(wsA))
+	// The directory stays: a running container's mount names it, and the
+	// next Open puts a socket back in it.
+	if fi, err := os.Lstat(e.b.SocketDir(wsA)); err != nil || !fi.IsDir() {
+		t.Errorf("Close removed the workspace's directory: %v", err)
+	}
+	// A socket where a Drydock before the directory mount kept it — an
+	// upgrade's leftover — is removed too.
+	legacy := filepath.Join(e.b.Dir, wsA+".sock")
+	l, _ = net.Listen("unix", legacy)
 	l.(*net.UnixListener).SetUnlinkOnClose(false)
 	l.Close()
-	if err := e.b.Open(ctx, wsA); err != nil {
-		t.Fatalf("a stale socket was not replaced: %v", err)
+	e.b.Close(wsA)
+	if _, err := os.Lstat(legacy); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("a legacy socket survived Close: %v", err)
+	}
+}
+
+// Open replaces whatever is at the socket's name — a stale socket from a
+// crash, or what root in the container put there, since the directory is
+// mounted writable — and never follows a symlink: the socket lands in the
+// directory, its target is untouched, and the socket's mode is set where no
+// container can reach. Only a directory at the name is refused.
+func TestOpenReplacesWhateverIsAtTheName(t *testing.T) {
+	ctx := context.Background()
+	e := newEnv(t)
+	outside := filepath.Join(t.TempDir(), "precious")
+	os.WriteFile(outside, []byte("keep"), 0o600)
+	stale := func() {
+		l, _ := net.Listen("unix", e.b.SocketPath(wsA))
+		l.(*net.UnixListener).SetUnlinkOnClose(false)
+		l.Close()
+	}
+	for name, plant := range map[string]func(){
+		"a stale socket": stale,
+		"a regular file": func() { os.WriteFile(e.b.SocketPath(wsA), []byte("not a socket"), 0o600) },
+		"a symlink":      func() { os.Symlink(outside, e.b.SocketPath(wsA)) },
+	} {
+		e.b.Close(wsA)
+		os.Remove(e.b.SocketPath(wsA))
+		plant()
+		if err := e.b.Open(ctx, wsA); err != nil {
+			t.Errorf("%s was not replaced: %v", name, err)
+			continue
+		}
+		if fi, err := os.Lstat(e.b.SocketPath(wsA)); err != nil || fi.Mode()&os.ModeSocket == 0 || fi.Mode().Perm() != 0o666 {
+			t.Errorf("after %s: %v %v", name, fi.Mode(), err)
+		}
+		if got := e.ask(t, wsA, "PING"); got != "OK" {
+			t.Errorf("after %s: PING %q", name, got)
+		}
+	}
+	if fi, err := os.Lstat(outside); err != nil || fi.Mode().Perm() != 0o600 {
+		t.Errorf("a symlink's target was touched: %v %v", fi.Mode(), err)
 	}
 	e.b.Close(wsA)
-	os.WriteFile(e.b.SocketPath(wsA), []byte("not a socket"), 0o600)
+	os.Mkdir(e.b.SocketPath(wsA), 0o700)
 	if err := e.b.Open(ctx, wsA); err == nil {
-		t.Error("a regular file at the socket path was replaced")
+		t.Error("a directory at the socket path was accepted")
+	}
+	if entries, _ := os.ReadDir(e.b.Dir); len(entries) != 2 {
+		t.Errorf("a failed Open left a staging socket: %v", entries)
 	}
 	if err := e.b.Open(ctx, "../../etc/passwd"); err == nil {
 		t.Error("a non-workspace id became a socket path")
@@ -464,4 +636,29 @@ func TestNoTokenReachesTheDatabase(t *testing.T) {
 			t.Error("a token reached the database")
 		}
 	}
+}
+
+// A socket path too long for sun_path is refused at Open: it is bound at the
+// shorter staging path, so the kernel would not refuse it, and no client
+// could ever connect. Control: the same broker one byte shallower opens, and
+// a client reaches it.
+func TestOpenRefusesAPathNoClientCouldReach(t *testing.T) {
+	ctx := context.Background()
+	base := shortDir(t)
+	room := maxSocketPath - len(base) - len("/"+wsA+"/"+SocketName) - 1 // the "/" after base
+	long := &Broker{Dir: filepath.Join(base, strings.Repeat("d", room+1))}
+	if err := long.Open(ctx, wsA); err == nil {
+		long.CloseAll()
+		t.Fatalf("a %d-byte socket path was opened", len(long.SocketPath(wsA)))
+	}
+	ok := &Broker{Dir: filepath.Join(base, strings.Repeat("d", room))}
+	if err := ok.Open(ctx, wsA); err != nil {
+		t.Fatalf("control: a %d-byte socket path: %v", len(ok.SocketPath(wsA)), err)
+	}
+	defer ok.CloseAll()
+	conn, err := net.Dial("unix", ok.SocketPath(wsA))
+	if err != nil {
+		t.Fatalf("control: connecting to a %d-byte path: %v", len(ok.SocketPath(wsA)), err)
+	}
+	conn.Close()
 }

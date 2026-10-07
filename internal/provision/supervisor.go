@@ -63,10 +63,28 @@ func (p *Provisioner) ResumeSupervisors(ctx context.Context) error {
 		if w.State != workspace.Running {
 			continue
 		}
+		// A container an earlier Drydock made with the broker socket
+		// mounted as a file has had no broker since this restart, and a
+		// server started in it would fail its secrets prelude on every
+		// launch. Say so, once, with the fix — never a restart loop — and
+		// leave whatever is running there alone. A failed look starts it as
+		// before: the check is a courtesy, not a gate.
+		legacy := false
+		if p.ParkSupervisor != nil && p.Broker != nil {
+			var lerr error
+			if legacy, lerr = p.Containers.LegacyBrokerMount(ctx, w.ID); lerr != nil {
+				p.logf("drydock: workspace %s: inspecting its container's mounts: %v", w.ID, lerr)
+			}
+		}
 		p.mu.Lock()
 		busy := p.active[w.ID] != nil || p.closed
 		var serr error
-		if !busy {
+		switch {
+		case busy:
+		case legacy:
+			p.logf("drydock: workspace %s: %v; not starting its session server", w.ID, errLegacyMount)
+			serr = p.ParkSupervisor(ctx, w, LegacyMountSentence)
+		default:
 			serr = p.StartSupervisor(ctx, w)
 		}
 		p.mu.Unlock()
