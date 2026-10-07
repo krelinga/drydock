@@ -236,8 +236,8 @@ func (c Config) Validate() error {
 	// lowercase and the Origin check is an exact string comparison, so an
 	// origin configured as https://Drydock.Example.com refuses every sign-in
 	// with forbidden_origin while the case-insensitive Host check lets the
-	// same requests through. And the subdomain check below is a suffix match
-	// that a difference in case would slip past.
+	// same requests through. And CrossSite below compares registrable
+	// domains as exact strings, which a difference in case would slip past.
 	for _, f := range []struct{ name, flag, value string }{
 		{"UIOrigin", "--ui-origin", c.UIOrigin},
 		{"UIHost", "--ui-host", c.UIHost},

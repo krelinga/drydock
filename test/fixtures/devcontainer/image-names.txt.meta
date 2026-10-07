@@ -1,0 +1,6 @@
+devcontainer_version: 0.89.0
+docker_version:       29.8.2-1 (the devcontainer's inner DinD daemon)
+recorded_at:          2026-10-07T19:59:25Z
+command:              test/fixtures/devcontainer/measure-image-names.sh > test/fixtures/devcontainer/image-names.txt -- one devcontainer up of an alpine image with a local Feature, run from /
+provenance:           recorded
+must_yield:           the features image's name for that folder; internal/container's TestBuiltImagesAreTheCLIsNames requires BuiltImages(folder)[1] to equal it, so a CLI bump that moves the naming is caught by re-recording

@@ -206,7 +206,8 @@ func New(ctx context.Context, cfg config.Config, env sys.Env) (*Server, error) {
 		gh := &github.Client{AppID: cfg.GitHubAppID, Key: key, BaseURL: cfg.GitHubAPI, Clock: env.Clock,
 			HTTP: &http.Client{Timeout: 30 * time.Second}}
 		s.Catalog = &catalog.Catalog{DB: db.DB, Events: s.Events, Clock: env.Clock, GitHub: gh}
-		s.Broker = &broker.Broker{Dir: cfg.BrokerDir, GitHub: gh, DB: db.DB, Events: s.Events, Env: env}
+		s.Broker = &broker.Broker{Dir: cfg.BrokerDir, GitHub: gh, DB: db.DB, Events: s.Events, Env: env,
+			Logf: func(f string, a ...any) { fmt.Fprintf(os.Stderr, f+"\n", a...) }}
 		if s.Secrets != nil {
 			s.Broker.Secrets = s.Secrets
 			s.Catalog.GrantsDropped = s.Secrets.Invalidate

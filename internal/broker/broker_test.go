@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -373,6 +374,13 @@ func TestCacheAndGrants(t *testing.T) {
 func TestATokenIsNeverServedUnrecorded(t *testing.T) {
 	ctx := context.Background()
 	e := newEnv(t)
+	var logMu sync.Mutex
+	var logged []string
+	e.b.Logf = func(f string, a ...any) {
+		logMu.Lock()
+		logged = append(logged, fmt.Sprintf(f, a...))
+		logMu.Unlock()
+	}
 	grants := func() int {
 		var n int
 		e.db.QueryRowContext(ctx, `SELECT count(*) FROM token_grant WHERE workspace_id = ?`, wsA).Scan(&n)
@@ -390,6 +398,12 @@ func TestATokenIsNeverServedUnrecorded(t *testing.T) {
 	if n := grants(); n != 0 {
 		t.Fatalf("setup: %d rows written through the trigger", n)
 	}
+	logMu.Lock()
+	journal := strings.Join(logged, "\n")
+	logMu.Unlock()
+	if strings.Count(journal, "token_grant could not be recorded") != 2 {
+		t.Errorf("each refused request should reach the journal once; it has:\n%s", journal)
+	}
 	if n := e.fake.Count("POST /app/installations/77/access_tokens"); n != 1 {
 		t.Errorf("%d mints; the refused requests should share one cached token", n)
 	}
@@ -398,6 +412,11 @@ func TestATokenIsNeverServedUnrecorded(t *testing.T) {
 		t.Fatal(err)
 	}
 	tok := tokenOf(t, e.ask(t, wsA, "GET-TOKEN scope=gh"))
+	logMu.Lock()
+	if j := strings.Join(logged, "\n"); strings.Contains(j, tok) {
+		t.Errorf("the journal carries the token: %s", j)
+	}
+	logMu.Unlock()
 	if n := grants(); n != 1 {
 		t.Errorf("after the database recovered: %d token_grant rows; want the retried one", n)
 	}

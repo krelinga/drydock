@@ -36,6 +36,10 @@ type Broker struct {
 	// Secrets answers GET-SECRETS. Nil when no master key is configured,
 	// and then there are no secrets: every workspace gets count=0.
 	Secrets SecretSource
+	// Logf, if set, is the journal: a grant or an access that could not be
+	// recorded is written there (never the token or a value), since the
+	// answer the client gets is only "unavailable".
+	Logf func(format string, args ...any)
 
 	mu        sync.Mutex
 	listeners map[string]net.Listener
@@ -353,6 +357,7 @@ func (b *Broker) secrets(ctx context.Context, wsID string) string {
 	// Recorded before it is sent, and not sent if it cannot be recorded:
 	// "which workspaces ever held this?" (§10.4) has no other answer.
 	if err := b.Secrets.RecordAccess(ctx, wsID, got); err != nil {
+		b.logf("drydock: broker: workspace %s: secret_access could not be recorded, so no secrets were served: %v", wsID, err)
 		return errLine(ReasonUnavailable)
 	}
 	names := make([]string, len(got))
@@ -417,10 +422,17 @@ func (b *Broker) token(ctx context.Context, wsID string, scope Scope) string {
 		return errLine(reason)
 	}
 	if err := b.record(ctx, wsID, bd.repositoryID, scope, tok); err != nil {
+		b.logf("drydock: broker: workspace %s: the %s token's token_grant could not be recorded, so it was not served: %v", wsID, scope, err)
 		// Never served unrecorded (see record): the next request retries.
 		return errLine(ReasonUnavailable)
 	}
 	return okToken(tok.Value(), tok.ExpiresAt)
+}
+
+func (b *Broker) logf(format string, args ...any) {
+	if b.Logf != nil {
+		b.Logf(format, args...)
+	}
 }
 
 // record writes a token_grant row and a token.issued event the first time a

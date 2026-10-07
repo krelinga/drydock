@@ -1214,6 +1214,7 @@ do not want.
 
 | Symptom | Likely cause | Fix |
 |---|---|---|
+| Installer: `--preview-domain refused: … must be a different registrable domain`, or `drydock serve` refusing to start with it | The preview domain shares the UI host's registrable domain — it is the same name, a subdomain, the parent, or a sibling (`preview.example.com` beside `drydock.example.com`), all of which make previews same-site with the UI. Or the UI host is a single label (`drydock`), which has no registrable domain to compare, so every preview domain is refused | Use a separate domain you own for previews, or leave `--preview-domain` unset (previews are not built yet: [step 9](#9-what-does-not-work-yet)). Before v0.4.3 only a subdomain was refused, so a configuration the old check let through is refused on upgrade |
 | Installer: `Docker is not installed` / `there is no 'docker' group` | Docker is missing, or was installed without its group | [3.1](#31-docker-engine-official-repository) |
 | Installer: `the devcontainer CLI is not installed where the service can find it` | `devcontainer` is under nvm, snap or a home directory | Install Node from NodeSource and run `npm install -g` as root ([3.2](#32-nodejs-20-and-the-devcontainer-cli-on-the-services-path)). Check with the `PATH=… command -v` line there. |
 | Installer: `…installed but does not run as the drydock user` | Node older than 20 on `/usr/bin` | `node --version` with the service `PATH`. Upgrade Node. |

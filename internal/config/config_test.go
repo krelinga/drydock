@@ -80,8 +80,8 @@ func TestValidateRefusesUppercaseHosts(t *testing.T) {
 		{"origin", func(c *Config) { c.UIOrigin = "https://Drydock.example.com" }, "--ui-origin https://drydock.example.com"},
 		{"host", func(c *Config) { c.UIHost = "drydock.Example.com" }, "--ui-host drydock.example.com"},
 		{"both", func(c *Config) { c.UIOrigin, c.UIHost = "https://DRYDOCK.EXAMPLE.COM", "DRYDOCK.EXAMPLE.COM" }, "must be lowercase"},
-		// Uppercase would also slip past the suffix match that keeps the
-		// preview domain off the UI's registrable domain.
+		// Uppercase would also slip past CrossSite's exact comparison of
+		// registrable domains.
 		{"preview", func(c *Config) { c.PreviewDomain = "P.DRYDOCK.EXAMPLE.COM" }, "--preview-domain p.drydock.example.com"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -125,6 +125,7 @@ func TestValidateRefusesASameSitePreviewDomain(t *testing.T) {
 		{"same owner under a private suffix", "drydock.alice.github.io", "preview.alice.github.io", false},
 		{"preview is a public suffix", "drydock.example.com", "co.uk", false},
 		{"UI host is a public suffix", "github.io", "drydock-preview.net", false},
+		{"UI host is a single label", "drydock", "drydock-preview.net", false},
 		{"trailing dot", "drydock.example.com", "preview.example.com.", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
