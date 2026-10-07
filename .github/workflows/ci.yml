@@ -10,8 +10,8 @@ on:
 permissions:
   contents: read
 
-# Every job has a timeout far under GitHub's default of 360 minutes. The
-# browser job's is the longest, because its Playwright install runs apt (below).
+# Every job has a timeout far under GitHub's default of 360 minutes, a few
+# times its usual length.
 jobs:
   # The suite's tools and commands live in .github/actions/go-suite, which the
   # release workflow runs too, so a release is held to exactly this job.
@@ -52,35 +52,71 @@ jobs:
   # The browser tier (testing §10): real Chromium, real Caddy on the shipped
   # Caddyfile, the real `drydock serve`, and a throwaway CA trusted through
   # NSS — never ignoreHTTPSErrors.
+  #
+  # It runs in Playwright's own image, which carries the three browsers and
+  # every library they need. On the bare runner, `playwright install
+  # --with-deps` took 6½ minutes at the 90th percentile and 42 at worst, all
+  # of it apt (181 packages from a mirror that falls back package by package):
+  # its browser downloads take 16 seconds. The tag must be
+  # web/package-lock.json's @playwright/test exactly, since an image carries
+  # the builds its one version expects, and test/docs fails when the two
+  # differ; the digest pins the bytes.
   browser:
     runs-on: ubuntu-latest
-    # The Playwright install's 60 minutes, plus the rest of the job, which
-    # takes under 10.
-    timeout-minutes: 75
+    # About 1½ minutes, the image pull included.
+    timeout-minutes: 15
+    container:
+      image: mcr.microsoft.com/playwright:v1.63.0-noble@sha256:eff16c30e6f3f4af0a03fa4b706120d5e9b0891c344a27d64559aff5900a4a27
+      # Chromium's shared memory: Docker's 64 MB /dev/shm is too small for it.
+      options: --ipc=host
     steps:
       - uses: actions/checkout@v5
-      # Go and the same pinned Caddy as the go job, without running its suite.
-      - uses: ./.github/actions/go-suite
+      # The same Go and the same pinned Caddy as the go job. The job is root
+      # here, and the image has neither.
+      - uses: actions/setup-go@v6
         with:
-          run-suite: "false"
-      - uses: actions/setup-node@v5
-        with:
-          node-version: 24
-          cache: npm
-          cache-dependency-path: web/package-lock.json
+          go-version-file: go.mod
+      - name: Install Caddy
+        run: .github/actions/go-suite/install-caddy.sh
       # certutil: how the test CA gets into Chromium's NSS store (Spike 04).
+      # The image's one missing package: its .deb is cached by the image's
+      # libnss3 version, so a warm run reaches no apt mirror at all, and a
+      # cold one fetches a single 600 kB file from it.
+      - name: Find the image's libnss3
+        id: nss
+        run: echo "version=$(dpkg-query -W -f='${Version}' libnss3)" >>"$GITHUB_OUTPUT"
+      - uses: actions/cache@v4
+        id: nss-tools
+        with:
+          path: ${{ runner.temp }}/nss-tools
+          key: libnss3-tools-noble-${{ steps.nss.outputs.version }}
       - name: Install certutil
-        run: sudo apt-get update -q && sudo apt-get install -y -q --no-install-recommends libnss3-tools
+        timeout-minutes: 5
+        env:
+          DEBS: ${{ runner.temp }}/nss-tools
+          HIT: ${{ steps.nss-tools.outputs.cache-hit }}
+        run: |
+          if [ "$HIT" != true ]; then
+            mkdir -p "$DEBS/partial"
+            apt-get update -q
+            apt-get install -y -q --download-only --no-install-recommends -o Dir::Cache::archives="$DEBS" libnss3-tools
+          fi
+          dpkg -i "$DEBS"/*.deb
+          command -v certutil
+      # The tier runs as the image's pwuser, never as root: Drydock refuses to
+      # run the login as root (login.spec.ts), and a root browser is not what
+      # an operator runs. pwuser is uid 1001, the runner's own, so the files
+      # it writes are the runner's outside the container too. HOME is the
+      # job's /github/home, where setup-go restored the Go caches.
+      - name: Hand the workspace to pwuser
+        run: chown -R pwuser:pwuser "$GITHUB_WORKSPACE" "$HOME"
       - run: npm ci
         working-directory: web
+        shell: setpriv --reuid=pwuser --regid=pwuser --init-groups bash -e {0}
       # Firefox and WebKit run engines.spec.ts: v0.2.1's UI sent `Origin: null`
       # from Safari, which Chromium alone could never have shown.
-      - run: npx playwright install --with-deps chromium firefox webkit
-        working-directory: web
-        # Slow, not hung: --with-deps runs apt, which is slow on the runners.
-        # Green runs have taken 7 to 42 minutes, so 60 leaves headroom.
-        timeout-minutes: 60
       - run: test/browser/run.sh
+        shell: setpriv --reuid=pwuser --regid=pwuser --init-groups bash -e {0}
       # A failed test leaves a Playwright trace: the page, the network, the
       # console, step by step. `npx playwright show-trace <zip>` opens one.
       - uses: actions/upload-artifact@v4
