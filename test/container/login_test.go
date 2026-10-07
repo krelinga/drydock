@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -128,6 +129,32 @@ func loginContainers(t *testing.T, p string) string {
 	return docker(t, "ps", "-aq", "--filter", "label="+p+"."+login.LabelLogin)
 }
 
+// loginContainer is the one container carrying login id's label, polled for
+// until a deadline. Seeing the container's output does not mean a listing
+// shows it yet: the daemon starts the process, whose output reaches the
+// attached CLI, and only then records the container as running (moby's
+// containerStart), and a busy daemon widens that gap. CI caught `docker ps
+// -q` (running only) empty after the prompt had arrived, and its empty
+// output went to `docker inspect`. The poll is the fix: an empty listing is
+// "not yet", never an id. It lists with --all, as the launcher's own list
+// does.
+func loginContainer(t *testing.T, p, id string) string {
+	t.Helper()
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		ids := strings.Fields(docker(t, "ps", "--all", "--quiet", "--no-trunc", "--filter", "label="+p+"."+login.LabelLogin+"="+id))
+		switch {
+		case len(ids) == 1:
+			return ids[0]
+		case len(ids) > 1:
+			t.Fatalf("login %s has %d containers: %v", id, len(ids), ids)
+		case time.Now().After(deadline):
+			t.Fatalf("login %s: no container listed within 30s", id)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+}
+
 // TestLoginPTYThroughDocker measures what Spike 01 relied on, through the
 // path Drydock now takes — its own PTY handed to `docker run -it` — with
 // fakeclaude in the container replaying the 2.1.289 recordings:
@@ -160,7 +187,7 @@ func TestLoginPTYThroughDocker(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			t.Cleanup(func() { syscall.Kill(proc.Pid(), syscall.SIGKILL); d.Remove(ctx, id) })
+			t.Cleanup(func() { syscall.Kill(proc.Pid(), syscall.SIGKILL); d.Remove(ctx, id, true) })
 			tm := readTerm(proc)
 
 			aw := tm.waitPhase(t, classify.LoginAwaitingCode)
@@ -183,7 +210,7 @@ func TestLoginPTYThroughDocker(t *testing.T) {
 			before := len(tm.bytes())
 			proc.Master.Write([]byte(bad + "\r"))
 			tm.waitPhase(t, classify.LoginInvalidCode)
-			if inspect := docker(t, "inspect", docker(t, "ps", "-q", "--filter", "label="+p+".login="+id)); strings.Contains(inspect, bad) {
+			if inspect := docker(t, "inspect", loginContainer(t, p, id)); strings.Contains(inspect, bad) {
 				t.Error("the code is in docker inspect")
 			}
 			proc.Master.Write([]byte(good + "\r"))
@@ -377,5 +404,139 @@ func TestLoginManagerAgainstRealDocker(t *testing.T) {
 	if got := docker(t, "run", "--rm", "--network", "none", "--mount", "type=volume,source="+other+",target=/v,readonly",
 		"--entrypoint", "stat", config.DefaultCleanupImage, "-c", "%u", "/v"); got != "4242" {
 		t.Errorf("the refusal changed the owner to %s", got)
+	}
+}
+
+// slowCreate is a docker whose `run` creates its container late, from a
+// process the CLI's death does not reach, while the CLI itself hangs. That is
+// a `docker run` killed with its create request in flight, which the daemon
+// finishes anyway (measured on Docker 29.8.2: the container lists tens of
+// milliseconds after the CLI is gone, longer on a busy daemon). It writes
+// dir/started when `run` is asked for, and dir/created, holding the
+// container's id, once the late create has landed.
+func slowCreate(t *testing.T, delay time.Duration) (bin, dir string) {
+	t.Helper()
+	real, err := exec.LookPath("docker")
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir = t.TempDir()
+	bin = filepath.Join(t.TempDir(), "docker")
+	script := `#!/bin/sh
+d=` + dir + `
+if [ "$1" = run ]; then
+	shift
+	: >"$d/started"
+	setsid sh -c 'sleep "$1"; shift; ` + real + ` create "$@" >"$0/created.tmp" 2>"$0/create.err" && mv "$0/created.tmp" "$0/created"' "$d" ` +
+		strconv.FormatFloat(delay.Seconds(), 'f', 3, 64) + ` "$@" </dev/null >/dev/null 2>&1 &
+	exec sleep 600
+fi
+exec ` + real + ` "$@"
+`
+	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return bin, dir
+}
+
+// waitFile waits for path to exist and returns its contents.
+func waitFile(t *testing.T, path string, within time.Duration) string {
+	t.Helper()
+	for deadline := time.Now().Add(within); ; time.Sleep(20 * time.Millisecond) {
+		if b, err := os.ReadFile(path); err == nil {
+			return strings.TrimSpace(string(b))
+		}
+		if time.Now().After(deadline) {
+			errs, _ := os.ReadFile(filepath.Join(filepath.Dir(path), "create.err"))
+			t.Fatalf("%s never appeared; create said %q", path, errs)
+		}
+	}
+}
+
+// TestLoginCancelDuringCreate: a login cancelled while its `docker run` is
+// still creating the container leaves nothing behind. The CLI is killed and
+// the create lands after it, so the Remove that follows the kill must wait
+// for it; otherwise the container, created but never started (--rm needs a
+// start), holds the shared volume until something sweeps it. The control is
+// the late create itself: a container carrying this login's label was made
+// after the kill. Then the sweep at a login's start: a container an earlier
+// login left goes, and the new login's own is spared.
+func TestLoginCancelDuringCreate(t *testing.T) {
+	needDocker(t)
+	if out, err := exec.Command("docker", "pull", "--quiet", config.DefaultCleanupImage).CombinedOutput(); err != nil {
+		t.Fatalf("docker pull: %v: %s", err, out)
+	}
+	p := prefix(t)
+	vol := claudeVolume(p)
+	extra, _ := fakeInContainer(t, loginCode())
+	ctx := context.Background()
+	db, err := store.Open(ctx, filepath.Join(t.TempDir(), "drydock.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Close() })
+	log := events.New(db.DB, sys.RealClock{})
+	sub := log.Subscribe()
+	defer log.Cancel(sub)
+	next := func(m *login.Manager, want login.Phase) login.View {
+		t.Helper()
+		deadline := time.After(90 * time.Second)
+		for {
+			select {
+			case ev := <-sub.C:
+				var d struct{ Login login.View }
+				if ev.Kind == login.KindLogin && json.Unmarshal(ev.Data, &d) == nil && d.Login.Phase == want {
+					return d.Login
+				}
+			case <-deadline:
+				t.Fatalf("no %s; current %+v", want, m.Current())
+			}
+		}
+	}
+
+	// The cancel during the create.
+	bin, dir := slowCreate(t, time.Second)
+	slow := subproc.Exec{Resolver: subproc.FixedResolver{"docker": bin}}
+	d := dockerLauncher(p, vol, extra)
+	d.Run, d.PTY = slow, slow
+	m := &login.Manager{Launcher: d, Events: log, Clock: sys.RealClock{}, Identity: &loggedIn{}, Settle: 10 * time.Second}
+	t.Cleanup(func() { m.Shutdown(30 * time.Second) })
+	v, err := m.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitFile(t, filepath.Join(dir, "started"), 60*time.Second)
+	if err := m.Cancel(ctx, v.ID); err != nil {
+		t.Fatal(err)
+	}
+	next(m, login.Cancelled)
+	created := waitFile(t, filepath.Join(dir, "created"), 30*time.Second)
+	if !regexp.MustCompile(`^[0-9a-f]{64}$`).MatchString(created) {
+		t.Fatalf("control: the late create made %q", created)
+	}
+	if left := loginContainers(t, p); left != "" {
+		t.Errorf("a login cancelled during its create left %s, created after its CLI was killed", left)
+	}
+
+	// The next login's sweep: a stray from an earlier login goes, and the
+	// new login's own container stays.
+	stray := docker(t, "create", "--label", p+"."+login.LabelLogin+"="+newLoginID(), config.DefaultCleanupImage, "true")
+	m2 := &login.Manager{Launcher: dockerLauncher(p, vol, extra), Events: log, Clock: sys.RealClock{}, Identity: &loggedIn{}, Settle: 10 * time.Second}
+	t.Cleanup(func() { m2.Shutdown(30 * time.Second) })
+	v2, err := m2.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	next(m2, login.AwaitingCode)
+	if got := docker(t, "ps", "-aq", "--no-trunc", "--filter", "id="+stray); got != "" {
+		t.Errorf("the next login's start left the stray %s", got)
+	}
+	if loginContainer(t, p, v2.ID) == "" {
+		t.Error("control: the new login has no container")
+	}
+	m2.Cancel(ctx, v2.ID)
+	next(m2, login.Cancelled)
+	if left := loginContainers(t, p); left != "" {
+		t.Errorf("after the second cancel: %s", left)
 	}
 }

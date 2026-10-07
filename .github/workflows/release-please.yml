@@ -40,9 +40,12 @@ permissions:
   contents: write
   pull-requests: write
 
+# Timeouts as in ci.yml: a few times each job's usual length, so a hang
+# leaves a draft within minutes rather than hours.
 jobs:
   release-please:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     outputs:
       released: ${{ steps.rp.outputs.release_created || steps.resume.outputs.released }}
       tag: ${{ steps.rp.outputs.tag_name || steps.resume.outputs.tag }}
@@ -76,6 +79,8 @@ jobs:
     needs: release-please
     if: needs.release-please.outputs.released == 'true'
     runs-on: ubuntu-latest
+    # CI's go job, with its timeout.
+    timeout-minutes: 30
     permissions:
       contents: read
     steps:
@@ -92,6 +97,7 @@ jobs:
   assets:
     needs: [release-please, test]
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     permissions:
       contents: write
     steps:
@@ -133,6 +139,7 @@ jobs:
   verify:
     needs: [release-please, assets]
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     permissions:
       # A draft release is visible only with push access.
       contents: write
@@ -165,6 +172,7 @@ jobs:
   publish:
     needs: [release-please, assets, verify]
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: write
     steps:

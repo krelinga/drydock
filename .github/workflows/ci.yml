@@ -10,11 +10,15 @@ on:
 permissions:
   contents: read
 
+# Every job has a timeout, a few times its usual length: GitHub's default is
+# 360 minutes, and a hung `npx playwright install` once held a run for 40.
 jobs:
   # The suite's tools and commands live in .github/actions/go-suite, which the
   # release workflow runs too, so a release is held to exactly this job.
   go:
     runs-on: ubuntu-latest
+    # About 5–6 minutes.
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v5
         with:
@@ -28,6 +32,8 @@ jobs:
 
   web:
     runs-on: ubuntu-latest
+    # Under a minute.
+    timeout-minutes: 10
     defaults:
       run:
         working-directory: web
@@ -48,6 +54,8 @@ jobs:
   # NSS — never ignoreHTTPSErrors.
   browser:
     runs-on: ubuntu-latest
+    # About 6–7 minutes, the browsers download included.
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v5
       # Go and the same pinned Caddy as the go job, without running its suite.
@@ -68,6 +76,8 @@ jobs:
       # from Safari, which Chromium alone could never have shown.
       - run: npx playwright install --with-deps chromium firefox webkit
         working-directory: web
+        # Usually about a minute; it is the step that has hung.
+        timeout-minutes: 15
       - run: test/browser/run.sh
       # A failed test leaves a Playwright trace: the page, the network, the
       # console, step by step. `npx playwright show-trace <zip>` opens one.
@@ -80,6 +90,8 @@ jobs:
 
   installer:
     runs-on: ubuntu-latest
+    # About 2–3 minutes.
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-go@v6
@@ -91,6 +103,8 @@ jobs:
 
   feature:
     runs-on: ubuntu-latest
+    # About 10–11 minutes.
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v5

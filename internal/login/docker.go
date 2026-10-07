@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/krelinga/drydock/internal/config"
 	"github.com/krelinga/drydock/internal/container"
@@ -86,6 +87,9 @@ type DockerLauncher struct {
 	// Extra is `docker run` options placed before the image. A test's seam
 	// — fakeclaude bind-mounted in — and empty in production.
 	Extra []string
+	// RemoveSettle bounds Remove's wait for a killed CLI's container; zero
+	// is DefaultRemoveSettle.
+	RemoveSettle time.Duration
 }
 
 // Launch implements Launcher.
@@ -180,18 +184,46 @@ func (d DockerLauncher) RunArgs(image, id string) ([]string, error) {
 
 func (d DockerLauncher) label(id string) string { return d.LabelPrefix + "." + LabelLogin + "=" + id }
 
+// DefaultRemoveSettle is how long Remove keeps looking for the container of
+// a killed `docker run` that is not listed yet. A `docker run` killed during
+// its create leaves the create to finish without it, and the container is
+// listed only then: on an idle Docker 29.8.2, 9 kills in 80 left a
+// container that appeared 29–95 ms after the client was gone. Whatever lands
+// later still goes, at the next login's sweep.
+const DefaultRemoveSettle = 3 * time.Second
+
 // Remove implements Launcher: every container carrying this login's label,
-// by full id.
-func (d DockerLauncher) Remove(ctx context.Context, id string) error {
+// by full id. When the CLI was killed and nothing is listed yet, it keeps
+// looking until RemoveSettle has passed, since the CLI's create may still be
+// landing; once something is listed it is removed, and that is the one
+// container the CLI's one create could make.
+func (d DockerLauncher) Remove(ctx context.Context, id string, killed bool) error {
 	if !ValidID(id) {
 		return fmt.Errorf("%q is not a login id", id)
 	}
-	ids, err := d.list(ctx, d.label(id))
-	if err != nil {
-		return err
+	settle := d.RemoveSettle
+	if settle <= 0 {
+		settle = DefaultRemoveSettle
 	}
-	return d.rm(ctx, ids)
+	deadline := time.Now().Add(settle)
+	for {
+		ids, err := d.list(ctx, d.label(id))
+		if err != nil {
+			return err
+		}
+		if len(ids) > 0 || !killed || !time.Now().Before(deadline) {
+			return d.rm(ctx, ids)
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(removePoll):
+		}
+	}
 }
+
+// removePoll is Remove's interval while it waits for a container to list.
+const removePoll = 50 * time.Millisecond
 
 // Sweep implements Launcher: every login container but keep's.
 func (d DockerLauncher) Sweep(ctx context.Context, keep string) (int, error) {

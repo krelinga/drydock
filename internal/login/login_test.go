@@ -14,6 +14,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"syscall"
@@ -220,10 +221,35 @@ func TestHappyPath(t *testing.T) {
 		t.Errorf("argv %q", got)
 	}
 	e.fake.NoViolations(t)
-	// A new login can start at once: nothing is left holding the slot.
-	if _, err := e.m.Begin(ctx); err != nil {
+	// The process exited by itself, so Remove need not wait for a create.
+	if k := e.killed(t, v.ID); k {
+		t.Error("a login that exited by itself was removed as killed")
+	}
+	// A new login can start at once: nothing is left holding the slot. And
+	// each launch is preceded by a sweep sparing only itself, so a container
+	// an earlier login left goes at the next login rather than the next boot.
+	v2, err := e.m.Begin(ctx)
+	if err != nil {
 		t.Errorf("a login after success: %v", err)
 	}
+	waitFor(t, func() bool { return len(e.launcher.Launched()) == 2 })
+	want := []string{"sweep " + v.ID, "launch " + v.ID, "sweep " + v2.ID, "launch " + v2.ID}
+	if got := e.launcher.Order(); !slices.Equal(got, want) {
+		t.Errorf("launcher saw %q; want %q", got, want)
+	}
+}
+
+// killed is what Remove was told for id.
+func (e *env) killed(t *testing.T, id string) bool {
+	t.Helper()
+	rs, ks := e.launcher.Removed(), e.launcher.Killed()
+	for i, r := range rs {
+		if r == id {
+			return ks[i]
+		}
+	}
+	t.Fatalf("login %s was never removed", id)
+	return false
 }
 
 func waitFor(t *testing.T, ok func() bool) {
@@ -402,6 +428,10 @@ func TestCancel(t *testing.T) {
 	if !contains(e.launcher.Removed(), v.ID) {
 		t.Error("not removed")
 	}
+	// Drydock killed it, so Remove is told to wait for a create landing late.
+	if !e.killed(t, v.ID) {
+		t.Error("a cancelled login's process was killed, but Remove was not told")
+	}
 	if err := e.m.Cancel(ctx, v.ID); !errors.Is(err, login.ErrEnded) {
 		t.Errorf("cancelling it again: %v; want ErrEnded", err)
 	}
@@ -422,6 +452,10 @@ func TestCancel(t *testing.T) {
 	e.m.Cancel(ctx, v2.ID)
 	if c := e.next(t, phase(login.Cancelled)); c.ID != v2.ID {
 		t.Fatal(c)
+	}
+	e.ended(t, v2.ID)
+	if e.killed(t, v2.ID) {
+		t.Error("no process was started, yet Remove was told one was killed")
 	}
 	if err := e.m.Cancel(ctx, "000000000000000000000000"); !errors.Is(err, login.ErrNotFound) {
 		t.Errorf("unknown id: %v", err)
@@ -475,6 +509,9 @@ func TestProcessDiesMidLogin(t *testing.T) {
 	}
 	if !contains(e.launcher.Removed(), v.ID) {
 		t.Error("not removed")
+	}
+	if e.killed(t, v.ID) {
+		t.Error("a process that died by itself was removed as killed")
 	}
 	if len(e.ids.calls()) != 0 {
 		t.Error("a dead process told the watch about a login")

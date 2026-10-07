@@ -42,6 +42,7 @@ import (
 	"io"
 	"os"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/krelinga/drydock/internal/classify"
@@ -171,8 +172,11 @@ type Launcher interface {
 	// a launch that has not yet started the process.
 	Launch(ctx context.Context, id string, cols, rows int) (*Proc, error)
 	// Remove removes everything Launch made for id. Idempotent; the local
-	// process has already been killed.
-	Remove(ctx context.Context, id string) error
+	// process has already ended. killed says Drydock killed it rather than
+	// it exiting by itself: a killed `docker run` may have died with its
+	// create request in flight, and the daemon finishes that create anyway
+	// (measured), so what Launch made may not be listable yet.
+	Remove(ctx context.Context, id string, killed bool) error
 	// Sweep removes whatever an earlier process left, except keep's.
 	Sweep(ctx context.Context, keep string) (int, error)
 }
@@ -217,13 +221,15 @@ func (p *Proc) Pid() int { return p.proc.Pid() }
 // Exited is closed when the local process has exited.
 func (p *Proc) Exited() <-chan struct{} { return p.exited }
 
-// kill kills the local process and waits a little for it to go. For the
+// kill kills the local process and waits a little for it to go, and says
+// whether it had to: false when the process had already exited. For the
 // docker launcher that is the CLI: the container itself is Remove's — a
-// killed CLI leaves its container running (measured).
-func (p *Proc) kill(wait time.Duration) {
+// killed CLI leaves its container running (measured), or, killed during its
+// create, one the daemon finishes creating after the CLI has gone.
+func (p *Proc) kill(wait time.Duration) bool {
 	select {
 	case <-p.exited:
-		return
+		return false
 	default:
 	}
 	p.proc.Signal(subproc.SignalKill)
@@ -231,6 +237,7 @@ func (p *Proc) kill(wait time.Duration) {
 	case <-p.exited:
 	case <-time.After(wait):
 	}
+	return true
 }
 
 // Manager runs at most one login at a time.
@@ -270,6 +277,12 @@ type session struct {
 	cancelReq chan struct{}
 	cancelOne sync.Once
 	done      chan struct{}
+	// killed: the run goroutine killed the process, which Remove is told.
+	killed bool
+	// streamEnded is set when the PTY reached its end: the process exited by
+	// itself, whether or not its reaping has been seen yet, so a kill after
+	// that kills nothing that was still creating a container.
+	streamEnded atomic.Bool
 }
 
 type submission struct {
@@ -566,6 +579,14 @@ func (s *session) launch(ctx context.Context, startTimer <-chan time.Time) (*Pro
 	go func() {
 		m.sweep.RLock()
 		defer m.sweep.RUnlock()
+		// Whatever an earlier login left, such as a container whose create
+		// landed after its Remove had given up, goes now rather than at the
+		// next boot. One login runs at a time, so all but this one is spare.
+		if n, err := m.Launcher.Sweep(lctx, s.view.ID); err != nil {
+			m.logf("drydock: login %s: sweeping earlier login containers: %v", s.view.ID, err)
+		} else if n > 0 {
+			m.logf("drydock: login %s: removed %d earlier login container(s)", s.view.ID, n)
+		}
 		p, err := m.Launcher.Launch(lctx, s.view.ID, durOr2(m.Cols, DefaultCols), durOr2(m.Rows, DefaultRows))
 		lc <- launched{p, err}
 	}()
@@ -591,7 +612,7 @@ func (s *session) launch(ctx context.Context, startTimer <-chan time.Time) (*Pro
 	// Abandoned: wait for the launch to give up, and kill what it started.
 	abandon()
 	if l := <-lc; l.p != nil {
-		l.p.kill(5 * time.Second)
+		s.killed = l.p.kill(5 * time.Second)
 		l.p.Master.Close()
 	}
 	return nil, stop
@@ -610,6 +631,7 @@ func (s *session) drive(ctx context.Context, p *Proc, startTimer <-chan time.Tim
 	chunks := make(chan []byte, 16)
 	go func() {
 		defer close(chunks)
+		defer s.streamEnded.Store(true)
 		b := make([]byte, 4096)
 		for {
 			n, err := p.Master.Read(b)
@@ -766,12 +788,16 @@ func (s *session) succeed(ctx context.Context, p *Proc, buf []byte, chunks <-cha
 func (s *session) finish(p *Proc, buf []byte, out outcome) {
 	m := s.m
 	if p != nil {
-		p.kill(5 * time.Second)
+		// Read before the kill, whose own effect is to end the stream.
+		ended := s.streamEnded.Load()
+		if p.kill(5*time.Second) && !ended {
+			s.killed = true
+		}
 		p.Master.Close()
 	}
 	wipe(buf)
 	rctx, cancel := context.WithTimeout(context.Background(), time.Minute)
-	if err := m.Launcher.Remove(rctx, s.view.ID); err != nil {
+	if err := m.Launcher.Remove(rctx, s.view.ID, s.killed); err != nil {
 		m.logf("drydock: login %s: removing the login container: %v", s.view.ID, err)
 	}
 	cancel()
