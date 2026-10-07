@@ -42,6 +42,22 @@ forget_drydock() {
 }
 mainpid() { systemctl show -p MainPID --value "$1"; }
 status() { "${CURL[@]}" -o /dev/null -w '%{http_code}' "$@"; }
+# runs_installed PID: the process executes the installed file itself — not a
+# deleted one an upgrade replaced.
+runs_installed() { [ "/proc/$1/exe" -ef /usr/local/bin/drydock ] && ! readlink "/proc/$1/exe" | grep -q deleted; }
+not_runs_installed() { ! runs_installed "$1"; }
+
+# A key's bytes in no output, journal, argv, environment or setting. Searched
+# as hex, raw bytes are found wherever they landed, whatever bytes surround
+# them; the key's own hex and base64 are searched for as text too.
+hex() { od -An -v -tx1 "$@" | tr -d ' \n'; }
+absent() { # absent KEYFILE FILE...: no trace of KEYFILE's bytes in the FILEs
+	local kh kb
+	kh=$(hex "$1") kb=$(base64 -w0 "$1")
+	shift
+	! hex "$@" | grep -qF -- "$kh" && ! grep -qF -- "$kh" "$@" && ! grep -qF -- "$kb" "$@"
+}
+present() { ! absent "$@"; }
 
 section setup
 cd /releases && python3 -m http.server 8000 --bind 127.0.0.1 >/dev/null 2>&1 &
@@ -125,10 +141,16 @@ section "the secrets master key"
 SK=/etc/drydock/secrets.key
 check "it was created, drydock's alone, mode 0400" [ "$(stat -c '%U %G %a %s' "$SK")" = "drydock drydock 400 32" ]
 check "the installer said to back it up" grep -q "back it up" <<<"$out"
-skb64=$(base64 -w0 "$SK") skhex=$(od -An -tx1 "$SK" | tr -d ' \n')
-check "it was never printed" bash -c "! grep -qF -- '$skb64' <<<\"\$1\" && ! grep -qF -- '$skhex' <<<\"\$1\"" _ "$out"
+# The generated key is kept for the sweep at the end too: it is the default
+# path, and every later section replaces it.
+cp "$SK" /root/generated.key
+printf '%s\n' "$out" >/root/first-install.out
+{ echo before; cat "$SK"; echo after; } >/root/control.bin
+check "control: the sweep finds the generated key's raw bytes where they are" present /root/generated.key /root/control.bin
+check "it was never printed" absent /root/generated.key /root/first-install.out
 check "drydock is given it as a path" bash -c "tr '\\0' ' ' </proc/$(mainpid drydock)/cmdline | grep -q -- '--secrets-key=$SK'"
-check "it is not in drydock's environment" bash -c "! base64 -w0 /proc/$(mainpid drydock)/environ | grep -qF -- '$skb64' && ! grep -qF -- '$skb64' /etc/drydock/drydock.env"
+check "it is not in drydock's argv, environment or settings" \
+	absent /root/generated.key "/proc/$(mainpid drydock)/cmdline" "/proc/$(mainpid drydock)/environ" /etc/drydock/drydock.env
 # put NAME VALUE: PUT a secret through Caddy; prints the response body.
 put() {
 	"${CURL[@]}" -b "$jar" -X PUT -H "Origin: https://$UI" -H 'Content-Type: application/json' \
@@ -425,21 +447,118 @@ check "and drydock running, unrestarted" [ "$(mainpid drydock)" = "$pid_d" ]
 install v0.0.2 --secrets-key "$SK2"
 check "control: the installed key given again is accepted" [ "$rc" = 0 ]
 check "and restarts nothing" [ "$(mainpid drydock)" = "$pid_d" ]
+check "and leaves no copy of it staged" bash -c '! compgen -G "/etc/drydock/.*.??????" >/dev/null'
 
-# The key's bytes are in no output, journal, argv, environment or setting.
-# Searched as hex, raw bytes are found wherever they landed, whatever bytes
-# surround them; the key's own hex and base64 are searched for as text too.
-hex() { od -An -v -tx1 "$@" | tr -d ' \n'; }
-absent() { # absent KEYFILE FILE...: no trace of KEYFILE's bytes in the FILEs
-	local kh kb
-	kh=$(hex "$1") kb=$(base64 -w0 "$1")
-	shift
-	! hex "$@" | grep -qF -- "$kh" && ! grep -qF -- "$kh" "$@" && ! grep -qF -- "$kb" "$@"
-}
-present() { ! absent "$@"; }
+section "a key refused during an upgrade leaves the old release installed and running"
+# The refusal must come before anything is replaced — the binary above all.
+# v0.4.1 installed the new binary first, so the old process kept running a
+# deleted file, and the runbook's re-run then said "installed and current"
+# and restarted nothing.
+key_sum=$(sha256sum "$SK") pid_d=$(mainpid drydock)
+check "control: v0.0.2 is installed" [ "$(drydock version)" = v0.0.2 ]
+check "control: and running from the installed file" runs_installed "$pid_d"
+install v0.0.4 --secrets-key "$SK1"
+check "a different key with a secret stored is refused on an upgrade too" [ "$rc" != 0 ]
+check "with the same reason" grep -q "1 stored secret(s) are sealed under the installed key" <<<"$out"
+check "the installed binary is still v0.0.2" [ "$(drydock version)" = v0.0.2 ]
+check "no staged binary was left beside it" [ ! -e /usr/local/bin/drydock.new ]
+check "drydock was not restarted" [ "$(mainpid drydock)" = "$pid_d" ]
+check "and still runs the installed file, not a deleted one" runs_installed "$pid_d"
+check "the key is byte-identical" [ "$(sha256sum "$SK")" = "$key_sum" ]
+check "no temporary file was left behind" bash -c '! compgen -G "/etc/drydock/.*.??????" >/dev/null'
+install v0.0.4
+check "the runbook's re-run without --secrets-key upgrades" [ "$rc" = 0 ] || printf '%s\n' "$out"
+check "and says so" grep -q "upgraded Drydock v0.0.2 -> v0.0.4" <<<"$out"
+check "drydock was restarted onto v0.0.4" bash -c "[ \"\$(systemctl show -p MainPID --value drydock)\" != $pid_d ] && [ \"\$(drydock version)\" = v0.0.4 ]"
+check "and runs the installed file" runs_installed "$(mainpid drydock)"
+check "the secret still decrypts" grep -q '"rotated":false' <<<"$(put TEST_KEY install-test-value)"
+
+section "an interrupted upgrade is finished by the next run"
+# What an interrupted run (or v0.4.1's refusal) leaves: a new binary in place
+# and the old one still running, deleted. The next run of the same release
+# must restart it, not call it current.
+mkdir -p /root/v5 && tar -xzf "/releases/v0.0.5/drydock_linux_$(dpkg --print-architecture).tar.gz" -C /root/v5
+command install -m 0755 /root/v5/drydock/drydock /usr/local/bin/drydock.new && mv -f /usr/local/bin/drydock.new /usr/local/bin/drydock
+pid_d=$(mainpid drydock)
+check "control: the process now runs a deleted file" not_runs_installed "$pid_d"
+install v0.0.5
+check "the re-run succeeds" [ "$rc" = 0 ] || printf '%s\n' "$out"
+check "it says what was really running" grep -q "drydock is running v0.0.4, not the installed /usr/local/bin/drydock (v0.0.5)" <<<"$out"
+check "and reports the upgrade, not 'current'" bash -c 'grep -q "upgraded Drydock v0.0.4 -> v0.0.5" <<<"$1" && ! grep -q "installed and current" <<<"$1"' _ "$out"
+check "drydock was restarted" [ "$(mainpid drydock)" != "$pid_d" ]
+check "and runs the installed file" runs_installed "$(mainpid drydock)"
+check "the rollback copy is what was running" [ "$(/usr/local/bin/drydock.previous version)" = v0.0.4 ]
+pid_d=$(mainpid drydock)
+install v0.0.5
+check "control: then a re-run is current, and restarts nothing" bash -c '[ "$1" = 0 ] && grep -q "v0.0.5 is installed and current" <<<"$2"' _ "$rc" "$out"
+check "nothing restarted" [ "$(mainpid drydock)" = "$pid_d" ]
+
+# The same, onto a binary that cannot start: the rollback restores what was
+# running, which the interrupted run's file never was.
+mkdir -p /root/v3 && tar -xzf "/releases/v0.0.3/drydock_linux_$(dpkg --print-architecture).tar.gz" -C /root/v3
+command install -m 0755 /root/v3/drydock/drydock /usr/local/bin/drydock.new && mv -f /usr/local/bin/drydock.new /usr/local/bin/drydock
+install v0.0.3
+check "an interrupted upgrade to a broken release fails" [ "$rc" != 0 ]
+check "and is rolled back to what was running" grep -q "rolled back to v0.0.5" <<<"$out"
+check "the binary is v0.0.5 again" [ "$(drydock version)" = v0.0.5 ]
+check "drydock is running it" systemctl is-active --quiet drydock
+check "from the installed file" runs_installed "$(mainpid drydock)"
+
+section "a failure after the key is swapped still leaves drydock running"
+code=$("${CURL[@]}" -o /dev/null -w '%{http_code}' -b "$jar" -X DELETE -H "Origin: https://$UI" "https://$UI/api/secrets/TEST_KEY")
+check "control: the stored secret is deleted ($code)" grep -qx '20[024]' <<<"$code"
+check "control: so none is stored, and a swap is allowed" [ "$(runuser -u drydock -- drydock count-secrets --db /var/lib/drydock/drydock.db)" = 0 ]
+# The Caddy sites directory, made a file: `install -d` fails after the swap,
+# though the staged Caddy config validated.
+mv /etc/caddy/drydock.d /root/drydock.d.saved && touch /etc/caddy/drydock.d
+pid_d=$(mainpid drydock)
+install v0.0.5 --secrets-key "$SK1"
+check "the run fails" [ "$rc" != 0 ]
+check "after it swapped the key" bash -c "cmp -s $SK1 $SK && grep -q 'stopping drydock to replace the secrets master key' <<<\"\$1\"" _ "$out"
+check "it says it started drydock again" grep -q "starting drydock again, which this run stopped" <<<"$out"
+check "drydock is running" systemctl is-active --quiet drydock
+check "a new process, on the new key" bash -c "[ \"\$(systemctl show -p MainPID --value drydock)\" != $pid_d ]"
+rm -f /etc/caddy/drydock.d && mv /root/drydock.d.saved /etc/caddy/drydock.d
+install v0.0.5 --secrets-key "$SK1"
+check "control: repaired, the same run passes" [ "$rc" = 0 ] || printf '%s\n' "$out"
+check "and has nothing left to do with the key" bash -c '! grep -q "secrets master key" <<<"$1"' _ "$out"
+
+section "a stop that fails is reported, and leaves nothing behind"
+mkdir -p /root/fakebin
+printf '#!/bin/sh\n[ "$*" = "stop drydock" ] && { echo "Failed to stop drydock.service: injected by the installer test" >&2; exit 1; }\nexec %s "$@"\n' "$(command -v systemctl)" >/root/fakebin/systemctl
+chmod +x /root/fakebin/systemctl
+pid_d=$(mainpid drydock)
+PATH=/root/fakebin:$PATH install v0.0.5 --secrets-key "$SK2"
+check "the run fails" [ "$rc" != 0 ]
+check "it says it could not stop drydock" grep -q "could not stop drydock to replace the secrets master key" <<<"$out"
+check "with systemctl's reason above it" grep -q "injected by the installer test" <<<"$out"
+check "the key is unchanged" cmp -s "$SK1" "$SK"
+check "the staged copy of the new key is gone" bash -c '! compgen -G "/etc/drydock/.*.??????" >/dev/null'
+check "drydock is running" systemctl is-active --quiet drydock
+PATH=/root/fakebin:$PATH install v0.0.5
+check "control: the fake systemctl passes everything else through" [ "$rc" = 0 ] || printf '%s\n' "$out"
+
+section "an empty database is not 'no secrets'"
+# A botched restore can leave a 0-byte file; the real database, and the
+# secrets in it, may come back. With drydock stopped, as an operator restoring
+# it would leave it.
+systemctl stop drydock
+mkdir -p /root/db.saved && mv /var/lib/drydock/drydock.db* /root/db.saved/
+command install -o drydock -g drydock -m 0600 /dev/null /var/lib/drydock/drydock.db
+install v0.0.5 --secrets-key "$SK2"
+check "a different key over an empty database is refused" [ "$rc" != 0 ]
+check "because it cannot tell" grep -q "could not tell whether any secret is stored" <<<"$out"
+check "and names the empty file" grep -q "is an empty file" <<<"$out"
+check "the key is unchanged" cmp -s "$SK1" "$SK"
+check "drydock was left stopped, as found" bash -c '! systemctl is-active --quiet drydock'
+rm -f /var/lib/drydock/drydock.db && mv /root/db.saved/* /var/lib/drydock/
+check "control: the real database answers" [ "$(runuser -u drydock -- drydock count-secrets --db /var/lib/drydock/drydock.db)" = 0 ]
+systemctl start drydock
+check "nothing in /var/lib/drydock belongs to anyone but drydock" [ -z "$(find /var/lib/drydock ! -user drydock)" ]
+
 journalctl -o cat --no-pager >/root/journal.txt 2>/dev/null
 pid=$(mainpid drydock)
-for k in "$SK1" "$SK2" /root/short.key; do
+for k in /root/generated.key "$SK1" "$SK2" /root/short.key; do
 	{ echo before; cat "$k"; echo after; } >/root/control.bin
 	check "control: the sweep finds $(basename "$k") where it is" present "$k" /root/control.bin
 	check "$(basename "$k") is in no installer output" absent "$k" /root/installer-output.log

@@ -55,14 +55,18 @@ them. Each one is also mentioned at the step where it bites.
 4. **There is no `uninstall`.** [Step 10](#10-upgrade-roll-back-uninstall-logs) lists what to remove
    by hand. The list is derived from what `deploy/install.sh` creates.
 Four issues listed here earlier are fixed: three in v0.2.0, and one in v0.2.1. This runbook
-deploys **v0.3.1**. v0.3.0 is the first release whose installer takes `--secrets-key`
-([step 6](#6-the-secrets-master-key-supply-it-or-back-it-up)), and v0.3.1 tells a GitHub App
-missing a permission apart from a revoked repository ([§11](#11-troubleshooting)). To confirm the
-installer you are about to run is v0.3.1 or later,
+deploys **v0.4.2**. v0.3.0 is the first release whose installer takes `--secrets-key`
+([step 6](#6-the-secrets-master-key-supply-it-or-back-it-up)); v0.4.0 is the first that tells a
+GitHub App missing a permission apart from a revoked repository ([§11](#11-troubleshooting)) and
+signs Claude in ([§8.6](#86-a-claude-session-phase-5)); and v0.4.2 is the first whose installer
+refuses a `--secrets-key` before it replaces anything, the binary included, and restarts a
+Drydock left running a replaced binary ([6.3](#63-switch-an-installed-key-to-one-you-supply)).
+To confirm the installer you are about to run is v0.4.2 or later,
 `curl -fsSL https://github.com/krelinga/drydock/releases/latest/download/install.sh | grep '^RELEASE_VERSION='`
-prints `RELEASE_VERSION="v0.3.1"` or a later tag. v0.3.0 installs and runs the same way. An
-installer older than v0.3.0 stops at the flag with
-`unknown option: --secrets-key`; on one, leave the flag off and take
+prints `RELEASE_VERSION="v0.4.2"` or a later tag. v0.4.0 and v0.4.1 install and run the same way,
+except on a refused `--secrets-key` during an upgrade
+([6.3](#63-switch-an-installed-key-to-one-you-supply)). An installer older than v0.3.0 stops at the
+flag with `unknown option: --secrets-key`; on one, leave the flag off and take
 [step 6's generated key](#62-a-generated-key-back-it-up-now).
 
 - A first install with `--github-app-key` on a host without `/etc/drydock` no longer stops with
@@ -216,9 +220,16 @@ baked into the unit is the production App's ([Known issue 3](#0-known-issues--re
 
 ## 2. Cut a release
 
-> **For this deployment, this step is done once `v0.3.1` is published and *Latest*.** It is the
-> release this runbook deploys; until it is, cut it with the steps below. Go to [step 3](#3-prerequisites-on-the-server). The rest of this
-> step is for cutting a later release.
+> **This runbook deploys `v0.4.2`. Check whether it is published:**
+> `gh release view v0.4.2 --repo krelinga/drydock --json isDraft --jq .isDraft`.
+> - It prints `false`: v0.4.2 is published. If it, or a later release, is *Latest*, this step is
+>   done: go to [step 3](#3-prerequisites-on-the-server).
+> - It prints `true`: v0.4.2 is a draft whose release run did not finish. Recover it with
+>   [the table below](#if-the-release-workflow-fails).
+> - It fails with `release not found`: v0.4.2 has not been cut yet. It is the open release PR,
+>   **`chore(main): release 0.4.2`**; cut it with the steps below.
+>
+> The rest of this step is also how any later release is cut.
 
 The install one-liner always installs the **latest** GitHub release. A new release comes from the
 open release-please PR, titled **`chore(main): release X.Y.Z`**; merging it publishes `vX.Y.Z`. If
@@ -244,7 +255,9 @@ Run these from any machine with `gh` signed in as a repository admin:
 - [ ] **Watch the release workflow to the end.** It has five jobs: `release-please` tags `vX.Y.Z`
   and creates the Release **as a draft**, `test` runs the whole Go suite in exactly CI's `go`
   environment (both use `.github/actions/go-suite`), `assets` uploads the files to the draft,
-  `verify` downloads them back and runs the README one-liner against them, and `publish` makes the
+  `verify` downloads them back and runs the README one-liner against them, on a fresh host and as
+  an upgrade of the release that is *Latest* now (with a password and a stored secret), and
+  `publish` makes the
   release public and *Latest*, then checks that `releases/latest/download/install.sh` serves it.
   ```sh
   gh run list --repo krelinga/drydock --workflow release-please.yml --limit 1
@@ -263,7 +276,7 @@ Run these from any machine with `gh` signed in as a repository admin:
 | What has to change | Do this |
 |---|---|
 | Nothing: a flaky download, a runner hiccup | `gh run rerun <run-id> --repo krelinga/drydock --failed`. A re-run uses the **workflow file its run started with**, so it cannot pick up a fix. |
-| The workflow or its test environment (`.github/workflows/release-please.yml`, `.github/actions/`) | Merge the fix to `main` as `ci:`, then [resume the draft](#resume-a-draft-release). The code at the tag was fine, so it stays the release. |
+| The workflow or its test environment (`.github/workflows/release-please.yml`, `.github/actions/`, `test/install/`) | Merge the fix to `main` as `ci:` (or `test:`), then [resume the draft](#resume-a-draft-release). The code at the tag was fine, so it stays the release. |
 | The code | Fix forward: merge a `fix:` PR, and release-please opens a release PR for the next patch version; merge that as above. The failed draft can stay, or be removed with `gh release delete vX.Y.Z --repo krelinga/drydock --yes`, which keeps the tag. Keep the tag: release-please finds its previous release by it. |
 
 Do not delete the tag to make release-please try again. Its release PR is already labelled
@@ -274,8 +287,9 @@ next release from the tag before it again.
 
 `workflow_dispatch` runs `main`'s release workflow against an existing draft. It skips
 release-please and runs `test`, `assets`, `verify` and `publish` on the **code at the tag**, with
-**`main`'s workflow and test environment**. It refuses a tag whose release is not a draft, so it
-cannot replace a public release's files.
+**`main`'s workflow and test environment**: `test` runs `main`'s `.github/actions/go-suite`, and
+`verify` runs `main`'s `test/install/live.sh` against the downloaded assets. It refuses a tag
+whose release is not a draft, so it cannot replace a public release's files.
 
 - [ ] **Check the draft and its tag exist**, and that the fix is on `main`:
   ```sh
@@ -555,12 +569,15 @@ step.
 
   Do **not** pass `--preview-domain`. Previews are not built yet ([step 9](#9-what-does-not-work-yet)).
 
-**What it does, in order.** It stops at the first failure, and nothing below the failure is
-changed:
+**What it does, in order.** It stops at the first failure. Steps 1 to 9 only check, stage and
+decide: a refusal there leaves the installed binary, the running Drydock and every file as they
+were, and removes whatever it staged. If a failure comes after the run stopped Drydock (to replace
+the master key), it starts Drydock again before it exits and says so:
+`warning: starting drydock again, which this run stopped`.
 
 1. It downloads `drydock_linux_amd64.tar.gz` and `SHA256SUMS` for the tag stamped into this
    `install.sh`, checks the checksum, and runs the `install.sh` inside the tarball. Output starts
-   with `==> downloading drydock_linux_amd64.tar.gz (v0.3.1)`.
+   with `==> downloading drydock_linux_amd64.tar.gz (v0.4.2)`.
 2. It checks prerequisites: root, Linux, systemd, `caddy` and the `caddy` user, `curl`, `docker`,
    the `docker` group, and `devcontainer` on the service `PATH`.
 3. It validates flags: the hostname must contain a dot, and is lowercased (it says so if that
@@ -569,25 +586,32 @@ changed:
    like a PEM private key; `--secrets-key` must be a regular file of exactly 32 bytes. The refusals
    name the file and its size, never its contents.
 4. It checks that the `caddy` user can read the certificate and key.
-5. It decides about the Caddyfile. The stock file is backed up and replaced:
-   `==> replacing the Caddy package's default Caddyfile (saved to /etc/caddy/Caddyfile.before-drydock.<timestamp>)`.
+5. It decides about the Caddyfile: the Caddy package's stock file may be replaced (it is backed up
+   in step 12), and anyone else's only with `--take-over-caddy`.
 6. `==> creating group drydock` and `==> creating user drydock`: a system account with home
    `/var/lib/drydock` and shell `nologin`.
 7. `==> adding drydock to the docker group (root-equivalent; see design §13.4)`. Then it runs
    `devcontainer --version` as `drydock` (and fails if that does not run), and `docker info` as
    `drydock` (only a *warning* if the daemon is unreachable).
-8. It creates `/srv/drydock` (root, `0755`, only if it is absent) and `/srv/drydock/ws`
-   (`drydock`, `0700`).
-9. It installs `/usr/local/bin/drydock` and creates `/etc/drydock` (root, `0755`), before
-   anything is written into it.
-10. `==> installed the GitHub App key at /etc/drydock/github-app.pem (mode 0400, owner drydock)`.
+8. It creates `/srv/drydock` (root, `0755`, only if it is absent), `/srv/drydock/ws`
+   (`drydock`, `0700`) and `/etc/drydock` (root, `0755`).
+9. It stages and decides, replacing nothing yet. It copies the release's binary to
+   `/usr/local/bin/drydock.new`, and validates the new Caddy config with `caddy validate`. If the
+   running Drydock is not the installed binary, because an earlier run was interrupted after it
+   replaced the file, it says so and restarts it in step 13:
+   `==> drydock is running vA, not the installed /usr/local/bin/drydock (vB): an earlier run did not finish; it will be restarted`.
+   With a `--secrets-key` that differs from an installed key, it asks whether any secret is stored,
+   and refuses here if one is ([6.3](#63-switch-an-installed-key-to-one-you-supply)).
+10. It installs `/usr/local/bin/drydock` (keeping the one it replaces as `drydock.previous`), then
+    `==> installed the GitHub App key at /etc/drydock/github-app.pem (mode 0400, owner drydock)`.
 11. Without `--secrets-key`: `==> created the secrets master key at /etc/drydock/secrets.key (mode 0400, owner drydock); back it up — without it no stored secret can be read`.
     With it: `==> installed the secrets master key at /etc/drydock/secrets.key from /root/drydock-secrets.key (mode 0400, owner drydock); keep your copy of it safe — without it no stored secret can be read`.
 12. It writes `/etc/drydock/drydock.env`, `/etc/systemd/system/drydock.service`,
     `/etc/systemd/system/caddy.service.d/drydock.conf`, `/etc/caddy/Caddyfile` and the directory
-    `/etc/caddy/drydock.d/`. The new Caddy config is validated with `caddy validate` **before**
-    anything under `/etc/caddy` changes.
-13. `==> starting drydock`, then `==> restarting caddy`.
+    `/etc/caddy/drydock.d/`. The stock Caddyfile is backed up first:
+    `==> replacing the Caddy package's default Caddyfile (saved to /etc/caddy/Caddyfile.before-drydock.<timestamp>)`.
+13. `==> starting drydock`, then `==> restarting caddy`. It fails unless the running Drydock is
+    the installed binary.
 14. **It asks for the operator password**: `New password:` and `Again:`, without echo. Then
     `Password set. Every existing session has been signed out.`
 15. It runs the end-to-end check: `https://drydock.example.com/api/auth/session` through Caddy,
@@ -596,7 +620,7 @@ changed:
     check passes. If everything is running and only the certificate could not be verified, it says
     exactly that, `Drydock is installed and running, and answers through Caddy, but this host could
     not verify the certificate …`, with `curl`'s reason; see [§11](#11-troubleshooting).
-16. `==> installed Drydock v0.3.1` and `==> open https://drydock.example.com`.
+16. `==> installed Drydock v0.4.2` and `==> open https://drydock.example.com`.
 
 - [ ] **Delete the temporary App key**, and the temporary master key if you gave one:
   ```sh
@@ -631,6 +655,7 @@ sudo -u drydock drydock passwd --db /var/lib/drydock/drydock.db
 | `/run/caddy/admin.sock` | caddy `0600` | Caddy's admin API, moved off `localhost:2019`. |
 | `/srv/drydock/ws/` | drydock `0700` | Clones, at `/srv/drydock/ws/<id>/repo`. |
 | `drydock.service`, `caddy.service` | enabled | Both start at boot. |
+| Docker volume `drydock-claude-config` | (Docker's) | Created by Drydock, not the installer, at the first workspace or Claude sign-in. Once someone signs in ([§8.6](#86-a-claude-session-phase-5)), it holds a live Claude login. |
 
 ---
 
@@ -724,9 +749,19 @@ installer never deletes or re-encrypts a secret, and has no flag to force the sw
 key anyway, have every value at hand first (Drydock never shows one), delete the secrets on
 **Secrets**, re-run with the flag, then store them and their grants again.
 
-If the same run was also an upgrade, the new binary is already in `/usr/local/bin`, but the
-refusal comes before the unit is rewritten or anything restarts, so the running Drydock is
-untouched. Re-run without `--secrets-key` to finish the upgrade.
+If the same run was also an upgrade, none of the upgrade happened either: the refusal comes before
+the new binary is installed, so `drydock version` still prints the old release, which keeps
+running from its own file. Re-run without `--secrets-key` to upgrade; it ends with
+`==> upgraded Drydock vA -> vB`.
+
+Installers before v0.4.2 installed the new binary *before* this refusal, so the old process kept
+running a deleted file, and a re-run with one of them said `is installed and current` and restarted
+nothing. If that happened on your host, `sudo readlink /proc/$(systemctl show -p MainPID --value drydock)/exe`
+ends in ` (deleted)`. Any run of a v0.4.2 or later installer repairs it: it prints
+`==> drydock is running vA, not the installed /usr/local/bin/drydock (vB): an earlier run did not finish; it will be restarted`,
+restarts Drydock on the installed binary, and keeps the one that was running as the rollback.
+That restart is the upgrade, so back up the database first, as for any upgrade
+([10.1](#101-upgrade)).
 
 ---
 
@@ -751,16 +786,29 @@ untouched. Re-run without `--secrets-key` to finish the upgrade.
   ```sh
   journalctl -u drydock -b --no-pager -o cat
   ```
-  On a healthy start, the **only** line is:
+  Apart from systemd's own `Started …` and `Stopping …` lines, a healthy start writes one line:
   ```
   drydock: serving on /run/drydock/http.sock and /run/drydock/preview.sock
   ```
-  Boot reconciliation and the first catalog refresh log **only when they fail**. So silence is
-  success, and any of these lines is a problem:
+  One other line is benign: `drydock: login: removed N leftover login container(s)`, when a
+  Claude sign-in was cut off by the previous stop. Everything else Drydock does at boot logs
+  **only when it fails**. So silence is success, and **any other line from Drydock is a
+  problem**. The ones boot can write:
   - `drydock: reconcile: …`: Drydock cannot list containers. This is usually Docker access
     ([§11](#11-troubleshooting)).
+  - `drydock: sweeping cleanup helpers: …`: the helper containers an interrupted delete left
+    could not be listed or removed. Usually Docker access, as above.
+  - `drydock: broker: …`: the broker sockets of running workspaces were not reopened, so those
+    workspaces have no GitHub access until they are stopped and started.
+  - `drydock: session servers: …`: running workspaces' Claude session servers were not resumed.
+  - `drydock: secrets: …`: the stored secrets could not be checked at boot.
+  - `drydock: identity: Could not check the Claude login: … (…)`: the shared Claude login could
+    not be read. The sentence says why; the first check builds an image and needs the network.
+  - `drydock: login: sweeping leftover login containers: …`: as the reconcile line.
   - `drydock: catalog refresh: github: GET /app/installations: 401 …`: the App ID and key do not
     belong together, or the clock is off.
+  - `drydock: workspace <id>: …`: one workspace's step or session server failed; its page in the
+    UI says which.
   - `drydock serve: …` followed by a restart loop: a startup refusal, for example a key file
     whose mode is too open, or a database newer than the binary.
 - [ ] **Caddy is not listening on the admin port**, and nothing else listens:
@@ -1082,29 +1130,44 @@ signs out every device. A device can also be signed out from **Settings**.
 There is no uninstall command. This list is derived from what the installer creates
 ([step 5](#5-install)).
 
+> [!WARNING]
+> **The `drydock-claude-config` Docker volume holds a live Claude login**: `.credentials.json`,
+> with a refresh token, and `.claude.json`, for the account that signed in at
+> [§8.6](#86-a-claude-session-phase-5). Removing Drydock does not remove it; step 2 below does.
+> Sign that account out of its other sessions at claude.ai as well if the host is going to
+> someone else.
+
 ```sh
 # 1. Delete every workspace in the UI first. That removes containers, clones and sockets properly.
-#    Anything left over, by label:
-sudo docker ps -aq --filter label=drydock.workspace | xargs -r sudo docker rm -f
-# 2. Drydock itself
+#    Then stop Drydock, so it starts no container while you remove the rest, and remove anything
+#    left over, by label: workspaces, cleanup helpers and login containers.
 sudo systemctl disable --now drydock
+for l in drydock.workspace drydock.cleanup drydock.login; do
+  sudo docker ps -aq --filter "label=$l" | xargs -r sudo docker rm -f
+done
+# 2. The shared Claude login (see the warning above), and the images Drydock built to read it.
+sudo docker volume rm drydock-claude-config
+sudo docker image ls --format '{{.Repository}}:{{.Tag}}' drydock-claude | xargs -r sudo docker image rm
+# 3. Drydock itself
 sudo rm -f /etc/systemd/system/drydock.service /etc/systemd/system/drydock.service.previous
 sudo rm -f /usr/local/bin/drydock /usr/local/bin/drydock.previous
-# 3. Give Caddy back: drop-in, Caddyfile, sites directory
+# 4. Give Caddy back: drop-in, Caddyfile, sites directory
 sudo rm -f /etc/systemd/system/caddy.service.d/drydock.conf
 sudo cp -p "$(ls -1 /etc/caddy/Caddyfile.before-drydock.* | head -n1)" /etc/caddy/Caddyfile   # the oldest backup is the original
 sudo rm -rf /etc/caddy/drydock.d
 sudo systemctl daemon-reload && sudo systemctl restart caddy
-# 4. Data and keys. Save the DB, and secrets.key unless your secret store has it, if you might come back.
+# 5. Data and keys. Save the DB, and secrets.key unless your secret store has it, if you might come back.
 sudo rm -rf /srv/drydock/ws /var/lib/drydock
 sudo shred -u /etc/drydock/secrets.key /etc/drydock/github-app.pem
 sudo rm -rf /etc/drydock
-# 5. The account (userdel also removes the drydock group when it is the user's own)
+# 6. The account (userdel also removes the drydock group when it is the user's own)
 sudo userdel drydock; getent group drydock && sudo groupdel drydock
 ```
 
 Then revoke the App key on GitHub (*Private keys → Delete*). Docker, Node, the devcontainer CLI
-and Caddy stay installed, because you installed them.
+and Caddy stay installed, because you installed them. So do the images the workspaces were built
+from (the devcontainer CLI names its own `vsc-…`) and the pinned `busybox` and `node` images
+Drydock pulled: `sudo docker image ls`, and remove what you do not want.
 
 ---
 

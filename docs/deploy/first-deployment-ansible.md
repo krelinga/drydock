@@ -166,12 +166,17 @@ ansible-playbook drydock.yml --ask-become-pass --ask-vault-pass
 Set these in `group_vars/drydock/vars.yml`. **`drydock_version` is pinned**, not "latest", so a
 re-run installs the same release until you change it. Use a release that is *published*
 ([runbook step 2](first-deployment.md#2-cut-a-release)): a draft's assets do not download, and the
-download task fails rather than installing something else. `drydock_secrets_key_src` needs
-**v0.3.0 or later**: an older installer stops at `--secrets-key` with `unknown option`.
+download task fails rather than installing something else. The pin below is the release
+[the runbook deploys](first-deployment.md#0-known-issues--read-these-first); if
+`gh release view v0.4.2 --repo krelinga/drydock` says `release not found`, it has not been cut yet
+([runbook step 2](first-deployment.md#2-cut-a-release)). `drydock_secrets_key_src` needs
+**v0.3.0 or later**: an older installer stops at `--secrets-key` with `unknown option`. Use
+**v0.4.2 or later** with it on an upgrade: an earlier installer that refuses the key has already
+replaced the binary ([below](#5-install)).
 
 ```yaml
 # file: group_vars/drydock/vars.yml
-drydock_version: v0.3.1
+drydock_version: v0.4.2
 # Lowercase, fully qualified, with a dot (runbook §1.2).
 drydock_ui_host: drydock.example.com
 
@@ -591,7 +596,8 @@ So the task is `changed` exactly when there is any other `==> ` line. The versio
 be wrong: a new certificate path restarts services and still reports "installed and current".
 
 **Failure.** The installer stops at the first failure, changes nothing below it, and exits
-non-zero, and so does the task. That includes its final check: an unauthenticated
+non-zero, and so does the task. A refusal of a setting or of a new master key comes before it
+replaces anything, the binary included, so the release that was running still is. That includes its final check: an unauthenticated
 `https://<ui-host>/api/auth/session` through Caddy must answer `401` over a verified certificate.
 When only the certificate could not be verified, the message starts `Drydock is installed and
 running, and answers through Caddy, but this host could not verify the certificate …`; it is still
@@ -602,6 +608,10 @@ secret, so the task shows it; the fixes are in [runbook §11](first-deployment.m
 ([runbook §10.1](first-deployment.md#101-upgrade), [Known issue 2](first-deployment.md#0-known-issues--read-these-first)):
 when an installed `drydock version` differs from `drydock_version`, it stops `drydock`, copies
 `/var/lib/drydock/drydock.db` to `/root/drydock.db.<timestamp>` (root, `0600`), and starts it again.
+It does the same when the running `drydock` is not the installed binary (the file it executes has
+another inode): an earlier run was cut off after it replaced the binary, or an installer before
+v0.4.2 refused a `--secrets-key` after doing so. Restarting that process onto the
+installed binary is the upgrade, so it gets an upgrade's backup first; the backup's own stop and start do the restart (the installer would otherwise).
 
 ```yaml
 # file: roles/drydock/tasks/install.yml
@@ -614,7 +624,7 @@ when an installed `drydock version` differs from `drydock_version`, it stops `dr
       - "'.' in drydock_ui_host"
       - drydock_app_id | string is match('^[1-9][0-9]*$')
     fail_msg: >-
-      drydock_version must look like v1.2.3, drydock_ui_host must be a lowercase
+      drydock_version must be a release tag (vMAJOR.MINOR.PATCH), drydock_ui_host must be a lowercase
       fully qualified name, and drydock_app_id the numeric App ID (not the Iv… Client ID).
 
 # Checked without printing it: neither the condition nor the message carries the value.
@@ -660,10 +670,35 @@ when an installed `drydock version` differs from `drydock_version`, it stops `dr
   changed_when: false
   when: drydock_installed_binary.stat.exists
 
+- name: Read drydock's main PID
+  ansible.builtin.command:
+    argv: [systemctl, show, --property=MainPID, --value, drydock]
+  register: drydock_running_pid
+  changed_when: false
+  when: drydock_installed_binary.stat.exists
+
+# Followed to the file the process executes, deleted or not: an inode other
+# than the installed binary's is a release the installer will restart away from.
+- name: Look at the binary the running drydock executes
+  ansible.builtin.stat:
+    path: "/proc/{{ drydock_running_pid.stdout }}/exe"
+    follow: true
+    get_checksum: false
+    get_mime: false
+    get_attributes: false
+  register: drydock_running_binary
+  when:
+    - drydock_running_pid is not skipped
+    - drydock_running_pid.stdout not in ['', '0']
+
 - name: Back up the database before changing release (runbook §10.1, Known issue 2)
   when:
     - drydock_installed_version is not skipped
-    - drydock_installed_version.stdout != drydock_version
+    - >-
+      drydock_installed_version.stdout != drydock_version or (
+      drydock_running_binary is not skipped and drydock_running_binary.stat.exists and
+      [drydock_running_binary.stat.dev, drydock_running_binary.stat.inode] !=
+      [drydock_installed_binary.stat.dev, drydock_installed_binary.stat.inode])
   block:
     - name: Stop drydock, for a clean, checkpointed copy
       ansible.builtin.systemd_service:
@@ -891,7 +926,9 @@ installer prints `==> stopping drydock to replace the secrets master key` and
 `==> replaced the secrets master key at /etc/drydock/secrets.key with /root/drydock-secrets.key …`,
 and starts Drydock on the new key. Then shred the old backup, which no longer matches the server:
 `shred -u ~/drydock-backup/secrets.key`. With a secret stored, the installer refuses and the play
-fails with nothing changed ([runbook §6.3](first-deployment.md#63-switch-an-installed-key-to-one-you-supply)).
+fails with nothing changed ([runbook §6.3](first-deployment.md#63-switch-an-installed-key-to-one-you-supply)),
+even when the same run also changed `drydock_version`: the refusal comes before the new binary is
+installed, so the next run without the new key still sees the old release, backs up, and upgrades.
 To check first:
 `ansible drydock -b -m ansible.builtin.command -a "runuser -u drydock -- drydock count-secrets --db /var/lib/drydock/drydock.db"`
 prints `0`.
@@ -912,7 +949,9 @@ for SNI and `Host`. It verifies the certificate: against `drydock-ca.pem` for op
 system store otherwise.
 
 The journal check reads only the **running** process's lines (`_PID=` its main PID), so a failure
-from an earlier start in the same boot does not fail it. The first catalog refresh logs only when it
+from an earlier start in the same boot does not fail it. It is an allowlist: every line must be the
+serving line or the benign `drydock: login: removed N leftover login container(s)`, and any other
+line fails it, whether or not [runbook §7.1](first-deployment.md#71-on-the-server) lists it. The first catalog refresh logs only when it
 fails, and asynchronously, so a wrong App key can show up seconds after this check has passed: look
 at `journalctl -u drydock -o cat` once more after signing in. That assertion carries its own tag,
 `drydock_verify_journal`, so `--skip-tags drydock_verify_journal` leaves it out while you fix
@@ -978,9 +1017,14 @@ something it already told you about.
   ansible.builtin.assert:
     that:
       - "'drydock: serving on /run/drydock/http.sock and /run/drydock/preview.sock' in drydock_journal.stdout_lines"
+      # An allowlist, not a list of known failures: every line is the serving
+      # line or the one benign line, so a failure line added later fails this too.
       - >-
-        drydock_journal.stdout is not
-        search('^drydock(: reconcile:|: catalog refresh:| serve:)', multiline=true)
+        drydock_journal.stdout_lines
+        | reject('equalto', 'drydock: serving on /run/drydock/http.sock and /run/drydock/preview.sock')
+        | reject('match', 'drydock: login: removed [0-9]+ leftover login container[(]s[)]$')
+        | reject('equalto', '')
+        | list | length == 0
     fail_msg: "{{ drydock_journal.stdout }}"
     quiet: true
 
@@ -1029,7 +1073,7 @@ are UI work and checks inside a running container. Nothing to automate; do them 
 download task fails rather than installing anything), then change one line and re-run:
 
 ```yaml
-drydock_version: v0.3.2
+drydock_version: vX.Y.Z   # the new release's tag
 ```
 
 The play backs up the database first (the [step 5](#5-install) block above), then the installer

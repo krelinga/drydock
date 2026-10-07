@@ -13,7 +13,11 @@
 # the database backup), another no-op, an App key rotation, and a master-key
 # backup that refuses to be overwritten by a different key, then the move to a
 # vaulted secrets master key: the installed key vaulted (changed=0), a new one
-# while no secret is stored (replaced), and another once one is (refused).
+# while no secret is stored (replaced), and another once one is (refused) —
+# also on a run that moves the release, which must leave the old binary
+# running — and last the run after an interrupted upgrade, which must back up
+# the database and restart onto the installed binary though `drydock version`
+# already reads the new release.
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 root=$(cd "$here/../.." && pwd)
@@ -49,9 +53,12 @@ play_dir="$work/play"
 export ANSIBLE_COLLECTIONS_PATH="$play_dir/.collections" ANSIBLE_NOCOLOR=1
 ansible-galaxy collection install community.docker -p "$play_dir/.collections" >/dev/null </dev/null
 
-# Two releases, served from inside the "server" as DRYDOCK_DOWNLOAD_BASE is in test/install.
-"$root/deploy/package.sh" v0.0.1 "$work/releases/v0.0.1" amd64 >/dev/null
-"$root/deploy/package.sh" v0.0.2 "$work/releases/v0.0.2" amd64 >/dev/null
+# Four releases, served from inside the "server" as DRYDOCK_DOWNLOAD_BASE is in
+# test/install: v0.0.3 and v0.0.4 for an upgrade a refused key must not
+# start, and one an interrupted run left half done.
+for v in v0.0.1 v0.0.2 v0.0.3 v0.0.4; do
+	"$root/deploy/package.sh" "$v" "$work/releases/$v" amd64 >/dev/null
+done
 
 # Runbook step 1's files, on the controller: a private CA (option A), a
 # certificate for the UI host, and an App key. The two keys are vault-encrypted.
@@ -217,6 +224,49 @@ check "with the installer's refusal" grep -q "1 stored secret(s) are sealed unde
 check "the server's key is unchanged" [ "$(server_sum)" = "$sum2" ]
 check "drydock was not restarted" [ "$(in_server systemctl show -p MainPID --value drydock)" = "$pid" ]
 check "the staged copy is gone, even so" in_server test ! -e /root/drydock-secrets.key
+
+# The same refused key on a run that also moves the release: still nothing
+# changed, the binary included (#46), and the run after it, with the server's
+# key, backs up and upgrades rather than finding the new binary "current".
+runs_installed() { in_server sh -c 'pid=$(systemctl show -p MainPID --value drydock); [ "$pid" != 0 ] && [ /proc/$pid/exe -ef /usr/local/bin/drydock ]'; }
+not_runs_installed() { ! runs_installed; }
+backups() { in_server sh -c 'ls /root/drydock.db.* 2>/dev/null | wc -l'; }
+KEYSRC3=(-e drydock_version=v0.0.3 -e '{"drydock_secrets_key_src": "{{ playbook_dir }}/files/drydock-secrets.key"}')
+play "${KEYSRC3[@]}"
+n=$run
+check "a different vaulted key on an upgrade fails the play" [ "$rc" != 0 ]
+check "with the installer's refusal" grep -q "1 stored secret(s) are sealed under the installed key" "$work/run$n.log"
+check "the installed binary is still v0.0.2" [ "$(in_server drydock version)" = v0.0.2 ]
+check "and drydock runs it, not a deleted file" runs_installed
+check "the server's key is unchanged" [ "$(server_sum)" = "$sum2" ]
+cp "$work/key2.vault" files/drydock-secrets.key
+b=$(backups)
+play "${KEYSRC3[@]}"
+n=$run
+check "the same upgrade with the server's key succeeds" [ "$rc" = 0 ]
+check "it backed up the database first" [ "$(backups)" = $((b + 1)) ]
+check "and upgraded" grep -q "upgraded Drydock v0.0.2 -> v0.0.3" "$work/run$n.log"
+check "drydock runs the installed file" runs_installed
+
+# What an interrupted run leaves: the next release's binary in place, the old
+# one still running, deleted. drydock version reads the file, so only the
+# running process's inode says an upgrade is still to come.
+in_server sh -c 'mkdir -p /root/v4 && tar -xzf /releases/v0.0.4/drydock_linux_amd64.tar.gz -C /root/v4 &&
+	install -m 0755 /root/v4/drydock/drydock /usr/local/bin/drydock.new && mv -f /usr/local/bin/drydock.new /usr/local/bin/drydock'
+check "control: the file reads v0.0.4" [ "$(in_server drydock version)" = v0.0.4 ]
+check "control: and drydock runs a deleted file" not_runs_installed
+KEYSRC4=(-e drydock_version=v0.0.4 -e '{"drydock_secrets_key_src": "{{ playbook_dir }}/files/drydock-secrets.key"}')
+b=$(backups)
+play "${KEYSRC4[@]}"
+n=$run
+check "the run after an interrupted upgrade succeeds" [ "$rc" = 0 ]
+check "it backed up the database, though the file already read v0.0.4" [ "$(backups)" = $((b + 1)) ]
+check "the backup's restart moved drydock onto v0.0.4, so the installer found it current" grep -q "Drydock v0.0.4 is installed and current" "$work/run$n.log"
+check "drydock runs the installed file" runs_installed
+b=$(backups)
+play "${KEYSRC4[@]}"
+check "control: the next run changes nothing" [ "$changed" = 0 ]
+check "and backs up nothing" [ "$(backups)" = "$b" ]
 
 # No key's bytes in any run's output, raw (searched as hex) or encoded.
 cat "$work"/run*.log >"$work/all-runs.log"

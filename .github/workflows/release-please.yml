@@ -20,8 +20,10 @@
 # against the existing draft:
 #   gh workflow run release-please.yml --ref main -f tag=vX.Y.Z
 # That skips release-please and runs test, assets, verify and publish on the
-# code at the tag, with main's workflow and test environment. It refuses a tag
-# whose release is not a draft, so it can never touch a published release.
+# code at the tag, with main's workflow and test environment: test's
+# .github/actions and verify's test/install both come from the workflow's own
+# commit. It refuses a tag whose release is not a draft, so it can never touch
+# a published release.
 name: release-please
 
 on:
@@ -80,6 +82,7 @@ jobs:
       - uses: actions/checkout@v5
         with:
           ref: ${{ needs.release-please.outputs.tag }}
+          fetch-depth: 0 # go-suite's test/docs reads the history since the last release
       - uses: actions/checkout@v5
         with:
           path: .workflow
@@ -121,7 +124,12 @@ jobs:
   # The README's one-liner against what was just uploaded, while the release
   # is still a draft: the assets are downloaded back from it and served
   # locally the way GitHub serves a published release (test/install/live.sh
-  # --dir). The bytes installed are the bytes that will be published.
+  # --dir), on a fresh host and as an upgrade of the release that is Latest
+  # now. The bytes installed are the bytes that will be published. The
+  # harness is test/install from this workflow's own commit, not the tag's:
+  # it tests the downloaded assets, not the tag's source, and its Dockerfile
+  # (unpinned Debian, Caddy's live apt repository) is the part most likely to
+  # need a fix that a resumed draft must pick up.
   verify:
     needs: [release-please, assets]
     runs-on: ubuntu-latest
@@ -131,7 +139,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
         with:
-          ref: ${{ needs.release-please.outputs.tag }}
+          sparse-checkout: test/install
       - name: Download the draft's assets
         env:
           TAG: ${{ needs.release-please.outputs.tag }}

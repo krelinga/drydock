@@ -317,111 +317,122 @@ install_app_key() {
 	say "installed the GitHub App key at $APP_KEY (mode 0400, owner drydock)"
 }
 
-# install_secrets_key puts the master key in place, straight into a file only
-# drydock can read; it is never printed. With no key there yet, it is the one
+# plan_secrets_key decides everything about the master key before anything is
+# installed — the binary included — so a refusal leaves the host exactly as it
+# was, running what it ran. With no key there yet, the key will be the one
 # given with --secrets-key, or else 32 bytes of /dev/urandom. A key already
 # there is kept — and one that is not a key is refused rather than replaced,
 # because replacing it is how every stored secret is lost. That decision
 # belongs to a person: restore the file from a backup, or move it aside
 # knowingly. A different --secrets-key replaces it only while no secret is
-# stored (replace_secrets_key).
-install_secrets_key() {
+# stored (plan_key_replacement). install_secrets_key carries the plan out.
+plan_secrets_key() {
+	KEY_ACTION=keep
 	if [ -e "$SECRETS_KEY" ] || [ -L "$SECRETS_KEY" ]; then
 		if [ ! -f "$SECRETS_KEY" ] || [ -L "$SECRETS_KEY" ] || [ "$(stat -c %s "$SECRETS_KEY")" != 32 ]; then
 			die "$SECRETS_KEY is not a 32-byte key file. It is never replaced automatically: every stored secret is sealed under it, and a new key makes them all unreadable. Restore it from your backup — or, accepting that every stored secret is lost, move it aside and re-run."
 		fi
-		# Kept as it is; only its ownership and mode are put right.
-		chown drydock:drydock "$SECRETS_KEY"
-		chmod 0400 "$SECRETS_KEY"
-		[ -z "${SECRETS_KEY_SRC:-}" ] || replace_secrets_key
+		[ -z "${SECRETS_KEY_SRC:-}" ] || plan_key_replacement
 		return 0
 	fi
-	local tmp
 	if [ -n "${SECRETS_KEY_SRC:-}" ]; then
-		tmp=$(stage_secrets_key) || exit 1
-		mv -f "$tmp" "$SECRETS_KEY"
-		KEY_CHANGED=1
-		say "installed the secrets master key at $SECRETS_KEY from $SECRETS_KEY_SRC (mode 0400, owner drydock); keep your copy of it safe — without it no stored secret can be read"
-		return 0
+		stage_secrets_key
+		KEY_ACTION=install
+	else
+		KEY_ACTION=create
 	fi
-	tmp=$(mktemp "$CONF_DIR/.secrets-key.XXXXXX") # 0600, root's, until the chown
-	head -c 32 /dev/urandom >"$tmp"
-	[ "$(stat -c %s "$tmp")" = 32 ] || {
-		rm -f "$tmp"
-		die "could not read 32 bytes from /dev/urandom"
-	}
-	chown drydock:drydock "$tmp"
-	chmod 0400 "$tmp"
-	mv -f "$tmp" "$SECRETS_KEY"
-	KEY_CHANGED=1
-	say "created the secrets master key at $SECRETS_KEY (mode 0400, owner drydock); back it up — without it no stored secret can be read"
 }
 
 # stage_secrets_key copies --secrets-key beside the installed key, drydock's
-# and 0400, and prints the copy's path. The size is checked again on the copy:
-# the source was checked before anything changed, but it is the copy that is
-# installed. Called in a command substitution, so a die here exits only that
-# subshell: callers exit on its status.
+# and 0400, as $KEY_TMP. The size is checked again on the copy: the source was
+# checked before anything changed, but it is the copy that is installed. A
+# copy the run does not install is removed however it ends (on_exit).
 stage_secrets_key() {
-	local tmp
-	tmp=$(mktemp "$CONF_DIR/.secrets-key.XXXXXX") # 0600, root's, until the chown
-	cat "$SECRETS_KEY_SRC" >"$tmp"
-	if [ "$(stat -c %s "$tmp")" != 32 ]; then
-		rm -f "$tmp"
+	KEY_TMP=$(mktemp "$CONF_DIR/.secrets-key.XXXXXX") # 0600, root's, until the chown
+	STAGED+=("$KEY_TMP")
+	cat "$SECRETS_KEY_SRC" >"$KEY_TMP"
+	if [ "$(stat -c %s "$KEY_TMP")" != 32 ]; then
 		check_secrets_key_size "$SECRETS_KEY_SRC" "--secrets-key $SECRETS_KEY_SRC"
 		die "--secrets-key $SECRETS_KEY_SRC changed while it was being read"
 	fi
-	chown drydock:drydock "$tmp"
-	chmod 0400 "$tmp"
-	printf '%s\n' "$tmp"
+	chown drydock:drydock "$KEY_TMP"
+	chmod 0400 "$KEY_TMP"
 }
 
-# stored_secrets prints how many secrets the database holds. Asked by the new
-# binary, as drydock, read-only (`drydock count-secrets`): no sqlite3 on the
+# stored_secrets prints how many secrets the database holds. Asked by the
+# binary this run installs — staged beside the installed one, not yet in its
+# place — as drydock, read-only (`drydock count-secrets`): no sqlite3 on the
 # host, no instance lock, no migration under a server that may be older, and
 # anything it cannot read is a failure, never a zero.
 stored_secrets() {
 	local n
-	n=$(runuser -u drydock -- "$BIN" count-secrets --db "$DB") || return 1
+	n=$(runuser -u drydock -- "$ASK_BIN" count-secrets --db "$DB") || return 1
 	[[ "$n" =~ ^[0-9]+$ ]] || return 1
 	printf '%s\n' "$n"
 }
 
-# replace_secrets_key installs a --secrets-key that differs from the installed
+# plan_key_replacement accepts a --secrets-key that differs from the installed
 # key — but only while no secret is stored. Every stored secret is sealed under
 # the installed key, and Drydock delivers none while any cannot be opened, so a
 # swap with secrets stored breaks every workspace's secrets at once. Then it
 # refuses and changes nothing; it never deletes or re-seals a secret. The
 # question is asked twice: once with drydock running, so a refusal costs no
 # downtime, and again with it stopped, so no secret can be written under the
-# old key between the answer and the swap.
-replace_secrets_key() {
-	local tmp n was_active=0
-	tmp=$(stage_secrets_key) || exit 1
-	if cmp -s "$tmp" "$SECRETS_KEY"; then
-		rm -f "$tmp"
-		return 0
+# old key between the answer and the swap. From that stop on, drydock is
+# started again however the run ends: by start_drydock, or by on_exit.
+plan_key_replacement() {
+	local n
+	stage_secrets_key
+	if cmp -s "$KEY_TMP" "$SECRETS_KEY"; then
+		return 0 # the installed key, given again; on_exit removes the copy
 	fi
 	local unsure="--secrets-key $SECRETS_KEY_SRC is not the key installed at $SECRETS_KEY, and the installer could not tell whether any secret is stored under the installed one (see the error above). Nothing was changed."
-	n=$(stored_secrets) || {
-		rm -f "$tmp"
-		die "$unsure"
-	}
+	n=$(stored_secrets) || die "$unsure"
 	if [ "$n" = 0 ] && systemctl is-active --quiet drydock; then
 		say "stopping drydock to replace the secrets master key"
-		systemctl stop drydock
-		was_active=1
+		DRYDOCK_STOPPED=1
+		systemctl stop drydock ||
+			die "could not stop drydock to replace the secrets master key (see the error above). Nothing was changed."
 		n=$(stored_secrets) || n=unknown
 	fi
-	if [ "$n" != 0 ]; then
-		rm -f "$tmp"
-		[ "$was_active" = 0 ] || systemctl start drydock
-		[ "$n" != unknown ] || die "$unsure"
+	[ "$n" != unknown ] || die "$unsure"
+	[ "$n" = 0 ] ||
 		die "--secrets-key $SECRETS_KEY_SRC is not the key installed at $SECRETS_KEY, and $n stored secret(s) are sealed under the installed key. Replacing it would make every one of them unreadable, and Drydock delivers no secret while any cannot be read. The installed key was left as it is. To keep it, copy $SECRETS_KEY into your secret store and pass that copy as --secrets-key, or leave the flag off. To move to the new key, delete the stored secrets on Drydock's Secrets screen, re-run with --secrets-key, and enter them again."
-	fi
-	mv -f "$tmp" "$SECRETS_KEY"
-	KEY_CHANGED=1
-	say "replaced the secrets master key at $SECRETS_KEY with $SECRETS_KEY_SRC (no secret was stored under the old one); keep your copy of it safe — without it no stored secret can be read"
+	KEY_ACTION=replace
+}
+
+# install_secrets_key carries out plan_secrets_key's decision. The key is
+# never printed, and goes straight into a file only drydock can read.
+install_secrets_key() {
+	local tmp
+	case "$KEY_ACTION" in
+	keep)
+		# Kept as it is; only its ownership and mode are put right.
+		chown drydock:drydock "$SECRETS_KEY"
+		chmod 0400 "$SECRETS_KEY"
+		;;
+	install)
+		mv -f "$KEY_TMP" "$SECRETS_KEY"
+		KEY_CHANGED=1
+		say "installed the secrets master key at $SECRETS_KEY from $SECRETS_KEY_SRC (mode 0400, owner drydock); keep your copy of it safe — without it no stored secret can be read"
+		;;
+	replace)
+		mv -f "$KEY_TMP" "$SECRETS_KEY"
+		KEY_CHANGED=1
+		say "replaced the secrets master key at $SECRETS_KEY with $SECRETS_KEY_SRC (no secret was stored under the old one); keep your copy of it safe — without it no stored secret can be read"
+		;;
+	create)
+		tmp=$(mktemp "$CONF_DIR/.secrets-key.XXXXXX") # 0600, root's, until the chown
+		STAGED+=("$tmp")
+		head -c 32 /dev/urandom >"$tmp"
+		[ "$(stat -c %s "$tmp")" = 32 ] || die "could not read 32 bytes from /dev/urandom"
+		chown drydock:drydock "$tmp"
+		chmod 0400 "$tmp"
+		mv -f "$tmp" "$SECRETS_KEY"
+		KEY_CHANGED=1
+		say "created the secrets master key at $SECRETS_KEY (mode 0400, owner drydock); back it up — without it no stored secret can be read"
+		;;
+	esac
 }
 
 check_prerequisites() {
@@ -502,21 +513,22 @@ check_caddy_can_read() {
 	done
 }
 
+# caddyfile_policy decides whether the Caddyfile may be replaced; the backup
+# it calls for is made by install_caddy_files, once nothing can refuse.
 caddyfile_policy() {
+	CADDY_BACKUP=""
 	[ -f "$CADDYFILE" ] || return 0
 	if grep -qF "$CADDYFILE_MARKER" "$CADDYFILE"; then
 		return 0 # ours: an upgrade
 	fi
-	local backup
-	backup="$CADDYFILE.before-drydock.$(date +%Y%m%d%H%M%S)"
 	if grep -qF "$CADDY_STOCK_MARKER" "$CADDYFILE"; then
-		say "replacing the Caddy package's default Caddyfile (saved to $backup)"
-		cp -p "$CADDYFILE" "$backup"
+		CADDY_BACKUP="$CADDYFILE.before-drydock.$(date +%Y%m%d%H%M%S)"
+		CADDY_BACKUP_SAY="replacing the Caddy package's default Caddyfile (saved to $CADDY_BACKUP)"
 		return 0
 	fi
 	if [ "${TAKE_OVER_CADDY:-0}" = 1 ]; then
-		warn "taking over $CADDYFILE as asked; the previous file is saved to $backup"
-		cp -p "$CADDYFILE" "$backup"
+		CADDY_BACKUP="$CADDYFILE.before-drydock.$(date +%Y%m%d%H%M%S)"
+		CADDY_BACKUP_WARN="taking over $CADDYFILE as asked; the previous file is saved to $CADDY_BACKUP"
 		return 0
 	fi
 	die "$CADDYFILE was not written by this installer. Drydock needs Caddy to itself: its Caddyfile carries a global options block, so it cannot be imported into another one. Move your sites elsewhere, or re-run with --take-over-caddy to replace it (a backup is kept)."
@@ -624,43 +636,116 @@ validate_caddy() {
 	fi
 }
 
-install_caddy_files() {
-	local here="$1" stage
-	stage=$(mktemp -d)
-	mkdir "$stage/sites"
-	cp "$here/Caddyfile" "$stage/Caddyfile"
+# stage_caddy_files stages the candidate Caddy files and validates them, with
+# the new settings, before anything is installed. install_caddy_files puts
+# them in place.
+stage_caddy_files() {
+	local here="$1"
+	CADDY_STAGE=$(mktemp -d)
+	STAGED+=("$CADDY_STAGE")
+	mkdir "$CADDY_STAGE/sites"
+	cp "$here/Caddyfile" "$CADDY_STAGE/Caddyfile"
 	# The real Caddyfile imports $SITES_DIR; the staged copy imports the staged
 	# sites directory through the same placeholder.
 	if [ -n "${PREVIEW_DOMAIN:-}" ]; then
-		cp "$here/preview.caddy" "$stage/sites/preview.caddy"
+		cp "$here/preview.caddy" "$CADDY_STAGE/sites/preview.caddy"
 	fi
-	validate_caddy "$stage"
+	validate_caddy "$CADDY_STAGE"
+}
 
-	write_if_changed "$CADDYFILE" 0644 CADDYFILE_CHANGED <"$here/Caddyfile"
+install_caddy_files() {
+	if [ -n "$CADDY_BACKUP" ]; then
+		[ -z "${CADDY_BACKUP_SAY:-}" ] || say "$CADDY_BACKUP_SAY"
+		[ -z "${CADDY_BACKUP_WARN:-}" ] || warn "$CADDY_BACKUP_WARN"
+		cp -p "$CADDYFILE" "$CADDY_BACKUP"
+	fi
+	write_if_changed "$CADDYFILE" 0644 CADDYFILE_CHANGED <"$CADDY_STAGE/Caddyfile"
 	install -d -m 0755 "$SITES_DIR"
 	if [ -n "${PREVIEW_DOMAIN:-}" ]; then
-		write_if_changed "$SITES_DIR/preview.caddy" 0644 CADDYFILE_CHANGED <"$here/preview.caddy"
+		write_if_changed "$SITES_DIR/preview.caddy" 0644 CADDYFILE_CHANGED <"$CADDY_STAGE/sites/preview.caddy"
 	elif [ -f "$SITES_DIR/preview.caddy" ] && grep -qF "$PREVIEW_MARKER" "$SITES_DIR/preview.caddy"; then
 		say "removing the preview site (no preview domain configured)"
 		rm -f "$SITES_DIR/preview.caddy"
 		CADDYFILE_CHANGED=1
 	fi
-	rm -rf "$stage"
 }
 
-install_binary() {
+# stage_binary puts the release's binary beside the installed one, as
+# $BIN.new, without replacing anything: the key's count-secrets question is
+# asked of it (as drydock, who can run a file there), and install_binary moves
+# it into place once nothing can refuse. ASK_BIN is the binary this run will
+# leave installed.
+stage_binary() {
 	local here="$1"
 	NEW_VERSION=$("$here/drydock" version)
 	OLD_VERSION=$([ -x "$BIN" ] && "$BIN" version 2>/dev/null || echo none)
+	ASK_BIN=$BIN
+	BIN_STAGED=0
 	if [ -x "$BIN" ] && cmp -s "$here/drydock" "$BIN"; then
 		return 0
 	fi
-	if [ -x "$BIN" ]; then
+	STAGED+=("$BIN.new")
+	install -m 0755 "$here/drydock" "$BIN.new"
+	ASK_BIN=$BIN.new
+	BIN_STAGED=1
+}
+
+# running_elsewhere prints drydock's main PID when that process is running a
+# binary other than the installed $BIN — the deleted file an earlier,
+# interrupted run replaced — and fails when it is $BIN or nothing runs. The
+# comparison is the inode the process executes against the file's, so a file
+# replaced with the same name is still told apart.
+running_elsewhere() {
+	local pid
+	pid=$(systemctl show -p MainPID --value drydock 2>/dev/null) || return 1
+	[ -n "$pid" ] && [ "$pid" != 0 ] && [ -e "/proc/$pid/exe" ] || return 1
+	[ ! "/proc/$pid/exe" -ef "$BIN" ] || return 1
+	printf '%s\n' "$pid"
+}
+
+# plan_stale_process: when drydock runs a binary that is no longer the
+# installed one, this run restarts it, says which version was really running,
+# and keeps a copy of what was running for the rollback — that, not the file
+# an interrupted run left, is the release known to start. Read before
+# anything stops drydock, while the process is still there to read.
+plan_stale_process() {
+	local pid running
+	RESTART_STALE=0
+	pid=$(running_elsewhere) || return 0
+	running=$("/proc/$pid/exe" version 2>/dev/null || echo unknown)
+	say "drydock is running $running, not the installed $BIN ($OLD_VERSION): an earlier run did not finish; it will be restarted"
+	OLD_VERSION=$running
+	STAGED+=("$BIN.running")
+	cp "/proc/$pid/exe" "$BIN.running"
+	chmod 0755 "$BIN.running"
+	RESTART_STALE=1
+}
+
+install_binary() {
+	if [ "$RESTART_STALE" = 1 ]; then
+		mv -f "$BIN.running" "$BIN.previous"
+	elif [ "$BIN_STAGED" = 1 ] && [ -x "$BIN" ]; then
 		cp -p "$BIN" "$BIN.previous"
 	fi
-	install -m 0755 "$here/drydock" "$BIN.new"
+	[ "$BIN_STAGED" = 1 ] || return 0
 	mv -f "$BIN.new" "$BIN"
 	BINARY_CHANGED=1
+}
+
+# on_exit runs however the bundle install ends. Whatever was staged and not
+# installed is removed, and a drydock this run stopped and has not handed to
+# start_drydock is started again — so neither a refusal nor a failure after
+# the key's stop leaves the host down or a copy of a key lying in /etc/drydock.
+on_exit() {
+	local rc=$?
+	trap - EXIT
+	[ "${#STAGED[@]}" = 0 ] || rm -rf -- "${STAGED[@]}"
+	if [ "$DRYDOCK_STOPPED" = 1 ]; then
+		warn "starting drydock again, which this run stopped"
+		systemctl daemon-reload || true
+		systemctl start drydock || warn "drydock did not start; see: journalctl -u drydock"
+	fi
+	exit "$rc"
 }
 
 wait_for_drydock() {
@@ -675,18 +760,26 @@ wait_for_drydock() {
 }
 
 start_drydock() {
+	# From here on starting drydock is this function's, rollback included.
+	DRYDOCK_STOPPED=0
 	systemctl enable --quiet drydock
 	# A new supplementary group (docker) reaches the process only on a restart.
 	if [ "${BINARY_CHANGED:-0}" = 1 ] || [ "${UNIT_CHANGED:-0}" = 1 ] || [ "${ENV_CHANGED:-0}" = 1 ] || [ "${KEY_CHANGED:-0}" = 1 ] ||
-		[ "${GROUPS_CHANGED:-0}" = 1 ] || ! systemctl is-active --quiet drydock; then
+		[ "${GROUPS_CHANGED:-0}" = 1 ] || [ "$RESTART_STALE" = 1 ] || ! systemctl is-active --quiet drydock; then
 		say "starting drydock"
 		systemctl restart drydock # SIGTERM first: a clean stop
 	fi
 	if wait_for_drydock; then
+		local pid
+		# "installed and current" is said only of the process that runs the
+		# installed file.
+		if pid=$(running_elsewhere); then
+			die "drydock is running $(readlink "/proc/$pid/exe"), not $BIN; restart it with: systemctl restart drydock"
+		fi
 		return 0
 	fi
 	journalctl -u drydock -n 20 --no-pager >&2 || true
-	if [ "${BINARY_CHANGED:-0}" = 1 ] && [ -x "$BIN.previous" ]; then
+	if { [ "${BINARY_CHANGED:-0}" = 1 ] || [ "$RESTART_STALE" = 1 ]; } && [ -x "$BIN.previous" ]; then
 		warn "drydock $NEW_VERSION did not start; rolling back to $OLD_VERSION"
 		mv -f "$BIN.previous" "$BIN"
 		# The unit goes back too: a new one can pass a flag the old binary
@@ -764,6 +857,12 @@ verify() {
 
 install_bundle() {
 	local here="$1"
+	STAGED=()
+	DRYDOCK_STOPPED=0
+	RESTART_STALE=0
+	trap on_exit EXIT
+
+	# Checks: each can refuse, and none changes anything.
 	check_prerequisites
 	load_config
 	validate_config
@@ -771,17 +870,30 @@ install_bundle() {
 	[ -n "${PREVIEW_DOMAIN:-}" ] && check_caddy_can_read "$PREVIEW_CERT" "$PREVIEW_KEY"
 	caddyfile_policy
 
+	# The account, its Docker access and its directories: idempotent
+	# groundwork, and what the staging below needs.
 	ensure_account
 	ensure_docker_access
 	ensure_workspace_root
-	install_binary "$here"
 	ensure_conf_dir
+
+	# Every decision that can still refuse, against staged copies: the Caddy
+	# config, then the master key, which asks the staged binary. A refusal
+	# here leaves the installed binary, its running process, the key and every
+	# file as they were (and drydock running, if the key's check stopped it).
+	stage_binary "$here"
+	stage_caddy_files "$here"
+	plan_stale_process
+	plan_secrets_key
+
+	# Only now is anything replaced.
+	install_binary
 	install_app_key
 	install_secrets_key
 	write_env_file
 	write_unit
 	write_caddy_dropin
-	install_caddy_files "$here"
+	install_caddy_files
 	systemctl daemon-reload
 
 	start_drydock

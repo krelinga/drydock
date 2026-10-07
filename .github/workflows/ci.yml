@@ -17,7 +17,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0 # test/docs reads the commits since the last release
       - uses: ./.github/actions/go-suite
+        with:
+          # The squash commit's subject, for release-please's next version.
+          # Retitling a PR re-runs only pr-title, not this: push again, or
+          # main's own run catches it after the merge.
+          pr-title: ${{ github.event.pull_request.title }}
 
   web:
     runs-on: ubuntu-latest
