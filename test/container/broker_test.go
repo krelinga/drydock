@@ -229,6 +229,15 @@ func brokerRestart(t *testing.T, ctx context.Context, b *broker.Broker, ws strin
 		t.Helper()
 		var before, after syscall.Stat_t
 		syscall.Stat(prev.SocketPath(ws), &before)
+		// Hold the old socket's inode with a hard link outside the mounted
+		// directory, as a file mount would hold it: otherwise the file system
+		// may hand the freed inode number straight to the new socket (it did
+		// on CI's runner), and the inode check below would prove nothing.
+		held := filepath.Join(prev.Dir, fmt.Sprintf(".held-%d", before.Ino))
+		if err := os.Link(prev.SocketPath(ws), held); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { os.Remove(held) })
 		prev.CloseAll()
 		if out, code := run("drydock-broker PING"); code == 0 {
 			t.Fatalf("control: PING answered with Drydock down: %s", out)
