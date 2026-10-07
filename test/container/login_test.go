@@ -128,6 +128,31 @@ func loginContainers(t *testing.T, p string) string {
 	return docker(t, "ps", "-aq", "--filter", "label="+p+"."+login.LabelLogin)
 }
 
+// loginContainer is the one container carrying login id's label, polled for
+// until a deadline. Seeing the container's output does not mean a listing
+// shows it yet: the daemon starts the process, whose output reaches the
+// attached CLI, and only then records the container as running (moby's
+// containerStart), and a busy daemon widens that gap — CI caught `docker ps -q` (running only) empty
+// after the prompt had arrived, and its empty output went to `docker
+// inspect`. So --all, which lists a container from its creation, and an
+// empty listing is "not yet", never an id.
+func loginContainer(t *testing.T, p, id string) string {
+	t.Helper()
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		ids := strings.Fields(docker(t, "ps", "--all", "--quiet", "--no-trunc", "--filter", "label="+p+"."+login.LabelLogin+"="+id))
+		switch {
+		case len(ids) == 1:
+			return ids[0]
+		case len(ids) > 1:
+			t.Fatalf("login %s has %d containers: %v", id, len(ids), ids)
+		case time.Now().After(deadline):
+			t.Fatalf("login %s: no container listed within 30s", id)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+}
+
 // TestLoginPTYThroughDocker measures what Spike 01 relied on, through the
 // path Drydock now takes — its own PTY handed to `docker run -it` — with
 // fakeclaude in the container replaying the 2.1.289 recordings:
@@ -183,7 +208,7 @@ func TestLoginPTYThroughDocker(t *testing.T) {
 			before := len(tm.bytes())
 			proc.Master.Write([]byte(bad + "\r"))
 			tm.waitPhase(t, classify.LoginInvalidCode)
-			if inspect := docker(t, "inspect", docker(t, "ps", "-q", "--filter", "label="+p+".login="+id)); strings.Contains(inspect, bad) {
+			if inspect := docker(t, "inspect", loginContainer(t, p, id)); strings.Contains(inspect, bad) {
 				t.Error("the code is in docker inspect")
 			}
 			proc.Master.Write([]byte(good + "\r"))
