@@ -585,6 +585,11 @@ ExecStart=/usr/local/bin/drydock serve \\
 # database, readable by Drydock alone.
 RuntimeDirectory=drydock
 RuntimeDirectoryMode=0750
+# Kept across a stop or restart, until reboot: each running workspace's
+# container bind-mounts its broker directory, /run/drydock/sock/<id>, and a
+# bind mount pins that directory's inode. Removed and recreated with the
+# service, it would leave every running container with no broker.
+RuntimeDirectoryPreserve=yes
 StateDirectory=drydock
 StateDirectoryMode=0700
 # The rest of the filesystem is read-only to Drydock (ProtectSystem=strict)

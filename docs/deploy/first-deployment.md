@@ -651,7 +651,7 @@ sudo -u drydock drydock passwd --db /var/lib/drydock/drydock.db
 | `/etc/caddy/drydock.d/` | root `0755` | Optional sites. Empty unless previews are configured. |
 | `/var/lib/drydock/drydock.db` | drydock, dir `0700` | SQLite (WAL). Created by systemd's `StateDirectory`. |
 | `/run/drydock/{http,preview}.sock` | drydock:drydock `0660` | The two Unix sockets. The directory is `0750`. |
-| `/run/drydock/sock/` | drydock `0700` | One token-broker socket per running workspace. |
+| `/run/drydock/sock/` | drydock `0700` | One directory per workspace, `<id>/` (`0755`), holding its token-broker socket `broker.sock` while the workspace runs. The directory, not the socket, is mounted into the container, so it is kept across restarts (`RuntimeDirectoryPreserve=yes`) and removed by a delete. |
 | `/run/caddy/admin.sock` | caddy `0600` | Caddy's admin API, moved off `localhost:2019`. |
 | `/srv/drydock/ws/` | drydock `0700` | Clones, at `/srv/drydock/ws/<id>/repo`. |
 | `drydock.service`, `caddy.service` | enabled | Both start at boot. |
@@ -894,7 +894,7 @@ should stay quiet.
 - [ ] **On the server**, the container is there, found by label:
   ```sh
   sudo docker ps --filter label=drydock.workspace --format '{{.ID}}  {{.Label "drydock.repo"}}  {{.Status}}'
-  sudo ls -l /run/drydock/sock/      # one <id>.sock per running workspace
+  sudo ls -l /run/drydock/sock/*/    # one <id>/broker.sock per running workspace
   ```
 
 ### 8.2 GitHub access inside the container (Phase 3)
@@ -966,7 +966,7 @@ before every command ([§10.3](../design/overall/drydock-design.md#103--delivery
 
 - [ ] **Stop** (detail page → *Actions*; once a session server is serving it asks first while a session is live). It moves to *Stopped*. On the server, the
   container is stopped but still exists (`sudo docker ps -a --filter label=drydock.workspace=$WS`),
-  and `/run/drydock/sock/$WS.sock` is **gone**. *Why:* GitHub access follows Drydock's state, not
+  and `/run/drydock/sock/$WS/broker.sock` is **gone** (its directory stays, for the next start). *Why:* GitHub access follows Drydock's state, not
   Docker's ([§9.1](../design/overall/drydock-design.md#91--why-a-broker-rather-than-an-injected-token)).
 - [ ] **Start**. It resumes from *resolving config*, reattaches to the same container, and is
   *Running* again with its socket back.
@@ -1092,6 +1092,26 @@ None of the following is a deployment fault. These are the phases still being bu
   To change the master key: [6.3](#63-switch-an-installed-key-to-one-you-supply), which is refused
   once a secret is stored.
 - [ ] **A specific release:** `… | sudo bash -s -- --version vX.Y.Z`.
+- [ ] **Upgrading from v0.4.1 or earlier: Rebuild each workspace once.** Earlier releases mounted
+  each workspace's broker socket into its container as a single file, and a bind mount of a file
+  pins the socket that existed when the container started. The upgrade's restart replaces that
+  socket, so every container created before it has had no broker since — and keeps that mount
+  until it is replaced. Now the workspace's directory, `/run/drydock/sock/<id>/`, is mounted
+  instead, and a restart no longer strands anything. The symptoms in an old container: `git fetch`
+  or `git push` and `gh` fail with `drydock: GitHub access unavailable: the broker did not answer`,
+  and every Bash command a Claude session runs exits `69` with
+  `drydock: secrets unavailable: the broker did not answer`. Drydock says so itself: a running
+  workspace's card shows **Container misconfigured** with **Rebuild** (its session server is not
+  restarted at boot), and a **Start** of a stopped one fails at *starting the container* with
+  *"This workspace's container was created by an earlier Drydock … Rebuild it once; the clone is
+  kept."* To find them all on the server:
+  ```sh
+  for c in $(sudo docker ps -aq --filter label=drydock.workspace); do
+    sudo docker inspect -f '{{index .Config.Labels "drydock.repo"}} {{range .Mounts}}{{if eq .Destination "/run/drydock/broker.sock"}}needs a rebuild{{end}}{{end}}' "$c"
+  done
+  ```
+  **Rebuild** keeps the clone and replaces the container, so anything installed in the container
+  outside the clone goes with it, as on any rebuild.
 
 ### 10.2 Roll back
 
@@ -1109,7 +1129,11 @@ None of the following is a deployment fault. These are the phases still being bu
   ```
   Restore the matching database backup first, because an older binary refuses a newer schema.
   The `--version` release's own installer then does the install. Rolling back to `v0.1.0` is not
-  useful: its installer predates the App and secrets flags.
+  useful: its installer predates the App and secrets flags. Rolling back past the release that
+  mounts each workspace's broker directory (v0.4.1 or earlier) strands the other way: those
+  binaries put the socket at `/run/drydock/sock/<id>.sock`, which a container created or rebuilt
+  since cannot see. Rebuild each workspace after such a rollback, as after the upgrade
+  ([10.1](#101-upgrade)).
 
 ### 10.3 Logs and state
 
@@ -1210,7 +1234,7 @@ Drydock pulled: `sudo docker image ls`, and remove what you do not want.
 | Journal: `drydock: reconcile: … Cannot connect to the Docker daemon` | The daemon is down | `sudo systemctl enable --now docker`, then `sudo systemctl restart drydock` |
 | Workspace fails at *starting the container* immediately, or `devcontainer: not found` in the journal | **devcontainer CLI missing for the `drydock` user** (Node removed or upgraded, or the CLI uninstalled) | `sudo runuser -u drydock -- env PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin HOME=/var/lib/drydock devcontainer --version` must print `0.89.0`. Reinstall ([3.2](#32-nodejs-20-and-the-devcontainer-cli-on-the-services-path)). |
 | Workspace fails at *starting the container* after a while | Image pull or build failure, a failing `postCreateCommand`, or no network to `ghcr.io` / `mcr.microsoft.com` | The step's detail, then `journalctl -u drydock \| grep "workspace <id>"`. Try `sudo docker pull mcr.microsoft.com/devcontainers/base:debian`. |
-| Workspace fails at *verifying* | The broker round-trip failed inside the container | Check that `/run/drydock/sock/<id>.sock` exists. The journal's `workspace <id>` lines. |
+| Workspace fails at *verifying* | The broker round-trip failed inside the container | Check that `/run/drydock/sock/<id>/broker.sock` exists. The journal's `workspace <id>` lines. |
 | Workspace fails at *cloning* | GitHub refused the clone token: the App lacks `contents`, or the repository was removed from the installation | Check the App permissions ([1.4](#14-the-github-apps-private-key)) |
 | Create refused with `at_capacity` | 10 workspaces already hold a container | Stop or delete one |
 | `git push` in a container: `GitHub access unavailable …` | The workspace is not *Running* in Drydock (its socket is closed), or GitHub refused | Start it in the UI. A container started by hand with `docker start` gets no GitHub access, by design. |

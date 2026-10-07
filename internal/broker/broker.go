@@ -25,9 +25,9 @@ import (
 
 // Broker serves one socket per workspace.
 type Broker struct {
-	// Dir holds the sockets: /run/drydock/sock. It is 0700 and Drydock's
-	// own, and that — not the socket's mode — is what keeps host users out;
-	// see Open.
+	// Dir holds the sockets, one directory per workspace:
+	// /run/drydock/sock/<id>/broker.sock. It is 0700 and Drydock's own, and
+	// that — not the socket's mode — is what keeps host users out; see Open.
 	Dir    string
 	GitHub *github.Client
 	DB     *sql.DB
@@ -49,21 +49,73 @@ const requestTimeout = 10 * time.Second
 
 var workspaceID = regexp.MustCompile(`^[0-9A-HJKMNP-TV-Z]{26}$`)
 
-// SocketPath is where a workspace's socket lives on the host — design §6
-// step 5. Inside the container it is mounted at /run/drydock/broker.sock.
+// SocketName is the socket's name inside its workspace's directory, on the
+// host and in the container alike.
+const SocketName = "broker.sock"
+
+// maxSocketPath is the longest path a Unix socket can be reached by on
+// Linux: sun_path's 108 bytes, less the terminating NUL.
+const maxSocketPath = 107
+
+// SocketDir is the workspace's own directory under Dir, holding its socket
+// and nothing else. It — not the socket — is what is bind-mounted into the
+// container (container.BrokerMountPoint; design §6 step 5, §9.1).
+//
+// A directory, because a bind mount pins the inode it was given. A socket
+// mounted as a file is the inode of the socket that existed when the
+// container started; a restart of Drydock unlinks it and listens again on a
+// new inode, and the container's mount names the dead one for as long as the
+// container lives — git, gh and every command's secrets prelude then fail in
+// a workspace the UI still shows running. A mounted directory shows its
+// current entries, so a socket recreated inside it is the container's at
+// once. The directory itself must therefore outlive Drydock's process: Open
+// never recreates one that exists, only Remove deletes it, and the unit keeps
+// its runtime directory across restarts (RuntimeDirectoryPreserve,
+// deploy/install.sh).
+func (b *Broker) SocketDir(workspaceID string) string {
+	return filepath.Join(b.Dir, workspaceID)
+}
+
+// SocketPath is where a workspace's socket lives on the host:
+// <Dir>/<id>/broker.sock. Inside the container it is
+// /run/drydock/broker.sock (container.BrokerSocketInContainer).
 func (b *Broker) SocketPath(workspaceID string) string {
+	return filepath.Join(b.SocketDir(workspaceID), SocketName)
+}
+
+// legacySocketPath is where a Drydock before the directory mount kept a
+// workspace's socket: a file directly in Dir.
+func (b *Broker) legacySocketPath(workspaceID string) string {
 	return filepath.Join(b.Dir, workspaceID+".sock")
 }
 
-// Open starts the workspace's socket, replacing a stale one left by a crash.
+// stagingPath is where Open binds before moving the socket into place: in
+// Dir, which no container sees.
+func (b *Broker) stagingPath(workspaceID string) string {
+	return filepath.Join(b.Dir, "."+workspaceID+".sock")
+}
+
+// Open starts the workspace's socket, replacing a stale one left by a crash
+// or by the previous process.
 //
-// The socket is mode 0666 inside a 0700 directory, and both halves are
-// deliberate. The container's user — uid 1000 in most dev containers — is
-// neither Drydock nor in its group, so a 0660 socket would refuse it. The
-// directory is what stops other users on the host: they cannot traverse it.
-// The container is not stopped by the directory, because the bind mount
-// hands it the socket's inode directly. So who can connect is decided by
-// where the socket is mounted, which is the design's point (§9.1).
+// Three modes, each deliberate. Dir is 0700 and Drydock's own: that is what
+// keeps other host users out, since they cannot traverse it. The workspace's
+// directory inside it is 0755, because the container sees the mounted
+// directory with the host's ownership and its user — uid 1000 in most dev
+// containers — is neither Drydock nor in its group, and must reach the
+// socket in it. The socket is 0666 for the same reason. Who can connect is
+// decided by which directory is mounted where, which is the design's point
+// (§9.1): each container gets its own workspace's directory and no other.
+//
+// The mount cannot be read-only (container.UpSpec.BrokerDir), so root in the
+// container can write in that one directory, and whatever Open finds there
+// is the container's. Hence the staging path: the socket is bound and
+// chmodded in Dir, which no container sees, and renamed into place. The
+// chmod never acts on a path a container can swap for a symlink; the socket
+// appears whole, never for an instant with the umask's mode; and rename
+// replaces whatever is at the name — a stale socket, or a file or symlink the
+// container put there — without following it. Only a directory there is
+// refused, since rename cannot replace one.
 func (b *Broker) Open(ctx context.Context, wsID string) error {
 	if !workspaceID.MatchString(wsID) {
 		return fmt.Errorf("broker: %q is not a workspace id", wsID)
@@ -74,26 +126,55 @@ func (b *Broker) Open(ctx context.Context, wsID string) error {
 	if err := os.Chmod(b.Dir, 0o700); err != nil {
 		return err
 	}
-	path := b.SocketPath(wsID)
+	dir, path, staging := b.SocketDir(wsID), b.SocketPath(wsID), b.stagingPath(wsID)
+	// The socket is bound at the staging path, which is shorter, so the
+	// kernel would not notice a final path too long for sun_path; a client
+	// could then never connect to it.
+	if len(path) > maxSocketPath {
+		return fmt.Errorf("broker: socket path %s is %d bytes, more than a Unix socket's %d", path, len(path), maxSocketPath)
+	}
 
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if _, open := b.listeners[wsID]; open {
 		return nil
 	}
-	if fi, err := os.Lstat(path); err == nil {
-		if fi.Mode()&os.ModeSocket == 0 {
-			return fmt.Errorf("broker: %s exists and is not a socket; refusing to replace it", path)
+	// A directory that exists is kept: a running container's mount names
+	// this very inode, and a new directory would strand it exactly as a new
+	// socket file did.
+	switch fi, err := os.Lstat(dir); {
+	case errors.Is(err, os.ErrNotExist):
+		if err := os.Mkdir(dir, 0o755); err != nil {
+			return fmt.Errorf("broker: %w", err)
 		}
-		os.Remove(path) // a stale socket from a previous run
+	case err != nil:
+		return fmt.Errorf("broker: %w", err)
+	case !fi.IsDir():
+		return fmt.Errorf("broker: %s exists and is not a directory; refusing to replace it", dir)
 	}
-	ln, err := net.Listen("unix", path)
+	if err := os.Chmod(dir, 0o755); err != nil {
+		return err
+	}
+	if fi, err := os.Lstat(path); err == nil && fi.IsDir() {
+		return fmt.Errorf("broker: %s is a directory, put there from inside the container; refusing to replace it", path)
+	}
+	os.Remove(staging) // one a crash left between bind and rename
+	ln, err := net.Listen("unix", staging)
 	if err != nil {
 		return fmt.Errorf("broker: %w", err)
 	}
-	if err := os.Chmod(path, 0o666); err != nil {
+	// Close removes the socket by its real path; the listener must not
+	// unlink the staging name on close, which by then may be another Open's.
+	ln.(*net.UnixListener).SetUnlinkOnClose(false)
+	if err := os.Chmod(staging, 0o666); err != nil {
 		ln.Close()
+		os.Remove(staging)
 		return err
+	}
+	if err := os.Rename(staging, path); err != nil {
+		ln.Close()
+		os.Remove(staging)
+		return fmt.Errorf("broker: %w", err)
 	}
 	if b.listeners == nil {
 		b.listeners = map[string]net.Listener{}
@@ -105,13 +186,16 @@ func (b *Broker) Open(ctx context.Context, wsID string) error {
 }
 
 // Close removes a workspace's socket. A container holding the mount then
-// gets ECONNREFUSED: GitHub access is gone at once, with nothing to revoke
-// (§9.1, Fig 3).
+// finds no socket: GitHub access is gone at once, with nothing to revoke
+// (§9.1, Fig 3). The directory stays, so the container's mount still names
+// it when the socket is opened again — after a restart above all, when Close
+// is CloseAll's. Remove deletes it with the workspace.
 //
 // A socket file this process is not serving — one left by an earlier
 // process, for a workspace whose delete is being resumed at boot — is
 // removed too, so a closed workspace has no socket on disk whichever process
-// opened it. Only a socket: anything else at the path is not Drydock's.
+// opened it; and so is one at the path a Drydock before the directory mount
+// used. Only a socket: anything else at the path is not Drydock's.
 func (b *Broker) Close(wsID string) error {
 	if !workspaceID.MatchString(wsID) {
 		return fmt.Errorf("broker: %q is not a workspace id", wsID)
@@ -124,13 +208,47 @@ func (b *Broker) Close(wsID string) error {
 	if ok {
 		err = ln.Close()
 	}
-	path := b.SocketPath(wsID)
-	if fi, lerr := os.Lstat(path); lerr == nil && fi.Mode()&os.ModeSocket != 0 {
-		if rerr := os.Remove(path); rerr != nil && !errors.Is(rerr, os.ErrNotExist) {
-			err = errors.Join(err, rerr)
+	for _, path := range []string{b.SocketPath(wsID), b.legacySocketPath(wsID)} {
+		if fi, lerr := os.Lstat(path); lerr == nil && fi.Mode()&os.ModeSocket != 0 {
+			if rerr := os.Remove(path); rerr != nil && !errors.Is(rerr, os.ErrNotExist) {
+				err = errors.Join(err, rerr)
+			}
 		}
 	}
 	return err
+}
+
+// ErrLeftover: Remove could not delete everything in a workspace's
+// directory. Only the container can have put anything there besides the
+// socket — as its root, which owns what it makes — and Drydock cannot delete
+// a non-empty directory root made. It is a tmpfs, so it goes at the next
+// reboot; nothing else reads it, and the workspace's id is never reused.
+var ErrLeftover = errors.New("broker: something the container left in its broker directory could not be removed")
+
+// Remove is Close and then the workspace's directory with whatever is in it:
+// a delete's broker_socket sub-step, which runs after the workspace's
+// containers are gone, so no mount names the directory any more and nothing
+// can be writing in it. os.RemoveAll removes a symlink, never what it names.
+// What cannot be removed is ErrLeftover.
+func (b *Broker) Remove(wsID string) error {
+	if err := b.Close(wsID); err != nil {
+		return err
+	}
+	dir := b.SocketDir(wsID)
+	fi, err := os.Lstat(dir)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if !fi.IsDir() {
+		return fmt.Errorf("broker: %s is not a directory; refusing to remove it", dir)
+	}
+	if err := os.RemoveAll(dir); err != nil {
+		return fmt.Errorf("%w: %w", ErrLeftover, err)
+	}
+	return nil
 }
 
 // Serving reports whether this process has the workspace's socket open.

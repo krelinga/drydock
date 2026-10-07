@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -92,6 +93,13 @@ func TestWorkspaceContainerReachesOnlyItsOwnRepository(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(b.CloseAll)
+	// Another workspace's socket beside it, in the same broker directory:
+	// the container must not see it, which a mount of the shared parent
+	// would show.
+	other, _ := workspace.NewID(time.Now(), rand.Reader)
+	if err := b.Open(ctx, other); err != nil {
+		t.Fatal(err)
+	}
 
 	// The workspace folder: a devcontainer.json naming the Feature from this
 	// checkout, on the host network so the container reaches the fake.
@@ -120,7 +128,7 @@ func TestWorkspaceContainerReachesOnlyItsOwnRepository(t *testing.T) {
 	}
 	res, stderr, err := m.Up(upCtx, container.UpSpec{
 		WorkspaceID: ws, RepositoryID: 101, FullName: "krelinga/alpha", Branch: "main", Folder: folder,
-		BrokerSocket: b.SocketPath(ws),
+		BrokerDir:    b.SocketDir(ws),
 		ClaudeVolume: claudeVolume(p),
 		RemoteEnv:    remoteEnv,
 	})
@@ -188,8 +196,82 @@ func TestWorkspaceContainerReachesOnlyItsOwnRepository(t *testing.T) {
 	if out, code := run("gh auth token"); code != 0 || !strings.HasPrefix(strings.TrimSpace(out), "ghs_") {
 		t.Errorf("gh did not get a token through the shim (exit %d):\n%s", code, out)
 	}
+	sec2 := brokerRestart(t, ctx, b, ws, run, alpha)
+	secretsInContainer(t, ctx, sec2, res.ContainerID, run)
+}
 
-	secretsInContainer(t, ctx, sec, res.ContainerID, run)
+// brokerRestart is #16's review, reproduced: a Drydock restart under a running
+// container. Shutdown closes every socket (CloseAll removes the files), and
+// the next process opens them again — new sockets, new inodes. A container
+// whose mount was the socket file kept the dead inode, and every git, gh and
+// secrets call in it failed until it was stopped and started. With the
+// directory mounted, the new socket is the container's at once.
+//
+// Then a second restart, with root in the container having planted a symlink
+// where the socket goes — the directory is writable from inside, since the
+// CLI cannot mount it read-only — which the next process must replace
+// without following. It returns the last process's secrets store, for the
+// checks that follow to go through the new broker.
+func brokerRestart(t *testing.T, ctx context.Context, b *broker.Broker, ws string, run func(string) (string, int), alpha string) *secrets.Store {
+	t.Helper()
+	ping := func(when string) {
+		t.Helper()
+		if out, code := run("drydock-broker PING"); code != 0 || strings.TrimSpace(out) != "OK" {
+			t.Fatalf("%s, the container's broker is dead (exit %d): %s\n"+
+				"a container whose mount pins the old socket's inode never sees the new one", when, code, out)
+		}
+	}
+	ping("control: before any restart")
+	// restart is one: everything closed, as at shutdown, then a fresh
+	// process — a new Broker over the same directory and a new store over
+	// the same database, as Serve builds them. plant runs while it is down.
+	restart := func(prev *broker.Broker, plant string) (*broker.Broker, *secrets.Store) {
+		t.Helper()
+		var before, after syscall.Stat_t
+		syscall.Stat(prev.SocketPath(ws), &before)
+		prev.CloseAll()
+		if out, code := run("drydock-broker PING"); code == 0 {
+			t.Fatalf("control: PING answered with Drydock down: %s", out)
+		}
+		if plant != "" {
+			if out, code := run(plant); code != 0 {
+				t.Fatalf("planting (exit %d): %s", code, out)
+			}
+		}
+		sec := &secrets.Store{DB: prev.DB, Key: prev.Secrets.(*secrets.Store).Key, Env: prev.Env}
+		next := &broker.Broker{Dir: prev.Dir, DB: prev.DB, Events: events.New(prev.DB, sys.RealClock{}), Env: prev.Env,
+			GitHub: prev.GitHub, Secrets: sec}
+		if err := next.Open(ctx, ws); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(next.CloseAll)
+		syscall.Stat(next.SocketPath(ws), &after)
+		if before.Ino == after.Ino {
+			t.Fatalf("the restart reused the socket's inode (%d), so this does not reproduce the review", after.Ino)
+		}
+		return next, sec
+	}
+
+	next, _ := restart(b, "")
+	ping("after a restart")
+	if out, code := run("cd /tmp/a && echo again > again.txt && git add again.txt && git commit -q -m again && " +
+		"git push -q origin HEAD:drydock/after-restart && git ls-remote " + alpha + " refs/heads/drydock/after-restart"); code != 0 ||
+		!strings.Contains(out, "refs/heads/drydock/after-restart") {
+		t.Errorf("git through the helper after a restart (exit %d):\n%s", code, out)
+	}
+	if out, code := run(`bash -c "$(cat "$CLAUDE_ENV_FILE") && echo ran"`); code != 0 || out != "ran\n" {
+		t.Errorf("the secrets prelude after a restart: exit %d, %q", code, out)
+	}
+
+	// Root in the container plants a symlink at the socket's name — a path
+	// that, followed on the host, names a host file — and a directory of its
+	// own beside it.
+	_, sec := restart(next, "sudo -n ln -s /etc/hostname /run/drydock/broker.sock && "+
+		"sudo -n mkdir /run/drydock/junk && sudo -n touch /run/drydock/junk/f")
+	ping("after a restart over a planted symlink")
+	// Root's leftovers, which the test's own cleanup could not remove.
+	run("sudo -n rm -rf /run/drydock/junk")
+	return sec
 }
 
 // secretsInContainer is Phase 4's deliverable in the container tier (design

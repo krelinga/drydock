@@ -71,12 +71,22 @@ var (
 )
 
 // Broker is what provisioning needs from internal/broker: step 5 opens the
-// socket, and stop and delete close it.
+// socket, up mounts its directory, stop closes it, and delete removes it
+// with its directory.
 type Broker interface {
 	Open(ctx context.Context, workspaceID string) error
 	Close(workspaceID string) error
-	SocketPath(workspaceID string) string
+	Remove(workspaceID string) error
+	SocketDir(workspaceID string) string
 }
+
+// LegacyMountSentence is what a workspace whose container an earlier Drydock
+// created says: its broker socket is mounted as a file, which has named a
+// dead socket since the restart that brought this version in, and only a
+// rebuild gives the container the directory mount (container.UpSpec.BrokerDir).
+const LegacyMountSentence = "This workspace's container was created by an earlier Drydock, " +
+	"whose GitHub access mount does not survive a restart, so git, gh and every command's secrets fail in it. " +
+	"Rebuild it once; the clone is kept."
 
 // Provisioner runs workspaces through §6.
 type Provisioner struct {
@@ -128,6 +138,12 @@ type Provisioner struct {
 	// supervisor holds for a workspace once its delete has finished.
 	StartSupervisor  func(ctx context.Context, w workspace.Workspace) error
 	ForgetSupervisor func(id string)
+	// ParkSupervisor records, in place of StartSupervisor at boot, that a
+	// running workspace's session server cannot work until its container is
+	// rebuilt, with Drydock's sentence saying so: the container has the
+	// broker socket mounted as a file, as an earlier Drydock made it
+	// (container.Manager.LegacyBrokerMount). Nil starts it as usual.
+	ParkSupervisor func(ctx context.Context, w workspace.Workspace, detail string) error
 	// SupervisorRestart stops (SIGTERM first) and starts a workspace's
 	// session server: the job RestartSupervisor runs. Nil refuses the
 	// route with ErrNoSupervisor.

@@ -110,7 +110,7 @@ const MOVING = new Set(['pending', 'cloning', 'building'])
  * fleet override leaves these cards alone (§6.6 keeps the override narrow),
  * and each points at the fix that can work.
  */
-const CONFIG_FAULTS = new Set(['not_trusted', 'hang_remote_dialog', 'hang_trust'])
+const CONFIG_FAULTS = new Set(['not_trusted', 'hang_remote_dialog', 'hang_trust', 'stale_broker_mount'])
 
 /**
  * §6.1's rows for `running` × `supervisor.state`, read from the supervisor

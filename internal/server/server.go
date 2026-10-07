@@ -153,6 +153,9 @@ func New(ctx context.Context, cfg config.Config, env sys.Env) (*Server, error) {
 		return s.Supervisor.Stop(ctx, w.ID)
 	}
 	s.Provisioner.ForgetSupervisor = s.Supervisor.Forget
+	s.Provisioner.ParkSupervisor = func(ctx context.Context, w workspace.Workspace, detail string) error {
+		return s.Supervisor.Park(ctx, w.ID, supervisor.ReasonStaleBrokerMount, detail)
+	}
 	s.Provisioner.SupervisorRestart = s.Supervisor.Restart
 	// A deleting row found at boot is finished by the same delete the route
 	// runs (§6: resume the delete), so a delete is resumable from any

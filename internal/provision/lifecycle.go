@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"regexp"
 
+	"github.com/krelinga/drydock/internal/broker"
 	"github.com/krelinga/drydock/internal/container"
 	"github.com/krelinga/drydock/internal/events"
 	"github.com/krelinga/drydock/internal/workspace"
@@ -262,7 +263,9 @@ func (p *Provisioner) deleteJob(ctx context.Context, id string) error {
 			}
 			return workspace.Note(fmt.Sprintf("Removed %d containers.", len(ids)))
 		}},
-		{SubBrokerSocket, func(context.Context) error { return p.closeSocket(id) }},
+		// The socket and its directory: the containers are gone, so no mount
+		// names the directory any more.
+		{SubBrokerSocket, func(context.Context) error { return p.removeSocket(id) }},
 		{SubFiles, func(ctx context.Context) error {
 			helped, err := removeWorkspaceDir(ctx, p.Workspaces.Root, w, p.Containers.RemoveContents)
 			switch {
@@ -371,6 +374,25 @@ func (p *Provisioner) closeSocket(id string) error {
 	}
 	if err := p.Broker.Close(id); err != nil {
 		return workspace.Public("Drydock could not close the workspace's GitHub access socket.", err)
+	}
+	return nil
+}
+
+// removeSocket is a delete's: the socket and the workspace's directory that
+// held it (broker.Remove).
+func (p *Provisioner) removeSocket(id string) error {
+	if p.Broker == nil {
+		return workspace.Note("No GitHub App is configured, so there is no socket.")
+	}
+	switch err := p.Broker.Remove(id); {
+	case errors.Is(err, broker.ErrLeftover):
+		// The socket is gone, which is what ends access; what is left is
+		// files root in the container made, on a tmpfs. Not worth a stuck
+		// delete that only a host root could unstick.
+		p.logf("drydock: workspace %s: %v", id, err)
+		return workspace.Note("Removed the socket. Something the container left beside it could not be removed; it goes at the next reboot.")
+	case err != nil:
+		return workspace.Public("Drydock could not remove the workspace's GitHub access socket.", err)
 	}
 	return nil
 }

@@ -62,10 +62,13 @@ type UpSpec struct {
 	// existing id-label reattaches and reports success even when the config
 	// has changed (§6), so a rebuild that forgot it would silently not be one.
 	Rebuild bool
-	// BrokerSocket is the workspace's token-broker socket on the host,
-	// bind-mounted at BrokerMountPoint in this container and no other
-	// (§6 step 5, §9.1). Empty mounts nothing.
-	BrokerSocket string
+	// BrokerDir is the workspace's own token-broker directory on the host
+	// (broker.SocketDir: <broker dir>/<id>, holding broker.sock and nothing
+	// else), bind-mounted at BrokerMountPoint in this container and
+	// no other (§6 step 5, §9.1). A directory rather than the socket file: a
+	// file mount pins the socket's inode, which a Drydock restart replaces.
+	// Empty mounts nothing.
+	BrokerDir string
 	// ClaudeVolume is the shared Claude credential volume (§7.1), mounted at
 	// ClaudeConfigMountPoint — the same volume in every workspace, which is
 	// what makes one login serve them all. EnsureClaudeVolume makes it.
@@ -96,9 +99,21 @@ type UpSpec struct {
 	OverrideConfig string
 }
 
-// BrokerMountPoint is where a workspace's broker socket appears inside its
-// container; the Feature's DRYDOCK_BROKER_SOCK points here.
-const BrokerMountPoint = "/run/drydock/broker.sock"
+const (
+	// BrokerMountPoint is where a workspace's broker directory is mounted
+	// inside its container.
+	BrokerMountPoint = "/run/drydock"
+	// BrokerSocketInContainer is the socket inside it: the path the
+	// Feature's DRYDOCK_BROKER_SOCK has always named, so the Feature is the
+	// same whichever way the socket arrives.
+	BrokerSocketInContainer = BrokerMountPoint + "/broker.sock"
+	// LegacyBrokerMountPoint is the target of the file mount a Drydock
+	// before the directory mount gave a container: the socket itself, whose
+	// inode a restart replaces. A container carrying it has had no broker
+	// since the restart that brought this version in, and only a rebuild
+	// gives it the directory (Mounts.LegacyBroker).
+	LegacyBrokerMountPoint = BrokerSocketInContainer
+)
 
 var envName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
@@ -143,13 +158,18 @@ func (m Manager) Args(s UpSpec) ([]string, error) {
 		"--id-label", m.key(LabelRepo)+"="+s.FullName,
 		"--id-label", m.key(LabelBranch)+"="+s.Branch,
 	)
-	if s.BrokerSocket != "" {
+	if s.BrokerDir != "" {
 		// --mount is comma-separated key=value pairs, so a comma or an equals
 		// sign in the path would let it add mount options of its own.
-		if !strings.HasPrefix(s.BrokerSocket, "/") || strings.ContainsAny(s.BrokerSocket, ",=\n") {
-			return nil, fmt.Errorf("container: broker socket path %q must be absolute and free of ',' and '='", s.BrokerSocket)
+		if !strings.HasPrefix(s.BrokerDir, "/") || strings.ContainsAny(s.BrokerDir, ",=\n") {
+			return nil, fmt.Errorf("container: broker directory %q must be absolute and free of ',' and '='", s.BrokerDir)
 		}
-		args = append(args, "--mount", "type=bind,source="+s.BrokerSocket+",target="+BrokerMountPoint)
+		// Not read-only, though nothing in the container needs to write
+		// here: the CLI's --mount takes type, source, target and external
+		// and nothing else (CLI 0.89.0 refuses the argument). So root in the
+		// container can write in this one directory, and the broker treats
+		// what it finds there as the container's (broker.Open, Remove).
+		args = append(args, "--mount", "type=bind,source="+s.BrokerDir+",target="+BrokerMountPoint)
 	}
 	if s.ClaudeVolume != "" {
 		if !config.ValidVolumeName(s.ClaudeVolume) {
@@ -270,6 +290,10 @@ type Found struct {
 	Branch       string
 	Running      bool
 	Status       string // docker's State.Status: running, exited, created, …
+	// LegacyBrokerMount: the container has the broker socket bind-mounted
+	// as a file, as a Drydock before the directory mount made it, and needs
+	// a rebuild (Manager.LegacyBrokerMount).
+	LegacyBrokerMount bool
 }
 
 // List finds every container, running or not, carrying this prefix's
@@ -284,14 +308,16 @@ func (m Manager) List(ctx context.Context) ([]Found, error) {
 	if err := failed("docker ps", res, &stderr); err != nil {
 		return nil, err
 	}
-	list := strings.Fields(ids.String())
+	return m.inspect(ctx, strings.Fields(ids.String()))
+}
+
+// inspect is `docker inspect` of the given containers, parsed.
+func (m Manager) inspect(ctx context.Context, list []string) ([]Found, error) {
 	if len(list) == 0 {
 		return nil, nil
 	}
-
-	var out bytes.Buffer
-	stderr.Reset()
-	res = m.Run.Run(ctx, subproc.Cmd{Name: "docker", Args: append([]string{"inspect", "--type", "container"}, list...),
+	var out, stderr bytes.Buffer
+	res := m.Run.Run(ctx, subproc.Cmd{Name: "docker", Args: append([]string{"inspect", "--type", "container"}, list...),
 		Stdout: &out, Stderr: limit(&stderr, 64<<10)})
 	if err := failed("docker inspect", res, &stderr); err != nil {
 		// A container removed between the two calls fails the inspect.
@@ -302,6 +328,30 @@ func (m Manager) List(ctx context.Context) ([]Found, error) {
 	return m.parseInspect(out.Bytes())
 }
 
+// LegacyBrokerMount reports whether any container carrying the workspace's
+// label was created with the broker socket mounted as a file
+// (LegacyBrokerMountPoint) by a Drydock before the directory mount. Such a
+// container lost its broker at the restart that brought this version in —
+// its mount names a socket inode no process listens on — and keeps the
+// mount until it is rebuilt: a plain start of it fails, since the file it
+// names no longer exists. Read from docker inspect's Mounts, never guessed.
+func (m Manager) LegacyBrokerMount(ctx context.Context, workspaceID string) (bool, error) {
+	ids, err := m.Find(ctx, workspaceID)
+	if err != nil {
+		return false, err
+	}
+	found, err := m.inspect(ctx, ids)
+	if err != nil {
+		return false, err
+	}
+	for _, f := range found {
+		if f.LegacyBrokerMount {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 type inspect struct {
 	ID    string `json:"Id"`
 	State struct {
@@ -310,6 +360,10 @@ type inspect struct {
 	}
 	Config struct {
 		Labels map[string]string
+	}
+	Mounts []struct {
+		Type        string
+		Destination string
 	}
 }
 
@@ -327,10 +381,14 @@ func (m Manager) parseInspect(b []byte) ([]Found, error) {
 			return nil, fmt.Errorf("docker inspect: container %q lacks the %s label it was listed by", c.ID, m.key(LabelWorkspace))
 		}
 		repoID, _ := strconv.ParseInt(c.Config.Labels[m.key(LabelRepositoryID)], 10, 64)
+		legacy := false
+		for _, mt := range c.Mounts {
+			legacy = legacy || (mt.Type == "bind" && mt.Destination == LegacyBrokerMountPoint)
+		}
 		found = append(found, Found{
 			ContainerID: c.ID, WorkspaceID: ws, RepositoryID: repoID,
 			Repo: c.Config.Labels[m.key(LabelRepo)], Branch: c.Config.Labels[m.key(LabelBranch)],
-			Running: c.State.Running, Status: c.State.Status,
+			Running: c.State.Running, Status: c.State.Status, LegacyBrokerMount: legacy,
 		})
 	}
 	return found, nil

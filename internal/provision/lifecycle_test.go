@@ -19,7 +19,9 @@ import (
 const testPrefix = "drydock.test.provision"
 
 // fakeDocker is a docker stand-in holding its containers in a file, one
-// "<id> <workspace> <status>" line each, so up, ps, inspect, stop and rm all
+// "<id> <workspace> <status>" line each — and a fourth field "legacy" for a
+// container an earlier Drydock made, with the broker socket mounted as a
+// file, which inspect then reports in Mounts — so up, ps, inspect, stop and rm all
 // see one world. It records argv beside the devcontainer fake's, first line
 // "docker". A file docker-fail-<subcommand> in dir makes that subcommand
 // fail, and docker-fail-cleanup-ps only the helper label's listing;
@@ -53,7 +55,7 @@ inspect)
   sep=
   for id; do
     printf '%s' "$sep"
-    awk -v id="$id" -v p='` + testPrefix + `' '$1==id {printf "{\"Id\":\"%s\",\"State\":{\"Status\":\"%s\",\"Running\":%s},\"Config\":{\"Labels\":{\"%s.workspace\":\"%s\",\"%s.repository-id\":\"101\",\"%s.repo\":\"krelinga/alpha\",\"%s.branch\":\"main\"}}}", $1, $3, ($3=="running"?"true":"false"), p, $2, p, p, p}' "$st"
+    awk -v id="$id" -v p='` + testPrefix + `' '$1==id {printf "{\"Id\":\"%s\",\"State\":{\"Status\":\"%s\",\"Running\":%s},\"Config\":{\"Labels\":{\"%s.workspace\":\"%s\",\"%s.repository-id\":\"101\",\"%s.repo\":\"krelinga/alpha\",\"%s.branch\":\"main\"}},\"Mounts\":[%s]}", $1, $3, ($3=="running"?"true":"false"), p, $2, p, p, p, ($4=="legacy"?"{\"Type\":\"bind\",\"Destination\":\"/run/drydock/broker.sock\"}":"{\"Type\":\"bind\",\"Destination\":\"/run/drydock\"}")}' "$st"
     awk -v id="$id" -v p='` + testPrefix + `' '$1==id {printf "{\"Id\":\"%s\",\"State\":{\"Status\":\"exited\",\"Running\":false},\"Config\":{\"Labels\":{\"%s.cleanup\":\"%s\"}}}", $1, p, $2}' "$hs"
     sep=,
   done
@@ -132,7 +134,7 @@ func (e *env) containers(t *testing.T, ws string) map[string]string {
 	}
 	out := map[string]string{}
 	for _, l := range strings.Split(strings.TrimSpace(string(b)), "\n") {
-		if f := strings.Fields(l); len(f) == 3 && f[1] == ws {
+		if f := strings.Fields(l); len(f) >= 3 && f[1] == ws {
 			out[f[0]] = f[2]
 		}
 	}
@@ -236,6 +238,13 @@ func TestStopStopsTheContainerAndClosesTheSocket(t *testing.T) {
 	if c := e.broker.closes(); len(c) != 1 || c[0] != v.ID {
 		t.Errorf("broker sockets closed: %v", c)
 	}
+	// The directory stays: the stopped container's mount names it, and the
+	// next start's step 5 puts a socket back in it.
+	e.broker.mu.Lock()
+	if r := e.broker.removed; len(r) != 0 {
+		t.Errorf("a stop removed the broker directory: %v", r)
+	}
+	e.broker.mu.Unlock()
 	if b, err := os.ReadFile(marker); err != nil || string(b) != "work" {
 		t.Errorf("the clone did not survive the stop: %v", err)
 	}
@@ -588,6 +597,12 @@ func TestDeleteRemovesEverything(t *testing.T) {
 	if c := e.broker.closes(); len(c) != 1 || c[0] != v.ID {
 		t.Errorf("broker sockets closed: %v", c)
 	}
+	// A delete takes the socket's directory too; only a delete does.
+	e.broker.mu.Lock()
+	if r := e.broker.removed; len(r) != 1 || r[0] != v.ID {
+		t.Errorf("broker directories removed: %v", r)
+	}
+	e.broker.mu.Unlock()
 	if _, err := os.Lstat(filepath.Join(e.root, v.ID)); !errors.Is(err, os.ErrNotExist) {
 		t.Errorf("the workspace directory survived: %v", err)
 	}

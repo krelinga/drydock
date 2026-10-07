@@ -80,6 +80,11 @@ const (
 	ReasonHangRemoteDialog Reason = "hang_remote_dialog"
 	ReasonHangTrust        Reason = "hang_trust"
 	ReasonBudgetSpent      Reason = "budget_spent" // too many exits in the window
+	// ReasonStaleBrokerMount: the container has the broker socket mounted
+	// as a file, as a Drydock before the directory mount made it, so it has
+	// had no broker since the restart and every command's secrets prelude
+	// exits 69. Not started; only a rebuild fixes it (Park).
+	ReasonStaleBrokerMount Reason = "stale_broker_mount"
 	ReasonServing          Reason = "connected"
 	ReasonStopped          Reason = "stopped"
 )
@@ -289,6 +294,42 @@ func (m *Manager) Restart(ctx context.Context, workspaceID string) error {
 		return err
 	}
 	return m.Start(ctx, workspaceID)
+}
+
+// Park records the workspace's session server as degraded for a reason
+// Drydock found before starting one, without starting one and without
+// touching a server already running in the container: boot adoption's answer
+// to a container that cannot work until it is rebuilt
+// (ReasonStaleBrokerMount). The card reads the reason as a container fault
+// and offers Rebuild, whose stop half stops any server an earlier process
+// left (Stop, through its pid file). Nothing is held in memory for it, so
+// nothing restarts it but an explicit Start.
+func (m *Manager) Park(ctx context.Context, workspaceID string, r Reason, detail string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.closed {
+		return ErrClosed
+	}
+	if s := m.sups[workspaceID]; s != nil && s.running() {
+		return nil
+	}
+	if m.logs == nil {
+		m.logs = map[string]*Ring{}
+	}
+	row, restarts, err := m.ensureRow(ctx, workspaceID)
+	if err != nil {
+		return err
+	}
+	ring := m.logs[workspaceID]
+	if ring == nil {
+		ring = NewRing(m.policy().LogBytes, m.redactValues(workspaceID))
+		m.logs[workspaceID] = ring
+	}
+	s := &sup{m: m, ws: workspaceID, row: row, restarts: restarts, log: ring, done: make(chan struct{})}
+	s.state, _, _ = m.storedState(ctx, row)
+	close(s.done)
+	s.set(ctx, Degraded, r, detail, 0)
+	return nil
 }
 
 func (m *Manager) launchLocked(ctx context.Context, workspaceID string) error { // m.mu held

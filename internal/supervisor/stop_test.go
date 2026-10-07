@@ -323,3 +323,30 @@ func TestTheLogIsRedactedToItsLastLine(t *testing.T) {
 		})
 	}
 }
+
+// Park records degraded with its reason and Drydock's sentence, starts
+// nothing, and is not restarted by anything but an explicit Start — which,
+// the control, then serves as usual.
+func TestParkStartsNothing(t *testing.T) {
+	r := newRig(t)
+	r.claude(claudetest.Step{Mode: claudetest.RCServe})
+	const why = "Rebuild it once."
+	if err := r.m.Park(context.Background(), wsID, ReasonStaleBrokerMount, why); err != nil {
+		t.Fatal(err)
+	}
+	if st, _ := r.row(); st != Degraded {
+		t.Errorf("row state %s, want degraded", st)
+	}
+	if l := r.last(); l.State != string(Degraded) || l.Reason != string(ReasonStaleBrokerMount) || l.Detail != why {
+		t.Errorf("event %+v", l)
+	}
+	time.Sleep(200 * time.Millisecond)
+	if n := r.invocations(); n != 0 {
+		t.Errorf("%d starts after Park", n)
+	}
+	r.start()
+	r.waitState(Serving, ReasonServing)
+	if n := r.invocations(); n != 1 {
+		t.Errorf("control: %d starts after Start", n)
+	}
+}
