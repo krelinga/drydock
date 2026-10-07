@@ -78,6 +78,9 @@ func TestStopStartRebuildDelete(t *testing.T) {
 	}
 	srv.Provisioner.Cloner.BaseURL = f.URL
 	srv.Provisioner.Config = []byte(hostNetConfig)
+	// The runArgs the test needs (above) is host access: approved, as the
+	// operator would, before anything runs (design §6).
+	approveHostNetwork(t, srv.DB.DB, 101)
 	srv.Provisioner.RemoteEnv = map[string]string{"DRYDOCK_GITHUB_HOST": strings.TrimPrefix(f.URL, "http://")}
 	noLogin(t, srv.DB.DB, cfg.ClaudeVolume)
 	ctx, cancel := context.WithCancel(context.Background())
@@ -213,6 +216,101 @@ func TestStopStartRebuildDelete(t *testing.T) {
 	if err := token(id); err != nil {
 		t.Errorf("start did not bring the socket back: %v", err)
 	}
+
+	// The attack on PR #25: from inside the running container, the agent
+	// rewrites the clone's devcontainer.json with an initializeCommand that
+	// would run on the host, and the operator rebuilds. The rebuild stops
+	// the container, stops at resolve_config for an approval naming the
+	// field, and never runs up — so the host canary never appears. Then the
+	// operator approves, and it runs: approval is the operator's decision to
+	// let it (design §6), so the canary appears. Putting the file back is less
+	// than was approved, so it runs without asking — and without the canary.
+	canary := filepath.Join(dir, "canary-initialize")
+	hostile := `{"image":"` + provision.DefaultImage + `","runArgs":["--network=host"],` +
+		`"initializeCommand":"touch ` + canary + `"}`
+	rewrite := exec.Command("docker", "exec", "-i", "-u", "vscode", first, "sh", "-c",
+		"cat > /workspaces/repo/.devcontainer/devcontainer.json")
+	rewrite.Stdin = strings.NewReader(hostile)
+	if out, err := rewrite.CombinedOutput(); err != nil {
+		t.Fatalf("rewriting the config from inside the container: %v: %s", err, out)
+	}
+	if b, _ := os.ReadFile(filepath.Join(clone, ".devcontainer", "devcontainer.json")); string(b) != hostile {
+		t.Fatalf("setup: the container's write did not reach the clone: %q", b)
+	}
+	if status, body := c.post("/api/workspaces/"+id+"/rebuild", ""); status != 202 {
+		t.Fatalf("rebuild of the rewritten config: %d %s", status, body)
+	}
+	type setting struct{ Field, Source string }
+	type pending struct {
+		State    string
+		Steps    map[string]struct{ Status, Detail string }
+		Approval *struct {
+			Hash                    string
+			Added, Changed, Removed []setting
+		}
+	}
+	awaitApproval := func(what string, noCanary bool) pending {
+		t.Helper()
+		deadline := time.Now().Add(5 * time.Minute)
+		for {
+			var v pending
+			_, body, _ := c.do("GET", "/api/workspaces/"+id, "")
+			json.Unmarshal([]byte(body), &v)
+			if v.State == "failed" || v.State == "running" || (v.State == "stopped" && v.Approval != nil) {
+				if _, err := os.Lstat(canary); noCanary && err == nil {
+					t.Fatalf("%s: initializeCommand ran on the host before an approval (%s)", what, v.State)
+				}
+				if v.State != "stopped" || v.Approval == nil || v.Steps["resolve_config"].Status != "needs_approval" {
+					t.Fatalf("%s: %s, resolve_config %+v; want stopped, waiting for an approval", what, v.State, v.Steps["resolve_config"])
+				}
+				return v
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("%s: never stopped for an approval: %s", what, v.State)
+			}
+			time.Sleep(time.Second)
+		}
+	}
+	asked := awaitApproval("the rewritten config", true)
+	if _, err := os.Lstat(canary); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("initializeCommand ran on the host before an approval: %v", err)
+	}
+	if a := asked.Approval; len(a.Added) != 1 || a.Added[0] != (setting{"initializeCommand", "repository"}) ||
+		!strings.Contains(asked.Steps["resolve_config"].Detail, "initializeCommand") {
+		t.Errorf("the request: %+v, %q", a, asked.Steps["resolve_config"].Detail)
+	}
+	if got := labelled(id); len(got) != 1 || got[0] != first || inspectRunning(first) != "false" {
+		t.Errorf("while waiting, docker lists %v (running=%s); want %s, stopped", got, inspectRunning(first), first)
+	}
+	// A stale hash is refused and changes nothing.
+	if status, body := c.post("/api/workspaces/"+id+"/config-approval", `{"hash":"sha256:`+strings.Repeat("0", 64)+`"}`); status != 409 || !strings.Contains(body, "approval_stale") {
+		t.Errorf("a stale approval: %d %s", status, body)
+	}
+	// Approved: the rebuild runs, initializeCommand with it.
+	if status, body := c.post("/api/workspaces/"+id+"/config-approval", `{"hash":"`+asked.Approval.Hash+`"}`); status != 202 {
+		t.Fatalf("approve: %d %s", status, body)
+	}
+	v = await(id, "running")
+	if _, err := os.Lstat(canary); err != nil {
+		t.Errorf("the approved initializeCommand did not run: %v", err)
+	}
+	// The committed file back: less than was approved — runArgs alone, a
+	// subset of what was — so it runs without asking, and the approval
+	// stays as it was (design §6).
+	if err := os.WriteFile(filepath.Join(clone, ".devcontainer", "devcontainer.json"), []byte(hostNetConfig), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(canary); err != nil {
+		t.Fatal(err)
+	}
+	if status, body := c.post("/api/workspaces/"+id+"/rebuild", ""); status != 202 {
+		t.Fatalf("rebuild with the file put back: %d %s", status, body)
+	}
+	v = await(id, "running")
+	if _, err := os.Lstat(canary); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("initializeCommand ran with the file put back: %v", err)
+	}
+	first = *v.ContainerID
 
 	// Rebuild: a new container, the clone intact.
 	if status, body := c.post("/api/workspaces/"+id+"/rebuild", ""); status != 202 {

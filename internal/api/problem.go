@@ -49,9 +49,17 @@ const (
 	// its own rather than bad_request, because the UI's answer is specific:
 	// the typed name did not match, type it again.
 	CodeConfirmMismatch = "confirm_mismatch"
-	CodeBadPassword     = "bad_password"
-	CodeLockedOut       = "locked_out"
-	CodeNotConfigured   = "not_configured"
+	// CodeApprovalNotPending: a host-access approval (design §6) for a
+	// workspace that is not stopped waiting for one — already approved,
+	// declined, or moved on.
+	CodeApprovalNotPending = "approval_not_pending"
+	// CodeApprovalStale: the hash approved is not the request the workspace
+	// is waiting on. The configuration changed after the operator was shown
+	// it; nothing was approved, and the page shows the new request.
+	CodeApprovalStale = "approval_stale"
+	CodeBadPassword   = "bad_password"
+	CodeLockedOut     = "locked_out"
+	CodeNotConfigured = "not_configured"
 	// CodeAppNotConfigured: no GitHub App is configured, so there is no
 	// repository list. Distinct from not_configured, which is the password.
 	CodeAppNotConfigured = "app_not_configured"

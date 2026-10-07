@@ -198,4 +198,30 @@ ALTER TABLE repository ADD COLUMN removed_at TEXT;
 	`
 CREATE INDEX secret_access_secret ON secret_access (secret_id, workspace_id, at);
 `,
+
+	// 6 — host-access approvals (design §6, "What a configuration may ask of
+	// the host"). A start, rebuild or create whose configuration reaches
+	// outside the container runs only when the operator has approved exactly
+	// that host-access subset for the repository. config_approval is the
+	// history, never deleted: a new approval supersedes the last rather than
+	// replacing it, so "who let this repository run privileged, and when?"
+	// stays answerable. approved_by is the approving session's id, which is
+	// itself a SHA-256 of the cookie (§4), never a usable credential.
+	// workspace.pending_approval is the request a run stopped at — the subset,
+	// its hash, and how it differs from the approved one — kept on the row so
+	// a reloaded page shows what the live events showed; any move clears it.
+	`
+CREATE TABLE config_approval (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  repository_id INTEGER NOT NULL,
+  hash          TEXT NOT NULL,
+  settings      TEXT NOT NULL,  -- the approved subset, canonical JSON
+  workspace_id  TEXT,           -- the workspace it was approved from
+  approved_by   TEXT NOT NULL,  -- auth_session.id: a SHA-256, never the cookie
+  approved_at   TEXT NOT NULL,
+  superseded_at TEXT
+);
+CREATE INDEX config_approval_repository ON config_approval (repository_id, superseded_at);
+ALTER TABLE workspace ADD COLUMN pending_approval TEXT;
+`,
 }

@@ -49,6 +49,10 @@ export function needsSlot(action: string | null, w: Workspace | null): boolean {
       return true
     case 'start':
       return true
+    // Approving continues a stopped workspace's start or rebuild, which
+    // takes a slot as a start does.
+    case 'approve':
+      return true
     case 'rebuild':
       return w === null || w.state !== 'running'
     default:

@@ -891,6 +891,16 @@ should stay quiet.
   *starting the container* step says that `devcontainer up` rewrote it in the clone. That is
   expected, and it is what VS Code would do too
   ([§6 *The repository's lockfile*](../design/overall/drydock-design.md#the-repositorys-lockfile)).
+- [ ] **If the row says *Needs approval* instead of building**, the repository's `devcontainer.json`
+  asks for something that reaches outside its container — `runArgs`, `privileged` (docker-in-docker
+  sets it), a bind mount, `initializeCommand`, Docker Compose and the like
+  ([§6 *What a configuration may ask of the host*](../design/overall/drydock-design.md#what-a-configuration-may-ask-of-the-host)).
+  Nothing has been built and no container exists yet. Read the list on the card: each setting, its
+  value, and whether the repository or a Feature set it. **Approve and continue** records the
+  approval for that repository and carries on with the build; **Cancel** leaves it stopped. Approve
+  only what you would let that repository do to this server — `privileged` is root on the host, and
+  anything running in the container can then use it. The approval is kept per repository: the same settings, or fewer of them, never ask again;
+  anything new, or a changed value, does, showing what changed.
 - [ ] **On the server**, the container is there, found by label:
   ```sh
   sudo docker ps --filter label=drydock.workspace --format '{{.ID}}  {{.Label "drydock.repo"}}  {{.Status}}'
@@ -1238,6 +1248,8 @@ Drydock pulled: `sudo docker image ls`, and remove what you do not want.
 | Workspace fails at *starting the container* after a while | Image pull or build failure, a failing `postCreateCommand`, or no network to `ghcr.io` / `mcr.microsoft.com` | The step's detail, then `journalctl -u drydock \| grep "workspace <id>"`. Try `sudo docker pull mcr.microsoft.com/devcontainers/base:debian`. |
 | Workspace fails at *verifying* | The broker round-trip failed inside the container | Check that `/run/drydock/sock/<id>/broker.sock` exists. The journal's `workspace <id>` lines. |
 | Workspace fails at *cloning* | GitHub refused the clone token: the App lacks `contents`, or the repository was removed from the installation | Check the App permissions ([1.4](#14-the-github-apps-private-key)) |
+| A workspace says *Needs approval* (step *resolving config*: *This configuration asks for host access that has not been approved for this repository: …* or *…differs from what was approved…*) | Not a failure. The `devcontainer.json` asks for something that reaches outside the container: `initializeCommand` (runs on the server as `drydock`), `runArgs`, `privileged`, a bind mount, `appPort`, `workspaceMount`, Docker Compose, `build.options`, a build context outside the repository, `capAdd`/`securityOpt` other than `SYS_PTRACE`/`seccomp=unconfined`, or a field Drydock does not know — and it goes beyond what was approved for this repository — a new setting, a changed value, or a list that gained an element (fewer settings than approved never ask). *from a Feature or the image* means a Feature the config declares asks for it: docker-in-docker sets `privileged`. The list and the reasons are in [§6 of the design](../design/overall/drydock-design.md#what-a-configuration-may-ask-of-the-host) | **On a create, or a repository you know needs it** (docker-in-docker): read the list and **Approve and continue** ([8.1](#81-clone-and-watch)). **On a start or rebuild of a workspace that worked before, with a setting you did not add:** something in the container changed the file — perhaps the agent "fixing" its dev container. Do not approve it unread. Look: `sudo cat /srv/drydock/ws/<id>/repo/.devcontainer/devcontainer.json`. Press **Cancel**, then restore the file by editing it as `drydock` (`sudo -u drydock nano …`) — do **not** run `git checkout` in the clone on the server, since its `.git/config` was writable by the container too — and **Start**. Or delete the workspace. Nothing in the config ran: the container was stopped before the check. |
+| Approving says *The configuration changed after this was shown, so nothing was approved* | The file (or a Feature it names) changed between the page loading and the press | Read the new list the page now shows, then approve that or cancel. |
 | Create refused with `at_capacity` | 10 workspaces already hold a container | Stop or delete one |
 | `git push` in a container: `GitHub access unavailable …` | The workspace is not *Running* in Drydock (its socket is closed), or GitHub refused | Start it in the UI. A container started by hand with `docker start` gets no GitHub access, by design. |
 | Pushing a workflow file is rejected | The App lacks `workflows: write` | Add the permission on the App, then accept the new permissions on the installation |

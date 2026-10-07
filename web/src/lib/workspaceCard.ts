@@ -29,6 +29,11 @@ export type CardAction =
   // (POST …/supervisor), and open the environment in Claude — a link, the
   // one action that is not a mutation.
   | 'start_session' | 'restart_session' | 'open'
+  // Design §6: a stopped workspace waiting for the operator to approve its
+  // configuration's host access. Rendered as the request itself — what it
+  // asks for, the warning, Approve and continue and Cancel — never as a
+  // bare button, because approving unread is the failure it exists to stop.
+  | 'approve'
   | null
 
 /**
@@ -213,6 +218,12 @@ export function cardStatus(w: Workspace, fleet: FleetLogin = null): CardStatus {
       return supervisorHalf(w, fleet) ?? { line: label, tone: 'ok', note: w.detail, action: 'stop' }
     }
     case 'stopped':
+      // Design §6: the run stopped before anything reached the host, and
+      // waits for the operator. Not a failure, so not the failure tone's
+      // word, but the one card that must be read before anything is pressed.
+      if (w.approval !== null) {
+        return { line: 'Needs approval', tone: 'bad', note: 'This configuration asks for host access.', action: 'approve' }
+      }
       // Fig 3: stopped says what survived, which is what makes Start cheap.
       return { line: label, tone: 'idle', note: w.detail ?? 'The clone is intact.', action: 'start' }
     case 'failed': {

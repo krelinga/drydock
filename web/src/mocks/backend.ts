@@ -17,7 +17,7 @@
 
 import { http, HttpResponse, sse, type HttpHandler } from 'msw'
 import type {
-  ActionView, CatalogView, Device, IdentityState, IdentityView, InstallationView, LoginView, PutSecretResult, RepoView, SecretMeta, SessionInfo, SessionView, Stale, StaleWorkspace, SupervisorView,
+  ActionView, ApprovalView, HostSettingView, CatalogView, Device, IdentityState, IdentityView, InstallationView, LoginView, PutSecretResult, RepoView, SecretMeta, SessionInfo, SessionView, Stale, StaleWorkspace, SupervisorView,
   StepView, StreamEvent, Undeliverable, UndeliverableSecret, WorkspaceDetail, WorkspaceList, WorkspaceState, WorkspaceView,
 } from '../api/types'
 import { checkDescription, checkName, checkReach, checkValue, type SecretRefusal } from '../lib/secretRules'
@@ -81,6 +81,17 @@ export interface MockBackend {
   scripts: Record<string, Array<() => void>>
   /** The step the next create, start or rebuild fails at, once (dev:mock's `failNext`). */
   failNext: string | null
+  /**
+   * Each repository's configuration's host-access subset (design §6), as
+   * step 3 would compute it from what is in the clone; absent is empty. A
+   * spec or dev:mock's `hostAccess` sets it — what an edit to the
+   * devcontainer.json, or a Feature's metadata, would change.
+   */
+  hostAccess: Record<number, { hash: string; settings: HostSettingView[] }>
+  /** The hash approved for each repository (config_approval's current row). */
+  approved: Record<number, { hash: string; settings: HostSettingView[] }>
+  /** Each config-approval POST's raw body, for the spec that asserts the hash sent. */
+  approvalBodies: string[]
   /**
    * The sub-step the next stop or delete fails at, once (dev:mock's
    * `failAction`): a stop that leaves the workspace running, or a delete that
@@ -261,6 +272,10 @@ export interface MockWorkspace {
   supervisor?: SupervisorView | null
   session?: SessionView | null
   environment_id?: string | null
+  /** The host-access request it waits on (design §6), or none. */
+  approval?: ApprovalView | null
+  /** The stopped run's --remove-existing-container, which an approval continues. */
+  approvalRebuild?: boolean
 }
 
 const CURRENT_ID = 'c0ffee0000000000000000000000000000000000000000000000000000000001'
@@ -364,6 +379,9 @@ function newBackendBare(now: number, overrides: Partial<MockBackend>): MockBacke
     scriptIntervalMs: 900,
     scripts: {},
     failNext: null,
+    hostAccess: {},
+    approved: {},
+    approvalBodies: [],
     failAction: null,
     jobs: {},
     timers: {},
@@ -531,6 +549,7 @@ export function workspaceView(b: MockBackend, w: MockWorkspace): WorkspaceView {
     created_at: w.created_at,
     steps: structuredClone(w.steps),
     last_action: w.last_action ? { ...w.last_action } : null,
+    approval: w.approval ? structuredClone(w.approval) : null,
     ...(b.supervisor ? {
       supervisor: w.supervisor ? { ...w.supervisor } : null,
       session: w.session ? { ...w.session } : null,
@@ -622,6 +641,9 @@ export function emit(
           : state === 'pending' ? null : row.container_id,
         steps: state === 'pending' ? {} : row.steps,
         created_at: state === 'pending' && cur === undefined ? ev.at : row.created_at,
+        // Every workspace.state event carries the request or clears it, as
+        // the server's row does (any move clears pending_approval).
+        approval: d.approval !== undefined && d.approval !== null ? structuredClone(d.approval as ApprovalView) : null,
       }
     }
   }
@@ -705,15 +727,61 @@ export function cloneScript(
  * reached past this run's failure keeps its old status too, which is what
  * the UI's runSteps exists to leave out.
  */
-export function startScript(b: MockBackend, id: string, failAt?: string): Array<(at?: string) => void> {
+export function startScript(b: MockBackend, id: string, failAt?: string, rebuild = false): Array<(at?: string) => void> {
   const w = b.workspaces[id]
   const from = w?.state ?? 'stopped'
   const steps = new ScriptSteps(b, id)
+  steps.rebuild = rebuild || from === 'failed'
   const rest: Array<[string, WorkspaceState | null]> = [['credential_volume', null], ['broker_socket', null], ['up', null], ['verify', null]]
   const plan: Array<[string, WorkspaceState | null]> = w?.steps.clone?.status === 'done'
     ? [['resolve_config', 'building'], ...rest]
     : [['clone', 'cloning'], ['resolve_config', null], ...rest.map(([n]): [string, WorkspaceState | null] => [n, n === 'up' ? 'building' : null])]
   return steps.run([], plan, from, failAt)
+}
+
+/** internal/container ITEM lists: compared element by element; runArgs is argv, and must equal. */
+const ITEM_LISTS = new Set(['capAdd', 'securityOpt', 'mounts'])
+
+/** container.Covered: every current entry within the approved set — the same, or (an item list) fewer. */
+function covered(approved: HostSettingView[], current: HostSettingView[]): boolean {
+  const by = new Map(approved.map((s) => [`${s.field}\u0000${s.source}`, s]))
+  return current.every((s) => {
+    const a = by.get(`${s.field}\u0000${s.source}`)
+    if (a === undefined) return false
+    if (JSON.stringify(a.value) === JSON.stringify(s.value)) return true
+    if (!ITEM_LISTS.has(s.field) || !Array.isArray(a.value) || !Array.isArray(s.value)) return false
+    const have = new Set(a.value.map((e) => JSON.stringify(e)))
+    return s.value.every((e) => have.has(JSON.stringify(e)))
+  })
+}
+
+/**
+ * Step 3's question (design §6): the repository's subset, compared with the
+ * one approved for it. Null when it is empty or within the approved set; otherwise the
+ * request — the difference from the approved subset — and its sentence.
+ */
+function askFor(b: MockBackend, id: string): { approval: ApprovalView; sentence: string } | null {
+  const repo = b.workspaces[id]?.repository_id
+  if (repo === undefined) return null
+  const cur = b.hostAccess[repo]
+  if (cur === undefined || cur.settings.length === 0) return null
+  const was = b.approved[repo]
+  if (was !== undefined && covered(was.settings, cur.settings)) return null
+  const key = (s: HostSettingView) => `${s.field}\u0000${s.source}`
+  const before = new Map((was?.settings ?? []).map((s) => [key(s), s]))
+  const now = new Set(cur.settings.map(key))
+  const added = cur.settings.filter((s) => !before.has(key(s)))
+  const changed = cur.settings.filter((s) => before.has(key(s)) && JSON.stringify(before.get(key(s))!.value) !== JSON.stringify(s.value))
+    .map((s) => ({ field: s.field, source: s.source, from: before.get(key(s))!.value, to: s.value }))
+  const removed = (was?.settings ?? []).filter((s) => !now.has(key(s)))
+  const names = [...new Set([...added, ...changed].map((s) => s.field))]
+  const what = was === undefined
+    ? 'This configuration asks for host access that has not been approved for this repository'
+    : "This configuration's host access differs from what was approved for this repository"
+  return {
+    approval: { hash: cur.hash, added, changed, removed },
+    sentence: `${what}${names.length > 0 ? `: ${names.join(', ')}` : ''}. Approve it to continue, or remove it from devcontainer.json.`,
+  }
 }
 
 /** A stop's and a delete's sub-steps (internal/provision lifecycle.go), in order. */
@@ -818,6 +886,8 @@ const FAILED_SENTENCE: Record<string, string> = {
 }
 
 class ScriptSteps {
+  /** Whether this run passes --remove-existing-container: a rebuild, or a start from failed. */
+  rebuild = false
   constructor(private b: MockBackend, private id: string) {}
 
   state(state: WorkspaceState, data: Record<string, unknown>, message: string, level: StreamEvent['level'] = 'info') {
@@ -890,6 +960,26 @@ class ScriptSteps {
         from = enter
       }
       out.push(this.step(name, 'started'))
+      if (name === 'resolve_config') {
+        const ask = askFor(this.b, this.id)
+        if (ask !== null) {
+          // Design §6: not a failure — the run stops before anything reaches
+          // the host, and the workspace waits, stopped, with the request.
+          const detail = ask.sentence
+          out.push(
+            this.step(name, 'needs_approval', detail),
+            (at?: string) => {
+              const w = this.b.workspaces[this.id]
+              if (w !== undefined) this.b.workspaces[this.id] = { ...w, approvalRebuild: this.rebuild }
+              emit(this.b, 'workspace.state', {
+                workspace_id: this.id, level: 'warn', message: `Stopped. ${detail}`,
+                data: { state: 'stopped', from, detail, approval: ask.approval }, ...(at ? { at } : {}),
+              })
+            },
+          )
+          return out
+        }
+      }
       if (name === failAt) {
         const detail = FAILED_SENTENCE[name] ?? `The ${name} step failed.`
         out.push(this.step(name, 'failed', detail), this.state('failed', { from, detail }, `Failed. ${detail}`, 'error'))
@@ -1270,7 +1360,51 @@ export function handlersFor(b: MockBackend): HttpHandler[] {
       }
       const failAt = b.failNext ?? undefined
       b.failNext = null
-      schedule(b, id, startScript(b, id, failAt))
+      schedule(b, id, startScript(b, id, failAt, true))
+      return HttpResponse.json({}, { status: 202 })
+    }),
+
+    // Design §6's host-access approval (internal/api/workspace_routes.go
+    // approve and decline). Approve takes the hash the page showed and
+    // refuses any other; it records the approval, writes config.approved, and
+    // continues the stopped run as a start (or a rebuild) under the cap.
+    http.post('/api/workspaces/:id/config-approval', async ({ request, params }) => {
+      record(request)
+      if (!b.signedIn) return unauthenticated()
+      const id = String(params.id)
+      const w = b.workspaces[id]
+      if (w === undefined) return envelope(404, 'not_found', 'There is no such workspace.')
+      const text = await request.text()
+      b.approvalBodies.push(text)
+      const body = strictBody(text, { hash: 'string' })
+      if (body === null || body.hash === '') return envelope(400, 'bad_request', 'The request needs the hash of the host access being approved.')
+      if (w.state !== 'stopped' || !w.approval || b.jobs[id] !== undefined) {
+        return envelope(409, 'approval_not_pending', 'This workspace is not waiting for a host-access approval.')
+      }
+      if (body.hash !== w.approval.hash) {
+        return envelope(409, 'approval_stale', 'The configuration changed after it was shown, so nothing was approved. Review the new request.')
+      }
+      if (Object.values(b.workspaces).filter((x) => OCCUPYING.has(x.state)).length >= b.capacity) return atCapacity()
+      const cur = b.hostAccess[w.repository_id]
+      if (cur !== undefined) b.approved[w.repository_id] = structuredClone(cur)
+      emit(b, 'config.approved', {
+        workspace_id: id, level: 'warn', message: "Host access approved for this repository's configuration.",
+        data: { repository_id: w.repository_id, hash: w.approval.hash },
+      })
+      schedule(b, id, startScript(b, id, undefined, w.approvalRebuild === true))
+      return HttpResponse.json({}, { status: 202 })
+    }),
+    http.delete('/api/workspaces/:id/config-approval', ({ request, params }) => {
+      record(request)
+      if (!b.signedIn) return unauthenticated()
+      const id = String(params.id)
+      const w = b.workspaces[id]
+      if (w === undefined) return envelope(404, 'not_found', 'There is no such workspace.')
+      if (w.state !== 'stopped' || !w.approval || b.jobs[id] !== undefined) {
+        return envelope(409, 'approval_not_pending', 'This workspace is not waiting for a host-access approval.')
+      }
+      const detail = 'Host access was not approved, so the workspace stays stopped. Start asks again.'
+      emit(b, 'workspace.state', { workspace_id: id, message: `Stopped. ${detail}`, data: { state: 'stopped', from: 'stopped', detail } })
       return HttpResponse.json({}, { status: 202 })
     }),
 

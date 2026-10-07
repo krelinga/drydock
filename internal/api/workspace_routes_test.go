@@ -36,6 +36,13 @@ func (s *stubProvisioner) Delete(_ context.Context, id, confirm string) error {
 	return s.act("delete " + id + " " + confirm)
 }
 
+func (s *stubProvisioner) ApproveConfig(_ context.Context, id, hash, by string) error {
+	return s.act("approve " + id + " " + hash + " " + by)
+}
+func (s *stubProvisioner) DeclineConfig(_ context.Context, id string) error {
+	return s.act("decline " + id)
+}
+
 func (s *stubProvisioner) Create(_ context.Context, repo int64, branch string) (workspace.Workspace, error) {
 	if s.err != nil {
 		return workspace.Workspace{}, s.err
@@ -208,6 +215,7 @@ func TestLifecycleRoutesMapEachRefusalToItsCode(t *testing.T) {
 		{"DELETE", "/api/workspaces/W1?confirm=krelinga/alpha", "delete W1 krelinga/alpha"},
 		{"DELETE", "/api/workspaces/W1?confirm=%20krelinga/Alpha", "delete W1  krelinga/Alpha"},
 		{"DELETE", "/api/workspaces/W1", "delete W1 "},
+		{"DELETE", "/api/workspaces/W1/config-approval", "decline W1"},
 	} {
 		p.acted = nil
 		rec := call(mux, c.method, c.path, ``)
@@ -226,13 +234,37 @@ func TestLifecycleRoutesMapEachRefusalToItsCode(t *testing.T) {
 		{provision.ErrNotConfigured, 503, CodeAppNotConfigured},
 		{provision.ErrConfirmMismatch, 400, CodeConfirmMismatch},
 		{provision.ErrShuttingDown, 503, CodeUnavailable},
+		{workspace.ErrNoApproval, 409, CodeApprovalNotPending},
+		{workspace.ErrApprovalStale, 409, CodeApprovalStale},
 	} {
 		p.err = c.err
-		for _, r := range [][2]string{{"POST", "/api/workspaces/W1/stop"}, {"POST", "/api/workspaces/W1/rebuild"},
-			{"DELETE", "/api/workspaces/W1?confirm=krelinga/alpha"}} {
-			if rec := call(mux, r[0], r[1], ``); rec.Code != c.status || errCode(t, rec) != c.code {
+		for _, r := range [][3]string{{"POST", "/api/workspaces/W1/stop", ``}, {"POST", "/api/workspaces/W1/rebuild", ``},
+			{"DELETE", "/api/workspaces/W1?confirm=krelinga/alpha", ``},
+			{"POST", "/api/workspaces/W1/config-approval", `{"hash":"sha256:ab"}`},
+			{"DELETE", "/api/workspaces/W1/config-approval", ``}} {
+			if rec := call(mux, r[0], r[1], r[2]); rec.Code != c.status || errCode(t, rec) != c.code {
 				t.Errorf("%s %s with %v: %d %s; want %d %s", r[0], r[1], c.err, rec.Code, rec.Body, c.status, c.code)
 			}
+		}
+	}
+}
+
+// TestApproveCarriesTheHashAndTheSession: the hash is passed through as
+// sent, the approver is the session the gate attached (here none, so
+// "unknown"), and a body without a hash is bad_request with nothing done —
+// beside the control that a hash is accepted.
+func TestApproveCarriesTheHashAndTheSession(t *testing.T) {
+	p := &stubProvisioner{}
+	mux := workspaceMux(p, stubReader{})
+	rec := call(mux, "POST", "/api/workspaces/W1/config-approval", `{"hash":"sha256:ab"}`)
+	if rec.Code != 202 || strings.TrimSpace(rec.Body.String()) != `{}` || len(p.acted) != 1 || p.acted[0] != "approve W1 sha256:ab unknown" {
+		t.Errorf("control: %d %s %q", rec.Code, rec.Body, p.acted)
+	}
+	for _, body := range []string{``, `{}`, `{"hash":""}`, `{"hash":"x"} {}`, `not json`} {
+		p.acted = nil
+		rec := call(mux, "POST", "/api/workspaces/W1/config-approval", body)
+		if rec.Code != 400 || errCode(t, rec) != CodeBadRequest || len(p.acted) != 0 {
+			t.Errorf("body %q: %d %s, acted %q", body, rec.Code, rec.Body, p.acted)
 		}
 	}
 }
@@ -264,9 +296,9 @@ func TestWorkspaceViewsHaveTheContractShape(t *testing.T) {
 		`"container_id":"c0ffee","created_at":"2026-10-04T12:00:00Z","steps":{` +
 		`"session_server":{"status":"done","detail":"Nothing to do yet.","at":"2026-10-04T12:00:00Z"},` +
 		`"up":{"status":"done","at":"2026-10-04T12:00:00Z"}},` +
-		`"last_action":{"action":"stop","step":"container","status":"failed","detail":"docker could not stop it.","at":"2026-10-04T12:00:00Z"},"environment_id":null,"supervisor":null,"session":null},` +
+		`"last_action":{"action":"stop","step":"container","status":"failed","detail":"docker could not stop it.","at":"2026-10-04T12:00:00Z"},"environment_id":null,"supervisor":null,"session":null,"approval":null},` +
 		`{"id":"W1","repository_id":101,"full_name":"krelinga/a","branch":"dev","state":"pending","state_detail":null,` +
-		`"container_id":null,"created_at":"2026-10-04T12:00:00Z","steps":{},"last_action":null,"environment_id":null,"supervisor":null,"session":null}],` +
+		`"container_id":null,"created_at":"2026-10-04T12:00:00Z","steps":{},"last_action":null,"environment_id":null,"supervisor":null,"session":null,"approval":null}],` +
 		`"capacity":{"cap":3,"occupied":2}}`
 	if rec.Code != 200 || strings.TrimSpace(rec.Body.String()) != want {
 		t.Errorf("GET /api/workspaces = %d\n got %s\nwant %s", rec.Code, rec.Body, want)

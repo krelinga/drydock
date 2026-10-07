@@ -16,6 +16,7 @@
 // (`withRoom`): the server would refuse it, and the way forward is a Stop.
 import { computed } from 'vue'
 import ActionButton from './ActionButton.vue'
+import HostAccessApproval from './HostAccessApproval.vue'
 import MakeRoom from './MakeRoom.vue'
 import { capacity } from '../lib/capacity'
 import { withRoom, type CardAction } from '../lib/workspaceCard'
@@ -32,6 +33,8 @@ const shown = computed(() => withRoom(props.action, props.workspace, capacity(st
 
 <template>
   <MakeRoom v-if="shown === 'make_room'" />
+  <!-- Never a bare button: the request is read where it is approved (design §6). -->
+  <HostAccessApproval v-else-if="shown === 'approve' && workspace.approval" :workspace="workspace" />
   <ActionButton
     v-else-if="shown === 'start'" label="Start" :primary="primary"
     :flight-key="startKey(workspace.id)" :run="() => workspaces.start(id())" data-test="start"

@@ -66,8 +66,9 @@ func TestReadConfigurationArgvAndExitCodes(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := strings.Join(argv(t, dir, "devcontainer"), " ")
-	want := "read-configuration --workspace-folder /srv/ws/repo -- " +
-		"read-configuration --workspace-folder /srv/ws/repo --override-config /srv/ws/.drydock/devcontainer.json "
+	merged := "--include-merged-configuration --id-label drydock.test.read-configuration=none "
+	want := "read-configuration --workspace-folder /srv/ws/repo " + merged + "-- " +
+		"read-configuration --workspace-folder /srv/ws/repo " + merged + "--override-config /srv/ws/.drydock/devcontainer.json "
 	if got != want {
 		t.Errorf("argv\n got %q\nwant %q", got, want)
 	}

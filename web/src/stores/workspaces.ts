@@ -1,6 +1,6 @@
 // The workspaces store (frontend §4.1): the fetches that feed workspace
 // entities, and the mutations — create and start (Phase 2), stop, rebuild
-// and delete (Phase 6).
+// and delete (Phase 6), and the host-access approval (design §6).
 //
 // Like the catalog it writes no entity itself. GET /api/workspaces and GET
 // /api/workspaces/:id are handed to the stream store as snapshots tagged with
@@ -34,6 +34,10 @@ export const rebuildKey = (id: string) => `workspace:${id}:rebuild`
 export const deleteKey = (id: string) => `workspace:${id}:delete`
 /** The in-flight key for starting or restarting a workspace's session server. */
 export const sessionKey = (id: string) => `workspace:${id}:session`
+/** The in-flight key for approving a workspace's host-access request. */
+export const approveKey = (id: string) => `workspace:${id}:approve`
+/** The in-flight key for declining it. */
+export const declineKey = (id: string) => `workspace:${id}:decline`
 
 const MOVING_STATES: ReadonlySet<string> = new Set(['pending', 'cloning', 'building'])
 
@@ -53,12 +57,14 @@ export interface Outcome {
   stuckDelete: boolean
   /** A stop's sub-step failed, leaving the workspace running (`stopFailed`). */
   failedStop: boolean
+  /** Stopped, waiting for a host-access approval (design §6): the event carries the request, or the entity holds one. */
+  awaitingApproval: boolean
 }
 
 /** What the event says about workspace `id`'s action, or null when it says nothing. */
 export function eventOutcome(id: string, ev: StreamEvent): Outcome | null {
   if (ev.workspace_id !== id) return null
-  const none: Outcome = { gone: false, state: null, stuckDelete: false, failedStop: false }
+  const none: Outcome = { gone: false, state: null, stuckDelete: false, failedStop: false, awaitingApproval: false }
   const d = ev.data ?? {}
   switch (ev.kind) {
     case 'workspace.gone':
@@ -73,7 +79,10 @@ export function eventOutcome(id: string, ev: StreamEvent): Outcome | null {
       // `stopFailed`). Not the failed sub-step before it: a body read
       // between the two cannot yet tell a failed stop from one under way.
       const annotated = d.from === state && typeof d.detail === 'string' && d.detail !== ''
-      return { ...none, state, stuckDelete: annotated && state === 'deleting', failedStop: annotated && state === 'running' }
+      return {
+        ...none, state, stuckDelete: annotated && state === 'deleting', failedStop: annotated && state === 'running',
+        awaitingApproval: d.approval !== undefined && d.approval !== null,
+      }
     }
     default:
       return null
@@ -85,8 +94,10 @@ export function entityOutcome(e: Entities, id: string): Outcome {
   const w = e.workspaces[id]
   // Only the workspace list, or `workspace.gone`, removes a workspace from
   // the entities (reducer.ts), so its absence is the server's word.
-  if (w === undefined || e.gone[id] !== undefined) return { gone: true, state: null, stuckDelete: false, failedStop: false }
-  return { gone: false, state: w.state, stuckDelete: deleteStuck(w), failedStop: stopFailed(w) }
+  if (w === undefined || e.gone[id] !== undefined) {
+    return { gone: true, state: null, stuckDelete: false, failedStop: false, awaitingApproval: false }
+  }
+  return { gone: false, state: w.state, stuckDelete: deleteStuck(w), failedStop: stopFailed(w), awaitingApproval: w.approval !== null }
 }
 
 /**
@@ -106,6 +117,11 @@ export const OVER = {
   build: (o: Outcome) => o.gone || (o.state !== null && !MOVING_STATES.has(o.state)),
   /** A delete: `workspace.gone`, or the annotation of one that stuck, after which Delete is the button again. */
   delete: (o: Outcome) => o.gone || o.stuckDelete,
+  /**
+   * Declining a host-access request: the request gone from the workspace —
+   * the decline's own state event, or any move — or the workspace gone.
+   */
+  decline: (o: Outcome) => o.gone || (o.state !== null && !o.awaitingApproval),
   /** A session server (re)start, as far as the workspace can say: it left `running`, or went. */
   session: (o: Outcome) => o.gone || (o.state !== null && o.state !== 'running'),
 } as const
@@ -188,6 +204,21 @@ export function settlesSession(id: string): (ev: StreamEvent) => boolean {
     return ev.workspace_id === id && ev.kind === 'supervisor.state' && typeof ev.data?.state === 'string' &&
       ev.data.state !== 'exited'
   }
+}
+
+/**
+ * What settles an approval (design §6): the start or rebuild it continues
+ * leaving its build (`OVER.build`) — running, failed, or stopped for an
+ * approval again — as a start's does. Not `config.approved` or the move into
+ * `building`, which the server writes before it answers 202.
+ */
+export function settlesApprove(id: string): (ev: StreamEvent) => boolean {
+  return settlesBy(id, OVER.build)
+}
+
+/** What settles a decline: the request gone from the workspace (`OVER.decline`). */
+export function settlesDecline(id: string): (ev: StreamEvent) => boolean {
+  return settlesBy(id, OVER.decline)
 }
 
 // A list load in progress is joined, and one asked for meanwhile runs once
@@ -320,6 +351,23 @@ export const useWorkspacesStore = defineStore('workspaces', {
     },
 
     /**
+     * POST /api/workspaces/:id/config-approval with the hash the page showed:
+     * the server approves only that request, so a configuration that changed
+     * since is `409 approval_stale`, never approved unseen (design §6). It
+     * continues the stopped start or rebuild, so it ends as one does.
+     */
+    approve(id: string, hash: string): Promise<void> {
+      return this.mutate(approveKey(id), settlesApprove(id), overIn(id, OVER.build), 'POST',
+        `/api/workspaces/${encodeURIComponent(id)}/config-approval`, { hash })
+    },
+
+    /** DELETE /api/workspaces/:id/config-approval: the workspace stays stopped. */
+    decline(id: string): Promise<void> {
+      return this.mutate(declineKey(id), settlesDecline(id), overIn(id, OVER.decline), 'DELETE',
+        `/api/workspaces/${encodeURIComponent(id)}/config-approval`)
+    },
+
+    /**
      * @internal §4.2 for one request: a second tap while in flight sends
      * nothing. The mark ends on the event `settles` accepts or, once the 202
      * has landed, on a snapshot whose entities `resolved` finds the action
@@ -327,13 +375,13 @@ export const useWorkspacesStore = defineStore('workspaces', {
      */
     async mutate(
       key: string, settles: (ev: StreamEvent) => boolean, resolved: (e: Entities) => boolean,
-      method: 'POST' | 'DELETE', path: string,
+      method: 'POST' | 'DELETE', path: string, body?: unknown,
     ): Promise<void> {
       const stream = useStreamStore()
       if (key in stream.inFlight) return
       stream.begin(key, settles, resolved)
       try {
-        await api.send(method, path)
+        await api.send(method, path, body)
         stream.accepted(key)
       } catch (e) {
         stream.end(key)

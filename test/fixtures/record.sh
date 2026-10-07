@@ -423,6 +423,44 @@ record_readconfig() {
 		"a Configuration -- the override is used, and configFilePath still names the folder's default path" \
 		--override-config "$base/override.json"
 	sed -i "s#$base#/srv/drydock/ws/FIXTURE#g" "$dir/read-configuration-override.json.meta"
+
+	# What step 3 runs since the host-affecting check (design §6, "What a
+	# configuration may ask of the host"): the merged configuration — the
+	# repository's own plus what its Features and image metadata declare —
+	# with an id-label nothing carries, so the CLI computes it afresh rather
+	# than reading an existing container's labels.
+	local merged=(--include-merged-configuration --id-label drydock.record.read-configuration=none)
+	rcrec read-configuration-merged-ok.json repo \
+		'{"image":"mcr.microsoft.com/devcontainers/base:debian","features":{"ghcr.io/devcontainers/features/go:1":{}},"mounts":["source=gocache-${devcontainerId},target=/go-cache,type=volume"],"containerEnv":{"GOFLAGS":"-mod=mod"},"postCreateCommand":"go version"}' \
+		"a Configuration that passes the check -- the go Feature's SYS_PTRACE and seccomp=unconfined are the debugger pair, and the volume names \${devcontainerId}" \
+		"${merged[@]}"
+	# The reviewer's attack on PR #25, and every other way a config reaches
+	# the host. initializeCommand writes a canary: read-configuration must not
+	# run it, and this recording is the evidence that it does not.
+	rcrec read-configuration-merged-hostile.json hostile \
+		'{"image":"mcr.microsoft.com/devcontainers/base:debian","initializeCommand":"id -un > '"$base"'/canary-initialize","runArgs":["--privileged"],"privileged":true,"capAdd":["SYS_ADMIN"],"securityOpt":["apparmor=unconfined"],"mounts":["source=/var/run/docker.sock,target=/var/run/docker.sock,type=bind"],"appPort":[8080],"workspaceMount":"source=/,target=/host,type=bind","hostRequirements":{"gpu":true},"postCreateCommand":"true"}' \
+		"refused, naming appPort, capAdd, hostRequirements.gpu, initializeCommand, mounts, privileged, runArgs, securityOpt and workspaceMount" \
+		"${merged[@]}"
+	if [ -e "$base/canary-initialize" ]; then
+		say "  FAIL: read-configuration ran initializeCommand on the host"
+		exit 1
+	fi
+	say "  read-configuration did not run initializeCommand (no canary)"
+	rcrec read-configuration-merged-dind.json dind \
+		'{"image":"mcr.microsoft.com/devcontainers/base:debian","features":{"ghcr.io/devcontainers/features/docker-in-docker:2":{}}}' \
+		"refused, naming privileged as set by a Feature or the image -- the repository's own config never says it" \
+		"${merged[@]}"
+	rcrec read-configuration-merged-override.json plain2 '' \
+		"a Configuration that passes the check -- Drydock's minimal configuration, the base image's metadata merged in" \
+		--override-config "$base/override.json" "${merged[@]}"
+	sed -i "s#$base#/srv/drydock/ws/FIXTURE#g" "$dir/read-configuration-merged-override.json.meta"
+	mkdir -p "$base/compose/.devcontainer"
+	printf '%s\n' 'services:' '  app:' '    image: mcr.microsoft.com/devcontainers/base:debian' '    volumes: ["/:/host"]' \
+		> "$base/compose/.devcontainer/compose.yml"
+	rcrec read-configuration-merged-compose.json compose \
+		'{"dockerComposeFile":"compose.yml","service":"app","workspaceFolder":"/workspaces/compose"}' \
+		"refused, naming dockerComposeFile and service" \
+		"${merged[@]}"
 	rm -rf "$base"
 }
 

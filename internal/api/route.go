@@ -208,6 +208,21 @@ var Table = []Route{
 		Name: "workspaces.rebuild", Doc: "POST /api/workspaces/:id/rebuild",
 	},
 	{
+		Method: "POST", Pattern: "/api/workspaces/{id}/config-approval", Mux: MuxAPI,
+		// Design §6: approve the host-access request a stopped workspace is
+		// waiting on, by the hash the operator was shown, and continue its
+		// run. Settled by config.approved.
+		Auth: AuthRequired, Mutating: true,
+		Name: "workspaces.approve", Doc: "POST /api/workspaces/:id/config-approval",
+	},
+	{
+		Method: "DELETE", Pattern: "/api/workspaces/{id}/config-approval", Mux: MuxAPI,
+		// Decline it: the request is dropped, the workspace stays stopped.
+		// Settled by the workspace.state event that carries no request.
+		Auth: AuthRequired, Mutating: true,
+		Name: "workspaces.decline", Doc: "DELETE /api/workspaces/:id/config-approval",
+	},
+	{
 		Method: "POST", Pattern: "/api/workspaces/{id}/supervisor", Mux: MuxAPI,
 		Auth: AuthRequired, Mutating: true,
 		Name: "workspaces.supervisor", Doc: "POST /api/workspaces/:id/supervisor",

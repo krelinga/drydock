@@ -80,6 +80,12 @@ func TestCreateWorkspaceThroughTheServer(t *testing.T) {
 		locked(104, "krelinga/unpinned", ""),
 		// Stale: written before the configuration declared the marker.
 		locked(105, "krelinga/stale", "{\n  \"features\": {}\n}\n"),
+		// docker-in-docker: its Feature sets privileged, which is host root
+		// (§13.4), so the create stops for an approval, and runs once given.
+		{ID: 106, FullName: "krelinga/dind", DefaultBranch: "main", PushedAt: time.Now(),
+			Files: []string{"README.md", ".devcontainer/devcontainer.json"},
+			Contents: map[string]string{".devcontainer/devcontainer.json": `{"image":"` + provision.DefaultImage +
+				`","runArgs":["--network=host"],"features":{"ghcr.io/devcontainers/features/docker-in-docker:2":{"moby":false}}}`}},
 	}}}
 	f.EnableGit(t)
 
@@ -115,6 +121,9 @@ func TestCreateWorkspaceThroughTheServer(t *testing.T) {
 	}
 	srv.Provisioner.Cloner.BaseURL = f.URL
 	srv.Provisioner.Config = []byte(hostNetConfig)
+	// The runArgs the test needs (above) is host access: approved, as the
+	// operator would, before anything runs (design §6).
+	approveHostNetwork(t, srv.DB.DB, 101, 102, 103, 104, 105)
 	srv.Provisioner.RemoteEnv = map[string]string{"DRYDOCK_GITHUB_HOST": strings.TrimPrefix(f.URL, "http://")}
 	noLogin(t, srv.DB.DB, cfg.ClaudeVolume)
 	ctx, cancel := context.WithCancel(context.Background())
@@ -133,7 +142,7 @@ func TestCreateWorkspaceThroughTheServer(t *testing.T) {
 	for {
 		var repos struct{ Repos []struct{ ID int64 } }
 		c.get("/api/repos", &repos)
-		if len(repos.Repos) == 5 {
+		if len(repos.Repos) == 6 {
 			break
 		}
 		if time.Now().After(deadline) {
@@ -153,7 +162,7 @@ func TestCreateWorkspaceThroughTheServer(t *testing.T) {
 	}
 
 	ids := map[string]string{}
-	for _, repo := range []string{"101", "102", "103", "104", "105"} {
+	for _, repo := range []string{"101", "102", "103", "104", "105", "106"} {
 		status, body := c.post("/api/workspaces", `{"repository_id":`+repo+`}`)
 		var created struct{ ID string }
 		if status != 202 || json.Unmarshal([]byte(body), &created) != nil || created.ID == "" {
@@ -168,7 +177,58 @@ func TestCreateWorkspaceThroughTheServer(t *testing.T) {
 		ContainerID *string `json:"container_id"`
 		Steps       map[string]struct{ Status, Detail string }
 		Supervisor  *struct{ State, Reason string }
+		Approval    *struct {
+			Hash  string
+			Added []struct{ Field, Source string }
+		}
 	}
+
+	// docker-in-docker waits, stopped, for the operator: its request names
+	// the Feature's privileged — the approved runArgs is a different subset
+	// once privileged joins it, so that is asked again too — and nothing was
+	// built. Approved, it runs privileged.
+	deadline = time.Now().Add(5 * time.Minute)
+	var dind view
+	for dind.Approval == nil {
+		if time.Now().After(deadline) {
+			t.Fatalf("docker-in-docker never asked for an approval: %+v", dind)
+		}
+		time.Sleep(time.Second)
+		dind = view{}
+		c.get("/api/workspaces/"+ids["106"], &dind)
+		if dind.State == "running" || dind.State == "failed" {
+			t.Fatalf("docker-in-docker ran without an approval: %s (%s)", dind.State, deref(dind.StateDetail))
+		}
+	}
+	var added []string
+	for _, a := range dind.Approval.Added {
+		added = append(added, a.Field+"/"+a.Source)
+	}
+	if dind.State != "stopped" || strings.Join(added, " ") != "privileged/feature_or_image runArgs/repository" ||
+		dind.Steps["resolve_config"].Status != "needs_approval" || dind.Steps["up"].Status != "" {
+		t.Errorf("docker-in-docker's request: %s %v %+v", dind.State, added, dind.Steps)
+	}
+	if got := docker(t, "ps", "-aq", "--filter", "label="+p+".workspace="+ids["106"]); got != "" {
+		t.Errorf("a container exists before the approval: %q", got)
+	}
+	if status, body := c.post("/api/workspaces/"+ids["106"]+"/config-approval", `{"hash":"`+dind.Approval.Hash+`"}`); status != 202 {
+		t.Fatalf("approve docker-in-docker: %d %s", status, body)
+	}
+	t.Cleanup(func() {
+		// Its Feature's named volume, which no delete takes: after the
+		// container, so it is free.
+		out, _ := exec.Command("docker", "ps", "-aq", "--filter", "label="+p+".workspace="+ids["106"]).Output()
+		for _, cid := range strings.Fields(string(out)) {
+			vols, _ := exec.Command("docker", "inspect", "-f", `{{range .Mounts}}{{if eq .Type "volume"}}{{.Name}} {{end}}{{end}}`, cid).Output()
+			exec.Command("docker", "rm", "-f", cid).Run()
+			for _, v := range strings.Fields(string(vols)) {
+				if strings.HasPrefix(v, "dind-var-lib-docker-") {
+					exec.Command("docker", "volume", "rm", "-f", v).Run()
+				}
+			}
+		}
+	})
+
 	views := map[string]view{}
 	deadline = time.Now().Add(15 * time.Minute)
 	for len(views) < len(ids) {
@@ -210,8 +270,12 @@ func TestCreateWorkspaceThroughTheServer(t *testing.T) {
 	if d := views["102"].Steps["resolve_config"].Detail; !strings.Contains(d, "minimal configuration") {
 		t.Errorf("the plain repository's resolve_config says %q", d)
 	}
-	if d := views["101"].Steps["resolve_config"].Detail; d != "" {
+	if d := views["101"].Steps["resolve_config"].Detail; !strings.Contains(d, "host access the operator approved for this repository: runArgs.") {
 		t.Errorf("the configured repository's resolve_config says %q", d)
+	}
+	cid := docker(t, "ps", "-q", "--no-trunc", "--filter", "label="+p+".workspace="+ids["106"])
+	if got := docker(t, "inspect", "-f", "{{.HostConfig.Privileged}}", cid); got != "true" {
+		t.Errorf("the approved docker-in-docker container: privileged=%s", got)
 	}
 
 	// Usable: devcontainer exec into each, as the remote user, in the clone.

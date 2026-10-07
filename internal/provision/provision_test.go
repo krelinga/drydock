@@ -121,7 +121,7 @@ func newFakeCLI(t *testing.T, origin string) *fakeCLI {
 		dir: t.TempDir(),
 		// The recording's folder was rewritten to /srv/drydock/ws/FIXTURE/repo;
 		// the real CLI names the folder it was given ($3), so the fake does.
-		readConfig: "sed \"s#/srv/drydock/ws/FIXTURE/repo#$3#g\" <<'EOF'\n" + fixture(t, "read-configuration-ok.json") + "\nEOF\n",
+		readConfig: "sed \"s#/srv/drydock/ws/FIXTURE/repo#$3#g\" <<'EOF'\n" + fixture(t, "read-configuration-merged-ok.json") + "\nEOF\n",
 		up:         "cat <<'EOF'\n" + fixture(t, "up-ok.json") + "\nEOF\necho 'a log line' >&2\n",
 		// The probe answers; git prints the origin the clone left.
 		exec: `case " $* " in
@@ -413,7 +413,7 @@ func deref(s *string) string {
 // config — read-configuration, up, and exec — is given it.
 func TestRepositoryWithoutAConfigGetsTheMinimalOne(t *testing.T) {
 	e := newEnv(t)
-	e.cli.readConfig = "cat <<'EOF'\n" + fixture(t, "read-configuration-override.json") + "\nEOF\n"
+	e.cli.readConfig = "cat <<'EOF'\n" + fixture(t, "read-configuration-merged-override.json") + "\nEOF\n"
 	e.cli.exec = strings.ReplaceAll(e.cli.exec, "/krelinga/alpha.git", "/krelinga/plain.git")
 	e.cli.exec = strings.ReplaceAll(e.cli.exec, "/workspaces/repo", "/workspaces/plain2")
 	e.wire(t)
@@ -558,6 +558,21 @@ func TestEachRealStepNamesItsFailure(t *testing.T) {
 			}},
 		{name: "resolve_config garbage", repo: alpha, step: workspace.StepResolveConfig, detail: "could not read devcontainer's answer",
 			break_: func(e *env) { e.cli.readConfig = "echo 'not json'" }},
+		// A configuration file outside the clone is not read at all: its
+		// paths would not resolve where they appear to (§6).
+		{name: "resolve_config config outside the clone", repo: alpha, step: workspace.StepResolveConfig,
+			detail: "is a symbolic link or not inside the clone",
+			break_: func(e *env) {
+				e.cli.readConfig = "sed \"s#/srv/drydock/ws/FIXTURE/repo/.devcontainer/devcontainer.json#/etc/hostname#g\" <<'EOF'\n" + fixtureBytes("read-configuration-merged-ok.json") + "\nEOF\n"
+			}},
+		{name: "resolve_config read without the merged configuration", repo: alpha, step: workspace.StepResolveConfig,
+			detail: "could not check what the dev container configuration asks of the host",
+			break_: func(e *env) {
+				e.cli.readConfig = "sed \"s#/srv/drydock/ws/FIXTURE/repo#$3#g\" <<'EOF'\n" + fixtureBytes("read-configuration-ok.json") + "\nEOF\n"
+			}},
+		{name: "resolve_config container not stopped", repo: alpha, step: workspace.StepResolveConfig,
+			detail: "could not stop the workspace's container before reading its configuration",
+			break_: func(e *env) { os.WriteFile(filepath.Join(e.cli.dir, "docker-fail-ps"), nil, 0o600) }},
 		{name: "broker_socket", repo: alpha, step: workspace.StepBrokerSocket, detail: "GitHub access socket",
 			break_: func(e *env) { e.broker.err = errors.New("listen: address in use") }},
 		{name: "up failed", repo: alpha, step: workspace.StepUp, detail: "did not bring the container up",

@@ -4,6 +4,9 @@ CREATE INDEX auth_attempt_at    ON auth_attempt (at);
 -- index auth_attempt_ip_at
 CREATE INDEX auth_attempt_ip_at ON auth_attempt (source_ip, at);
 
+-- index config_approval_repository
+CREATE INDEX config_approval_repository ON config_approval (repository_id, superseded_at);
+
 -- index event_workspace
 CREATE INDEX event_workspace ON event (workspace_id, id);
 
@@ -37,6 +40,18 @@ CREATE TABLE claude_identity (
   state           TEXT NOT NULL CHECK (state IN ('ok','expiring','expired','blanked','absent')),
   expires_at      TEXT,
   last_checked_at TEXT
+);
+
+-- table config_approval
+CREATE TABLE config_approval (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  repository_id INTEGER NOT NULL,
+  hash          TEXT NOT NULL,
+  settings      TEXT NOT NULL,  -- the approved subset, canonical JSON
+  workspace_id  TEXT,           -- the workspace it was approved from
+  approved_by   TEXT NOT NULL,  -- auth_session.id: a SHA-256, never the cookie
+  approved_at   TEXT NOT NULL,
+  superseded_at TEXT
 );
 
 -- table event
@@ -164,5 +179,5 @@ CREATE TABLE workspace (
   environment_id TEXT,
   created_at     TEXT,
   last_active_at TEXT
-);
+, pending_approval TEXT);
 

@@ -13,7 +13,8 @@ const released = `SELECT id FROM repository WHERE removed_at IS NOT NULL
 // DropReleasedRepositories deletes, in the caller's transaction, every
 // repository row the installation dropped that no workspace holds any more,
 // and the secret grants on each (§4: "a repository the catalog drops takes
-// its grants with it; one that comes back is granted nothing").
+// its grants with it; one that comes back is granted nothing"). Its current
+// host-access approval is superseded for the same reason.
 //
 // A dropped repository's row — and its grants — are kept only while a
 // workspace holds it, because §12 keeps that workspace working on what it
@@ -35,6 +36,13 @@ func DropReleasedRepositories(ctx context.Context, tx *sql.Tx) (grants int64, er
 	}
 	grants, err = res.RowsAffected()
 	if err != nil {
+		return 0, err
+	}
+	// An approval of host access goes the way of a grant: a repository that
+	// comes back has to be approved again. Superseded, not deleted, because
+	// the approvals are history.
+	if _, err := tx.ExecContext(ctx, `UPDATE config_approval SET superseded_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+		WHERE superseded_at IS NULL AND repository_id IN (`+released+`)`); err != nil {
 		return 0, err
 	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM repository WHERE id IN (`+released+`)`); err != nil {

@@ -29,10 +29,17 @@
 // Event data shapes, from the Emit calls that write them:
 //
 //   workspace.state    {state, from, detail?}                  workspace.Move
+//                      {state: stopped, from: building, detail, approval}
+//                                           a run stopped for a host-access
+//                                           approval (design §6); every other
+//                                           workspace.state carries none, which
+//                                           is what takes the request away
+//   config.approved    {repository_id, hash}  the approval recorded; settles
+//                                           the approve button, changes nothing
 //                      {state: running, from, container_id}    Move to running
 //                      {state, repository_id, branch}          workspace.Create
 //                      {state, adopted, repository_id, branch, detail?}  Adopt
-//   workspace.step     {step, status: started|done|failed, detail?}
+//   workspace.step     {step, status: started|done|failed|needs_approval, detail?}
 //   workspace.action   {action: stop|delete, step, status: started|done|failed, detail?}
 //                                           internal/provision subSteps (Phase 6)
 //                      {state: deleting, from: deleting, detail}  Annotate: a stuck
@@ -100,7 +107,7 @@
 import {
   IDENTITY_STATES, LOGIN_PHASES, WORKSPACE_STATES, WORKSPACE_STEPS, type CatalogView, type ClaudeIdentityBody,
   type IdentityCheckError, type IdentityState, type InstallationView, type LoginPhase, type RepoView, type SecretList,
-  type SecretMeta, type StepStatus, type StreamEvent, type WorkspaceDetail, type WorkspaceList, type WorkspaceState,
+  type SecretMeta, type StepStatus, type StreamEvent, type ApprovalView, type WorkspaceDetail, type WorkspaceList, type WorkspaceState,
   type WorkspaceView, SUPERVISOR_STATES, type SupervisorState,
 } from '../api/types'
 
@@ -245,6 +252,12 @@ export interface Workspace {
   session: SessionStatus | null
   /** The id of the event (or snapshot position) that last wrote `session`. */
   sessionAt: number
+  /**
+   * The host-access request a stopped workspace waits on (design §6), or
+   * null. Written with `state` and versioned with it: the workspace.state
+   * event that stopped the run carries it, every other one carries none.
+   */
+  approval: ApprovalView | null
 }
 
 /** The latest action sub-step, versioned like any field. */
@@ -552,7 +565,20 @@ function isState(v: unknown): v is WorkspaceState {
 }
 
 function isStepStatus(v: unknown): v is StepStatus {
-  return v === 'started' || v === 'done' || v === 'failed'
+  return v === 'started' || v === 'done' || v === 'failed' || v === 'needs_approval'
+}
+
+/**
+ * A request as the server sent it, or null for anything that is not one: a
+ * hash and three lists. The settings' values are kept as they came, to be
+ * shown as JSON and never interpreted.
+ */
+function toApproval(v: unknown): ApprovalView | null {
+  if (v === null || typeof v !== 'object') return null
+  const a = v as Record<string, unknown>
+  if (typeof a.hash !== 'string' || a.hash === '') return null
+  const list = <T,>(x: unknown): T[] => (Array.isArray(x) ? x.filter((e) => e !== null && typeof e === 'object' && typeof (e as { field?: unknown }).field === 'string') as T[] : [])
+  return { hash: a.hash, added: list(a.added), changed: list(a.changed), removed: list(a.removed) }
 }
 
 function str(v: unknown): string | null {
@@ -568,7 +594,7 @@ function stub(id: string): Workspace {
     id, repositoryId: null, fullName: null, branch: null, state: null, detail: null, step: null,
     steps: {}, containerId: null, createdAt: null, adopted: false, stateAt: 0, stepAt: 0, containerAt: 0,
     action: null, lastAction: null, stateEventId: 0,
-    supervisor: null, supervisorAt: 0, supervisorKnown: false, session: null, sessionAt: 0,
+    supervisor: null, supervisorAt: 0, supervisorKnown: false, session: null, sessionAt: 0, approval: null,
   }
 }
 
@@ -683,6 +709,7 @@ function applyEvent(prev: Entities, ev: StreamEvent): Entities {
         repositoryId: num(data.repository_id) ?? cur.repositoryId,
         branch: str(data.branch) ?? cur.branch,
         adopted: data.adopted === true ? true : cur.adopted,
+        approval: toApproval(data.approval),
       }
       // A new run through the steps begins at pending (a create); nothing
       // written before it belongs to this workspace's timeline. Start moves
@@ -969,6 +996,8 @@ function mergeView(cur: Workspace | undefined, at: number, v: WorkspaceView): Wo
     branch: v.branch,
     state: eventsWin ? base.state : v.state,
     detail: eventsWin ? base.detail : v.state_detail,
+    // A body without the field (an older server) has no requests to show.
+    approval: eventsWin ? base.approval : toApproval(v.approval ?? null),
     stateAt: eventsWin ? base.stateAt : at,
     containerId: containerWins ? base.containerId : v.container_id,
     containerAt: containerWins ? base.containerAt : at,

@@ -35,7 +35,7 @@ func fakeDevcontainer(t *testing.T, origin string) subproc.Runner {
 	script := "#!/bin/sh\ncase \"$1\" in\n" +
 		// The recording's folder was rewritten to /srv/drydock/ws/FIXTURE/repo;
 		// the real CLI names the folder it was given ($3), so the fake does.
-		"read-configuration) sed \"s#/srv/drydock/ws/FIXTURE/repo#$3#g\" <<'EOF'\n" + read("read-configuration-ok.json") + "\nEOF\n;;\n" +
+		"read-configuration) sed \"s#/srv/drydock/ws/FIXTURE/repo#$3#g\" <<'EOF'\n" + read("read-configuration-merged-ok.json") + "\nEOF\n;;\n" +
 		"up) cat <<'EOF'\n" + read("up-ok.json") + "\nEOF\n;;\n" +
 		"exec) case \" $* \" in *\" remote -v \"*) printf 'origin\\t%s (fetch)\\n' '" + origin + "' ;;\n" +
 		"  *\" claude --version \"*) echo '" + classify.ClaudeCodeVersion + " (Claude Code)' ;; esac ;;\n" +

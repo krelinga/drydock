@@ -67,8 +67,8 @@ const timeline = computed(() => WORKSPACE_STEPS.map((step) => {
   return { step, title: stepTitle(step), rec, isFailed: failed.value === step }
 }))
 
-const GLYPH: Record<string, string> = { done: '✓', started: '…', failed: '×' }
-const WORD: Record<string, string> = { done: 'done', started: 'running', failed: 'failed' }
+const GLYPH: Record<string, string> = { done: '✓', started: '…', failed: '×', needs_approval: '!' }
+const WORD: Record<string, string> = { done: 'done', started: 'running', failed: 'failed', needs_approval: 'needs approval' }
 
 // §7: newest at the bottom, scrolling inside its own box, and never moved
 // under a reader — the box follows new events only while already at the end.
@@ -118,7 +118,8 @@ const RUN_TITLE: Record<string, string> = { stop: 'Stop', delete: 'Delete' }
 // from running or stopped, with no stop in progress (design §5).
 const canRebuild = computed(() => {
   const w = ws.value
-  if (w === null || status.value === null || status.value.action === 'rebuild') return false
+  // Not while a host-access request waits: a rebuild would only ask again.
+  if (w === null || status.value === null || status.value.action === 'rebuild' || w.approval !== null) return false
   return (w.state === 'running' || w.state === 'stopped') && liveAction(w) === null
 })
 
@@ -361,6 +362,7 @@ watch(id, () => {
 .step.done .glyph { color: var(--ok); }
 .step.started .glyph { color: var(--warn); }
 .step.failed .glyph, .step.failed .step-status { color: var(--bad); }
+.step.needs_approval .glyph, .step.needs_approval .step-status { color: var(--warn); }
 .step.failed { background: var(--bad-bg); }
 .step.none .step-name { color: var(--ink-3); }
 .step-status { font-size: 12px; color: var(--ink-2); text-align: right; }

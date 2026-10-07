@@ -55,6 +55,8 @@ export type ErrorCode =
   | 'in_progress'
   | 'at_capacity'
   | 'confirm_mismatch'
+  | 'approval_not_pending'
+  | 'approval_stale'
   | 'bad_request'
   | 'bad_password'
   | 'locked_out'
@@ -96,7 +98,43 @@ export const WORKSPACE_STEPS = [
   'allocate', 'clone', 'resolve_config', 'credential_volume', 'broker_socket', 'up', 'verify', 'session_server',
 ] as const
 
-export type StepStatus = 'started' | 'done' | 'failed'
+/**
+ * `needs_approval` is resolve_config's stop for a host-access request
+ * (design §6): not a failure, and the run's last step.
+ */
+export type StepStatus = 'started' | 'done' | 'failed' | 'needs_approval'
+
+/**
+ * One entry of a configuration's host-access subset (internal/container
+ * HostSetting): a field, whether the repository's configuration or a
+ * Feature's or the image's metadata set it, and the host-affecting part of
+ * its value — JSON, shown as JSON, never interpreted.
+ */
+export interface HostSettingView {
+  field: string
+  source: 'repository' | 'feature_or_image' | string
+  value: unknown
+}
+
+/** A setting in both the approved subset and the current one, with another value. */
+export interface HostSettingChange {
+  field: string
+  source: 'repository' | 'feature_or_image' | string
+  from: unknown
+  to: unknown
+}
+
+/**
+ * The host-access request a stopped workspace waits on (internal/workspace
+ * ApprovalView): the hash to approve, and how the subset differs from what
+ * was last approved for the repository. Never the whole configuration.
+ */
+export interface ApprovalView {
+  hash: string
+  added: HostSettingView[]
+  changed: HostSettingChange[]
+  removed: HostSettingView[]
+}
 
 /** A step's latest status, as `GET /api/workspaces` reports it. */
 export interface StepView {
@@ -130,6 +168,8 @@ export interface WorkspaceView {
   supervisor?: SupervisorView | null
   /** The latest `session.status` event, or null before one. */
   session?: SessionView | null
+  /** The host-access request a stopped workspace waits on, or null (design §6). */
+  approval?: ApprovalView | null
 }
 
 /** `internal/supervisor` State; the database's CHECK constraint holds the same set. */

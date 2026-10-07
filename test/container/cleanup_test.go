@@ -91,6 +91,9 @@ func TestDeleteRemovesRootOwnedFiles(t *testing.T) {
 	}
 	srv.Provisioner.Cloner.BaseURL = f.URL
 	srv.Provisioner.Config = []byte(hostNetConfig)
+	// The runArgs the test needs (above) is host access: approved, as the
+	// operator would, before anything runs (design §6).
+	approveHostNetwork(t, srv.DB.DB, 101)
 	srv.Provisioner.RemoteEnv = map[string]string{"DRYDOCK_GITHUB_HOST": strings.TrimPrefix(f.URL, "http://")}
 	sctx, cancel := context.WithCancel(ctx)
 	done := make(chan error, 1)
