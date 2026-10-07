@@ -106,7 +106,7 @@ export interface MockBackend {
    * The raw body of every write to /api/secrets, for the one spec that must
    * prove a value *was* sent before proving it is nowhere afterwards.
    */
-  secretBodies: Array<{ method: string; url: string; body: string }>
+  secretBodies: Array<{ method: string; url: string; body: string; ifNoneMatch: string | null }>
   /**
    * The next secret write is refused with this envelope, once, whatever it
    * sent — how a spec (or dev:mock's `refuseSecret`) reaches a server-side
@@ -1056,7 +1056,7 @@ export function handlersFor(b: MockBackend): HttpHandler[] {
   const secretWrite = async (request: Request): Promise<string> => {
     record(request)
     const body = await request.text()
-    b.secretBodies.push({ method: request.method, url: request.url, body })
+    b.secretBodies.push({ method: request.method, url: request.url, body, ifNoneMatch: request.headers.get('If-None-Match') })
     return body
   }
   const takeRefusal = () => {
@@ -1405,6 +1405,13 @@ export function handlersFor(b: MockBackend): HttpHandler[] {
       if (!b.secretsKey) return secretsNotConfigured()
       const forced = takeRefusal()
       if (forced) return forced
+      // If-None-Match: * makes the PUT a create, which never replaces
+      // (internal/api secret_routes.go put): any other value is a bad request.
+      const inm = request.headers.get('If-None-Match')
+      if (inm !== null && inm.trim() !== '*') {
+        return envelope(400, 'bad_request', 'If-None-Match is only understood as *: create, never replace.')
+      }
+      const createOnly = inm !== null
       const parsed = strictBody(body, { value: 'string', reach: 'string', description: 'string' })
       if (parsed === null) return envelope(400, 'bad_request', 'Send a JSON object with the documented fields.')
       const name = String(params.name)
@@ -1412,6 +1419,9 @@ export function handlersFor(b: MockBackend): HttpHandler[] {
       // (internal/api optionalValue). A null fails strictBody's type check
       // above, as the server's decoder refuses it.
       const kept = !('value' in parsed)
+      if (createOnly && kept) {
+        return envelope(400, 'secret_value_required', 'A new secret needs a value.', {}, 'A create has no stored value to keep.')
+      }
       const reach = String(parsed.reach ?? '')
       const description = String(parsed.description ?? '')
       // internal/secrets Put's order: name, value, reach, description.
@@ -1420,6 +1430,10 @@ export function handlersFor(b: MockBackend): HttpHandler[] {
       }
       const now = new Date().toISOString()
       const cur = b.secrets[name]
+      if (createOnly && cur !== undefined) {
+        return envelope(412, 'secret_exists', 'A secret by that name already exists.', {},
+          'Nothing was changed. Edit that secret to replace its value.')
+      }
       if (kept && cur === undefined) {
         return envelope(400, 'secret_value_required', 'A new secret needs a value.', {},
           'There is no secret by this name, so there is no stored value to keep.')

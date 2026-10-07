@@ -254,6 +254,47 @@ describe('the create form', () => {
     expect(puts(b).map((p) => new URL(p.url).pathname)).toEqual(['/api/secrets/DO_TRACK_THIS'])
   })
 
+  it('refuses a name that is already stored as it is typed, sends nothing, and offers that secret instead (#29)', async () => {
+    const { wrapper, b, router } = await open('/secrets/new')
+    const before = { ...b.secrets.STRIPE_TEST_KEY! }
+    await fillCreate(wrapper, 'STRIPE_TEST_KEY', 'sk_test_replacement', 'Something else entirely.')
+    expect(said(wrapper.find('[data-test="name-error"]'))).toBe(sentenceFor('secret_exists', ''))
+    const link = wrapper.find('[data-test="edit-existing"] a')
+    expect(link.attributes('href')).toBe('/secrets/STRIPE_TEST_KEY')
+    await wrapper.find('[data-test="save"]').trigger('click')
+    await settle()
+    expect(puts(b)).toEqual([])
+    expect(b.secrets.STRIPE_TEST_KEY).toEqual(before)
+    // The offer leads to the secret's own page, where replacing is the labelled act.
+    await link.trigger('click')
+    await settle()
+    expect(router.currentRoute.value.fullPath).toBe('/secrets/STRIPE_TEST_KEY')
+
+    // Control: a new name is sent — once, as a create that cannot replace.
+    const again = await open('/secrets/new')
+    await fillCreate(again.wrapper, 'BRAND_NEW_KEY', 'fresh value')
+    expect(again.wrapper.find('[data-test="name-error"]').exists()).toBe(false)
+    expect(again.wrapper.find('[data-test="edit-existing"]').exists()).toBe(false)
+    await again.wrapper.find('[data-test="save"]').trigger('click')
+    await settle()
+    expect(puts(again.b).map((p) => [new URL(p.url).pathname, p.ifNoneMatch])).toEqual([['/api/secrets/BRAND_NEW_KEY', '*']])
+    expect(again.b.secrets.BRAND_NEW_KEY?.value).toBe('fresh value')
+  })
+
+  it('a name another device stored after the list loaded is refused by the server, and nothing is replaced', async () => {
+    const { wrapper, b } = await open('/secrets/new')
+    await fillCreate(wrapper, 'RACED_KEY', 'mine')
+    // Stored elsewhere a moment ago; this page's list has not heard yet.
+    b.secrets.RACED_KEY = { ...b.secrets.STAGING_DB_URL!, name: 'RACED_KEY', value: 'theirs' }
+    expect(wrapper.find('[data-test="name-error"]').exists()).toBe(false)
+    await wrapper.find('[data-test="save"]').trigger('click')
+    await settle()
+    expect(puts(b).length).toBe(1)
+    expect(said(wrapper.find('[data-test="name-error"]'))).toBe(sentenceFor('secret_exists', ''))
+    expect(wrapper.find('[data-test="edit-existing"] a').attributes('href')).toBe('/secrets/RACED_KEY')
+    expect(b.secrets.RACED_KEY.value).toBe('theirs')
+  })
+
   it('will not save without a reach', async () => {
     const { wrapper, b } = await open('/secrets/new')
     await fillCreate(wrapper, 'K', 'v', '   ')
@@ -282,6 +323,7 @@ describe('the create form', () => {
     ['secret_description_invalid', 400, 'description-error'],
     ['secrets_not_configured', 503, 'form-error'],
     ['bad_request', 400, 'form-error'],
+    ['secret_exists', 412, 'name-error'],
   ]
   for (const [code, status, field, detail] of refusals) {
     it(`shows the server's ${code} on its field`, async () => {
@@ -423,6 +465,9 @@ describe('replacing a value', () => {
     await wrapper.find('[data-test="save"]').trigger('click')
     await settle()
     expect(JSON.parse(puts(b)[1]!.body)).toMatchObject({ value: 'sk_test_rotated' })
+    // An edit is the replace: it is not sent as a create (#29), and it replaces.
+    expect(puts(b).map((p) => p.ifNoneMatch)).toEqual([null, null])
+    expect(b.secrets.STRIPE_TEST_KEY!.value).toBe('sk_test_rotated')
     expect(b.events.at(-1)?.kind).toBe('secret.rotated')
     expect(wrapper.find('[data-test="stale-new-commands"]').exists()).toBe(true)
   })

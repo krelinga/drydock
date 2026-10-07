@@ -19,7 +19,21 @@
 //
 // Every `open` after the first runs the registered refetchers (the current
 // route's backstop), and so does a `resync` frame and an event naming a
-// workspace the entities cannot place.
+// workspace the entities cannot place. The first `open` runs them too when a
+// snapshot was requested before it: the server subscribes a stream before it
+// answers, so `open` is the moment from which nothing is missed, and a body
+// read before then may predate an event the new stream will never carry
+// (frontend §4.3).
+//
+// In-flight marks (§4.2) end on their settling event, and also on a snapshot
+// that shows the action over. A `resync` means the settling event may be in
+// a gap no replay can reach; without the second path the mark — and its
+// button — would spin until a reload. A snapshot resolves a mark only if it
+// was requested after the mark's request was accepted (its 2xx arrived): the
+// server commits an action's receipt before answering, so only such a body
+// can tell "not begun" from "over". Each action's "over" is one predicate
+// over an Outcome, shared by both paths (stores/workspaces.ts), so the event
+// path and the snapshot path cannot disagree.
 //
 // The EventSource, the timers and the refetchers are not state — they are not
 // rendered and must not be reset by `$reset` (which would orphan an open
@@ -30,7 +44,7 @@ import { defineStore } from 'pinia'
 import { toRaw } from 'vue'
 import * as api from '../api/client'
 import type { StreamEvent } from '../api/types'
-import { emptyEntities, hasStubs, reduce, type Action } from './reducer'
+import { emptyEntities, hasStubs, reduce, type Action, type Entities } from './reducer'
 
 export type Phase =
   /** No stream: signed out, or not started. */
@@ -77,6 +91,14 @@ interface Runtime {
   retryTimer: ReturnType<typeof setTimeout> | null
   slowTimers: Map<string, ReturnType<typeof setTimeout>>
   settlers: Map<string, (ev: StreamEvent) => boolean>
+  /** Per key: whether the entities show the action over. Asked after a snapshot only. */
+  resolvers: Map<string, (e: Entities) => boolean>
+  /** Per key: the tick at which its request was accepted. Absent until it is. */
+  accepted: Map<string, number>
+  /** Orders acceptances against snapshot requests; never reset, only compared. */
+  tick: number
+  /** A snapshot was requested before the current stream first opened. */
+  snapshotBeforeOpen: boolean
   refetchers: Set<Refetcher>
   /** Bumped by disconnect, so a probe that answers late cannot revive a closed stream. */
   generation: number
@@ -96,6 +118,7 @@ function rt(proxy: object): Runtime {
     r = {
       es: null, opens: 0, backoff: 0, markerTimer: null, retryTimer: null,
       slowTimers: new Map(), settlers: new Map(), refetchers: new Set(), generation: 0,
+      resolvers: new Map(), accepted: new Map(), tick: 0, snapshotBeforeOpen: false,
     }
     runtimes.set(store, r)
   }
@@ -148,6 +171,9 @@ export const useStreamStore = defineStore('stream', {
       for (const t of r.slowTimers.values()) clearTimeout(t)
       r.slowTimers.clear()
       r.settlers.clear()
+      r.resolvers.clear()
+      r.accepted.clear()
+      r.snapshotBeforeOpen = false
       this.phase = 'idle'
       this.reconnecting = false
     },
@@ -169,8 +195,14 @@ export const useStreamStore = defineStore('stream', {
         this.clearMarker(r)
         // Replay closed the gap through the reducer already — the browser's
         // Last-Event-ID, or the query on a hard retry. Refetch anyway: replay
-        // is bounded, and a resync is not always noticed in time.
-        if (r.opens > 1) this.runRefetchers()
+        // is bounded, and a resync is not always noticed in time. On the
+        // first open there is nothing to replay from, so a snapshot asked
+        // for before it is asked for again: the server subscribed this stream
+        // before answering, so from here nothing is missed, and a body read
+        // before then can predate an event the stream will never carry.
+        const pre = r.snapshotBeforeOpen
+        r.snapshotBeforeOpen = false
+        if (r.opens > 1 || pre) this.runRefetchers()
       })
       es.addEventListener('message', (m) => {
         if (r.es !== es) return
@@ -252,6 +284,44 @@ export const useStreamStore = defineStore('stream', {
       this.entities = reduce(this.entities, action)
     },
 
+    /**
+     * Tags a snapshot request as it is made: the stream position its body
+     * will be applied at, and the tick that says which accepted requests it
+     * postdates. Call it immediately before the GET.
+     */
+    snapshotTag(): { at: number; tick: number } {
+      const r = rt(this)
+      if (r.opens === 0) r.snapshotBeforeOpen = true
+      return { at: this.entities.lastEventId, tick: r.tick }
+    },
+
+    /**
+     * Applies a snapshot through the reducer, then resolves the in-flight
+     * marks it can speak for: each whose request was accepted before this
+     * one was made, and whose resolver finds the action over in the
+     * entities. A mark it cannot speak for, or whose action is not over, is
+     * kept — "no response yet" never turns into anything else here.
+     */
+    snapshot(action: Action, tick: number): void {
+      this.dispatch(action)
+      const r = rt(this)
+      for (const [key, over] of r.resolvers) {
+        const at = r.accepted.get(key)
+        if (at !== undefined && at <= tick && over(this.entities)) this.end(key)
+      }
+    },
+
+    /**
+     * The mark's request was accepted (a 2xx). From now on a snapshot
+     * requested later reflects at least the server's receipt of it, so it
+     * may resolve the mark. The response body is not read.
+     */
+    accepted(key: string): void {
+      const r = rt(this)
+      if (!(key in this.inFlight)) return
+      r.accepted.set(key, ++r.tick)
+    },
+
     /** @internal */
     runRefetchers(): void {
       for (const f of rt(this).refetchers) void f.refetch()
@@ -267,12 +337,17 @@ export const useStreamStore = defineStore('stream', {
     /**
      * §4.2 step 1: mark `key` in flight until an event that `settledBy`
      * accepts arrives. Not until the response lands — the 202 means only that
-     * the server accepted it.
+     * the server accepted it. `overIn`, when given, is the same "is it over?"
+     * asked of the entities after a snapshot (see `snapshot`): the path that
+     * ends a mark whose settling event fell in a resync's gap.
      */
-    begin(key: string, settledBy: (ev: StreamEvent) => boolean): void {
+    begin(key: string, settledBy: (ev: StreamEvent) => boolean, overIn?: (e: Entities) => boolean): void {
       const r = rt(this)
       this.inFlight = { ...this.inFlight, [key]: { since: Date.now(), slow: false } }
       r.settlers.set(key, settledBy)
+      r.accepted.delete(key)
+      if (overIn !== undefined) r.resolvers.set(key, overIn)
+      else r.resolvers.delete(key)
       const old = r.slowTimers.get(key)
       if (old !== undefined) clearTimeout(old)
       r.slowTimers.set(key, setTimeout(() => {
@@ -282,10 +357,12 @@ export const useStreamStore = defineStore('stream', {
       }, SLOW_AFTER_MS))
     },
 
-    /** Clears `key`: its settling event arrived, or the request itself was refused. */
+    /** Clears `key`: its settling event arrived, a snapshot showed it over, or the request itself was refused. */
     end(key: string): void {
       const r = rt(this)
       r.settlers.delete(key)
+      r.resolvers.delete(key)
+      r.accepted.delete(key)
       const t = r.slowTimers.get(key)
       if (t !== undefined) clearTimeout(t)
       r.slowTimers.delete(key)

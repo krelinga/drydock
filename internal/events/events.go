@@ -90,41 +90,120 @@ func (l *Log) window() int {
 // subscriber. A nil or empty Data is stored as NULL; anything else must be a
 // JSON object, so the reducer never has to handle a bare string or array.
 func (l *Log) Append(ctx context.Context, e Event) (Event, error) {
+	p, err := prepare(e)
+	if err != nil {
+		return Event{}, err
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if p, err = l.insert(ctx, l.DB, p); err != nil {
+		return Event{}, err
+	}
+	l.publish(p.Event)
+	return p.Event, nil
+}
+
+// Commit runs fn in one transaction, appends the events fn returns in that
+// same transaction, commits, and only then publishes them — all under the
+// log's lock, the one Append takes.
+//
+// It is for a change whose event must not be told apart from the change
+// itself: a workspace's state and its workspace.state event. Committing the
+// row and then appending the event as two steps let two movers interleave —
+// A commits, B reads A's state, commits and appends, then A appends — so the
+// stream ended on A's state while the row held B's. Under Commit the order
+// of commits is the order of ids is the order of publication, for every
+// writer, because every writer of the event table holds the same lock while
+// it commits. It also closes the crash window between the two: the row and
+// its event are written together or not at all.
+//
+// fn returning an error rolls everything back; returning no events commits
+// and publishes nothing. fn must not call Append, Emit or Commit (the lock is
+// held), and should be short: every other event waits on it.
+func (l *Log) Commit(ctx context.Context, fn func(tx *sql.Tx) ([]Event, error)) ([]Event, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	tx, err := l.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+	es, err := fn(tx)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]Event, 0, len(es))
+	for _, e := range es {
+		p, err := prepare(e)
+		if err != nil {
+			return nil, err
+		}
+		if p, err = l.insert(ctx, tx, p); err != nil {
+			return nil, err
+		}
+		out = append(out, p.Event)
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	for _, e := range out {
+		l.publish(e)
+	}
+	return out, nil
+}
+
+// prepared is an event checked for its kind, level and data, with the data
+// and workspace as they are stored.
+type prepared struct {
+	Event
+	data any // NULL unless there is an object to store
+	ws   any
+}
+
+func prepare(e Event) (prepared, error) {
 	if e.Kind == "" {
-		return Event{}, errors.New("events: an event needs a kind")
+		return prepared{}, errors.New("events: an event needs a kind")
 	}
 	switch e.Level {
 	case Info, Warn, Error:
 	case "":
 		e.Level = Info
 	default:
-		return Event{}, fmt.Errorf("events: unknown level %q", e.Level)
+		return prepared{}, fmt.Errorf("events: unknown level %q", e.Level)
 	}
-	var data any // NULL unless there is an object to store
+	p := prepared{Event: e}
 	if len(e.Data) > 0 {
 		var obj map[string]json.RawMessage
 		if err := json.Unmarshal(e.Data, &obj); err != nil || obj == nil {
-			return Event{}, fmt.Errorf("events: %s data must be a JSON object", e.Kind)
+			return prepared{}, fmt.Errorf("events: %s data must be a JSON object", e.Kind)
 		}
-		data = string(e.Data)
+		p.data = string(e.Data)
 	}
-	var ws any
 	if e.WorkspaceID != "" {
-		ws = e.WorkspaceID
+		p.ws = e.WorkspaceID
 	}
+	return p, nil
+}
 
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	e.At = l.Clock.Now().UTC()
-	res, err := l.DB.ExecContext(ctx,
+type execer interface {
+	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+}
+
+func (l *Log) insert(ctx context.Context, db execer, p prepared) (prepared, error) { // l.mu held
+	p.At = l.Clock.Now().UTC()
+	res, err := db.ExecContext(ctx,
 		`INSERT INTO event (workspace_id, level, kind, message, data, at) VALUES (?, ?, ?, ?, ?, ?)`,
-		ws, string(e.Level), e.Kind, e.Message, data, e.At.Format(time.RFC3339Nano))
+		p.ws, string(p.Level), p.Kind, p.Message, p.data, p.At.Format(time.RFC3339Nano))
 	if err != nil {
-		return Event{}, fmt.Errorf("events: append %s: %w", e.Kind, err)
+		return p, fmt.Errorf("events: append %s: %w", p.Kind, err)
 	}
-	if e.ID, err = res.LastInsertId(); err != nil {
-		return Event{}, err
+	if p.ID, err = res.LastInsertId(); err != nil {
+		return p, err
 	}
+	return p, nil
+}
+
+func (l *Log) publish(e Event) { // l.mu held
 	for s := range l.subs {
 		select {
 		case s.ch <- e:
@@ -132,18 +211,27 @@ func (l *Log) Append(ctx context.Context, e Event) (Event, error) {
 			l.drop(s) // too far behind; it will reconnect and replay
 		}
 	}
+}
+
+// NewEvent builds an Event whose Data is v marshalled: Commit's callers use
+// it as Emit's do implicitly.
+func NewEvent(workspaceID string, level Level, kind, message string, v any) (Event, error) {
+	e := Event{WorkspaceID: workspaceID, Level: level, Kind: kind, Message: message}
+	if v != nil {
+		b, err := json.Marshal(v)
+		if err != nil {
+			return Event{}, fmt.Errorf("events: %s data: %w", kind, err)
+		}
+		e.Data = b
+	}
 	return e, nil
 }
 
 // Emit is Append for callers that build Data from a Go value.
 func (l *Log) Emit(ctx context.Context, workspaceID string, level Level, kind, message string, data any) (Event, error) {
-	e := Event{WorkspaceID: workspaceID, Level: level, Kind: kind, Message: message}
-	if data != nil {
-		b, err := json.Marshal(data)
-		if err != nil {
-			return Event{}, fmt.Errorf("events: %s data: %w", kind, err)
-		}
-		e.Data = b
+	e, err := NewEvent(workspaceID, level, kind, message, data)
+	if err != nil {
+		return Event{}, err
 	}
 	return l.Append(ctx, e)
 }

@@ -109,6 +109,10 @@ const (
 	// CodeSecretDescriptionInvalid: a description that is not UTF-8. A JSON
 	// body cannot carry one, so the API does not send this today.
 	CodeSecretDescriptionInvalid = secrets.CodeDescriptionBad
+	// CodeSecretExists: a create — a PUT with If-None-Match: * — for a name
+	// already stored. 412, and nothing written: a create never replaces a
+	// value that can never be shown again (frontend §6.4).
+	CodeSecretExists = "secret_exists"
 	// CodeUnknownRepository: a grant names a repository id the catalog
 	// does not have.
 	CodeUnknownRepository = secrets.CodeUnknownRepo

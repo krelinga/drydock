@@ -185,18 +185,41 @@ func (s *Store) views(ctx context.Context, q string, args ...any) ([]View, error
 	return out, s.fillSteps(ctx, out, index, args...)
 }
 
-// fillSteps reads the step and action events oldest first and keeps the last
-// per step, and the last action, which are the latest. Read in Go rather than
-// with a GROUP BY over json_extract: data is the reducer's contract, and the
-// API parses it the same way the reducer does rather than through a second
-// dialect.
-func (s *Store) fillSteps(ctx context.Context, out []View, index map[string]int, args ...any) error {
-	q := `SELECT workspace_id, kind, data, at FROM event WHERE kind IN (?, ?, ?, ?) AND workspace_id IS NOT NULL ORDER BY id`
-	qargs := []any{KindStep, KindAction, KindSupervisor, KindSession}
-	if len(args) == 1 { // one workspace
-		q = `SELECT workspace_id, kind, data, at FROM event WHERE kind IN (?, ?, ?, ?) AND workspace_id = ? ORDER BY id`
-		qargs = append(qargs, args[0])
+// latestEvents is fillSteps' query: with no argument, over every workspace
+// that has a row; with one, over that workspace alone.
+func latestEvents(one ...any) (string, []any) {
+	scope := `workspace_id IN (SELECT id FROM workspace)`
+	args := []any{KindStep, KindAction, KindSupervisor, KindSession}
+	if len(one) == 1 {
+		scope = `workspace_id = ?`
+		args = append(args, one[0])
 	}
+	return `SELECT workspace_id, kind, data, at FROM event WHERE id IN (
+		SELECT max(id) FROM event
+		WHERE kind IN (?, ?, ?, ?) AND ` + scope + `
+		GROUP BY workspace_id, kind,
+		  CASE WHEN kind = '` + KindStep + `' AND json_valid(data) THEN json_extract(data, '$.step') END
+	) ORDER BY id`, args
+}
+
+// fillSteps reads, for the workspaces being listed and no others, the newest
+// event of each kind the view reports: per step for workspace.step, and one
+// each for workspace.action, supervisor.state and session.status.
+//
+// Bounded twice over (#39's review). Only live workspaces' events are read —
+// a deleted workspace's history is kept on purpose (§4) and must not make
+// every list request slower — and SQL keeps only the newest row per group,
+// so the work is the number of steps, not the length of the history. The
+// grouping key is the step's name, read with json_extract guarded by
+// json_valid; the *data* is still parsed here, in Go, the way the reducer
+// parses it, rather than through a second dialect.
+//
+// An event whose data cannot be read is skipped and logged, never an error:
+// one malformed row must not take the whole list down with a 500. Its field
+// is then reported as nothing known — the same as a workspace with no such
+// event — and the next event of its kind replaces it.
+func (s *Store) fillSteps(ctx context.Context, out []View, index map[string]int, args ...any) error {
+	q, qargs := latestEvents(args...)
 	rows, err := s.DB.QueryContext(ctx, q, qargs...)
 	if err != nil {
 		return err
@@ -212,22 +235,28 @@ func (s *Store) fillSteps(ctx context.Context, out []View, index map[string]int,
 		if !ok || !data.Valid {
 			continue
 		}
+		skip := func(err error) {
+			s.logf("workspace %s: skipping a %s event the view cannot read: %v", ws, kind, err)
+		}
 		t, err := time.Parse(time.RFC3339Nano, at)
 		if err != nil {
-			return fmt.Errorf("workspace %s: %s event time: %w", ws, kind, err)
+			skip(err)
+			continue
 		}
 		switch kind {
 		case KindSupervisor:
 			var d SupervisorData
 			if err := json.Unmarshal([]byte(data.String), &d); err != nil || d.State == "" {
-				return errors.Join(fmt.Errorf("workspace %s: a %s event has unreadable data", ws, kind), err)
+				skip(errors.Join(errors.New("no state"), err))
+				continue
 			}
 			out[i].Supervisor = &SupervisorView{SupervisorData: d, At: t}
 			continue
 		case KindSession:
 			var d SessionData
 			if err := json.Unmarshal([]byte(data.String), &d); err != nil {
-				return errors.Join(fmt.Errorf("workspace %s: a %s event has unreadable data", ws, kind), err)
+				skip(err)
+				continue
 			}
 			out[i].Session = &SessionView{SessionData: d, At: t}
 			continue
@@ -240,7 +269,8 @@ func (s *Store) fillSteps(ctx context.Context, out []View, index map[string]int,
 		}
 		if err := json.Unmarshal([]byte(data.String), &d); err != nil || d.Step == "" ||
 			(kind == KindAction && d.Action == "") {
-			return errors.Join(fmt.Errorf("workspace %s: a %s event has unreadable data", ws, kind), err)
+			skip(errors.Join(errors.New("no step or action"), err))
+			continue
 		}
 		if kind == KindAction {
 			out[i].LastAction = &ActionOutcome{Action: d.Action, Step: string(d.Step), Status: d.Status, Detail: d.Detail, At: t}

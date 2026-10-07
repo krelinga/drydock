@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"time"
 
@@ -40,6 +41,17 @@ type Store struct {
 	// was what held it — so the secrets store rebuilds the snapshot the
 	// broker serves from (secrets.Store.Invalidate).
 	GrantsDropped func()
+	// Logf receives what the views skip: an event whose data they cannot
+	// read. Nil writes to stderr, the service's journal.
+	Logf func(format string, args ...any)
+}
+
+func (s *Store) logf(format string, args ...any) {
+	if s.Logf != nil {
+		s.Logf(format, args...)
+		return
+	}
+	fmt.Fprintf(os.Stderr, "drydock: "+format+"\n", args...)
 }
 
 var (
@@ -86,42 +98,47 @@ func (s *Store) Create(ctx context.Context, repositoryID int64, branch string) (
 		HostPath: filepath.Join(s.Root, id, "repo"), CreatedAt: now,
 	}
 
-	// One transaction for the two checks and the insert, so two creates
-	// racing past the checks cannot both land: the store opens every
+	// One transaction for the two checks, the insert and its event, so two
+	// creates racing past the checks cannot both land: the store opens every
 	// transaction IMMEDIATE, so the write lock is held before the reads.
-	tx, err := s.DB.BeginTx(ctx, nil)
+	_, err = s.Events.Commit(ctx, func(tx *sql.Tx) ([]events.Event, error) {
+		var same, total int
+		if err := tx.QueryRowContext(ctx,
+			`SELECT count(*) FROM workspace WHERE repository_id = ?`, // any state: see ErrInProgress
+			repositoryID).Scan(&same); err != nil {
+			return nil, err
+		}
+		if same > 0 {
+			return nil, ErrInProgress
+		}
+		if err := tx.QueryRowContext(ctx,
+			`SELECT count(*) FROM workspace WHERE state IN (`+occupyingSQL+`)`).Scan(&total); err != nil {
+			return nil, err
+		}
+		if s.Cap > 0 && total >= s.Cap {
+			return nil, ErrAtCap
+		}
+		if _, err := tx.ExecContext(ctx,
+			`INSERT INTO workspace (id, repository_id, host_path, branch, state, created_at)
+			 VALUES (?, ?, ?, ?, ?, ?)`,
+			w.ID, w.RepositoryID, w.HostPath, w.Branch, string(w.State), ts(now)); err != nil {
+			return nil, fmt.Errorf("workspace: insert: %w", err)
+		}
+		return one(events.NewEvent(w.ID, events.Info, KindState, "Workspace created.",
+			map[string]any{"state": Pending, "repository_id": repositoryID, "branch": branch}))
+	})
 	if err != nil {
 		return Workspace{}, err
 	}
-	defer tx.Rollback()
-	var same, total int
-	if err := tx.QueryRowContext(ctx,
-		`SELECT count(*) FROM workspace WHERE repository_id = ?`, // any state: see ErrInProgress
-		repositoryID).Scan(&same); err != nil {
-		return Workspace{}, err
+	return w, nil
+}
+
+// one is an event for Commit's function to return, or the error building it.
+func one(e events.Event, err error) ([]events.Event, error) {
+	if err != nil {
+		return nil, err
 	}
-	if same > 0 {
-		return Workspace{}, ErrInProgress
-	}
-	if err := tx.QueryRowContext(ctx,
-		`SELECT count(*) FROM workspace WHERE state IN (`+occupyingSQL+`)`).Scan(&total); err != nil {
-		return Workspace{}, err
-	}
-	if s.Cap > 0 && total >= s.Cap {
-		return Workspace{}, ErrAtCap
-	}
-	if _, err := tx.ExecContext(ctx,
-		`INSERT INTO workspace (id, repository_id, host_path, branch, state, created_at)
-		 VALUES (?, ?, ?, ?, ?, ?)`,
-		w.ID, w.RepositoryID, w.HostPath, w.Branch, string(w.State), ts(now)); err != nil {
-		return Workspace{}, fmt.Errorf("workspace: insert: %w", err)
-	}
-	if err := tx.Commit(); err != nil {
-		return Workspace{}, err
-	}
-	_, err = s.Events.Emit(ctx, w.ID, events.Info, KindState, "Workspace created.",
-		map[string]any{"state": Pending, "repository_id": repositoryID, "branch": branch})
-	return w, err
+	return []events.Event{e}, nil
 }
 
 // Occupied counts the workspaces holding or building a container: what the
@@ -134,26 +151,28 @@ func (s *Store) Occupied(ctx context.Context) (int, error) {
 }
 
 // Move takes a workspace from its current state to `to`, refusing an illegal
-// move, and writes a workspace.state event. The update is conditional on the
-// state it read, so two movers racing cannot both win: the loser gets an
-// ErrIllegalMove naming the state it lost to, or retries.
+// move, and writes a workspace.state event. The read, the update and the
+// event are one events.Commit: one IMMEDIATE transaction, committed and
+// published under the event log's lock. So two movers are serialized — the
+// second reads the first's state and is refused if the move is illegal from
+// there — and their events are published in the order their rows were
+// committed, which is what keeps the stream's newest workspace.state equal
+// to the row (a delete overtaking a run's move to running published
+// `deleting` before `running` when the two were separate steps).
 func (s *Store) Move(ctx context.Context, id string, to State, detail string) (Workspace, error) {
-	for attempt := 0; attempt < 3; attempt++ {
-		w, err := s.Get(ctx, id)
-		if err != nil {
-			return Workspace{}, err
+	var w Workspace
+	_, err := s.Events.Commit(ctx, func(tx *sql.Tx) ([]events.Event, error) {
+		var err error
+		if w, err = get(ctx, tx, id); err != nil {
+			return nil, err
 		}
 		if !CanMove(w.State, to) {
-			return Workspace{}, ErrIllegalMove{From: w.State, To: to}
+			return nil, ErrIllegalMove{From: w.State, To: to}
 		}
-		res, err := s.DB.ExecContext(ctx,
+		if _, err := tx.ExecContext(ctx,
 			`UPDATE workspace SET state = ?, state_detail = ? WHERE id = ? AND state = ?`,
-			string(to), nullable(detail), id, string(w.State))
-		if err != nil {
-			return Workspace{}, err
-		}
-		if n, _ := res.RowsAffected(); n == 0 {
-			continue // moved under us; re-read and re-check
+			string(to), nullable(detail), id, string(w.State)); err != nil {
+			return nil, err
 		}
 		level := events.Info
 		if to == Failed {
@@ -169,13 +188,13 @@ func (s *Store) Move(ctx context.Context, id string, to State, detail string) (W
 		if detail != "" {
 			data["detail"] = detail
 		}
-		if _, err := s.Events.Emit(ctx, id, level, KindState, message(to, detail), data); err != nil {
-			return Workspace{}, err
-		}
-		w.State, w.StateDetail = to, detail
-		return w, nil
+		return one(events.NewEvent(id, level, KindState, message(to, detail), data))
+	})
+	if err != nil {
+		return Workspace{}, err
 	}
-	return Workspace{}, fmt.Errorf("workspace %s: state kept changing during a move to %s", id, to)
+	w.State, w.StateDetail = to, detail
+	return w, nil
 }
 
 // SetContainer records the container id, a cache reconciliation rebuilds
@@ -200,23 +219,25 @@ func (s *Store) SetContainer(ctx context.Context, id, containerID string) error 
 // later move replaces it (Move writes its own detail), and ClearDetail
 // removes it as a retry starts.
 func (s *Store) Annotate(ctx context.Context, id string, want State, detail string) error {
-	res, err := s.DB.ExecContext(ctx, `UPDATE workspace SET state_detail = ? WHERE id = ? AND state = ?`,
-		nullable(detail), id, string(want))
-	if err != nil {
-		return err
-	}
-	if n, _ := res.RowsAffected(); n == 0 {
-		w, err := s.Get(ctx, id)
+	_, err := s.Events.Commit(ctx, func(tx *sql.Tx) ([]events.Event, error) {
+		res, err := tx.ExecContext(ctx, `UPDATE workspace SET state_detail = ? WHERE id = ? AND state = ?`,
+			nullable(detail), id, string(want))
 		if err != nil {
-			return err
+			return nil, err
 		}
-		return ErrIllegalMove{From: w.State, To: want}
-	}
-	data := map[string]any{"state": want, "from": want}
-	if detail != "" {
-		data["detail"] = detail
-	}
-	_, err = s.Events.Emit(ctx, id, events.Warn, KindState, message(want, detail), data)
+		if n, _ := res.RowsAffected(); n == 0 {
+			w, err := get(ctx, tx, id)
+			if err != nil {
+				return nil, err
+			}
+			return nil, ErrIllegalMove{From: w.State, To: want}
+		}
+		data := map[string]any{"state": want, "from": want}
+		if detail != "" {
+			data["detail"] = detail
+		}
+		return one(events.NewEvent(id, events.Warn, KindState, message(want, detail), data))
+	})
 	return err
 }
 
@@ -229,20 +250,24 @@ func (s *Store) Annotate(ctx context.Context, id string, want State, detail stri
 // with no detail, or not in want, is left alone and nothing is written;
 // cleared reports whether there was a detail to clear.
 func (s *Store) ClearDetail(ctx context.Context, id string, want State) (cleared bool, err error) {
-	res, err := s.DB.ExecContext(ctx,
-		`UPDATE workspace SET state_detail = NULL WHERE id = ? AND state = ? AND state_detail IS NOT NULL`,
-		id, string(want))
+	_, err = s.Events.Commit(ctx, func(tx *sql.Tx) ([]events.Event, error) {
+		res, err := tx.ExecContext(ctx,
+			`UPDATE workspace SET state_detail = NULL WHERE id = ? AND state = ? AND state_detail IS NOT NULL`,
+			id, string(want))
+		if err != nil {
+			return nil, err
+		}
+		if n, _ := res.RowsAffected(); n == 0 {
+			return nil, nil
+		}
+		cleared = true
+		return one(events.NewEvent(id, events.Info, KindState, message(want, ""),
+			map[string]any{"state": want, "from": want}))
+	})
 	if err != nil {
 		return false, err
 	}
-	if n, _ := res.RowsAffected(); n == 0 {
-		return false, nil
-	}
-	if _, err := s.Events.Emit(ctx, id, events.Info, KindState, message(want, ""),
-		map[string]any{"state": want, "from": want}); err != nil {
-		return false, err
-	}
-	return true, nil
+	return cleared, nil
 }
 
 // Remove deletes the row of a workspace whose delete has finished. Only a
@@ -259,46 +284,47 @@ func (s *Store) ClearDetail(ctx context.Context, id string, want State) (cleared
 // installation has dropped the repository: this workspace was the one thing
 // keeping them (§4, §12), and a repository re-added later is granted nothing.
 func (s *Store) Remove(ctx context.Context, id string) error {
-	tx, err := s.DB.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-	// The supervisor rows first, and only for a workspace in deleting:
-	// foreign keys are checked per statement.
-	if _, err := tx.ExecContext(ctx, `DELETE FROM supervisor WHERE workspace_id = ?
-		AND EXISTS (SELECT 1 FROM workspace WHERE id = ? AND state = ?)`, id, id, string(Deleting)); err != nil {
-		return err
-	}
-	res, err := tx.ExecContext(ctx, `DELETE FROM workspace WHERE id = ? AND state = ?`, id, string(Deleting))
-	if err != nil {
-		return err
-	}
-	if n, _ := res.RowsAffected(); n == 0 {
-		tx.Rollback()
-		w, err := s.Get(ctx, id)
-		if err != nil {
-			return err
+	var dropped int64
+	_, err := s.Events.Commit(ctx, func(tx *sql.Tx) ([]events.Event, error) {
+		// The supervisor rows first, and only for a workspace in deleting:
+		// foreign keys are checked per statement.
+		if _, err := tx.ExecContext(ctx, `DELETE FROM supervisor WHERE workspace_id = ?
+			AND EXISTS (SELECT 1 FROM workspace WHERE id = ? AND state = ?)`, id, id, string(Deleting)); err != nil {
+			return nil, err
 		}
-		return ErrIllegalMove{From: w.State, To: "removed"}
-	}
-	dropped, err := store.DropReleasedRepositories(ctx, tx)
-	if err != nil {
-		return err
-	}
-	if err := tx.Commit(); err != nil {
-		return err
-	}
-	if dropped > 0 && s.GrantsDropped != nil {
+		res, err := tx.ExecContext(ctx, `DELETE FROM workspace WHERE id = ? AND state = ?`, id, string(Deleting))
+		if err != nil {
+			return nil, err
+		}
+		if n, _ := res.RowsAffected(); n == 0 {
+			w, err := get(ctx, tx, id)
+			if err != nil {
+				return nil, err
+			}
+			return nil, ErrIllegalMove{From: w.State, To: "removed"}
+		}
+		if dropped, err = store.DropReleasedRepositories(ctx, tx); err != nil {
+			return nil, err
+		}
+		return one(events.NewEvent(id, events.Info, KindGone, "Workspace deleted.", map[string]any{}))
+	})
+	if err == nil && dropped > 0 && s.GrantsDropped != nil {
 		s.GrantsDropped()
 	}
-	_, err = s.Events.Emit(ctx, id, events.Info, KindGone, "Workspace deleted.", map[string]any{})
 	return err
 }
 
 // Get reads one workspace.
 func (s *Store) Get(ctx context.Context, id string) (Workspace, error) {
-	row := s.DB.QueryRowContext(ctx, `SELECT `+columns+` FROM workspace WHERE id = ?`, id)
+	return get(ctx, s.DB, id)
+}
+
+type querier interface {
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+}
+
+func get(ctx context.Context, db querier, id string) (Workspace, error) {
+	row := db.QueryRowContext(ctx, `SELECT `+columns+` FROM workspace WHERE id = ?`, id)
 	w, err := scan(row)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Workspace{}, ErrNotFound
@@ -381,30 +407,24 @@ func (s *Store) Adopt(ctx context.Context, w Workspace, fullName string) error {
 		w.HostPath = filepath.Join(s.Root, w.ID, "repo")
 	}
 	now := s.Env.Clock.Now().UTC()
-	tx, err := s.DB.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-	if _, err := tx.ExecContext(ctx,
-		`INSERT INTO repository (id, installation_id, full_name, default_branch) VALUES (?, 0, ?, ?)
-		 ON CONFLICT(id) DO NOTHING`, w.RepositoryID, fullName, w.Branch); err != nil {
-		return fmt.Errorf("workspace: stub repository: %w", err)
-	}
-	if _, err := tx.ExecContext(ctx,
-		`INSERT INTO workspace (id, repository_id, host_path, branch, state, state_detail, container_id, created_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		w.ID, w.RepositoryID, w.HostPath, w.Branch, string(w.State), nullable(w.StateDetail),
-		nullable(w.ContainerID), ts(now)); err != nil {
-		return fmt.Errorf("workspace: adopt %s: %w", w.ID, err)
-	}
-	if err := tx.Commit(); err != nil {
-		return err
-	}
-	data := map[string]any{"state": w.State, "adopted": true, "repository_id": w.RepositoryID, "branch": w.Branch}
-	if w.StateDetail != "" {
-		data["detail"] = w.StateDetail
-	}
-	_, err = s.Events.Emit(ctx, w.ID, events.Warn, KindState, message(w.State, w.StateDetail), data)
+	_, err := s.Events.Commit(ctx, func(tx *sql.Tx) ([]events.Event, error) {
+		if _, err := tx.ExecContext(ctx,
+			`INSERT INTO repository (id, installation_id, full_name, default_branch) VALUES (?, 0, ?, ?)
+			 ON CONFLICT(id) DO NOTHING`, w.RepositoryID, fullName, w.Branch); err != nil {
+			return nil, fmt.Errorf("workspace: stub repository: %w", err)
+		}
+		if _, err := tx.ExecContext(ctx,
+			`INSERT INTO workspace (id, repository_id, host_path, branch, state, state_detail, container_id, created_at)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+			w.ID, w.RepositoryID, w.HostPath, w.Branch, string(w.State), nullable(w.StateDetail),
+			nullable(w.ContainerID), ts(now)); err != nil {
+			return nil, fmt.Errorf("workspace: adopt %s: %w", w.ID, err)
+		}
+		data := map[string]any{"state": w.State, "adopted": true, "repository_id": w.RepositoryID, "branch": w.Branch}
+		if w.StateDetail != "" {
+			data["detail"] = w.StateDetail
+		}
+		return one(events.NewEvent(w.ID, events.Warn, KindState, message(w.State, w.StateDetail), data))
+	})
 	return err
 }

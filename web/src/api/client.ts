@@ -65,13 +65,13 @@ export function onUnauthorized(fn: UnauthorizedHandler | null): void {
 
 type Method = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE'
 
-async function request(method: Method, path: string, body?: unknown): Promise<Response> {
+async function request(method: Method, path: string, body?: unknown, extra: Record<string, string> = {}): Promise<Response> {
   if (!path.startsWith('/api/')) {
     // A guard against building a URL from data: the client talks to its own
     // API and nothing else.
     throw new Error(`api client: refusing non-API path ${path}`)
   }
-  const headers: Record<string, string> = { Accept: 'application/json' }
+  const headers: Record<string, string> = { ...extra, Accept: 'application/json' }
   const init: RequestInit = {
     method,
     headers,
@@ -157,9 +157,15 @@ export async function send(method: Exclude<Method, 'GET'>, path: string, body?: 
  * metadata too, and that must not be applied: it has no event id to be
  * ordered by, so the caller strips it (stores/secrets.ts) and the reducer
  * learns the secret from its event like everything else (§2.1, §4.1).
+ *
+ * `headers` carries the one request header a caller may add: `If-None-Match:
+ * *`, which makes that PUT a create the server refuses to turn into a
+ * replace (`412 secret_exists`).
  */
-export async function sendForResult<T>(method: Exclude<Method, 'GET'>, path: string, body?: unknown): Promise<T> {
-  const resp = await request(method, path, body)
+export async function sendForResult<T>(
+  method: Exclude<Method, 'GET'>, path: string, body?: unknown, headers: Record<string, string> = {},
+): Promise<T> {
+  const resp = await request(method, path, body, headers)
   const type = resp.headers.get('Content-Type') ?? ''
   if (!type.startsWith('application/json')) {
     throw new ApiError(resp.status, 'unparseable')

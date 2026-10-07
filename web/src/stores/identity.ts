@@ -68,11 +68,11 @@ export const useIdentityStore = defineStore('identity', {
     /** @internal */
     async fetchOnce(): Promise<void> {
       const stream = useStreamStore()
-      const at = stream.lastEventId
+      const { at, tick } = stream.snapshotTag()
       if (this.status !== 'ready') this.status = 'loading'
       try {
         const view = await api.get<ClaudeIdentityBody>('/api/auth/claude')
-        stream.dispatch({ type: 'identity', at, view })
+        stream.snapshot({ type: 'identity', at, view }, tick)
         this.status = 'ready'
         this.error = null
       } catch (e) {

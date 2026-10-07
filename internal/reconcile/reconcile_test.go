@@ -239,8 +239,8 @@ func TestRunChangesNothingWhenDockerCannotBeListed(t *testing.T) {
 	e := newEnv(t)
 	w := e.walk(t, workspace.Cloning, workspace.Building, workspace.Running)
 	r := &Reconciler{Workspaces: e.ws, Events: e.log, Containers: fakeLister{err: errors.New("daemon down")}}
-	if _, err := r.Run(ctx); err == nil {
-		t.Fatal("a failed list was not reported")
+	if _, err := r.Run(ctx); !errors.Is(err, ErrNothingChanged) {
+		t.Fatalf("a failed list was reported as %v; want ErrNothingChanged", err)
 	}
 	if got, _ := e.ws.Get(ctx, w.ID); got.State != workspace.Running {
 		t.Errorf("a failed list moved the workspace to %s", got.State)
@@ -251,6 +251,31 @@ func TestRunChangesNothingWhenDockerCannotBeListed(t *testing.T) {
 	r.Run(ctx)
 	if got, _ := e.ws.Get(ctx, w.ID); got.State != workspace.Stopped {
 		t.Errorf("control: with Docker reporting it absent, the workspace is %s", got.State)
+	}
+}
+
+// TestAPartialFailureIsNotNothingChanged: one action failing (a resumed
+// delete that sticks) is reported as a *Partial naming the count, never as
+// ErrNothingChanged — the same run applied everything else, and the control
+// is that it did.
+func TestAPartialFailureIsNotNothingChanged(t *testing.T) {
+	ctx := context.Background()
+	e := newEnv(t)
+	stuck := e.walk(t, workspace.Deleting)
+	died := e.walk(t, workspace.Cloning, workspace.Building, workspace.Running)
+	r := &Reconciler{Workspaces: e.ws, Events: e.log, Containers: fakeLister{},
+		Delete: func(context.Context, workspace.Workspace, string) error { return errors.New("root-owned files") }}
+	_, err := r.Run(ctx)
+	var p *Partial
+	if !errors.As(err, &p) || len(p.Errs) != 1 || p.Applied != 1 || errors.Is(err, ErrNothingChanged) {
+		t.Fatalf("Run = %v; want a *Partial with one failure and one applied, not ErrNothingChanged", err)
+	}
+	if !strings.Contains(err.Error(), stuck.ID) {
+		t.Errorf("the error does not name the workspace that failed: %v", err)
+	}
+	// Control: the rest of the plan was applied.
+	if got, _ := e.ws.Get(ctx, died.ID); got.State != workspace.Stopped {
+		t.Errorf("the other row is %s; the partial run should have marked it stopped", got.State)
 	}
 }
 

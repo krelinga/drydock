@@ -212,7 +212,7 @@ func (wr WorkspaceRoutes) writeProvisionError(w http.ResponseWriter, err error) 
 		WriteError(w, http.StatusConflict, CodeAtCapacity,
 			"Drydock is at its concurrent-container cap. Stop a workspace to make room.", detail)
 	case errors.Is(err, provision.ErrShuttingDown):
-		WriteError(w, http.StatusServiceUnavailable, CodeInternal, "Drydock is shutting down.", "")
+		WriteError(w, http.StatusServiceUnavailable, CodeUnavailable, "Drydock is shutting down.", "")
 	default:
 		WriteError(w, http.StatusInternalServerError, CodeInternal, "Could not start the workspace.", "")
 	}

@@ -4,6 +4,7 @@ import { FakeEventSource } from '../test/fakeEventSource'
 import { freshBackend, mountApp, server, settle, useMockApi } from '../test/setup'
 import { emit, playScript, WS_FAILED, WS_REMOVED, WS_RUNNING } from '../mocks/backend'
 import { useStreamStore } from '../stores/stream'
+import { useWorkspacesStore } from '../stores/workspaces'
 
 useMockApi()
 
@@ -126,6 +127,7 @@ describe('the workspace detail', () => {
     const b = freshBackend({ signedIn: true, scriptMode: 'manual' })
     const { wrapper } = await mountApp(`/ws/${WS_REMOVED}`)
     FakeEventSource.latest().open().pipe(b)
+    await settle() // the first open's refetch (§4.3)
     expect(wrapper.find('[data-test="ws-state"]').text()).toBe('Stopped')
     expect(wrapper.find('[data-test="ws-note"]').text()).toBe('The clone is intact.')
     // It moved on the server before this click: the server says in_progress.
@@ -145,14 +147,25 @@ describe('the workspace detail', () => {
     expect(wrapper.find('[data-test="ws-state"]').text()).toBe('Running')
   })
 
-  it('refetches when the stream reopens, and not before', async () => {
+  it('refetches when the stream reopens, and at the first open only if its snapshot came first', async () => {
     const b = freshBackend({ signedIn: true })
     await mountApp(`/ws/${WS_RUNNING}`)
-    const es = FakeEventSource.latest().open()
+    // The detail was read before the stream opened, so an event between the
+    // read and the server's subscription could be lost: the first open
+    // re-reads it (§4.3, #20's review).
+    const es = FakeEventSource.latest()
     expect(reads(b, WS_RUNNING)).toBe(1)
-    es.drop().open()
+    es.open()
     await settle()
     expect(reads(b, WS_RUNNING)).toBe(2)
+    // Nothing else re-reads it while the stream stays open…
+    es.send({ id: 900, kind: 'token.issued', level: 'info', message: 'x', at: new Date().toISOString() })
+    await settle()
+    expect(reads(b, WS_RUNNING)).toBe(2)
+    // …and every reopen does.
+    es.drop().open()
+    await settle()
+    expect(reads(b, WS_RUNNING)).toBe(3)
   })
 
   it('an unknown id says so; one deleted while open says that instead', async () => {
@@ -170,6 +183,24 @@ describe('the workspace detail', () => {
     await settle()
     expect(other.wrapper.find('[data-test="ws-card"]').exists()).toBe(false)
     expect(other.wrapper.find('[data-test="ws-deleted"]').exists()).toBe(true)
+  })
+
+  it('a workspace whose own GET is a 404 stops rendering, buttons and all, though its workspace.gone was missed (#23)', async () => {
+    const b = freshBackend({ signedIn: true })
+    const { wrapper, pinia } = await mountApp(`/ws/${WS_RUNNING}`)
+    FakeEventSource.latest().open()
+    await settle()
+    // Control: it renders with its actions.
+    expect(wrapper.find('[data-test="ws-card"]').exists()).toBe(true)
+    expect(wrapper.find('[data-test="delete"]').exists()).toBe(true)
+    // Deleted on another device while this stream was in a resync gap: the
+    // row is gone, and no workspace.gone ever arrives here.
+    delete b.workspaces[WS_RUNNING]
+    await useWorkspacesStore(pinia).loadOne(WS_RUNNING)
+    await settle()
+    expect(wrapper.find('[data-test="ws-card"]').exists()).toBe(false)
+    expect(wrapper.find('[data-test="delete"]').exists()).toBe(false)
+    expect(wrapper.find('[data-test="ws-not-found"]').exists()).toBe(true)
   })
 
   it('keeps the Workspaces tab current', async () => {

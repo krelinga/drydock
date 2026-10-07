@@ -99,6 +99,8 @@ describe('the catalog lives off the stream', () => {
     const b = freshBackend({ signedIn: true })
     const { wrapper } = await mountApp('/')
     const es = FakeEventSource.latest().open().pipe(b)
+    // The first open re-asks the snapshots requested before it (§4.3).
+    await settle()
     const reads = () => b.log.filter((r) => r.url.endsWith('/api/repos')).length
     const before = reads()
 
@@ -131,6 +133,7 @@ describe('the catalog lives off the stream', () => {
     const b = freshBackend({ signedIn: true })
     const { wrapper } = await mountApp('/')
     FakeEventSource.latest().open().pipe(b)
+    await settle() // the first open's refetch (§4.3)
     b.repos = [...b.repos, { ...b.repos[0]!, id: 9, full_name: 'krelinga/new-one' }]
     // Control: the backend changed, but nothing on screen moves without an event.
     await settle()
@@ -343,6 +346,7 @@ describe('the clone button (§4.2)', () => {
     // Control: a stop elsewhere frees the slot, and Clone comes back from the
     // stream alone — nothing refetched.
     FakeEventSource.latest().open().pipe(b)
+    await settle() // the first open's refetch (§4.3)
     const lists = b.log.filter((r) => new URL(r.url).pathname === '/api/workspaces').length
     emit(b, 'workspace.state', { workspace_id: WS_RUNNING, data: { state: 'stopped', from: 'running' } })
     await settle()
