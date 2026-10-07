@@ -427,8 +427,8 @@ func TestLoginManagerAgainstRealDocker(t *testing.T) {
 // runner, so every run depends on the handshake instead of usually winning
 // the race.
 //
-// Each stage leaves a file (detached, creating, create.err), so a failure
-// says how far the late create got.
+// Each stage leaves a file (ready, detached, creating, create.err), so a
+// failure says how far the late create got.
 func slowCreate(t *testing.T, delay time.Duration) (bin, dir string) {
 	t.Helper()
 	real, err := exec.LookPath("docker")
@@ -438,7 +438,13 @@ func slowCreate(t *testing.T, delay time.Duration) (bin, dir string) {
 	dir = t.TempDir()
 	bin = filepath.Join(t.TempDir(), "docker")
 	// The detached part: $0 is dir, $1 the delay, the rest the run's args.
-	late := `: >"$0/detached"; echo ok >"$0/ready"; sleep "$1"; shift; : >"$0/creating"; ` +
+	// The write to ready is bounded. A wrapper killed before it opened ready
+	// would otherwise leave this process blocked in open(2) for good, in its
+	// own session where no cleanup reaches it. Unread, it exits without
+	// creating anything, rather than landing a container after the test's
+	// own cleanup has run.
+	late := `: >"$0/detached"; echo ok | timeout 30 tee "$0/ready" >/dev/null || exit 0; ` +
+		`sleep "$1"; shift; : >"$0/creating"; ` +
 		real + ` create "$@" >"$0/created.tmp" 2>"$0/create.err" && mv "$0/created.tmp" "$0/created"`
 	script := `#!/bin/sh
 d=` + dir + `
@@ -471,7 +477,7 @@ func waitFile(t *testing.T, path string, within time.Duration) string {
 		if time.Now().After(deadline) {
 			d := filepath.Dir(path)
 			var reached []string
-			for _, stage := range []string{"started", "detached", "creating"} {
+			for _, stage := range []string{"ready", "detached", "started", "creating"} {
 				if _, err := os.Stat(filepath.Join(d, stage)); err == nil {
 					reached = append(reached, stage)
 				}
@@ -531,6 +537,10 @@ func TestLoginCancelDuringCreate(t *testing.T) {
 	slow := subproc.Exec{Resolver: subproc.FixedResolver{"docker": bin}}
 	d := dockerLauncher(p, vol, extra)
 	d.Run, d.PTY = slow, slow
+	// Far past the late create, which lands about a second after the
+	// cancel, so a slow daemon's `docker create` cannot outlast it. Remove
+	// stops waiting once the container lists, so a passing run pays nothing.
+	d.RemoveSettle = 30 * time.Second
 	m := &login.Manager{Launcher: d, Events: log, Clock: sys.RealClock{}, Identity: &loggedIn{}, Settle: 10 * time.Second}
 	t.Cleanup(func() { m.Shutdown(30 * time.Second) })
 	v, err := m.Begin(ctx)
