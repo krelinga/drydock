@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/krelinga/drydock/internal/container"
 	"github.com/krelinga/drydock/internal/login"
@@ -141,7 +142,7 @@ func TestRemoveAndSweep(t *testing.T) {
 	}}
 	d := launcher()
 	d.Run = f
-	if err := d.Remove(context.Background(), loginID); err != nil {
+	if err := d.Remove(context.Background(), loginID, false); err != nil {
 		t.Fatal(err)
 	}
 	n, err := d.Sweep(context.Background(), loginID)
@@ -214,5 +215,77 @@ func TestLaunchRefusesAForeignOwner(t *testing.T) {
 	_, err = d.Launch(context.Background(), loginID, 80, 24)
 	if !errors.As(err, &le) || le.Problem != login.ProblemDocker {
 		t.Errorf("control: %v", err)
+	}
+}
+
+// TestRemoveWaitsForAKilledCreate: a `docker run` killed during its create
+// leaves the daemon to finish the create, so the container lists only after
+// the CLI is gone. Remove told the CLI was killed keeps listing until the
+// container appears, and removes it; told the CLI exited by itself, it lists
+// once (the control: a finished login's container went with --rm, and
+// waiting for it would only delay the announcement).
+func TestRemoveWaitsForAKilledCreate(t *testing.T) {
+	// late answers the login's ps with nothing for the first n calls.
+	late := func(n int) *fakeRunner {
+		ps := 0
+		return &fakeRunner{ans: func(a []string) (string, int) {
+			if a[0] == "ps" {
+				if ps++; ps > n {
+					return id64('d') + "\n", 0
+				}
+			}
+			return "", 0
+		}}
+	}
+	count := func(f *fakeRunner) (ps int, rms []string) {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		for _, c := range f.calls {
+			switch c[1] {
+			case "ps":
+				ps++
+			case "rm":
+				rms = append(rms, strings.Join(c[1:], " "))
+			}
+		}
+		return ps, rms
+	}
+	d := launcher()
+	d.RemoveSettle = 5 * time.Second
+
+	// Killed: the container lists on the fourth look, and goes.
+	f := late(3)
+	d.Run = f
+	if err := d.Remove(context.Background(), loginID, true); err != nil {
+		t.Fatal(err)
+	}
+	if ps, rms := count(f); ps != 4 || !slices.Equal(rms, []string{"rm --force -- " + id64('d')}) {
+		t.Errorf("killed: %d listings, rm %q; want 4 and the late container removed", ps, rms)
+	}
+
+	// Exited by itself: one look, nothing to remove.
+	f = late(3)
+	d.Run = f
+	if err := d.Remove(context.Background(), loginID, false); err != nil {
+		t.Fatal(err)
+	}
+	if ps, rms := count(f); ps != 1 || rms != nil {
+		t.Errorf("exited: %d listings, rm %q; want one and none", ps, rms)
+	}
+
+	// Killed before it asked for anything: it gives up at the deadline,
+	// having removed nothing, rather than waiting on.
+	f = late(1 << 30)
+	d.Run = f
+	d.RemoveSettle = 300 * time.Millisecond
+	start := time.Now()
+	if err := d.Remove(context.Background(), loginID, true); err != nil {
+		t.Fatal(err)
+	}
+	if took := time.Since(start); took < 300*time.Millisecond || took > 5*time.Second {
+		t.Errorf("gave up after %v; want the 300ms settle", took)
+	}
+	if ps, rms := count(f); ps < 2 || rms != nil {
+		t.Errorf("nothing came: %d listings, rm %q; want several and none", ps, rms)
 	}
 }

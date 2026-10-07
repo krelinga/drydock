@@ -32,7 +32,9 @@ type Launcher struct {
 	mu       sync.Mutex
 	launched []string
 	removed  []string
+	killed   []bool
 	swept    []string
+	order    []string
 	procs    map[string]*login.Proc
 }
 
@@ -40,6 +42,7 @@ type Launcher struct {
 func (l *Launcher) Launch(ctx context.Context, id string, cols, rows int) (*login.Proc, error) {
 	l.mu.Lock()
 	l.launched = append(l.launched, id)
+	l.order = append(l.order, "launch "+id)
 	l.mu.Unlock()
 	if l.Hold != nil {
 		select {
@@ -69,11 +72,19 @@ func (l *Launcher) Launch(ctx context.Context, id string, cols, rows int) (*logi
 }
 
 // Remove implements login.Launcher: recorded, since there is no container.
-func (l *Launcher) Remove(_ context.Context, id string) error {
+func (l *Launcher) Remove(_ context.Context, id string, killed bool) error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	l.removed = append(l.removed, id)
+	l.killed = append(l.killed, killed)
 	return nil
+}
+
+// Killed is each Remove's killed, in the order of Removed.
+func (l *Launcher) Killed() []bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return append([]bool(nil), l.killed...)
 }
 
 // Sweep implements login.Launcher.
@@ -81,6 +92,7 @@ func (l *Launcher) Sweep(_ context.Context, keep string) (int, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	l.swept = append(l.swept, keep)
+	l.order = append(l.order, "sweep "+keep)
 	return 0, nil
 }
 
@@ -98,6 +110,10 @@ func (l *Launcher) Proc(id string) (*login.Proc, error) {
 func (l *Launcher) Launched() []string { return l.copy(&l.launched) }
 func (l *Launcher) Removed() []string  { return l.copy(&l.removed) }
 func (l *Launcher) Swept() []string    { return l.copy(&l.swept) }
+
+// Order is every Sweep and Launch in turn, as "sweep <keep>" and
+// "launch <id>".
+func (l *Launcher) Order() []string { return l.copy(&l.order) }
 
 func (l *Launcher) copy(s *[]string) []string {
 	l.mu.Lock()

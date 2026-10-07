@@ -16,15 +16,22 @@ printf '#!/bin/sh\ntrue\n' >"$folder/.devcontainer/f/install.sh"
 chmod +x "$folder/.devcontainer/f/install.sh"
 image=
 # The image goes after the container: Docker refuses to remove an image a
-# container still uses. A refusal is reported and fails the run, never
-# swallowed.
+# container still uses. A run that failed before reading the image takes its
+# name from the labelled container if there is one; with no container either,
+# it says an image may be left. A refusal is reported and fails the run,
+# never swallowed.
 cleanup() {
 	status=$?
 	ids=$(docker ps -aq --filter "label=$label")
+	if [ -z "$image" ] && [ -n "$ids" ]; then
+		image=$(docker inspect --format '{{.Config.Image}}' $ids | head -n1)
+	fi
 	[ -z "$ids" ] || docker rm -f $ids >/dev/null
 	if [ -n "$image" ] && ! docker image rm -- "$image" >/dev/null; then
 		echo "measure-image-names.sh: could not remove image $image; remove it by hand" >&2
 		status=1
+	elif [ -z "$image" ] && [ "$status" -ne 0 ]; then
+		echo "measure-image-names.sh: failed before any container was made; an image devcontainer up built (vsc-repo-*-features) may be left" >&2
 	fi
 	rm -rf /tmp/drydock-measure
 	exit "$status"
