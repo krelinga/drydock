@@ -169,8 +169,10 @@ func (s *Store) Move(ctx context.Context, id string, to State, detail string) (W
 		if !CanMove(w.State, to) {
 			return nil, ErrIllegalMove{From: w.State, To: to}
 		}
+		// Any move clears a pending host-access request (approval.go): the
+		// run it stopped is over, and a new run asks again if it must.
 		if _, err := tx.ExecContext(ctx,
-			`UPDATE workspace SET state = ?, state_detail = ? WHERE id = ? AND state = ?`,
+			`UPDATE workspace SET state = ?, state_detail = ?, pending_approval = NULL WHERE id = ? AND state = ?`,
 			string(to), nullable(detail), id, string(w.State)); err != nil {
 			return nil, err
 		}

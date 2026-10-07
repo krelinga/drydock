@@ -117,7 +117,8 @@ type Provisioner struct {
 	// DRYDOCK_GITHUB_HOST to point the Feature's helper at a fake.
 	RemoteEnv map[string]string
 	// Config is the minimal devcontainer.json for a repository without one.
-	// Nil means DefaultConfig. A test adds runArgs to it.
+	// Nil means DefaultConfig. A test adds runArgs to it, which then needs
+	// a host-access approval like a repository's own (§6).
 	Config []byte
 	// Timeout bounds one run (config.ProvisionTimeout).
 	Timeout time.Duration
@@ -266,6 +267,41 @@ func (p *Provisioner) Rebuild(ctx context.Context, id string) error {
 }
 
 func (p *Provisioner) restart(ctx context.Context, id string, rebuild bool) error {
+	return p.restartWith(ctx, id, rebuild, nil)
+}
+
+// ApproveConfig is POST /api/workspaces/{id}/config-approval: the operator
+// approves the host-access request a stopped workspace is waiting on, and
+// the run it stopped continues — from step 3, with the stopped run's
+// --remove-existing-container — exactly as a start would, under the same
+// lock, refusals and cap. hash is the request's hash as the operator was
+// shown it: a different one is workspace.ErrApprovalStale, so a configuration
+// that changed between the display and the click is never approved. by is the
+// approving session's id. Step 3 then reads the configuration again and runs
+// it only if its subset still hashes to what was approved; if a Feature's tag
+// moved in between, it asks again. Errors: ErrNotConfigured,
+// workspace.ErrNotFound, workspace.ErrNoApproval, workspace.ErrApprovalStale,
+// workspace.ErrInProgress, workspace.ErrAtCap.
+func (p *Provisioner) ApproveConfig(ctx context.Context, id, hash, by string) error {
+	return p.restartWith(ctx, id, false, &approval{hash: hash, by: by})
+}
+
+// DeclineConfig is DELETE /api/workspaces/{id}/config-approval: the request
+// is dropped and the workspace stays stopped; nothing is recorded for the
+// repository, so the next start asks again. Errors: workspace.ErrNotFound,
+// workspace.ErrNoApproval, workspace.ErrInProgress.
+func (p *Provisioner) DeclineConfig(ctx context.Context, id string) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.active[id] != nil {
+		return workspace.ErrInProgress
+	}
+	return p.Workspaces.Decline(ctx, id)
+}
+
+type approval struct{ hash, by string }
+
+func (p *Provisioner) restartWith(ctx context.Context, id string, rebuild bool, ap *approval) error {
 	if p.Cloner == nil || p.Broker == nil {
 		return ErrNotConfigured
 	}
@@ -296,6 +332,19 @@ func (p *Provisioner) restart(ctx context.Context, id string, rebuild bool) erro
 	if w, err = p.Workspaces.Get(ctx, id); err != nil {
 		return err
 	}
+	var pending workspace.PendingApproval
+	if ap != nil {
+		// Checked before the cap, and recorded after it: an approval that
+		// cannot run now is not recorded, and the operator approves again.
+		_, pp, err := p.Workspaces.Pending(ctx, id)
+		if err != nil {
+			return err
+		}
+		if ap.hash == "" || ap.hash != pp.Hash {
+			return workspace.ErrApprovalStale
+		}
+		pending = pp
+	}
 	switch {
 	case w.State == workspace.Stopped || w.State == workspace.Failed:
 	case rebuild && w.State == workspace.Running:
@@ -318,6 +367,12 @@ func (p *Provisioner) restart(ctx context.Context, id string, rebuild bool) erro
 		}
 	}
 	removeExisting := rebuild || w.State == workspace.Failed
+	if ap != nil {
+		if _, err := p.Workspaces.Approve(ctx, id, ap.hash, ap.by); err != nil {
+			return err
+		}
+		removeExisting = pending.RemoveExisting
+	}
 	wasRunning := w.State == workspace.Running
 	to := workspace.Building
 	if first == workspace.StepClone {
@@ -426,6 +481,12 @@ func (p *Provisioner) run(parent context.Context, id string, first workspace.Ste
 		steps[st] = guard(ctx, timeout, f)
 	}
 	err := p.Workspaces.Provision(book, id, first, steps)
+	if errors.Is(err, workspace.ErrNeedsApproval) {
+		// Not a failure: the workspace is stopped, waiting for the
+		// operator, and a stopped workspace has no socket.
+		p.closeIfFailed(book, id)
+		return nil
+	}
 	if err != nil {
 		p.logf("drydock: workspace %s: %v", id, err)
 		p.closeIfFailed(book, id)
@@ -441,13 +502,14 @@ func (p *Provisioner) run(parent context.Context, id string, first workspace.Ste
 // Closing it here makes a live failure and a rebooted one the same. Start and
 // rebuild run step 5 again, which reopens it. A run cut off by a delete is
 // left alone: the workspace is deleting, and the delete closes the socket in
-// its own sub-step.
+// its own sub-step. A run that stopped for a host-access approval leaves the
+// workspace stopped, and a stopped workspace has no socket either.
 func (p *Provisioner) closeIfFailed(ctx context.Context, id string) {
 	if p.Broker == nil {
 		return
 	}
 	w, err := p.Workspaces.Get(ctx, id)
-	if err != nil || w.State != workspace.Failed {
+	if err != nil || (w.State != workspace.Failed && w.State != workspace.Stopped) {
 		return
 	}
 	if err := p.Broker.Close(id); err != nil {

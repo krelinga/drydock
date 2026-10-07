@@ -227,7 +227,7 @@ func TestTheMinimalConfigNeverHonoursALockfile(t *testing.T) {
 		r.Files = append(r.Files, ".devcontainer/devcontainer-lock.json")
 		r.Contents = map[string]string{".devcontainer/devcontainer-lock.json": lockfile}
 	})
-	e.cli.readConfig = "cat <<'EOF'\n" + fixture(t, "read-configuration-override.json") + "\nEOF\n"
+	e.cli.readConfig = "cat <<'EOF'\n" + fixture(t, "read-configuration-merged-override.json") + "\nEOF\n"
 	e.cli.exec = strings.ReplaceAll(e.cli.exec, "/krelinga/alpha.git", "/krelinga/plain.git")
 	e.cli.exec = strings.ReplaceAll(e.cli.exec, "/workspaces/repo", "/workspaces/plain2")
 	e.wire(t)

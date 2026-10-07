@@ -37,6 +37,12 @@ const SENTENCES: Record<string, string> = {
   confirm_mismatch:
     "That is not the repository's full name exactly as written, so nothing was deleted. Type it again, capitals and all.",
   bad_request: 'Drydock did not understand that request.',
+  // Design §6's host-access approval. Stale is the guard working: the
+  // configuration changed after this page showed it, and the new request is
+  // what the page now shows.
+  approval_not_pending: 'This workspace is no longer waiting for an approval.',
+  approval_stale:
+    'The configuration changed after this was shown, so nothing was approved. Review what it asks for now.',
   // Design §10.1's refusals. Three of them need the server's detail to be
   // specific — which reason a name is reserved for, which character at which
   // byte, which repository id — and DETAILED below says which.

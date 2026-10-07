@@ -48,6 +48,12 @@ type View struct {
 	// kept live from events are the same card (frontend §2.1).
 	Supervisor *SupervisorView `json:"supervisor"`
 	Session    *SessionView    `json:"session"`
+	// Approval is the host-access request a stopped workspace is waiting on
+	// (approval.go), or null: the hash to approve, and what is added,
+	// changed and removed relative to the subset last approved for the
+	// repository. The workspace.state event that stopped it carries the
+	// same object, and every other workspace.state event carries none.
+	Approval *ApprovalView `json:"approval"`
 }
 
 // Kinds the session supervisor (internal/supervisor, design §8) writes.
@@ -112,13 +118,13 @@ type ActionOutcome struct {
 
 // StepOutcome is the latest workspace.step event for one step.
 type StepOutcome struct {
-	Status string    `json:"status"` // started | done | failed
+	Status string    `json:"status"` // started | done | failed | needs_approval
 	Detail string    `json:"detail,omitempty"`
 	At     time.Time `json:"at"`
 }
 
 const viewColumns = `w.id, w.repository_id, coalesce(r.full_name, ''), w.branch, w.state,
-	w.state_detail, w.container_id, coalesce(w.created_at, ''), w.environment_id`
+	w.state_detail, w.container_id, coalesce(w.created_at, ''), w.environment_id, w.pending_approval`
 
 // Views reads every workspace with a row, deleting ones included, newest
 // first (ids are ULIDs, so id order is creation order).
@@ -149,10 +155,10 @@ func (s *Store) views(ctx context.Context, q string, args ...any) ([]View, error
 	index := map[string]int{}
 	for rows.Next() {
 		var v View
-		var detail, container, env sql.NullString
+		var detail, container, env, pending sql.NullString
 		var created string
 		if err := rows.Scan(&v.ID, &v.RepositoryID, &v.FullName, &v.Branch, &v.State,
-			&detail, &container, &created, &env); err != nil {
+			&detail, &container, &created, &env, &pending); err != nil {
 			rows.Close()
 			return nil, err
 		}
@@ -164,6 +170,15 @@ func (s *Store) views(ctx context.Context, q string, args ...any) ([]View, error
 		}
 		if env.Valid && env.String != "" {
 			v.EnvironmentID = &env.String
+		}
+		if pending.Valid && pending.String != "" {
+			var p PendingApproval
+			if err := json.Unmarshal([]byte(pending.String), &p); err != nil {
+				rows.Close()
+				return nil, fmt.Errorf("workspace %s pending_approval: %w", v.ID, err)
+			}
+			a := p.view()
+			v.Approval = &a
 		}
 		if created != "" {
 			if v.CreatedAt, err = time.Parse(time.RFC3339Nano, created); err != nil {

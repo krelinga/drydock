@@ -1,0 +1,6 @@
+devcontainer_version: 0.89.0
+recorded_at:          2026-10-07T13:42:25Z
+command:              devcontainer read-configuration --workspace-folder <dir>/compose --include-merged-configuration --id-label drydock.record.read-configuration=none   (stdout only; exit 0)
+config:               {"dockerComposeFile":"compose.yml","service":"app","workspaceFolder":"/workspaces/compose"}
+provenance:           recorded; the temp directory is rewritten to /srv/drydock/ws/FIXTURE
+must_yield:           refused, naming dockerComposeFile and service

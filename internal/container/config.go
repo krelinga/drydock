@@ -24,7 +24,17 @@ type Configuration struct {
 	// it still names the repository's default path, measured, so it says
 	// where the config would be rather than where it came from.
 	ConfigFile string
+	// Own is the configuration itself, as the CLI resolved it (comments
+	// stripped, ${localEnv:…} and ${localWorkspaceFolder} substituted), and
+	// Merged is that configuration merged with what its Features and image
+	// metadata declare (--include-merged-configuration). HostAccessOf
+	// reads both; Merged is nil in a result read without the flag.
+	Own, Merged map[string]json.RawMessage
 }
+
+// labelReadConfiguration is the id-label read-configuration is given, under
+// the prefix: a label no container carries (ReadConfiguration).
+const labelReadConfiguration = "read-configuration"
 
 // ErrUnbuildable is a configuration that names nothing to build or run.
 //
@@ -56,6 +66,7 @@ func (e *ReadError) Error() string {
 // JSON object; logs go to stderr.
 type readResult struct {
 	Configuration map[string]json.RawMessage `json:"configuration"`
+	Merged        map[string]json.RawMessage `json:"mergedConfiguration"`
 	Workspace     *struct {
 		WorkspaceFolder string `json:"workspaceFolder"`
 	} `json:"workspace"`
@@ -63,11 +74,26 @@ type readResult struct {
 
 // ReadConfiguration runs `devcontainer read-configuration` for a host folder,
 // with overrideConfig as --override-config when it is not empty.
+//
+// It asks for the merged configuration — the folder's own plus what its
+// Features and image metadata declare — because a Feature can ask for
+// privileged and mounts as well as the repository can (HostAccessOf).
+// And it passes an id-label no container carries: with none, the CLI looks
+// for a container by its default labels, and from a container it found it
+// would read the merged metadata off that container's labels rather than
+// compute it from the configuration that the next `up` will use.
+//
+// Measured on CLI 0.89.0, read-configuration does not run initializeCommand,
+// with or without the merged configuration: the recording of
+// read-configuration-merged-hostile.json writes a host canary from
+// initializeCommand and checks it is absent. It does fetch the Features'
+// metadata and the image's, from their registries, so it needs the network.
 func (m Manager) ReadConfiguration(ctx context.Context, folder, overrideConfig string) (Configuration, error) {
 	if !strings.HasPrefix(folder, "/") {
 		return Configuration{}, fmt.Errorf("container: folder %q must be absolute", folder)
 	}
-	args := []string{"read-configuration", "--workspace-folder", folder}
+	args := []string{"read-configuration", "--workspace-folder", folder,
+		"--include-merged-configuration", "--id-label", m.key(labelReadConfiguration) + "=none"}
 	if overrideConfig != "" {
 		if !strings.HasPrefix(overrideConfig, "/") {
 			return Configuration{}, fmt.Errorf("container: override config %q must be absolute", overrideConfig)
@@ -105,7 +131,7 @@ func ParseConfiguration(b []byte) (Configuration, error) {
 	if r.Configuration == nil || r.Workspace == nil || !strings.HasPrefix(r.Workspace.WorkspaceFolder, "/") {
 		return Configuration{}, errors.New("devcontainer read-configuration: the result lacks a configuration or an absolute workspace folder")
 	}
-	c := Configuration{WorkspaceFolder: r.Workspace.WorkspaceFolder}
+	c := Configuration{WorkspaceFolder: r.Workspace.WorkspaceFolder, Own: r.Configuration, Merged: r.Merged}
 	var path struct {
 		FSPath string `json:"fsPath"`
 	}

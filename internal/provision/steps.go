@@ -2,6 +2,7 @@ package provision
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -72,7 +73,24 @@ func (r *runState) allocate(_ context.Context, w workspace.Workspace) error {
 // any other failure looks like too. A config only in a subfolder of
 // .devcontainer/ is one the CLI would not pick without --config, so it gets
 // the minimal config as well, and the step says so.
+//
+// The configuration is then checked for host access (design §6, "What a
+// configuration may ask of the host"): the clone is the container's to write,
+// so the file read here may be the container's work, and `up` would act on
+// it on the host. A refusal fails this step, before any `up`. And so that
+// what is checked is what `up` reads, the workspace's containers are stopped
+// first: a rebuild, or a start from failed, otherwise runs with the old
+// container still up, free to rewrite the file between the check and `up`.
+// Each of those runs passes --remove-existing-container, so the stop loses
+// nothing; a start from stopped finds its container stopped already.
 func (r *runState) resolveConfig(ctx context.Context, w workspace.Workspace) error {
+	ids, err := r.p.Containers.Find(ctx, w.ID)
+	if err == nil {
+		err = r.p.Containers.Stop(ctx, ids)
+	}
+	if err != nil {
+		return workspace.Public("Drydock could not stop the workspace's container before reading its configuration.", err)
+	}
 	has := false
 	for _, rel := range []string{".devcontainer/devcontainer.json", ".devcontainer.json"} {
 		ok, err := exists(filepath.Join(w.HostPath, rel))
@@ -106,12 +124,93 @@ func (r *runState) resolveConfig(ctx context.Context, w workspace.Workspace) err
 	case err != nil:
 		return workspace.Public("Drydock could not read devcontainer's answer about the configuration.", err)
 	}
+	// Drydock's own configuration, beside the clone, is checked too, but
+	// its paths are Drydock's.
+	ha, err := container.HostAccessOf(c, w.HostPath, r.override == "")
+	switch {
+	case errors.Is(err, container.ErrConfigFileOutside):
+		return workspace.Public("The repository's devcontainer.json is a symbolic link or not inside the clone, so Drydock does not read it.", err)
+	case err != nil:
+		return workspace.Public("Drydock could not check what the dev container configuration asks of the host.", err)
+	}
+	approvedNote := ""
+	if !ha.Empty() {
+		approved, ok, err := r.p.Workspaces.Approved(ctx, w.RepositoryID)
+		if err != nil {
+			return workspace.Public("Drydock could not read the repository's host-access approval.", err)
+		}
+		var granted []container.HostSetting
+		if ok {
+			if err := json.Unmarshal(approved.Settings, &granted); err != nil {
+				return workspace.Public("Drydock could not read the repository's host-access approval.", err)
+			}
+		}
+		// Within what was approved — the same, or less — runs; anything
+		// new or changed asks (design §6). The approval itself stays as it
+		// was: running less does not narrow it.
+		if !ok || !container.Covered(granted, ha.Settings) {
+			return r.needsApproval(ha, approved, ok)
+		}
+		approvedNote = "It runs with host access the operator approved for this repository: " +
+			strings.Join(container.FieldNames(ha.Settings), ", ") + "."
+	}
 	r.folder = c.WorkspaceFolder
 	r.lockfile, r.lockPath = container.LockfileIgnore, ""
 	if r.override != "" {
-		return workspace.Note("The repository has no devcontainer.json, so it gets Drydock's minimal configuration.")
+		return joinNotes("The repository has no devcontainer.json, so it gets Drydock's minimal configuration.", approvedNote)
 	}
-	return r.resolveLockfile(w, c.ConfigFile)
+	err = r.resolveLockfile(w, c.ConfigFile)
+	if n, ok := workspace.IsNote(err); ok || err == nil {
+		return joinNotes(n, approvedNote)
+	}
+	return err
+}
+
+// needsApproval is step 3's stop for a host-access subset the operator has
+// not approved for the repository (design §6): the request, and a sentence
+// naming what is new or changed.
+func (r *runState) needsApproval(ha container.HostAccess, approved workspace.Approval, had bool) error {
+	var before []container.HostSetting
+	if had {
+		json.Unmarshal(approved.Settings, &before)
+	}
+	added, changed, removed := container.DiffSettings(before, ha.Settings)
+	enc := func(v any) json.RawMessage { b, _ := json.Marshal(v); return b }
+	settings := enc(ha.Settings)
+	var asked []container.HostSetting
+	asked = append(asked, added...)
+	for _, c := range changed {
+		asked = append(asked, container.HostSetting{Field: c.Field, Source: c.Source})
+	}
+	names := container.FieldNames(asked)
+	if len(names) > 8 {
+		names = append(names[:8], fmt.Sprintf("%d more", len(names)-8))
+	}
+	what := "This configuration asks for host access that has not been approved for this repository"
+	if had {
+		what = "This configuration's host access differs from what was approved for this repository"
+	}
+	sentence := what + ". Approve it to continue, or remove it from devcontainer.json."
+	if len(names) > 0 {
+		sentence = what + ": " + strings.Join(names, ", ") + ". Approve it to continue, or remove it from devcontainer.json."
+	}
+	return workspace.NeedsApproval(sentence, workspace.PendingApproval{
+		Hash: ha.Hash, Settings: settings,
+		Added: enc(added), Changed: enc(changed), Removed: enc(removed),
+		RemoveExisting: r.removeExisting,
+	})
+}
+
+func joinNotes(a, b string) error {
+	switch {
+	case a == "" && b == "":
+		return nil
+	case a == "":
+		return workspace.Note(b)
+	case b == "":
+		return workspace.Note(a)
+	}
+	return workspace.Note(a + " " + b)
 }
 
 // resolveLockfile decides how up treats the repository's

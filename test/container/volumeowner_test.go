@@ -122,6 +122,9 @@ func TestTheFirstWorkspaceDoesNotDecideTheVolumesOwner(t *testing.T) {
 	}
 	srv.Provisioner.Cloner.BaseURL = f.URL
 	srv.Provisioner.Config = []byte(hostNetConfig)
+	// The runArgs the test needs (above) is host access: approved, as the
+	// operator would, before anything runs (design §6).
+	approveHostNetwork(t, srv.DB.DB, 201, 202, 203)
 	srv.Provisioner.RemoteEnv = map[string]string{"DRYDOCK_GITHUB_HOST": strings.TrimPrefix(f.URL, "http://")}
 	noLogin(t, srv.DB.DB, cfg.ClaudeVolume)
 	ctx, cancel := context.WithCancel(context.Background())

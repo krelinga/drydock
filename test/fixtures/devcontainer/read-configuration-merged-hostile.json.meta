@@ -1,0 +1,6 @@
+devcontainer_version: 0.89.0
+recorded_at:          2026-10-07T13:42:24Z
+command:              devcontainer read-configuration --workspace-folder <dir>/hostile --include-merged-configuration --id-label drydock.record.read-configuration=none   (stdout only; exit 0)
+config:               {"image":"mcr.microsoft.com/devcontainers/base:debian","initializeCommand":"id -un > /tmp/ddrc-IYuC79/canary-initialize","runArgs":["--privileged"],"privileged":true,"capAdd":["SYS_ADMIN"],"securityOpt":["apparmor=unconfined"],"mounts":["source=/var/run/docker.sock,target=/var/run/docker.sock,type=bind"],"appPort":[8080],"workspaceMount":"source=/,target=/host,type=bind","hostRequirements":{"gpu":true},"postCreateCommand":"true"}
+provenance:           recorded; the temp directory is rewritten to /srv/drydock/ws/FIXTURE
+must_yield:           refused, naming appPort, capAdd, hostRequirements.gpu, initializeCommand, mounts, privileged, runArgs, securityOpt and workspaceMount

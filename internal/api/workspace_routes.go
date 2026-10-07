@@ -20,6 +20,8 @@ type Provisioner interface {
 	Stop(ctx context.Context, id string) error
 	Rebuild(ctx context.Context, id string) error
 	Delete(ctx context.Context, id, confirm string) error
+	ApproveConfig(ctx context.Context, id, hash, by string) error
+	DeclineConfig(ctx context.Context, id string) error
 }
 
 // WorkspaceReader is what they need from the workspace store and the log.
@@ -61,6 +63,8 @@ func (wr WorkspaceRoutes) Handlers() map[string]http.HandlerFunc {
 		"workspaces.stop":    wr.stop,
 		"workspaces.rebuild": wr.rebuild,
 		"workspaces.delete":  wr.remove,
+		"workspaces.approve": wr.approve,
+		"workspaces.decline": wr.decline,
 	}
 }
 
@@ -180,6 +184,39 @@ func (wr WorkspaceRoutes) remove(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusAccepted, struct{}{})
 }
 
+// approve is POST /api/workspaces/{id}/config-approval {"hash": "sha256:…"}:
+// the hash is the request's as the page showed it, so a configuration that
+// changed in between is approval_stale rather than approved unseen. The
+// approval is recorded as the session that made it.
+func (wr WorkspaceRoutes) approve(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Hash string `json:"hash"`
+	}
+	dec := json.NewDecoder(io.LimitReader(r.Body, 4<<10))
+	if err := dec.Decode(&body); err != nil || dec.More() || body.Hash == "" {
+		WriteError(w, http.StatusBadRequest, CodeBadRequest, "The request needs the hash of the host access being approved.", "")
+		return
+	}
+	by := "unknown"
+	if s, ok := SessionFrom(r.Context()); ok {
+		by = s.ID
+	}
+	if err := wr.Provisioner.ApproveConfig(r.Context(), r.PathValue("id"), body.Hash, by); err != nil {
+		wr.writeProvisionError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusAccepted, struct{}{})
+}
+
+// decline is DELETE /api/workspaces/{id}/config-approval.
+func (wr WorkspaceRoutes) decline(w http.ResponseWriter, r *http.Request) {
+	if err := wr.Provisioner.DeclineConfig(r.Context(), r.PathValue("id")); err != nil {
+		wr.writeProvisionError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusAccepted, struct{}{})
+}
+
 // writeProvisionError maps create's and start's refusals to the envelope.
 // Each code is one the UI can turn into a sentence and, for at_capacity, an
 // action (frontend §4.5): which workspace to stop.
@@ -199,6 +236,12 @@ func (wr WorkspaceRoutes) writeProvisionError(w http.ResponseWriter, err error) 
 			"To delete this workspace, confirm with the repository's full name, exactly.", "")
 	case errors.Is(err, provision.ErrBadBranch):
 		WriteError(w, http.StatusBadRequest, CodeBadRequest, "That is not a branch name Drydock can clone.", "")
+	case errors.Is(err, workspace.ErrNoApproval):
+		WriteError(w, http.StatusConflict, CodeApprovalNotPending,
+			"This workspace is not waiting for a host-access approval.", "")
+	case errors.Is(err, workspace.ErrApprovalStale):
+		WriteError(w, http.StatusConflict, CodeApprovalStale,
+			"The configuration changed after it was shown, so nothing was approved. Review the new request.", "")
 	case errors.Is(err, workspace.ErrInProgress):
 		WriteError(w, http.StatusConflict, CodeInProgress,
 			"This repository already has a workspace, or this workspace is busy or not in a state that allows this.", "")

@@ -135,6 +135,18 @@ func (s *Store) Provision(ctx context.Context, id string, first Step, run map[St
 			return err
 		}
 		runErr := run[st](ctx, w)
+		var na needsApproval
+		if errors.As(runErr, &na) {
+			// Not a failure: the run stops before anything reaches the host,
+			// and the workspace waits, stopped, for the operator (approval.go).
+			if err := s.stepEvent(ctx, id, st, "needs_approval", events.Warn, na.sentence); err != nil {
+				return err
+			}
+			if err := s.awaitApproval(ctx, id, na.sentence, na.p); err != nil {
+				return err
+			}
+			return &StepError{Step: st, Err: ErrNeedsApproval}
+		}
 		var n note
 		if runErr == nil || errors.As(runErr, &n) {
 			if err := s.stepEvent(ctx, id, st, "done", events.Info, string(n)); err != nil {

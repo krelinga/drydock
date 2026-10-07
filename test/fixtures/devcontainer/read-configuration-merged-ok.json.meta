@@ -1,0 +1,6 @@
+devcontainer_version: 0.89.0
+recorded_at:          2026-10-07T13:42:24Z
+command:              devcontainer read-configuration --workspace-folder <dir>/repo --include-merged-configuration --id-label drydock.record.read-configuration=none   (stdout only; exit 0)
+config:               {"image":"mcr.microsoft.com/devcontainers/base:debian","features":{"ghcr.io/devcontainers/features/go:1":{}},"mounts":["source=gocache-${devcontainerId},target=/go-cache,type=volume"],"containerEnv":{"GOFLAGS":"-mod=mod"},"postCreateCommand":"go version"}
+provenance:           recorded; the temp directory is rewritten to /srv/drydock/ws/FIXTURE
+must_yield:           a Configuration that passes the check -- the go Feature's SYS_PTRACE and seccomp=unconfined are the debugger pair, and the volume names ${devcontainerId}
