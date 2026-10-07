@@ -242,6 +242,103 @@ func TestRemovedRepositoryTakesItsSecretGrants(t *testing.T) {
 	}
 }
 
+// §4: a dropped repository a workspace holds keeps its row and its grants
+// (§12) only while it is held. Once the workspace is gone, the next refresh
+// deletes both, and a re-added repository is granted nothing. The workspace
+// row is deleted here by hand, as a release before this fix (or a delete cut
+// off before its transaction) left it: the refresh's sweep is what is under
+// test, and internal/server tests the delete's own path. Control: the grant
+// of a repository that stays installed survives every refresh, and the
+// held repository's grant survives the refresh that marks it removed.
+func TestReleasedRepositoryGrantsDoNotRevive(t *testing.T) {
+	ctx := context.Background()
+	e := newEnv(t)
+	dropped := 0
+	e.cat.GrantsDropped = func() { dropped++ }
+	e.refresh(t)
+	for _, q := range []string{
+		`INSERT INTO workspace (id, repository_id, host_path, branch, state)
+			VALUES ('01JAAAAAAAAAAAAAAAAAAAAAAA', 1, '/srv/drydock/ws/x/repo', 'main', 'running')`,
+		`INSERT INTO secret (id, name, ciphertext, nonce, reach) VALUES ('s1', 'TEST_KEY', x'00', x'00', 'a test key')`,
+		`INSERT INTO secret_grant (secret_id, repository_id) VALUES ('s1', 1), ('s1', 3)`,
+		`INSERT INTO secret_access (secret_id, workspace_id, at) VALUES ('s1', '01JAAAAAAAAAAAAAAAAAAAAAAA', 'then')`,
+		`INSERT INTO token_grant (id, workspace_id, repository_id, permissions) VALUES ('t1', '01JAAAAAAAAAAAAAAAAAAAAAAA', 1, '{}')`,
+	} {
+		if _, err := e.cat.DB.ExecContext(ctx, q); err != nil {
+			t.Fatal(err)
+		}
+	}
+	grants := func() map[int64]bool {
+		out := map[int64]bool{}
+		rows, err := e.cat.DB.QueryContext(ctx, `SELECT repository_id FROM secret_grant`)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var r int64
+			rows.Scan(&r)
+			out[r] = true
+		}
+		return out
+	}
+	count := func(q string) int {
+		var n int
+		if err := e.cat.DB.QueryRowContext(ctx, q).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	plain := e.fake.Installations[0].Repos[0]
+
+	// Dropped while held: kept, marked, granted as before.
+	e.fake.Mu.Lock()
+	e.fake.Installations[0].Repos = e.fake.Installations[0].Repos[1:]
+	e.fake.Mu.Unlock()
+	e.refresh(t)
+	if g := grants(); !g[1] || !g[3] {
+		t.Fatalf("control: grants while held = %v; want 1 and 3", g)
+	}
+	if !e.list(t)["krelinga/plain"].Removed {
+		t.Fatal("control: the held repository is not marked removed")
+	}
+
+	// Released: the next refresh takes the row and its grant.
+	if _, err := e.cat.DB.ExecContext(ctx, `DELETE FROM workspace`); err != nil {
+		t.Fatal(err)
+	}
+	e.refresh(t)
+	if g := grants(); g[1] || !g[3] {
+		t.Errorf("grants after the release = %v; want 3 only", g)
+	}
+	if n := count(`SELECT count(*) FROM repository WHERE id = 1`); n != 0 {
+		t.Errorf("the released repository's row is still there (%d)", n)
+	}
+	if dropped != 1 {
+		t.Errorf("GrantsDropped called %d times; want 1, after the refresh that deleted a grant", dropped)
+	}
+
+	// Re-added: granted nothing; the other repository's grant still there.
+	e.fake.Mu.Lock()
+	e.fake.Installations[0].Repos = append(e.fake.Installations[0].Repos, plain)
+	e.fake.Mu.Unlock()
+	e.refresh(t)
+	e.refresh(t)
+	if g := grants(); g[1] || !g[3] {
+		t.Errorf("grants after the re-add = %v; want 3 only", g)
+	}
+	if r, ok := e.list(t)["krelinga/plain"]; !ok || r.Removed {
+		t.Errorf("control: the re-added repository is not listed as installed: %+v", r)
+	}
+	// The history outlives both.
+	if n := count(`SELECT count(*) FROM secret_access`) + count(`SELECT count(*) FROM token_grant`); n != 2 {
+		t.Errorf("history rows = %d; want secret_access and token_grant kept", n)
+	}
+	if dropped != 1 {
+		t.Errorf("GrantsDropped called %d times; want still 1: nothing more was deleted", dropped)
+	}
+}
+
 // A refresh that fails changes nothing and says why — in GitHub's words,
 // which name the problem without carrying a credential.
 func TestFailedRefreshKeepsTheCache(t *testing.T) {

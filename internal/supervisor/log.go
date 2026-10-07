@@ -2,6 +2,8 @@ package supervisor
 
 import (
 	"regexp"
+	"slices"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -30,9 +32,17 @@ type Line struct {
 // redacted. The status block Claude Code reprints in place (Spike 02: twelve
 // times in a 6.7 KB capture) would otherwise fill the ring with copies, so a
 // line identical to one of the last few is not kept again.
+//
+// What it masks is the ring's own, not each caller's: the literal values come
+// from the source it was made with, asked afresh on every Write, Flush and
+// Mark, and every line reaches the ring through add, which masks them. So no
+// path in — a terminated line, the held-back tail flushed at exit, on a stop
+// or at a hang gate, or a mark — can store a line unmasked, and no call site
+// has a list to forget to pass. (A Flush once passed nil and stored a final
+// unterminated line with a granted secret's value in clear.)
 type Ring struct {
-	// Max bounds the ring by the bytes of text it holds.
-	Max int
+	max    int
+	values func() []string
 
 	mu      sync.Mutex
 	lines   []Line
@@ -40,19 +50,61 @@ type Ring struct {
 	seq     int64
 	pending []byte
 	recent  []string
+	// masks is every literal value values has returned in this ring's life,
+	// longest first. It never shrinks: a value rotated out or a grant
+	// revoked is still in a running server's environment until it is
+	// restarted (§10.3's needs_supervisor_restart), and a source that fails
+	// for a moment (an undeliverable snapshot) must not unmask what it
+	// masked before.
+	masks []string
+}
+
+// NewRing returns a ring bounded at max bytes of text (0: 1 MB) that masks,
+// beside the credential patterns, every value values returns — a
+// workspace's granted secrets' values. values may be nil, and is never
+// called with the ring's lock held.
+func NewRing(max int, values func() []string) *Ring {
+	return &Ring{max: max, values: values}
+}
+
+// current asks the source for the values to mask now. Called before r.mu is
+// taken, so a slow source never blocks a reader of the ring.
+func (r *Ring) current() []string {
+	if r.values == nil {
+		return nil
+	}
+	return r.values()
+}
+
+func (r *Ring) mergeLocked(vals []string) { // r.mu held
+	added := false
+	for _, v := range vals {
+		if len(v) < minMask || slices.Contains(r.masks, v) {
+			continue
+		}
+		r.masks = append(r.masks, v)
+		added = true
+	}
+	if added {
+		// Longest first, so a value that contains another is masked whole
+		// rather than left with its remainder showing.
+		sort.SliceStable(r.masks, func(i, j int) bool { return len(r.masks[i]) > len(r.masks[j]) })
+	}
 }
 
 const (
+	minMask     = 4    // the shortest literal value Redact masks
 	maxLine     = 2000 // bytes of text kept per line
 	maxPending  = 8 << 10
 	recentLines = 16
 )
 
-// Write adds terminal output. redact masks extra literal values — the
-// workspace's own secret values — beside the fixed token patterns.
-func (r *Ring) Write(now time.Time, b []byte, redact []string) {
+// Write adds terminal output.
+func (r *Ring) Write(now time.Time, b []byte) {
+	vals := r.current()
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	r.mergeLocked(vals)
 	r.pending = append(r.pending, b...)
 	cut := lastBreak(r.pending)
 	var complete []byte
@@ -66,31 +118,35 @@ func (r *Ring) Write(now time.Time, b []byte, redact []string) {
 		return
 	}
 	for _, l := range strings.FieldsFunc(visible(complete), func(c rune) bool { return c == '\n' }) {
-		r.add(now, l, redact)
+		r.add(now, l)
 	}
 }
 
 // Flush adds whatever partial line is held back: the process has ended and no
-// more of it is coming.
-func (r *Ring) Flush(now time.Time, redact []string) {
+// more of it is coming, or it waits at a prompt that has no line end.
+func (r *Ring) Flush(now time.Time) {
+	vals := r.current()
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	r.mergeLocked(vals)
 	if len(r.pending) == 0 {
 		return
 	}
 	text := visible(r.pending)
 	r.pending = nil
 	for _, l := range strings.FieldsFunc(text, func(c rune) bool { return c == '\n' }) {
-		r.add(now, l, redact)
+		r.add(now, l)
 	}
 }
 
-func (r *Ring) add(now time.Time, l string, redact []string) { // r.mu held
+// add is the one way a line enters the ring, and it masks: the credential
+// patterns and every value in masks.
+func (r *Ring) add(now time.Time, l string) { // r.mu held
 	l = strings.TrimRight(l, " \t")
 	if strings.TrimSpace(l) == "" {
 		return
 	}
-	l = Redact(l, redact)
+	l = Redact(l, r.masks)
 	if len(l) > maxLine {
 		cut := maxLine
 		for cut > 0 && !utf8.RuneStart(l[cut]) {
@@ -110,7 +166,7 @@ func (r *Ring) add(now time.Time, l string, redact []string) { // r.mu held
 	r.seq++
 	r.lines = append(r.lines, Line{N: r.seq, At: now.UTC(), Text: l})
 	r.size += len(l)
-	max := r.Max
+	max := r.max
 	if max <= 0 {
 		max = 1 << 20
 	}
@@ -121,12 +177,14 @@ func (r *Ring) add(now time.Time, l string, redact []string) { // r.mu held
 }
 
 // Mark adds a line of Drydock's own — "restarting", "stopped" — so the log
-// reads as one story. Not redacted beyond the patterns: it is Drydock's text.
+// reads as one story. It is Drydock's text, and masked like any other line.
 func (r *Ring) Mark(now time.Time, text string) {
+	vals := r.current()
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	r.mergeLocked(vals)
 	r.recent = nil // a mark separates two runs; a repeated line after it is news
-	r.add(now, "— "+text, nil)
+	r.add(now, "— "+text)
 	r.recent = nil
 }
 
@@ -170,7 +228,7 @@ var tokenPatterns = []*regexp.Regexp{
 // the log unreadable and protect nothing.
 func Redact(s string, values []string) string {
 	for _, v := range values {
-		if len(v) >= 4 {
+		if len(v) >= minMask {
 			s = strings.ReplaceAll(s, v, "[redacted]")
 		}
 	}

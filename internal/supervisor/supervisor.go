@@ -167,7 +167,10 @@ type Manager struct {
 	// Capacity and the pid file are filled in here.
 	Spec func(ctx context.Context, workspaceID string) (container.SessionSpec, error)
 	// Redact returns literal values to mask in a workspace's log — its
-	// granted secrets' values. Nil masks the credential patterns only.
+	// granted secrets' values. Nil masks the credential patterns only. The
+	// workspace's log ring asks it on every write, flush and mark (read
+	// when asked, so it may be set after the Manager is made), and keeps
+	// masking every value it has ever returned.
 	Redact func(ctx context.Context, workspaceID string) []string
 	// Identity reports the stored Claude identity verdict (§7.3) and
 	// whether there is one: the server wires identity.Watch.Read. Nil reads
@@ -187,6 +190,20 @@ type Manager struct {
 	closed bool
 	base   context.Context
 	cancel context.CancelFunc
+}
+
+// redactValues is a workspace's log ring's source of values to mask.
+func (m *Manager) redactValues(workspaceID string) func() []string {
+	return func() []string {
+		if m.Redact == nil {
+			return nil
+		}
+		// Not the loop's context: the ring outlives a run, and a flush
+		// after a cancelled run must still be masked.
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		return m.Redact(ctx, workspaceID)
+	}
 }
 
 func (m *Manager) logf(format string, args ...any) {
@@ -287,7 +304,7 @@ func (m *Manager) launchLocked(ctx context.Context, workspaceID string) error { 
 	}
 	ring := m.logs[workspaceID]
 	if ring == nil {
-		ring = &Ring{Max: m.policy().LogBytes}
+		ring = NewRing(m.policy().LogBytes, m.redactValues(workspaceID))
 		m.logs[workspaceID] = ring
 	}
 	prev := m.sups[workspaceID]

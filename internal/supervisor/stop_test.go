@@ -243,3 +243,83 @@ while :; do sleep 0.05; done
 		t.Error("control: the environment id is not in the database, so the sweep proves nothing")
 	}
 }
+
+// Redact by default, to the last byte: what a server prints after its last
+// line break — its parting words before it exits, the tail it was writing
+// when it was stopped, the prompt it hangs at — is held back until a Flush,
+// and a Flush masks the workspace's secret values exactly as a terminated
+// line does. The control, in each case, is a terminated line carrying the
+// same value, masked; and the unterminated line's own text must be present,
+// so the test fails if the flushed line is missing as well as if it is in
+// clear.
+func TestTheLogIsRedactedToItsLastLine(t *testing.T) {
+	const secret = "S3CR3T-CANARY-VALUE-41c7"
+	const served = "printf 'Environment ID: env_01REDACTED000000000000000\\r\\n    Capacity: 0/4 · x\\r\\n'\n"
+	cases := []struct {
+		name   string
+		opt    rigOpt
+		script func(r *rig) string
+		end    func(r *rig)
+	}{{
+		// The server exits on its own, mid-line: flushed when the run ends.
+		name: "exit",
+		opt:  func(_ *rig, p *Policy) { p.Budget = 0 },
+		script: func(*rig) string {
+			return served + "printf 'control " + secret + " terminated\\r\\n'\n" +
+				"printf 'fatal: " + secret + " no newline'\nsleep 0.3\nexit 1\n"
+		},
+		end: func(r *rig) { r.waitState(Degraded, ReasonBudgetSpent) },
+	}, {
+		// Drydock stops it mid-line: flushed when the stopped run ends.
+		name: "stop",
+		script: func(r *rig) string {
+			return served + "printf 'control " + secret + " terminated\\r\\n'\n" +
+				"printf 'stopping: " + secret + " no newline'\n" +
+				": > '" + filepath.Join(r.dir, "printed") + "'\nwhile :; do sleep 0.05; done\n"
+		},
+		end: func(r *rig) {
+			r.waitState(Serving, ReasonServing)
+			r.waitFor(5*time.Second, "the unterminated line printed", func() bool {
+				_, err := os.Stat(filepath.Join(r.dir, "printed"))
+				return err == nil
+			})
+			time.Sleep(200 * time.Millisecond) // and read off the terminal
+			if err := r.m.Stop(context.Background(), wsID); err != nil {
+				r.t.Fatal(err)
+			}
+		},
+	}, {
+		// It never announces an environment and waits mid-line: flushed at
+		// the gate, so the log shows what it waits at.
+		name: "gate",
+		opt:  func(_ *rig, p *Policy) { p.GateTimeout = 500 * time.Millisecond; p.Budget = 0 },
+		script: func(*rig) string {
+			return "printf 'control " + secret + " terminated\\r\\n'\n" +
+				"printf 'waiting: " + secret + " no newline'\nwhile :; do sleep 0.05; done\n"
+		},
+		end: func(r *rig) { r.waitState(Degraded, ReasonBudgetSpent) },
+	}}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var opts []rigOpt
+			if tc.opt != nil {
+				opts = append(opts, tc.opt)
+			}
+			r := newRig(t, opts...)
+			r.m.Redact = func(context.Context, string) []string { return []string{secret} }
+			r.script("claude", tc.script(r))
+			r.start()
+			tc.end(r)
+			log := r.logText()
+			if !strings.Contains(log, "control [redacted] terminated") {
+				t.Errorf("control: the terminated line is not in the log, masked:\n%s", log)
+			}
+			if !strings.Contains(log, "[redacted] no newline") {
+				t.Errorf("the unterminated last line is not in the log, masked:\n%s", log)
+			}
+			if strings.Contains(log, secret) {
+				t.Errorf("the secret's value is in the log:\n%s", log)
+			}
+		})
+	}
+}

@@ -141,7 +141,13 @@ func (s *Store) open(id string, ct, nonce []byte) (string, error) {
 	return string(pt), nil
 }
 
-func (s *Store) invalidate() {
+// Invalidate drops the decrypted snapshot, so the next Resolve rebuilds it
+// from the tables. Every write here calls it; so must anything else that
+// deletes secret_grant rows — the catalog and a workspace's removal, when a
+// repository dropped from the installation is released — or the broker
+// keeps serving the deleted grants from memory to a repository re-added
+// under the same id.
+func (s *Store) Invalidate() {
 	s.mu.Lock()
 	s.snap = nil
 	s.mu.Unlock()
@@ -389,7 +395,7 @@ func (s *Store) put(ctx context.Context, name string, value *string, reach, desc
 	if err := tx.Commit(); err != nil {
 		return PutResult{}, err
 	}
-	s.invalidate()
+	s.Invalidate()
 
 	res.Stale = Stale{NewCommands: []StaleWorkspace{}, NeedsSupervisorRestart: []StaleWorkspace{}}
 	if res.Rotated {
@@ -465,7 +471,7 @@ func (s *Store) Delete(ctx context.Context, name string) error {
 	if n, _ := res.RowsAffected(); n == 0 {
 		return ErrNotFound
 	}
-	s.invalidate()
+	s.Invalidate()
 	s.emit(ctx, "secret.deleted", "Deleted the secret "+name+".", map[string]any{"name": name})
 	s.recheck(ctx)
 	return nil
@@ -535,7 +541,7 @@ func (s *Store) SetGrants(ctx context.Context, name string, repoIDs []int64, all
 	if err := tx.Commit(); err != nil {
 		return Meta{}, err
 	}
-	s.invalidate()
+	s.Invalidate()
 	m, err := s.Get(ctx, name)
 	if err != nil {
 		return Meta{}, err

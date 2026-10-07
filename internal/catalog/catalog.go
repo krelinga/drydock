@@ -19,6 +19,7 @@ import (
 
 	"github.com/krelinga/drydock/internal/events"
 	"github.com/krelinga/drydock/internal/github"
+	"github.com/krelinga/drydock/internal/store"
 	"github.com/krelinga/drydock/internal/sys"
 )
 
@@ -38,6 +39,11 @@ type Catalog struct {
 	Events   *events.Log
 	Clock    sys.Clock
 	Interval time.Duration
+	// GrantsDropped is called after a refresh commits that deleted secret
+	// grants, so the secrets store rebuilds the snapshot the broker serves
+	// from (secrets.Store.Invalidate). Without it a re-added repository
+	// would be served the grants this refresh deleted, from memory.
+	GrantsDropped func()
 
 	// one refresh at a time: a manual refresh during the periodic one joins
 	// it rather than racing it.
@@ -222,33 +228,29 @@ func (c *Catalog) refresh(ctx context.Context) (Result, error) {
 		if listed[id] {
 			continue
 		}
-		// Kept, and marked, while a workspace holds it; otherwise gone.
-		var held int
-		if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM workspace WHERE repository_id = ?`, id).Scan(&held); err != nil {
+		// Marked removed. Kept, with its grants, while a workspace holds it
+		// (§12); otherwise deleted with them, below.
+		if _, err := tx.ExecContext(ctx,
+			`UPDATE repository SET removed_at = coalesce(removed_at, ?) WHERE id = ?`, now, id); err != nil {
 			return Result{}, err
-		}
-		if held > 0 {
-			if _, err := tx.ExecContext(ctx,
-				`UPDATE repository SET removed_at = coalesce(removed_at, ?) WHERE id = ?`, now, id); err != nil {
-				return Result{}, err
-			}
-		} else {
-			// Its secret grants go with it — secret_grant references the
-			// row, so without this the delete fails and every later
-			// refresh with it. A repository that comes back is granted
-			// nothing: default deny (§10.1) is the right state for a
-			// repository the operator last saw leave.
-			if _, err := tx.ExecContext(ctx, `DELETE FROM secret_grant WHERE repository_id = ?`, id); err != nil {
-				return Result{}, err
-			}
-			if _, err := tx.ExecContext(ctx, `DELETE FROM repository WHERE id = ?`, id); err != nil {
-				return Result{}, err
-			}
 		}
 		res.Removed++
 	}
+	// Every removed row nothing holds goes now, with its secret grants —
+	// the ones just marked, and any marked earlier whose workspace has
+	// since gone (a delete takes its row too, but a row left by an older
+	// release, or by a delete cut off before its transaction, is swept
+	// here). A repository that comes back is then granted nothing: default
+	// deny (§10.1) is the right state for one the operator last saw leave.
+	dropped, err := store.DropReleasedRepositories(ctx, tx)
+	if err != nil {
+		return Result{}, err
+	}
 	if err := tx.Commit(); err != nil {
 		return Result{}, err
+	}
+	if dropped > 0 && c.GrantsDropped != nil {
+		c.GrantsDropped()
 	}
 	res.Count = len(rows)
 	return res, nil

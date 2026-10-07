@@ -365,7 +365,7 @@ func (e *env) insertRaw(t *testing.T, id, name, value string, repo int64) {
 	if _, err := e.db.ExecContext(ctx, `INSERT INTO secret_grant (secret_id, repository_id) VALUES (?, ?)`, id, repo); err != nil {
 		t.Fatal(err)
 	}
-	e.s.invalidate()
+	e.s.Invalidate()
 }
 
 func (e *env) deliveryEvents(t *testing.T) []string {
@@ -524,7 +524,7 @@ func TestAADIsTheSecretID(t *testing.T) {
 	e.db.QueryRow(`SELECT ciphertext, nonce FROM secret WHERE name = 'TWO'`).Scan(&ct2, &n2)
 	e.db.ExecContext(ctx, `UPDATE secret SET ciphertext = ?, nonce = ? WHERE name = 'ONE'`, ct2, n2)
 	e.db.ExecContext(ctx, `UPDATE secret SET ciphertext = ?, nonce = ? WHERE name = 'TWO'`, ct1, n1)
-	e.s.invalidate()
+	e.s.Invalidate()
 	got, err := e.s.Resolve(ctx, 101)
 	if err == nil || len(got) != 0 {
 		t.Fatalf("swapped rows delivered %q", names(got))
@@ -664,7 +664,7 @@ func TestUndeliverableRowFailsClosed(t *testing.T) {
 	ct, nonce, _ := e.s.seal(id, "hunter2\nGH_TOKEN ghp_forged")
 	e.db.ExecContext(ctx, `INSERT INTO secret (id, name, ciphertext, nonce, reach) VALUES (?, 'FORGED', ?, ?, 'x')`, id, ct, nonce)
 	e.db.ExecContext(ctx, `INSERT INTO secret_grant (secret_id, repository_id) VALUES (?, 101)`, id)
-	e.s.invalidate()
+	e.s.Invalidate()
 	if got, err := e.s.Resolve(ctx, 101); err == nil || len(got) != 0 {
 		t.Errorf("a row with a newline delivered %q", names(got))
 	}
