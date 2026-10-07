@@ -50,7 +50,6 @@ describe('one fault, ten cards', () => {
   it.each([
     ['blanked', 'Signed out. Sign in again.'],
     ['absent', 'No one has signed in yet.'],
-    ['expired', 'The Claude login has expired. Sign in again.'],
   ] as const)('%s: one banner, one button, every running card waiting, the failed card its own', async (state, title) => {
     fleet(state)
     const { wrapper } = await mountApp('/')
@@ -82,7 +81,7 @@ describe('one fault, ten cards', () => {
   // the very cards that would carry ten Restart session server buttons. The
   // override drops the session half, and the waiting sentence is said once
   // per card, by the identity note, never also by the card's own line.
-  it.each(['blanked', 'absent', 'expired'] as const)('%s with session servers: one waiting sentence per card, no restart button', async (state) => {
+  it.each(['blanked', 'absent'] as const)('%s with session servers: one waiting sentence per card, no restart button', async (state) => {
     const b = fleet(state)
     b.supervisor = true
     for (const w of Object.values(b.workspaces)) {

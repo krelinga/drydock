@@ -802,7 +802,10 @@ func (s *session) finish(p *Proc, buf []byte, out outcome) {
 		return
 	}
 	if m.Identity != nil {
-		ictx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+		// Under the manager's own context, which Shutdown ends: the check
+		// must not outlive the database it writes to. The watch bounds its
+		// own reads, so this is only a backstop.
+		ictx, cancel := context.WithTimeout(m.base, 5*time.Minute)
 		defer cancel()
 		if err := m.Identity.LoggedIn(ictx, *v.EndedAt); err != nil {
 			m.logf("drydock: login %s: the check after the login failed: %v", v.ID, err)

@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/krelinga/drydock/internal/config"
 	"github.com/krelinga/drydock/internal/container"
 	"github.com/krelinga/drydock/internal/events"
 	"github.com/krelinga/drydock/internal/reconcile"
@@ -73,6 +74,14 @@ func prefix(t *testing.T) string {
 // no test touches another's login, or the devcontainer's.
 func claudeVolume(p string) string { return p + ".claude" }
 
+// manager is the container manager as the server builds it: this test's
+// prefix, the pinned cleanup image, and this process's uid as the owner of
+// the shared credential volume (§7.1).
+func manager(p string) container.Manager {
+	return container.Manager{Run: subproc.Exec{}, LabelPrefix: p, CleanupImage: config.DefaultCleanupImage,
+		ClaudeUID: os.Getuid(), ClaudeGID: os.Getgid()}
+}
+
 // docker runs a docker command and returns its stdout. Stdout only: on a
 // cold cache `docker run` reports the image pull on stderr, and mixing the two
 // glued "Unable to find image…" onto a container id in CI.
@@ -111,7 +120,7 @@ func setup(t *testing.T, p string) (*reconcile.Reconciler, *workspace.Store) {
 	log := events.New(db.DB, env.Clock)
 	ws := &workspace.Store{DB: db.DB, Events: log, Env: env, Root: "/srv/drydock/ws", Cap: 10}
 	return &reconcile.Reconciler{Workspaces: ws, Events: log,
-		Containers: container.Manager{Run: subproc.Exec{}, LabelPrefix: p}}, ws
+		Containers: manager(p)}, ws
 }
 
 // A lost database: a running container with this instance's labels and no

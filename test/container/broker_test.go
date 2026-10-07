@@ -23,7 +23,6 @@ import (
 	"github.com/krelinga/drydock/internal/github/githubtest"
 	"github.com/krelinga/drydock/internal/secrets"
 	"github.com/krelinga/drydock/internal/store"
-	"github.com/krelinga/drydock/internal/subproc"
 	"github.com/krelinga/drydock/internal/sys"
 	"github.com/krelinga/drydock/internal/workspace"
 )
@@ -115,7 +114,7 @@ func TestWorkspaceContainerReachesOnlyItsOwnRepository(t *testing.T) {
   "runArgs": ["--network=host"]
 }`), 0o644)
 
-	m := container.Manager{Run: subproc.Exec{}, LabelPrefix: p}
+	m := manager(p)
 	// The helper answers only for GitHub's host; the fake is elsewhere. Given
 	// to exec as well as up: up's --remote-env does not persist (see Exec).
 	remoteEnv := map[string]string{"DRYDOCK_GITHUB_HOST": host}

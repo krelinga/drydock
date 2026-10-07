@@ -10,6 +10,10 @@
 //     file, and the UI must not collapse them again. Blanked: everyone just
 //     lost access. Absent: nobody ever had it — the expected first run.
 //   - a blanked credential is not an expired one: no countdown, no "expired".
+//   - expired is not a fault at all. It dates the access token, which the
+//     next session server renews from the live refresh token beside it
+//     (design §7.3, Spike 00), so it gets no banner, no card overlay and no
+//     button; a login whose refresh token is dead is blanked, not expired.
 //   - one cause, one message, one button. The banner carries the only Sign in
 //     to Claude; a card shows what the login broke and carries no button for
 //     it, and a card whose fault is its own (a failed build) is left alone.
@@ -28,7 +32,7 @@ export const SIGN_IN_TARGET = { path: '/settings', hash: '#claude' } as const
 export const SIGN_IN_LABEL = 'Sign in to Claude'
 
 export interface IdentityBanner {
-  state: 'expiring' | 'expired' | 'blanked' | 'absent' | 'unknown'
+  state: 'expiring' | 'blanked' | 'absent' | 'unknown'
   tone: 'warn' | 'bad'
   title: string
   body: string
@@ -55,11 +59,9 @@ export function identityBanner(id: ClaudeIdentity | null, now: number = Date.now
       }
     }
     case 'expired':
-      return {
-        state: 'expired', tone: 'bad', dismissible: false, action: signIn,
-        title: 'The Claude login has expired. Sign in again.',
-        body: 'Session servers cannot run until someone signs in. One sign-in fixes every workspace.',
-      }
+      // The access token has lapsed; the refresh token is live and the next
+      // session server renews it. Nothing for the operator to do.
+      return null
     case 'blanked':
       return {
         state: 'blanked', tone: 'bad', dismissible: false, action: signIn,
@@ -102,7 +104,6 @@ export function cardOverlay(id: ClaudeIdentity | null, state: WorkspaceState | n
   switch (id.state) {
     case 'expiring':
       return { kind: 'dot', text: 'Claude login expiring' }
-    case 'expired':
     case 'blanked':
     case 'absent':
       return { kind: 'waiting', text: 'Waiting on Claude sign-in.' }
@@ -119,7 +120,7 @@ export function identitySentence(id: ClaudeIdentity | null): string {
     case 'expiring':
       return 'Signed in, and the login expires soon.'
     case 'expired':
-      return 'The login has expired.'
+      return 'Signed in. The access token has lapsed; the next session server to start renews it.'
     case 'blanked':
       return 'Signed out. Sign in again.'
     case 'absent':

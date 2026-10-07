@@ -35,7 +35,7 @@ func fakeDocker(dir string) string {
 dir='` + dir + `'
 st="$dir/containers"
 hs="$dir/helpers"
-{ echo docker; printf '%s\n' "$@"; echo @@; } >> "$dir/argv"
+printf '%s\n' docker "$@" @@ >> "$dir/argv" # one write: concurrent calls (a job's beside a sweep's) must not interleave
 touch "$st" "$hs"
 if [ -e "$dir/docker-fail-$1" ]; then echo "docker $1: the daemon said no" >&2; exit 1; fi
 case "$1" in
@@ -71,9 +71,17 @@ rm)
     awk -v id="$id" '$1!=id' "$hs" > "$hs.t" && mv "$hs.t" "$hs"
   done ;;
 run)
+  owner=
   for a in "$@"; do
     case "$a" in type=bind,source=*) src=${a#type=bind,source=}; src=${src%%,target=*} ;; esac
+    case "$a" in *.volume-owner=*) owner=1 ;; esac
   done
+  if [ -n "$owner" ]; then
+    # Step 4's owner helper: its answer is the test's.
+    [ -e "$dir/owner-out" ] && cat "$dir/owner-out"
+    [ -e "$dir/owner-exit" ] && exit "$(cat "$dir/owner-exit")"
+    exit 0
+  fi
   find "$src" -mindepth 1 -delete ;;
 volume)
   # Volumes as files, vols/<name>.json being what inspect prints; create of
@@ -1102,7 +1110,7 @@ func TestDeleteFallsBackToTheHelperContainer(t *testing.T) {
 	runs := func() [][]string {
 		var out [][]string
 		for _, c := range e.cli.callsTo(t, "docker") {
-			if len(c) > 1 && c[1] == "run" {
+			if len(c) > 1 && c[1] == "run" && !strings.Contains(strings.Join(c, " "), ".volume-owner=") { // cleanup helpers, not step 4's owner helper
 				out = append(out, c[1:])
 			}
 		}

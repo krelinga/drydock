@@ -35,8 +35,12 @@ type Manager struct {
 	// test run — never sees this one's containers.
 	LabelPrefix string
 	// CleanupImage is config.CleanupImage: the digest-pinned image a delete
-	// runs to remove what the drydock user cannot (cleanup.go).
+	// runs to remove what the drydock user cannot (cleanup.go), and the
+	// image the credential volume's owner helper runs (volumeowner.go).
 	CleanupImage string
+	// ClaudeUID and ClaudeGID own the shared credential volume: Drydock's
+	// own, which every workspace's remote user is given (volumeowner.go).
+	ClaudeUID, ClaudeGID int
 }
 
 // Label keys, under the prefix. Workspace is the id-label `up` matches on;

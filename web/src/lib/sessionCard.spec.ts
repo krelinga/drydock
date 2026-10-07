@@ -88,7 +88,7 @@ describe('the card, supervisor half (§6.1)', () => {
 })
 
 describe('one fault, ten cards (§6.6)', () => {
-  const signedOut: FleetLogin[] = ['blanked', 'absent', 'expired']
+  const signedOut: FleetLogin[] = ['blanked', 'absent']
 
   it.each(signedOut)('%s: every session-dependent card drops its session line and button (the waiting sentence is the identity note’s)', (fleet) => {
     const cards = [
@@ -106,8 +106,10 @@ describe('one fault, ten cards (§6.6)', () => {
     expect(cardStatus(withSup('degraded', 'bad_command_line'), fleet).line).toBe('Drydock built a bad command line')
   })
 
-  it('the control: ok and expiring leave every card its own row', () => {
-    for (const fleet of ['ok', 'expiring', null] as FleetLogin[]) {
+  it('the control: ok, expiring and expired leave every card its own row', () => {
+    // Expired is the access token's lapse, which a starting server renews:
+    // the supervisor starts servers under it, so the cards say what they do.
+    for (const fleet of ['ok', 'expiring', 'expired', null] as FleetLogin[]) {
       expect(cardStatus(withSup('degraded', 'budget_spent'), fleet).action).toBe('restart_session')
       expect(cardStatus(serving(), fleet).action).toBe('open')
     }

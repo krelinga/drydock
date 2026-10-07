@@ -149,7 +149,7 @@ func seedVolume(e *env, json string) {
 func (c *fakeCLI) runner(t *testing.T) subproc.Runner {
 	t.Helper()
 	argv := filepath.Join(c.dir, "argv")
-	script := "#!/bin/sh\n{ printf '%s\\n' \"$@\"; echo @@; } >> '" + argv + "'\ncase \"$1\" in\n" +
+	script := "#!/bin/sh\nprintf '%s\\n' \"$@\" @@ >> '" + argv + "'\ncase \"$1\" in\n" +
 		"read-configuration)\n" + c.readConfig + "\n;;\n" +
 		"up)\n" + c.up + "\n;;\n" +
 		"exec)\n" + c.exec + "\n;;\n" +
@@ -251,7 +251,8 @@ func newEnv(t *testing.T, setup ...func(*githubtest.Fake)) *env {
 		Workspaces: ws, Events: log, Broker: b,
 		Cloner: &clone.Cloner{DB: db.DB, GitHub: &github.Client{AppID: 4242, Key: key, BaseURL: f.URL, Clock: clock},
 			Runner: subproc.Exec{}, BaseURL: f.URL},
-		Containers:        container.Manager{LabelPrefix: "drydock.test.provision"},
+		Containers: container.Manager{LabelPrefix: "drydock.test.provision",
+			CleanupImage: "busybox:1.37.0@sha256:" + strings.Repeat("a", 64), ClaudeUID: 998, ClaudeGID: 997},
 		Feature:           feature,
 		FeatureOptions:    map[string]any{"botName": "krelinga-drydock-dev[bot]", "botEmail": "1+x[bot]@users.noreply.github.com"},
 		ClaudeVolume:      claudeVolume,
@@ -591,6 +592,14 @@ func TestEachRealStepNamesItsFailure(t *testing.T) {
 			detail: "is not a plain local Docker volume",
 			break_: func(e *env) {
 				seedVolume(e, `{"Name":"`+claudeVolume+`","Driver":"local","Labels":{"drydock.test.provision.claude-config":"true"},"Options":{"type":"nfs","device":":/claude"}}`)
+			}},
+		// A volume another uid has written to: the owner helper's refusal,
+		// with that uid named.
+		{name: "credential_volume owner", repo: alpha, step: workspace.StepCredentialVolume,
+			detail: "holds files that belong to uid 1000, not to Drydock's uid",
+			break_: func(e *env) {
+				os.WriteFile(filepath.Join(e.cli.dir, "owner-out"), []byte("1000\n"), 0o600)
+				os.WriteFile(filepath.Join(e.cli.dir, "owner-exit"), []byte("4"), 0o600)
 			}},
 		{name: "credential_volume docker", repo: alpha, step: workspace.StepCredentialVolume,
 			detail: "could not create or check the shared Claude credential volume",

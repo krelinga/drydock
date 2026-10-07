@@ -222,7 +222,7 @@ export function identityView(state: IdentityState | null, expiresInMs = 30 * 864
 /** Stores a new identity and announces it, as a check that saw it would. */
 export function setIdentity(b: MockBackend, view: IdentityView): StreamEvent {
   b.identity = view
-  const level = view.state === 'blanked' || view.state === 'expired' ? 'error' : view.state === 'expiring' ? 'warn' : 'info'
+  const level = view.state === 'blanked' ? 'error' : view.state === 'expiring' ? 'warn' : 'info'
   return emit(b, 'auth.identity', { level, message: `Claude identity: ${view.state}`, data: { identity: view } })
 }
 

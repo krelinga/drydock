@@ -164,3 +164,93 @@ func TestASuccessfulHandshakeResumesAWaitingSupervisor(t *testing.T) {
 	rc.NoViolations(t)
 	lf.NoViolations(t)
 }
+
+// fixedVolume is the shared volume holding one credential file (nil: none),
+// with auth status answering as Claude Code does for it: loggedIn:true for
+// any live tokens, expired ones included (Spike 01), false otherwise.
+type fixedVolume struct{ creds []byte }
+
+func (v fixedVolume) Credentials(context.Context) ([]byte, error) { return v.creds, nil }
+
+func (v fixedVolume) AuthStatus(context.Context) ([]byte, error) {
+	if !live(v.creds) {
+		return []byte(`{"loggedIn":false,"authMethod":"none"}`), nil
+	}
+	return []byte(`{"loggedIn":true,"authMethod":"claude.ai","email":"op@example.invalid","orgId":"org"}`), nil
+}
+
+func live(creds []byte) bool {
+	var c struct {
+		O struct{ AccessToken, RefreshToken string } `json:"claudeAiOauth"`
+	}
+	return json.Unmarshal(creds, &c) == nil && c.O.AccessToken != "" && c.O.RefreshToken != ""
+}
+
+// TestAnExpiredAccessTokenStillStarts is #52's review finding: `expired`
+// means the credential file's expiresAt has passed, which dates the access
+// token — the refresh token beside it is live, and Claude Code renews the
+// access token from it as it starts (Spike 00). So the real watch, reading
+// the expired.json fixture (expiresAt an hour before the clock, both tokens
+// present), stores expired, and the supervisor starts a server under it
+// rather than parking it in awaiting_login for a sign-in nothing needs.
+//
+// The controls are the two states that really are no login: the blanked
+// tombstone and no file at all, read through the same watch, start nothing
+// and spend nothing.
+func TestAnExpiredAccessTokenStillStarts(t *testing.T) {
+	read := func(name string) []byte {
+		if name == "" {
+			return nil
+		}
+		b, err := os.ReadFile(filepath.Join("..", "..", "test", "fixtures", "credentials", name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return b
+	}
+	for _, c := range []struct {
+		fixture string
+		want    identity.State
+		starts  bool
+	}{
+		{"expired.json", identity.Expired, true},
+		{"blanked.json", identity.Blanked, false},
+		{"", identity.Absent, false},
+	} {
+		t.Run(string(c.want), func(t *testing.T) {
+			r := newRig(t)
+			r.claude(claudetest.Step{Mode: claudetest.RCServe})
+			// The fixtures' own clock: expired.json lapsed an hour before it.
+			clock := sys.NewFakeClock(time.Date(2026, 10, 4, 6, 14, 37, 0, time.UTC))
+			w := &identity.Watch{DB: r.db.DB, Events: r.log, Clock: clock, Volume: "drydock-claude-config",
+				Window: 72 * time.Hour, Source: fixedVolume{creds: read(c.fixture)}}
+			v, err := w.Check(context.Background())
+			if err != nil || v.State == nil || *v.State != c.want {
+				t.Fatalf("the watch stored %v (%v); want %s", v.State, err, c.want)
+			}
+			r.m.Identity = func(ctx context.Context) (string, bool) {
+				v, err := w.Read(ctx)
+				if err != nil || v.State == nil {
+					return "", false
+				}
+				return string(*v.State), true
+			}
+			r.start()
+			if c.starts {
+				r.waitState(Serving, ReasonServing)
+				if r.invocations() != 1 {
+					t.Errorf("%d starts; want 1", r.invocations())
+				}
+				return
+			}
+			r.waitState(AwaitingLogin, ReasonSignedOut)
+			time.Sleep(200 * time.Millisecond)
+			if n := r.invocations(); n != 0 {
+				t.Errorf("%d starts under %s", n, c.want)
+			}
+			if _, n := r.row(); n != 0 {
+				t.Errorf("restart_count %d under %s", n, c.want)
+			}
+		})
+	}
+}

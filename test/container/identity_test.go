@@ -16,7 +16,6 @@ import (
 	"github.com/krelinga/drydock/internal/classify"
 	"github.com/krelinga/drydock/internal/claudeimage"
 	"github.com/krelinga/drydock/internal/config"
-	"github.com/krelinga/drydock/internal/container"
 	"github.com/krelinga/drydock/internal/events"
 	"github.com/krelinga/drydock/internal/identity"
 	"github.com/krelinga/drydock/internal/store"
@@ -97,7 +96,7 @@ func TestIdentityWatchReadsARealVolume(t *testing.T) {
 		t.Fatalf("an unlabelled volume: %v; want a foreign_volume read error", err)
 	}
 	docker(t, "volume", "rm", vol)
-	if created, err := (container.Manager{Run: subproc.Exec{}, LabelPrefix: p}).EnsureClaudeVolume(ctx, vol); err != nil || !created {
+	if created, err := (manager(p)).EnsureClaudeVolume(ctx, vol); err != nil || !created {
 		t.Fatalf("step 4's volume: created %v, %v", created, err)
 	}
 	check(identity.Absent)

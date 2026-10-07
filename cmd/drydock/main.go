@@ -96,6 +96,7 @@ func serve(args []string) int {
 	fs.StringVar(&cfg.ClaudeBaseImage, "claude-base-image", cfg.ClaudeBaseImage, "image, pinned by digest, Drydock builds its Claude Code image from")
 	fs.DurationVar(&cfg.IdentityInterval, "identity-interval", cfg.IdentityInterval, "how often to check the shared Claude login")
 	fs.DurationVar(&cfg.IdentityExpiringWindow, "identity-expiring-window", cfg.IdentityExpiringWindow, "warn when the Claude login expires within this long")
+	fs.DurationVar(&cfg.IdentityCheckTimeout, "identity-check-timeout", cfg.IdentityCheckTimeout, "give up on each read of the shared Claude login after this long")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}

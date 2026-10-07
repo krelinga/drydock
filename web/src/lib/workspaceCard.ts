@@ -39,8 +39,13 @@ export type CardAction =
  */
 export type FleetLogin = 'ok' | 'expiring' | 'expired' | 'blanked' | 'absent' | null
 
-/** The logins under which no session server can run until someone signs in. */
-const SIGNED_OUT = new Set<FleetLogin>(['expired', 'blanked', 'absent'])
+/**
+ * The logins under which no session server can run until someone signs in.
+ * Not expired: that dates the access token, which a starting server renews
+ * from the live refresh token beside it (design §7.3), and the supervisor
+ * starts servers under it — the server's own row speaks.
+ */
+const SIGNED_OUT = new Set<FleetLogin>(['blanked', 'absent'])
 
 /**
  * What is rendered where an action would be: the action, or — when it needs a

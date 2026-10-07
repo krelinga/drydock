@@ -29,23 +29,6 @@ const LabelLogin = "login"
 // its config lives is what the workspaces will find.
 const MountPoint = container.ClaudeConfigMountPoint
 
-// prepMount is where the ownership helper sees the volume.
-const prepMount = "/claude"
-
-// prepScript is the one shell line the ownership helper runs, as root with
-// only CHOWN and FOWNER. A volume Drydock's uid already owns is left alone;
-// a fresh one — root's and empty, as `docker volume create` leaves it, with
-// no image directory to copy an owner from — is given to Drydock's uid, 0700,
-// as a workspace's first mount would have done. Anything else is somebody
-// else's volume: it prints the owner and exits 4, and nothing is changed.
-// Constant: the uid and gid arrive as validated integers in the environment.
-const prepScript = `d=` + prepMount + `; o=$(stat -c %u "$d") || exit 5; ` +
-	`if [ "$o" = "$DRYDOCK_UID" ]; then exit 0; fi; ` +
-	`if [ "$o" = 0 ] && [ -z "$(ls -A "$d")" ]; then chown "$DRYDOCK_UID:$DRYDOCK_GID" "$d" && chmod 0700 "$d" && exit 0; exit 5; fi; ` +
-	`echo "$o"; exit 4`
-
-const exitForeignOwner = 4
-
 var (
 	imageIDPattern = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
 	pinnedPattern  = regexp.MustCompile(`^[a-z0-9][a-z0-9./_:-]*@sha256:[0-9a-f]{64}$`)
@@ -53,8 +36,12 @@ var (
 )
 
 // Volumes makes the shared credential volume: container.Manager's
-// EnsureClaudeVolume, which creates it labelled and refuses a foreign or
-// non-local one (Spike 00: the refresh lock needs mkdir to be atomic).
+// EnsureClaudeVolume, which creates it labelled, refuses a foreign or
+// non-local one (Spike 00: the refresh lock needs mkdir to be atomic), gives
+// an empty one to Drydock's uid — the uid this login runs as — and refuses
+// one another uid has written to (container.ErrVolumeOwner). §6 step 4 runs
+// the same call, so a login and a create can never disagree about whose the
+// volume is.
 type Volumes interface {
 	EnsureClaudeVolume(ctx context.Context, name string) (bool, error)
 }
@@ -86,13 +73,10 @@ type DockerLauncher struct {
 	// Run runs the short docker commands; PTY starts the one on a terminal
 	// (subproc.Exec in production, the same PTY start the supervisor
 	// uses). Nil PTY is subproc.Exec{}.
-	Run     subproc.Runner
-	PTY     subproc.PTYRunner
-	Volumes Volumes
-	Image   Images
-	// PrepImage runs the ownership helper: the cleanup helper's busybox,
-	// pinned by digest.
-	PrepImage   string
+	Run         subproc.Runner
+	PTY         subproc.PTYRunner
+	Volumes     Volumes
+	Image       Images
 	Volume      string
 	LabelPrefix string
 	// UID and GID are Drydock's own, which the workspaces' remote user has.
@@ -109,11 +93,16 @@ func (d DockerLauncher) Launch(ctx context.Context, id string, cols, rows int) (
 	if !ValidID(id) {
 		return nil, &LaunchError{Problem: ProblemStart, Detail: "invalid login id"}
 	}
-	if _, err := d.Volumes.EnsureClaudeVolume(ctx, d.Volume); err != nil {
-		return nil, &LaunchError{Problem: ProblemVolume, Detail: err.Error()}
+	if err := d.check(); err != nil {
+		return nil, &LaunchError{Problem: ProblemStart, Detail: err.Error()}
 	}
-	if err := d.prepare(ctx, id); err != nil {
-		return nil, err
+	if _, err := d.Volumes.EnsureClaudeVolume(ctx, d.Volume); err != nil {
+		var oe *container.VolumeOwnerError
+		if errors.As(err, &oe) {
+			return nil, &LaunchError{Problem: ProblemVolumeOwner, Detail: err.Error(),
+				Message: fmt.Sprintf("The login could not start: the shared Claude volume holds files that belong to %s, and Drydock runs as uid %d. Every workspace runs as Drydock's uid and must be able to read the login.", oe.OwnerName(), d.UID)}
+		}
+		return nil, &LaunchError{Problem: ProblemVolume, Detail: err.Error()}
 	}
 	img, err := d.Image.Ensure(ctx)
 	if err != nil {
@@ -139,35 +128,6 @@ func (d DockerLauncher) Launch(ctx context.Context, id string, cols, rows int) (
 	return p, nil
 }
 
-// prepare gives a fresh volume to Drydock's uid, and refuses one another uid
-// owns, before Claude Code writes a file into it that the workspaces could
-// not read.
-func (d DockerLauncher) prepare(ctx context.Context, id string) error {
-	args, err := d.PrepArgs(id)
-	if err != nil {
-		return &LaunchError{Problem: ProblemVolume, Detail: err.Error()}
-	}
-	var out bytes.Buffer
-	res := d.Run.Run(ctx, subproc.Cmd{Name: "docker", Args: args, Stdout: &capped{buf: &out, max: 64}})
-	if res.Err != nil {
-		return &LaunchError{Problem: ProblemDocker, Detail: res.Err.Error()}
-	}
-	switch res.ExitCode {
-	case 0:
-		return nil
-	case exitForeignOwner:
-		owner := strings.TrimSpace(out.String())
-		if _, err := strconv.Atoi(owner); err != nil {
-			owner = "another uid"
-		} else {
-			owner = "uid " + owner
-		}
-		return &LaunchError{Problem: ProblemVolumeOwner, Detail: "volume owned by " + owner,
-			Message: fmt.Sprintf("The login could not start: the shared Claude volume belongs to %s, and Drydock runs as uid %d. Every workspace runs as Drydock's uid and must be able to read the login.", owner, d.UID)}
-	}
-	return &LaunchError{Problem: ProblemVolume, Detail: fmt.Sprintf("the ownership helper exited %d", res.ExitCode)}
-}
-
 func (d DockerLauncher) check() error {
 	if !config.ValidVolumeName(d.Volume) {
 		return fmt.Errorf("%q is not a volume name", d.Volume)
@@ -181,29 +141,6 @@ func (d DockerLauncher) check() error {
 		return fmt.Errorf("uid %d gid %d: Drydock must not run the login as root", d.UID, d.GID)
 	}
 	return nil
-}
-
-// PrepArgs is the ownership helper's argv, exported so it can be asserted.
-func (d DockerLauncher) PrepArgs(id string) ([]string, error) {
-	if err := d.check(); err != nil {
-		return nil, err
-	}
-	if !pinnedPattern.MatchString(d.PrepImage) {
-		return nil, fmt.Errorf("%q is not pinned by digest", d.PrepImage)
-	}
-	return []string{"run", "--rm",
-		"--label", d.label(id),
-		"--network", "none",
-		"--read-only",
-		"--cap-drop", "ALL", "--cap-add", "CHOWN", "--cap-add", "FOWNER",
-		"--security-opt", "no-new-privileges",
-		"--user", "0:0",
-		"--mount", "type=volume,source=" + d.Volume + ",target=" + prepMount,
-		"--env", "DRYDOCK_UID=" + strconv.Itoa(d.UID),
-		"--env", "DRYDOCK_GID=" + strconv.Itoa(d.GID),
-		"--entrypoint", "sh",
-		d.PrepImage, "-c", prepScript,
-	}, nil
 }
 
 // RunArgs is the login container's argv, exported so it can be asserted on
@@ -244,7 +181,7 @@ func (d DockerLauncher) RunArgs(image, id string) ([]string, error) {
 func (d DockerLauncher) label(id string) string { return d.LabelPrefix + "." + LabelLogin + "=" + id }
 
 // Remove implements Launcher: every container carrying this login's label,
-// the ownership helper's included, by full id.
+// by full id.
 func (d DockerLauncher) Remove(ctx context.Context, id string) error {
 	if !ValidID(id) {
 		return fmt.Errorf("%q is not a login id", id)

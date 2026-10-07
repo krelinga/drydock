@@ -11,18 +11,18 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/krelinga/drydock/internal/container"
 	"github.com/krelinga/drydock/internal/login"
 	"github.com/krelinga/drydock/internal/subproc"
 )
 
 const (
 	testImage = "sha256:" + "ab12ab12ab12ab12ab12ab12ab12ab12ab12ab12ab12ab12ab12ab12ab12ab12"
-	busybox   = "busybox:1.37.0@sha256:bdf57e528e45e4433820e045b29b4597825a1c9e38353532d90a01445013f82e"
 	loginID   = "0123456789abcdef01234567"
 )
 
 func launcher() login.DockerLauncher {
-	return login.DockerLauncher{PrepImage: busybox, Volume: "drydock-claude-config", LabelPrefix: "drydock", UID: 1000, GID: 1000}
+	return login.DockerLauncher{Volume: "drydock-claude-config", LabelPrefix: "drydock", UID: 1000, GID: 1000}
 }
 
 // pairs returns flag → values for the "--flag value" options in args.
@@ -97,35 +97,6 @@ func TestRunArgsRefuses(t *testing.T) {
 	// Control: the unmutated launcher is accepted.
 	if _, err := launcher().RunArgs(testImage, loginID); err != nil {
 		t.Error(err)
-	}
-}
-
-// TestPrepArgs: the ownership helper is root with only CHOWN and FOWNER, no
-// network, the volume alone, and a constant script.
-func TestPrepArgs(t *testing.T) {
-	args, err := launcher().PrepArgs(loginID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := flagValues(args, "--cap-add"); !slices.Equal(got, []string{"CHOWN", "FOWNER"}) {
-		t.Errorf("caps %q", got)
-	}
-	if got := flagValues(args, "--network"); !slices.Equal(got, []string{"none"}) {
-		t.Errorf("network %q", got)
-	}
-	if got := flagValues(args, "--mount"); len(got) != 1 || got[0] != "type=volume,source=drydock-claude-config,target=/claude" {
-		t.Errorf("mounts %q", got)
-	}
-	if got := flagValues(args, "--env"); !slices.Equal(got, []string{"DRYDOCK_UID=1000", "DRYDOCK_GID=1000"}) {
-		t.Errorf("env %q", got)
-	}
-	if got := flagValues(args, "--label"); !slices.Equal(got, []string{"drydock.login=" + loginID}) {
-		t.Errorf("label %q", got)
-	}
-	d := launcher()
-	d.PrepImage = "busybox:latest"
-	if _, err := d.PrepArgs(loginID); err == nil {
-		t.Error("an unpinned helper image was accepted")
 	}
 }
 
@@ -214,28 +185,31 @@ type images struct{}
 
 func (images) Ensure(context.Context) (string, error) { return testImage, nil }
 
-// TestLaunchRefusesAForeignOwner: the helper's exit 4 is a refusal naming
-// both uids, and nothing is started.
+// TestLaunchRefusesAForeignOwner: the volume's owner is decided by §6 step
+// 4's own EnsureClaudeVolume (container.ErrVolumeOwner), and a volume another
+// uid has written to is a refusal naming both uids, with nothing started.
+// Any other volume failure is the volume's problem. The control is a volume
+// that is fine, which gets as far as finding docker.
 func TestLaunchRefusesAForeignOwner(t *testing.T) {
-	f := &fakeRunner{ans: func(a []string) (string, int) { return "4242\n", 4 }}
+	f := &fakeRunner{ans: func(a []string) (string, int) { return "", 0 }}
 	d := launcher()
-	d.Run, d.Volumes, d.Image = f, volumes{}, images{}
+	d.Run, d.Image = f, images{}
+	d.Volumes = volumes{err: &container.VolumeOwnerError{Owner: "4242", UID: 1000}}
 	d.PTY = subproc.Exec{Resolver: subproc.FixedResolver{}} // no docker for the PTY: must never be reached
 	_, err := d.Launch(context.Background(), loginID, 80, 24)
 	var le *login.LaunchError
 	if !errors.As(err, &le) || le.Problem != login.ProblemVolumeOwner || !strings.Contains(le.Message, "uid 4242") || !strings.Contains(le.Message, "uid 1000") {
 		t.Fatalf("%v", err)
 	}
-	// The volume is ensured first: a failure there is the volume's problem,
-	// and no helper runs against a volume that might not be labelled.
-	f.calls = nil
+	if len(f.calls) != 0 {
+		t.Errorf("docker ran %d times for a refused volume", len(f.calls))
+	}
 	d.Volumes = volumes{err: errors.New("foreign")}
 	_, err = d.Launch(context.Background(), loginID, 80, 24)
 	if !errors.As(err, &le) || le.Problem != login.ProblemVolume || len(f.calls) != 0 {
 		t.Errorf("%v, %d docker calls", err, len(f.calls))
 	}
-	// Control: a helper that exits 0 gets as far as finding docker.
-	f.ans = func([]string) (string, int) { return "", 0 }
+	// Control.
 	d.Volumes = volumes{}
 	_, err = d.Launch(context.Background(), loginID, 80, 24)
 	if !errors.As(err, &le) || le.Problem != login.ProblemDocker {

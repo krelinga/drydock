@@ -141,6 +141,12 @@ type Config struct {
 	// expires within it is `expiring` rather than `ok`. Three days, which
 	// is when Claude Code itself starts warning (§2.4).
 	IdentityExpiringWindow time.Duration
+	// IdentityCheckTimeout bounds each read an identity check makes (the
+	// credential file, `auth status`): each is a container that should be
+	// done in seconds, and every workspace can write the file it reads, so
+	// one made never to end must cost one failed check, not the watch
+	// (§7.3). The Claude image's first build has its own, longer bound.
+	IdentityCheckTimeout time.Duration
 }
 
 // DefaultClaudeVolume is the shared Claude credential volume's name (§6).
@@ -203,6 +209,7 @@ func Default() Config {
 		ClaudeBaseImage:        DefaultClaudeBaseImage,
 		IdentityInterval:       6 * time.Hour,
 		IdentityExpiringWindow: 72 * time.Hour,
+		IdentityCheckTimeout:   2 * time.Minute,
 	}
 }
 
@@ -292,6 +299,11 @@ func (c Config) Validate() error {
 	// nothing straight to "expired" — the one warning §2.4 says to give.
 	if c.IdentityExpiringWindow <= 0 {
 		return fmt.Errorf("identity expiring window %s must be positive", c.IdentityExpiringWindow)
+	}
+	// Zero would be no bound at all — the hang it exists for — and a few
+	// seconds would fail a healthy check on a busy daemon.
+	if c.IdentityCheckTimeout < 10*time.Second {
+		return fmt.Errorf("identity check timeout %s is shorter than ten seconds: each read starts a container", c.IdentityCheckTimeout)
 	}
 	return nil
 }

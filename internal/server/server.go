@@ -124,7 +124,11 @@ func New(ctx context.Context, cfg config.Config, env sys.Env) (*Server, error) {
 
 	s := &Server{DB: db, Auth: svc, Events: events.New(db.DB, env.Clock), reconciled: make(chan struct{})}
 	s.Workspaces = &workspace.Store{DB: db.DB, Events: s.Events, Env: env, Root: cfg.WorkspaceRoot, Cap: cfg.ContainerCap}
-	containers := container.Manager{Run: subproc.Exec{}, LabelPrefix: cfg.LabelPrefix, CleanupImage: cfg.CleanupImage}
+	// Drydock's own uid owns the shared credential volume (§7.1): the dev
+	// container CLI, run as Drydock, gives every workspace's remote user
+	// this uid, and the login handshake writes the credential as it.
+	containers := container.Manager{Run: subproc.Exec{}, LabelPrefix: cfg.LabelPrefix, CleanupImage: cfg.CleanupImage,
+		ClaudeUID: os.Getuid(), ClaudeGID: os.Getgid()}
 	// The Claude Code version is this binary's, not the Feature's default:
 	// the classifiers compiled in here were recorded against it, so a
 	// Feature release under the same major tag cannot move it (§11).
@@ -232,6 +236,7 @@ func New(ctx context.Context, cfg config.Config, env sys.Env) (*Server, error) {
 	claudeImage := &claudeimage.Builder{Run: subproc.Exec{}, Base: cfg.ClaudeBaseImage, Version: classify.ClaudeCodeVersion}
 	s.Identity = &identity.Watch{DB: db.DB, Events: s.Events, Clock: env.Clock,
 		Volume: cfg.ClaudeVolume, Window: cfg.IdentityExpiringWindow, Interval: cfg.IdentityInterval,
+		Timeout: cfg.IdentityCheckTimeout,
 		Source: identity.DockerSource{Run: subproc.Exec{},
 			Image:     claudeImage,
 			FileImage: cfg.CleanupImage, Volume: cfg.ClaudeVolume, LabelPrefix: cfg.LabelPrefix},
@@ -251,7 +256,7 @@ func New(ctx context.Context, cfg config.Config, env sys.Env) (*Server, error) {
 	// credential the login writes is theirs to read.
 	s.Login = &login.Manager{Events: s.Events, Clock: env.Clock, Identity: s.Identity,
 		Launcher: login.DockerLauncher{Run: subproc.Exec{}, Volumes: containers, Image: claudeImage,
-			PrepImage: cfg.CleanupImage, Volume: cfg.ClaudeVolume, LabelPrefix: cfg.LabelPrefix,
+			Volume: cfg.ClaudeVolume, LabelPrefix: cfg.LabelPrefix,
 			UID: os.Getuid(), GID: os.Getgid()},
 		Logf: func(f string, a ...any) { fmt.Fprintf(os.Stderr, f+"\n", a...) }}
 	for name, h := range (api.ClaudeRoutes{Watch: s.Identity, Login: s.Login}).Handlers() {
@@ -324,6 +329,10 @@ func apiSocketHandler(gate api.Gate, apiMux *http.ServeMux, ui http.Handler) htt
 // write down that they were interrupted — well inside systemd's 90-second
 // stop timeout, so the service is never SIGKILLed for waiting.
 const provisionShutdownWait = 20 * time.Second
+
+// identityShutdownWait bounds how long shutdown waits for a triggered
+// identity check to end and remove its helper container.
+const identityShutdownWait = 35 * time.Second
 
 // supervisorDetachWait bounds how long shutdown waits for the supervisors to
 // let go of their terminals.
@@ -490,6 +499,10 @@ func (s *Server) Serve(ctx context.Context) error {
 	// restart reconnects them); only Drydock's terminals close.
 	s.Supervisor.Detach(supervisorDetachWait)
 	s.Login.Shutdown(provisionShutdownWait)
+	// After the login, whose last act may be a check: the checks Trigger
+	// started end here, each removing its helper, before the database
+	// closes. Run's own check ends with ctx and is waited for below.
+	s.Identity.Shutdown(identityShutdownWait)
 	if s.Broker != nil {
 		s.Broker.CloseAll()
 	}
