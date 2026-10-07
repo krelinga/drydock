@@ -27,9 +27,21 @@ else
 fi
 oneliner() { out=$(curl -fsSL "$url" | bash -s -- "$@" 2>&1); rc=$?; printf '%s\n' "$out" | sed 's/^/    /'; }
 
+# installer URL: that installer's bytes, in a file, or a failure. Read a file,
+# never `curl | grep -q`: grep -q exits at its match, curl then fails writing
+# the rest (exit 23), and pipefail turns a flag that is there into one that is
+# not — which is how v0.4.3's verify installed v0.4.2 without --ca-cert.
+installer() {
+	local f
+	f=$(mktemp) && curl -fsSL "$1" -o "$f" && [ -s "$f" ] && echo "$f"
+}
+# takes_ca_cert FILE: that installer has --ca-cert.
+takes_ca_cert() { grep -q -- '--ca-cert)' "$1"; }
+
 # Releases before --ca-cert existed read the CA from a variable instead.
+this=$(installer "$url") || { echo "FAIL could not download $url"; exit 1; }
 ca_args=(--ca-cert "$CA")
-if ! curl -fsSL "$url" | grep -q -- '--ca-cert)'; then
+if ! takes_ca_cert "$this"; then
 	ca_args=()
 	export DRYDOCK_VERIFY_CACERT="$CA"
 fi
@@ -63,7 +75,8 @@ check "the embedded UI is served" [ "$("${CURL[@]}" -o /dev/null -w '%{http_code
 # release is a draft, releases/latest is still the previous one.)
 if [ -n "${ASSETS:-}" ]; then
 	prev_url="https://github.com/$REPO/releases/latest/download/install.sh"
-	prev=$(curl -fsSL "$prev_url" | sed -n 's/^RELEASE_VERSION="\(.*\)"$/\1/p')
+	prev_sh=$(installer "$prev_url") || prev_sh=/dev/null
+	prev=$(sed -n 's/^RELEASE_VERSION="\(.*\)"$/\1/p' "$prev_sh")
 	check "the release to upgrade from is published ($prev)" grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$' <<<"$prev"
 	if [ "$prev" = "$RELEASE" ]; then
 		echo "    $RELEASE is already Latest: no previous release to upgrade from"
@@ -74,14 +87,22 @@ if [ -n "${ASSETS:-}" ]; then
 		rm -rf /etc/drydock /var/lib/drydock /usr/local/bin/drydock /usr/local/bin/drydock.previous \
 			/etc/systemd/system/drydock.service /etc/systemd/system/drydock.service.previous
 		systemctl daemon-reload
+		# As an operator with a private CA installs it: with --ca-cert, which
+		# the installer keeps in drydock.env for the no-flags upgrade below to
+		# reuse. The bytes the README pipes to bash, piped from a file.
 		prev_ca=(--ca-cert "$CA")
-		curl -fsSL "$prev_url" | grep -q -- '--ca-cert)' || prev_ca=()
-		out=$(curl -fsSL "$prev_url" | env -u DRYDOCK_DOWNLOAD_BASE DRYDOCK_VERIFY_CACERT="$CA" bash -s -- \
-			--ui-host "$UI" --cert /etc/ssl/drydock/ui.pem --key /etc/ssl/drydock/ui.key "${prev_ca[@]}" 2>&1)
+		takes_ca_cert "$prev_sh" || prev_ca=()
+		out=$(env -u DRYDOCK_DOWNLOAD_BASE DRYDOCK_VERIFY_CACERT="$CA" bash -s -- \
+			--ui-host "$UI" --cert /etc/ssl/drydock/ui.pem --key /etc/ssl/drydock/ui.key "${prev_ca[@]}" \
+			<"$prev_sh" 2>&1)
 		rc=$?
 		printf '%s\n' "$out" | sed 's/^/    /'
 		check "the previous release, $prev, installs from GitHub" [ "$rc" = 0 ]
 		check "control: it is $prev that runs" [ "$(drydock version)" = "$prev" ]
+		if takes_ca_cert "$prev_sh"; then
+			check "control: $prev was given --ca-cert, and kept it" \
+				grep -qx "DRYDOCK_CA_CERT=$CA" /etc/drydock/drydock.env
+		fi
 		printf '%s\n' "$PW" | runuser -u drydock -- drydock passwd --db /var/lib/drydock/drydock.db >/dev/null
 		jar=$(mktemp)
 		code=$("${CURL[@]}" -o /dev/null -w '%{http_code}' -c "$jar" -H "Origin: https://$UI" \
@@ -96,6 +117,7 @@ if [ -n "${ASSETS:-}" ]; then
 		oneliner
 		check "the one-liner with no flags upgrades $prev to $RELEASE" [ "$rc" = 0 ]
 		check "and says so" grep -q "upgraded Drydock $prev -> $RELEASE" <<<"$out"
+		check "and still keeps --ca-cert" grep -qx "DRYDOCK_CA_CERT=$CA" /etc/drydock/drydock.env
 		check "it is $RELEASE that runs" [ "$(drydock version)" = "$RELEASE" ]
 		pid=$(systemctl show -p MainPID --value drydock)
 		check "from the installed file" [ "/proc/$pid/exe" -ef /usr/local/bin/drydock ]
