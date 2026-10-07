@@ -578,6 +578,54 @@ func TestRemoveTakesTheSupervisorRowAndKeepsTheHistory(t *testing.T) {
 	}
 }
 
+// TestRemoveAnnouncesAReleasedRepository: when a workspace's removal takes
+// a repository row the installation had dropped, the same commit writes a
+// repo.removed event naming it, after workspace.gone — a repo.* event is
+// what makes an open catalog refetch, and without one the UI kept showing
+// the removed repository. The control is a removal whose repository is still
+// installed: workspace.gone alone, and no repo.* event.
+func TestRemoveAnnouncesAReleasedRepository(t *testing.T) {
+	ctx := context.Background()
+	f := newFixture(t)
+	kept, released := f.create(t, 1), f.create(t, 2)
+	if _, err := f.store.DB.ExecContext(ctx, `UPDATE repository SET removed_at = 'then' WHERE id = 2`); err != nil {
+		t.Fatal(err)
+	}
+	remove := func(w Workspace) []events.Event {
+		t.Helper()
+		before, _ := f.events.Since(ctx, 0)
+		f.store.Move(ctx, w.ID, Deleting, "")
+		if err := f.store.Remove(ctx, w.ID); err != nil {
+			t.Fatal(err)
+		}
+		all, _ := f.events.Since(ctx, 0)
+		var out []events.Event
+		for _, e := range all[len(before):] {
+			if e.Kind != KindState {
+				out = append(out, e)
+			}
+		}
+		return out
+	}
+
+	if got := remove(kept); len(got) != 1 || got[0].Kind != KindGone {
+		t.Errorf("control: removing a workspace of an installed repository wrote %+v; want workspace.gone alone", got)
+	}
+	got := remove(released)
+	if len(got) != 2 || got[0].Kind != KindGone || got[1].Kind != store.KindRepositoriesRemoved ||
+		got[1].WorkspaceID != "" || string(got[1].Data) != `{"repository_ids":[2]}` {
+		t.Fatalf("removing the released repository's last workspace wrote %+v", got)
+	}
+	if !strings.HasPrefix(got[1].Kind, "repo.") {
+		t.Errorf("%s is not a repo.* kind, which is what the catalog refetches on", got[1].Kind)
+	}
+	var n int
+	f.store.DB.QueryRowContext(ctx, `SELECT count(*) FROM repository WHERE id = 2`).Scan(&n)
+	if n != 0 {
+		t.Error("the event was written but the row was not removed")
+	}
+}
+
 // TestAnnotateSetsTheDetailWithoutMoving: a delete that stops part-way stays
 // deleting and says why; Annotate refuses a workspace not in the state named.
 func TestAnnotateSetsTheDetailWithoutMoving(t *testing.T) {

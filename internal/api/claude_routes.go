@@ -171,8 +171,15 @@ func (cr ClaudeRoutes) cancel(w http.ResponseWriter, r *http.Request) {
 // string, which the shape check then refuses anyway.
 func codeFromBody(body []byte) ([]byte, bool) {
 	var raw map[string]json.RawMessage
-	dec := json.NewDecoder(bytes.NewReader(body))
-	if err := dec.Decode(&raw); err != nil || dec.More() {
+	// Each RawMessage is the decoder's own copy of its bytes: zeroed too.
+	defer func() {
+		for _, v := range raw {
+			wipe(v)
+		}
+	}()
+	// Unmarshal rather than a Decoder, which would read the body into a
+	// buffer of its own that nothing zeroes; it refuses trailing data too.
+	if err := json.Unmarshal(body, &raw); err != nil {
 		return nil, false
 	}
 	v, ok := raw["code"]

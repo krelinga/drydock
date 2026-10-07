@@ -5,9 +5,12 @@ package config
 
 import (
 	"fmt"
+	"net"
 	"regexp"
 	"strings"
 	"time"
+
+	"golang.org/x/net/publicsuffix"
 )
 
 // Config is Drydock's runtime configuration. Nothing here is a credential —
@@ -22,9 +25,10 @@ type Config struct {
 	// independently of Caddy's site block (§13.3).
 	UIHost string
 	// PreviewDomain is the separate registrable domain previews are served
-	// from — "drydock-preview.net". It must not be a subdomain of UIHost:
-	// the whole cross-site boundary rests on these being different eTLD+1,
-	// and Validate refuses the mistake.
+	// from — "drydock-preview.net". It must not share UIHost's registrable
+	// domain (eTLD+1): not equal, not a subdomain, not a parent, not a
+	// sibling. The whole cross-site boundary rests on these being different
+	// sites, and Validate refuses the mistake (CrossSite).
 	PreviewDomain string
 
 	// APISocket and PreviewSocket are the two Unix sockets. Drydock binds
@@ -249,8 +253,8 @@ func (c Config) Validate() error {
 		// previews same-site, and SameSite stops separating repository
 		// code from the control plane — silently, with everything still
 		// appearing to work.
-		if c.PreviewDomain == c.UIHost || strings.HasSuffix(c.PreviewDomain, "."+c.UIHost) {
-			return fmt.Errorf("preview domain %q must be a different registrable domain from %q, not a subdomain of it", c.PreviewDomain, c.UIHost)
+		if err := CrossSite(c.UIHost, c.PreviewDomain); err != nil {
+			return err
 		}
 	}
 	if c.APISocket == c.PreviewSocket {
@@ -306,4 +310,45 @@ func (c Config) Validate() error {
 		return fmt.Errorf("identity check timeout %s is shorter than ten seconds: each read starts a container", c.IdentityCheckTimeout)
 	}
 	return nil
+}
+
+// CrossSite refuses a preview domain that is same-site with the UI host: one
+// whose registrable domain (eTLD+1, by the Public Suffix List browsers use to
+// decide SameSite) is the UI host's. Equal, subdomain, parent and sibling are
+// all the same mistake. preview.example.com beside drydock.example.com is
+// same-site, so the session cookie's SameSite=Lax stops separating repository
+// code from the control plane, silently (PF §4, §10.5; overall §13.3). A name
+// whose site cannot be decided (a public suffix itself, or empty) is refused
+// rather than guessed at; an IP address is its own site. Both names are
+// expected lowercase, which Validate checks first. The installer asks this
+// through `drydock check-preview-domain` rather than reimplementing the list.
+func CrossSite(uiHost, previewDomain string) error {
+	ui, err := site(uiHost)
+	if err != nil {
+		return fmt.Errorf("UI host %q %v, so no preview domain can be proved cross-site with it", uiHost, err)
+	}
+	pv, err := site(previewDomain)
+	if err != nil {
+		return fmt.Errorf("preview domain %q %v", previewDomain, err)
+	}
+	if ui == pv {
+		return fmt.Errorf("preview domain %q must be a different registrable domain from %q: both are on %q, which makes previews same-site with the UI", previewDomain, uiHost, ui)
+	}
+	return nil
+}
+
+// site is a host's registrable domain: the unit SameSite compares.
+func site(host string) (string, error) {
+	host = strings.TrimSuffix(host, ".")
+	if host == "" {
+		return "", fmt.Errorf("is empty")
+	}
+	if net.ParseIP(host) != nil {
+		return host, nil
+	}
+	s, err := publicsuffix.EffectiveTLDPlusOne(host)
+	if err != nil {
+		return "", fmt.Errorf("has no registrable domain (%v)", err)
+	}
+	return s, nil
 }

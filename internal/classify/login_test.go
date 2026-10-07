@@ -302,6 +302,28 @@ func leaks(s, secret string) bool {
 	return false
 }
 
+// TestValidateCodeShapeMakesNoCopy: the code is a one-time credential held in
+// a slice its caller zeroes. Converting it to a string makes an immutable
+// copy no one can zero, so the check reads the bytes in place and allocates
+// nothing — which is what this measures, on a code the length of a real one
+// (past the 32 bytes a non-escaping conversion may keep on the stack). The
+// control: the same measurement sees the copy a string conversion makes.
+func TestValidateCodeShapeMakesNoCopy(t *testing.T) {
+	code := []byte(strings.Repeat("Kq7vZ2mXwP9rT4bNe8Jd", 4) + "#" + strings.Repeat("Hs3jY8cLdF6gA1eUo5Wy", 3) + "\n")
+	var sink string
+	if n := testing.AllocsPerRun(100, func() { sink = string(code) }); n < 1 {
+		t.Fatalf("control: a string conversion measured %v allocations", n)
+	}
+	_ = sink
+	if n := testing.AllocsPerRun(100, func() {
+		if ValidateCodeShape(code) != nil {
+			t.Fatal("setup: the code is refused")
+		}
+	}); n != 0 {
+		t.Errorf("ValidateCodeShape allocated %v times per call: a copy of the code it cannot zero", n)
+	}
+}
+
 func TestValidateCodeShape(t *testing.T) {
 	// High-entropy canaries: any 6-byte window of either found in an error
 	// is a leak.
@@ -320,7 +342,7 @@ func TestValidateCodeShape(t *testing.T) {
 		"  " + l + "#" + r + "\t",
 		"a#b",
 	} {
-		if err := ValidateCodeShape(ok); err != nil {
+		if err := ValidateCodeShape([]byte(ok)); err != nil {
 			t.Errorf("%q rejected: %v", ok, err)
 		}
 	}
@@ -347,7 +369,7 @@ func TestValidateCodeShape(t *testing.T) {
 		{"non-ascii", l + "é#" + r, ErrCodeBadCharacter},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			err := ValidateCodeShape(tc.code)
+			err := ValidateCodeShape([]byte(tc.code))
 			if !errors.Is(err, tc.want) {
 				t.Fatalf("err = %v, want %v", err, tc.want)
 			}

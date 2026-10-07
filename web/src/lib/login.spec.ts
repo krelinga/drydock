@@ -47,7 +47,7 @@ describe('checkCodeShape', () => {
     const named = [...ROUTES.matchAll(/return "([a-z_]+)"\n/g)].map((m) => m[1]).filter((n) => n !== '')
     expect(new Set(named)).toEqual(new Set<CodeRule>(['empty', 'no_separator', 'half_missing', 'extra_hash', 'bad_character']))
     // classify.ValidateCodeShape's bound, which checkCodeShape copies.
-    expect(CLASSIFY).toContain('if c := code[i]; c <= 0x20 || c >= 0x7f {')
+    expect(CLASSIFY).toContain('if c <= 0x20 || c >= 0x7f {')
   })
 })
 

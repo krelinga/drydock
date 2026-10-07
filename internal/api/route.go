@@ -329,7 +329,10 @@ var Table = []Route{
 		// Consumes the one-time token, sets the host-only preview cookie,
 		// redirects to the originally requested path. Also the one place
 		// that must answer Referrer-Policy: no-referrer, because the
-		// token is in the query string (PF §7).
+		// token is in the query string (PF §7). The preview server has no
+		// SecurityHeaders, so the handler must set it itself;
+		// server.TestPreviewSessionSendsNoReferrer fails the day a handler
+		// is written without it (security review F4).
 		Auth: AuthPreviewToken,
 		Name: "preview.session", Doc: "GET /.drydock/session",
 	},

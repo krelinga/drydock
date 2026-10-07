@@ -365,6 +365,50 @@ func TestCacheAndGrants(t *testing.T) {
 	}
 }
 
+// TestATokenIsNeverServedUnrecorded: a token whose token_grant row cannot be
+// written is not served (unavailable), and is not marked recorded, so the
+// next request writes the row and serves the same cached token — one row, one
+// mint. The database fails by a trigger that refuses token_grant inserts and
+// nothing else; the control is the same request once it is dropped.
+func TestATokenIsNeverServedUnrecorded(t *testing.T) {
+	ctx := context.Background()
+	e := newEnv(t)
+	grants := func() int {
+		var n int
+		e.db.QueryRowContext(ctx, `SELECT count(*) FROM token_grant WHERE workspace_id = ?`, wsA).Scan(&n)
+		return n
+	}
+	if _, err := e.db.ExecContext(ctx, `CREATE TRIGGER refuse_grants BEFORE INSERT ON token_grant
+		BEGIN SELECT RAISE(ABORT, 'disk on fire'); END`); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 2; i++ {
+		if got := e.ask(t, wsA, "GET-TOKEN scope=gh"); got != "ERR reason=unavailable" {
+			t.Fatalf("request %d with token_grant unwritable answered %q; want ERR reason=unavailable", i, got)
+		}
+	}
+	if n := grants(); n != 0 {
+		t.Fatalf("setup: %d rows written through the trigger", n)
+	}
+	if n := e.fake.Count("POST /app/installations/77/access_tokens"); n != 1 {
+		t.Errorf("%d mints; the refused requests should share one cached token", n)
+	}
+
+	if _, err := e.db.ExecContext(ctx, `DROP TRIGGER refuse_grants`); err != nil {
+		t.Fatal(err)
+	}
+	tok := tokenOf(t, e.ask(t, wsA, "GET-TOKEN scope=gh"))
+	if n := grants(); n != 1 {
+		t.Errorf("after the database recovered: %d token_grant rows; want the retried one", n)
+	}
+	if again := tokenOf(t, e.ask(t, wsA, "GET-TOKEN scope=gh")); again != tok || grants() != 1 {
+		t.Errorf("a cache hit after the retry: same token %v, %d rows; want one row", again == tok, grants())
+	}
+	if n := e.fake.Count("POST /app/installations/77/access_tokens"); n != 1 {
+		t.Errorf("%d mints in all; want 1", n)
+	}
+}
+
 // The repository's state is read per request: archived, removed from the
 // installation, or a workspace being deleted all stop tokens — and none of
 // them reaches GitHub.

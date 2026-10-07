@@ -143,6 +143,23 @@ describe('the catalog lives off the stream', () => {
     expect(names(wrapper)).toContain('krelinga/new-one')
   })
 
+  it('repo.removed — a released repository going with its last workspace — drops it from the list', async () => {
+    const b = freshBackend({ signedIn: true })
+    const { wrapper } = await mountApp('/')
+    FakeEventSource.latest().open().pipe(b)
+    await settle()
+    const first = b.repos[0]!
+    const gone = first.full_name
+    expect(names(wrapper)).toContain(gone)
+    b.repos = b.repos.slice(1)
+    // Control: the backend changed, but nothing moves without an event.
+    await settle()
+    expect(names(wrapper)).toContain(gone)
+    emit(b, 'repo.removed', { data: { repository_ids: [first.id] } })
+    await settle()
+    expect(names(wrapper)).not.toContain(gone)
+  })
+
   it('a failed refresh is shown — even to a page loaded after it — and a good one clears it', async () => {
     const b = freshBackend({ signedIn: true })
     b.pendingRefreshes = 1

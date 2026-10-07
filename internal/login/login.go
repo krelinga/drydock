@@ -360,7 +360,7 @@ func (m *Manager) Begin(ctx context.Context) (View, error) {
 // Submit reads it and never keeps it.
 func (m *Manager) Submit(ctx context.Context, id string, code []byte) error {
 	// classify's errors are constants: no part of the code is in them.
-	if err := classify.ValidateCodeShape(string(code)); err != nil {
+	if err := classify.ValidateCodeShape(code); err != nil {
 		return &CodeError{Err: err}
 	}
 	s, err := m.find(id)

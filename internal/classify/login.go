@@ -1,6 +1,7 @@
 package classify
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"net/url"
@@ -307,7 +308,7 @@ var (
 //
 // Surrounding whitespace is trimmed before the check, because a pasted code
 // routinely carries a trailing newline. That makes the contract with the
-// caller exact: what it writes to the PTY must be strings.TrimSpace(code),
+// caller exact: what it writes to the PTY must be bytes.TrimSpace(code),
 // never the raw input, whose own newline would submit the line early.
 //
 // After trimming, the shape is design §7.2's `^[^#\s]+#[^#\s]+$`, narrowed
@@ -315,25 +316,27 @@ var (
 // into a terminal, where a control byte is a command to the line discipline
 // (`^C` kills the login, `^U` erases the line), not a character of a code.
 //
-// No error carries the code or any part of it; the messages are constants.
-func ValidateCodeShape(code string) error {
-	code = strings.TrimSpace(code)
-	if code == "" {
+// It takes bytes, and reads them in place: a string conversion would be an
+// immutable copy of a one-time credential that no one can zero, and the
+// caller's slice is zeroed after use (§13.5, redact by default). No error
+// carries the code or any part of it; the messages are constants.
+func ValidateCodeShape(code []byte) error {
+	code = bytes.TrimSpace(code)
+	if len(code) == 0 {
 		return ErrCodeEmpty
 	}
-	for i := 0; i < len(code); i++ {
-		if c := code[i]; c <= 0x20 || c >= 0x7f {
+	for _, c := range code {
+		if c <= 0x20 || c >= 0x7f {
 			return ErrCodeBadCharacter
 		}
 	}
-	switch n := strings.Count(code, "#"); {
+	switch n := bytes.Count(code, []byte{'#'}); {
 	case n == 0:
 		return ErrCodeNoSeparator
 	case n > 1:
 		return ErrCodeExtraHash
 	}
-	left, right, _ := strings.Cut(code, "#")
-	if left == "" || right == "" {
+	if i := bytes.IndexByte(code, '#'); i == 0 || i == len(code)-1 {
 		return ErrCodeHalfMissing
 	}
 	return nil

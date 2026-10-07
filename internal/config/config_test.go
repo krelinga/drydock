@@ -97,3 +97,49 @@ func TestValidateRefusesUppercaseHosts(t *testing.T) {
 		})
 	}
 }
+
+// TestValidateRefusesASameSitePreviewDomain: previews must be on a different
+// registrable domain from the UI (PF §4, §10.5), or SameSite stops separating
+// them. Equal, child, parent and sibling all share it; so do two names under a
+// private public suffix the PSL knows, while two such names under different
+// owners do not. The controls validate: genuinely different domains, and
+// siblings under a public suffix, which browsers treat as different sites.
+func TestValidateRefusesASameSitePreviewDomain(t *testing.T) {
+	base := Default()
+	base.UIOrigin, base.UIHost = "https://drydock.example.com", "drydock.example.com"
+	for _, tc := range []struct {
+		name, ui, preview string
+		ok                bool
+	}{
+		{"different domain", "drydock.example.com", "drydock-preview.net", true},
+		{"different domain, same TLD", "drydock.example.com", "example-preview.com", true},
+		{"different owners under a private suffix", "alice.github.io", "bob.github.io", true},
+		{"different registrable domain under a multi-label suffix", "drydock.example.co.uk", "preview.example2.co.uk", true},
+		{"unlisted TLD, different names", "drydock.lan", "preview.lan", true},
+		{"equal", "drydock.example.com", "drydock.example.com", false},
+		{"subdomain", "drydock.example.com", "p.drydock.example.com", false},
+		{"parent", "drydock.example.com", "example.com", false},
+		{"sibling", "drydock.example.com", "preview.example.com", false},
+		{"cousin", "drydock.home.example.com", "p.lab.example.com", false},
+		{"sibling under a multi-label suffix", "drydock.example.co.uk", "preview.example.co.uk", false},
+		{"same owner under a private suffix", "drydock.alice.github.io", "preview.alice.github.io", false},
+		{"preview is a public suffix", "drydock.example.com", "co.uk", false},
+		{"UI host is a public suffix", "github.io", "drydock-preview.net", false},
+		{"trailing dot", "drydock.example.com", "preview.example.com.", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := base
+			c.UIOrigin, c.UIHost, c.PreviewDomain = "https://"+tc.ui, tc.ui, tc.preview
+			err := c.Validate()
+			if tc.ok && err != nil {
+				t.Fatalf("control: %q beside %q refused: %v", tc.preview, tc.ui, err)
+			}
+			if !tc.ok && err == nil {
+				t.Fatalf("%q beside %q validated: previews would be same-site with the UI", tc.preview, tc.ui)
+			}
+			if !tc.ok && !strings.Contains(err.Error(), "registrable domain") {
+				t.Errorf("error %q does not say why", err)
+			}
+		})
+	}
+}

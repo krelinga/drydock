@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/krelinga/drydock/internal/config"
+	"github.com/krelinga/drydock/internal/container"
 	"github.com/krelinga/drydock/internal/github/githubtest"
 	"github.com/krelinga/drydock/internal/provision"
 	"github.com/krelinga/drydock/internal/server"
@@ -334,6 +335,24 @@ func TestStopStartRebuildDelete(t *testing.T) {
 		t.Errorf("after rebuild the socket refused: %v", err)
 	}
 
+	// The images up built for this workspace, by the names the CLI gives
+	// them. Control: up built at least one (the Feature's), so "none after
+	// the delete" below is not vacuous.
+	built, err := container.BuiltImages(clone)
+	if err != nil {
+		t.Fatal(err)
+	}
+	images := func() []string {
+		args := []string{"image", "ls", "--format", "{{.Repository}}"}
+		for _, n := range built {
+			args = append(args, "--filter", "reference="+n)
+		}
+		return strings.Fields(docker(t, args...))
+	}
+	if got := images(); len(got) == 0 {
+		t.Fatalf("control: docker lists none of %q before the delete: the CLI's names have moved", built)
+	}
+
 	// Delete: a wrong confirm first, then the right one.
 	if status, body, _ := c.do("DELETE", "/api/workspaces/"+id+"?confirm=krelinga/alph", ""); status != 400 {
 		t.Errorf("delete with a near-miss confirm: %d %s", status, body)
@@ -347,6 +366,12 @@ func TestStopStartRebuildDelete(t *testing.T) {
 	await(id)
 	if got := labelled(id); len(got) != 0 {
 		t.Errorf("after delete, docker still lists %v", got)
+	}
+	if got := images(); len(got) != 0 {
+		t.Errorf("after delete, the images up built for it are still there: %v", got)
+	}
+	if got := docker(t, "image", "ls", "-q", provision.DefaultImage); got == "" {
+		t.Errorf("the delete took the base image %s, which is not the workspace's own", provision.DefaultImage)
 	}
 	if _, err := os.Lstat(filepath.Join(cfg.WorkspaceRoot, id)); !errors.Is(err, os.ErrNotExist) {
 		t.Errorf("the workspace directory survived: %v", err)

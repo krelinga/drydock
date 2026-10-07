@@ -42,10 +42,28 @@ export const test = base.extend<{ signedIn: Page }, { stack: Stack }>({
     stack.previewTap.clear()
     await use(page)
   },
-  /** A page on the UI origin, signed in by the real sign-in route. */
+  /**
+   * A page on the UI origin, signed in by the real sign-in route.
+   *
+   * Chromium aborts every request in flight with `net::ERR_NETWORK_CHANGED`
+   * when the host's network interfaces change — which Docker does each time
+   * it creates or removes a container's veth, so a container test or a
+   * workspace build beside this tier fails a fetch here as `Failed to fetch`
+   * (measured: 1 in 380 under `--repeat-each=20` beside `go test ./...`, the
+   * trace naming ERR_NETWORK_CHANGED). That is the host, not Drydock, so the
+   * sign-in is asked once more — but only when the tap shows it never reached
+   * the server. A sign-in the server saw and refused is never retried, and it
+   * must answer 204.
+   */
   signedIn: async ({ page, stack }, use) => {
     await page.goto(`${UI}/signin`)
-    await signIn(page, stack.password)
+    const arrived = () => stack.apiTap.seen.some((s) => s.method === 'POST' && s.path === '/api/auth/session')
+    let status = await signIn(page, stack.password).catch((e: Error) => {
+      if (!/Failed to fetch/.test(e.message) || arrived()) throw e
+      return null
+    })
+    if (status === null) status = await signIn(page, stack.password)
+    expect(status, 'the fixture sign-in').toBe(204)
     await use(page)
   },
 })

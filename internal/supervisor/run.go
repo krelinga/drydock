@@ -448,6 +448,19 @@ func (m *Manager) terminate(ctx context.Context, ws string, proc subproc.Process
 	if gone(p.StopTimeout) {
 		return true, nil
 	}
+	if cerr := ctx.Err(); cerr != nil {
+		// The wait was cut short, not timed out: no SIGKILL, which is only
+		// for a server that outlived its grace period (and a docker exec on
+		// a cancelled context could not deliver one anyway). Say what
+		// happened rather than what would have.
+		m.logf("drydock: workspace %s: the stop was cancelled while waiting for the session server to exit after SIGTERM; SIGKILL was not sent", ws)
+		if proc != nil {
+			// As before the cancel was noticed here: Drydock's own end of
+			// the server, which does not reach the server itself.
+			proc.Signal(subproc.SignalKill)
+		}
+		return true, errors.Join(err, cerr)
+	}
 	m.logf("drydock: workspace %s: the session server did not exit within %s of SIGTERM; sending SIGKILL", ws, p.StopTimeout)
 	if _, kerr := m.Runtime.Signal(ctx, ws, container.SessionKill, m.PidFile); kerr != nil {
 		err = errors.Join(err, kerr)

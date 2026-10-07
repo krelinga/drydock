@@ -5,6 +5,12 @@ import (
 	"database/sql"
 )
 
+// KindRepositoriesRemoved is the event a workspace's removal writes, in the
+// same commit, when it released repository rows (data: {repository_ids}). It
+// is a repo.* kind, which is what makes an open catalog refetch (frontend
+// §4.1); a refresh that drops rows says so in its own repo.refreshed.
+const KindRepositoriesRemoved = "repo.removed"
+
 // released is every repository row the installation dropped (removed_at set)
 // that no workspace holds any more.
 const released = `SELECT id FROM repository WHERE removed_at IS NOT NULL
@@ -27,26 +33,45 @@ const released = `SELECT id FROM repository WHERE removed_at IS NOT NULL
 // and the workspace by value, with no foreign key, so "which workspaces ever
 // held this secret?" outlives both.
 //
-// It returns how many grants it deleted, so a caller can tell the secrets
-// store its decrypted snapshot is stale.
-func DropReleasedRepositories(ctx context.Context, tx *sql.Tx) (grants int64, err error) {
+// It returns the repositories it deleted, so a caller can announce them, and
+// how many grants it deleted, so a caller can tell the secrets store its
+// decrypted snapshot is stale.
+func DropReleasedRepositories(ctx context.Context, tx *sql.Tx) (repos []int64, grants int64, err error) {
+	rows, err := tx.QueryContext(ctx, released+` ORDER BY id`)
+	if err != nil {
+		return nil, 0, err
+	}
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return nil, 0, err
+		}
+		repos = append(repos, id)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, 0, err
+	}
+	if len(repos) == 0 {
+		return nil, 0, nil
+	}
 	res, err := tx.ExecContext(ctx, `DELETE FROM secret_grant WHERE repository_id IN (`+released+`)`)
 	if err != nil {
-		return 0, err
+		return nil, 0, err
 	}
 	grants, err = res.RowsAffected()
 	if err != nil {
-		return 0, err
+		return nil, 0, err
 	}
 	// An approval of host access goes the way of a grant: a repository that
 	// comes back has to be approved again. Superseded, not deleted, because
 	// the approvals are history.
 	if _, err := tx.ExecContext(ctx, `UPDATE config_approval SET superseded_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
 		WHERE superseded_at IS NULL AND repository_id IN (`+released+`)`); err != nil {
-		return 0, err
+		return nil, 0, err
 	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM repository WHERE id IN (`+released+`)`); err != nil {
-		return 0, err
+		return nil, 0, err
 	}
-	return grants, nil
+	return repos, grants, nil
 }

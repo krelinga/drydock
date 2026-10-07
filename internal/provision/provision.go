@@ -194,6 +194,30 @@ func (p *Provisioner) Owns(id string) bool {
 	return p.owned[id]
 }
 
+// Unowned runs act, holding the lock every job starts under, only if this
+// process has started no job for the workspace (and is not shutting down),
+// and reports whether it ran. It is boot reconciliation's guard, and it is
+// the check and the act in one: reconciliation runs beside serving, so with
+// Owns checked first and the act after, a stop, start or delete asked in
+// between started a job that reconciliation's plan — made from rows read
+// before it — then acted against, marking stopped a workspace the stop was
+// moving, or writing a stale container id over the one a start just set.
+// Under the lock, no job can start during act, and none started unseen
+// before it; a delete asked meanwhile waits for the lock and then cancels
+// nothing, since act is not a job.
+//
+// act must not take p.mu — no Stop, Start, Delete or ResumeDelete inside it.
+// Reconciliation calls ResumeDelete outside, which is safe: a deleting row's
+// only job is its delete, and startDelete is atomic itself.
+func (p *Provisioner) Unowned(id string, act func() error) (bool, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.closed || p.owned[id] {
+		return false, nil
+	}
+	return true, act()
+}
+
 // Create is the clone button (POST /api/workspaces): validate, insert the
 // row in pending, and start the run in the background. The returned
 // workspace is the row as created; everything after arrives as events.

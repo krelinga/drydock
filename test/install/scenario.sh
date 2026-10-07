@@ -46,6 +46,8 @@ status() { "${CURL[@]}" -o /dev/null -w '%{http_code}' "$@"; }
 # deleted one an upgrade replaced.
 runs_installed() { [ "/proc/$1/exe" -ef /usr/local/bin/drydock ] && ! readlink "/proc/$1/exe" | grep -q deleted; }
 not_runs_installed() { ! runs_installed "$1"; }
+# refused_saying TEXT: the last install failed, and its output says TEXT.
+refused_saying() { [ "$rc" != 0 ] && grep -qF -- "$1" <<<"$out"; }
 
 # A key's bytes in no output, journal, argv, environment or setting. Searched
 # as hex, raw bytes are found wherever they landed, whatever bytes surround
@@ -208,6 +210,17 @@ check "the session still works" [ "$(status -b "$jar" "https://$UI/api/auth/sess
 
 section "previews on, then off"
 check "control: no preview site yet" [ "$(status --resolve "a-b.$PREVIEW:443:127.0.0.1" "https://a-b.$PREVIEW/")" = 000 ]
+# A preview domain on the UI's registrable domain is same-site with it, which
+# undoes SameSite (port forwarding §4). Child and sibling are both refused
+# before anything changes; the control is the install just below, with a
+# domain of its own, succeeding.
+cp /etc/drydock/drydock.env /root/env.before-preview
+install v0.0.2 --preview-domain "p.$UI" --preview-cert /etc/ssl/drydock/preview.pem --preview-key /etc/ssl/drydock/preview.key
+check "a preview domain under the UI host is refused" refused_saying "different registrable domain"
+install v0.0.2 --ui-host "ui.$UI" --preview-domain "previews.$UI" --preview-cert /etc/ssl/drydock/preview.pem --preview-key /etc/ssl/drydock/preview.key
+check "a preview domain beside the UI host (a sibling) is refused" refused_saying "both are on \"$UI\""
+check "neither refusal changed the settings" cmp -s /etc/drydock/drydock.env /root/env.before-preview
+check "neither installed a preview site" [ ! -e /etc/caddy/drydock.d/preview.caddy ]
 install v0.0.2 --preview-domain "$PREVIEW" --preview-cert /etc/ssl/drydock/preview.pem --preview-key /etc/ssl/drydock/preview.key
 check "enabling previews succeeds" [ "$rc" = 0 ] || printf '%s\n' "$out"
 check "the preview site is installed" [ -f /etc/caddy/drydock.d/preview.caddy ]

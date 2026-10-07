@@ -1202,8 +1202,11 @@ sudo userdel drydock; getent group drydock && sudo groupdel drydock
 
 Then revoke the App key on GitHub (*Private keys → Delete*). Docker, Node, the devcontainer CLI
 and Caddy stay installed, because you installed them. So do the images the workspaces were built
-from (the devcontainer CLI names its own `vsc-…`) and the pinned `busybox` and `node` images
-Drydock pulled: `sudo docker image ls`, and remove what you do not want.
+from and the pinned `busybox` and `node` images Drydock pulled. Deleting a workspace in the UI
+removes the `vsc-repo-…` images the devcontainer CLI built for it; a workspace you never deleted
+leaves its own behind, and base images (`mcr.microsoft.com/devcontainers/base`, whatever your
+repositories' configurations name) are never removed. `sudo docker image ls`, and remove what you
+do not want.
 
 ---
 

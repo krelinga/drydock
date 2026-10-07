@@ -517,6 +517,11 @@ func TestValuesStayOutOfArgv(t *testing.T) {
 			e.grant(t, "TEST_KEY", "postgres://u:"+canary+"@db/x", 101)
 			real, err := exec.LookPath(map[string]string{"socat": "socat", "nc": "nc"}[tr])
 			if err != nil {
+				// A skip in CI would be a silent pass of the one test that
+				// sweeps argv for a secret, so CI sets the guard.
+				if os.Getenv("DRYDOCK_REQUIRE_TRANSPORTS") != "" {
+					t.Fatalf("%s is not installed, and DRYDOCK_REQUIRE_TRANSPORTS is set", tr)
+				}
 				t.Skip(tr + " is not installed")
 			}
 			wrap := t.TempDir()

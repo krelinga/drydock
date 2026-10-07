@@ -54,9 +54,12 @@ runs:
       shell: bash
       run: npm install -g @devcontainers/cli@0.89.0
 
-    - name: Install socat
+    # The broker clients' two transports: socat, and OpenBSD nc where socat
+    # is absent. Named rather than left to the runner image, since
+    # DRYDOCK_REQUIRE_TRANSPORTS fails the suite without either.
+    - name: Install socat and nc
       shell: bash
-      run: sudo apt-get update -q && sudo apt-get install -y -q --no-install-recommends socat
+      run: sudo apt-get update -q && sudo apt-get install -y -q --no-install-recommends socat netcat-openbsd
 
     - name: gofmt
       if: inputs.run-suite == 'true'
@@ -71,7 +74,8 @@ runs:
     # Without DRYDOCK_REQUIRE_CADDY a missing caddy is a skip, which would be a
     # silent pass of the one test of the LAN-facing surface; likewise Docker
     # and the container tier (test/container), and the commits since the last
-    # release that test/docs reads (the checkout needs fetch-depth: 0).
+    # release that test/docs reads (the checkout needs fetch-depth: 0), and
+    # socat and nc, without which the broker's argv sweep is skipped.
     - name: go test
       if: inputs.run-suite == 'true'
       shell: bash
@@ -79,5 +83,6 @@ runs:
         DRYDOCK_REQUIRE_CADDY: "1"
         DRYDOCK_REQUIRE_DOCKER: "1"
         DRYDOCK_REQUIRE_RELEASE_HISTORY: "1"
+        DRYDOCK_REQUIRE_TRANSPORTS: "1"
         DRYDOCK_PR_TITLE: ${{ inputs.pr-title }}
       run: go test ./...

@@ -165,7 +165,7 @@ func New(ctx context.Context, cfg config.Config, env sys.Env) (*Server, error) {
 	// runs (§6: resume the delete), so a delete is resumable from any
 	// sub-step it was interrupted after.
 	s.Reconciler = &reconcile.Reconciler{Workspaces: s.Workspaces, Events: s.Events,
-		Containers: containers, Busy: s.Provisioner.Owns,
+		Containers: containers, Exclusive: s.Provisioner.Unowned,
 		Delete: func(ctx context.Context, w workspace.Workspace, _ string) error {
 			return s.Provisioner.ResumeDelete(ctx, w.ID)
 		}}
@@ -272,7 +272,7 @@ func New(ctx context.Context, cfg config.Config, env sys.Env) (*Server, error) {
 		// No WriteTimeout: /api/events is a long-lived SSE stream.
 	}
 	s.preview = &http.Server{
-		Handler:           api.Build(api.MuxPreview, gate, nil),
+		Handler:           api.Build(api.MuxPreview, gate, previewHandlers()),
 		ReadHeaderTimeout: 10 * time.Second,
 		IdleTimeout:       2 * time.Minute,
 	}
@@ -293,6 +293,21 @@ func New(ctx context.Context, cfg config.Config, env sys.Env) (*Server, error) {
 	}
 	return s, nil
 }
+
+// previewHandlers are the preview mux's handlers, by route name. None is
+// written yet — previews are their own phase — so every preview route is
+// Build's 501 behind a token gate that fails closed.
+//
+// The preview server deliberately carries no web.SecurityHeaders: what it
+// will mostly serve is a repository's own app, whose headers are its own.
+// That leaves one header nothing else will send. /.drydock/session carries
+// the single-use token in its query string, so its response must say
+// Referrer-Policy: no-referrer, or the token URL leaks onward in the Referer
+// of whatever the app loads next (security review F4, PF §7).
+// TestPreviewSessionSendsNoReferrer holds that obligation: the moment a
+// "preview.session" handler appears here, it fails unless the handler's own
+// response carries the header.
+func previewHandlers() map[string]http.HandlerFunc { return nil }
 
 // apiSocketHandler is everything the API socket serves, in one place:
 //
@@ -428,7 +443,7 @@ func (s *Server) Serve(ctx context.Context) error {
 		// closes it. A container whose socket is missing has no GitHub
 		// access, which is safe but not what anyone wants.
 		if s.Broker != nil && ctx.Err() == nil {
-			if err := s.openBrokerSockets(ctx); err != nil {
+			if err := s.Provisioner.ReopenSockets(ctx); err != nil {
 				fmt.Fprintf(os.Stderr, "drydock: broker: %v\n", err)
 			}
 		}
@@ -576,26 +591,4 @@ func lookupGroup(name string) (int, error) {
 		return 0, fmt.Errorf("socket group %q: %w", name, err)
 	}
 	return strconv.Atoi(g.Gid)
-}
-
-// openBrokerSockets opens a socket for every running workspace. A stopped
-// one has no container to mount it into, and stop closed it (§9.1: access
-// follows Drydock's state); start opens it again at step 5. A workspace
-// mid-provision is this process's own run, whose step 5 opens it; a deleting
-// one is having its socket removed.
-func (s *Server) openBrokerSockets(ctx context.Context) error {
-	all, err := s.Workspaces.List(ctx)
-	if err != nil {
-		return err
-	}
-	var errs []error
-	for _, w := range all {
-		if w.State != workspace.Running {
-			continue
-		}
-		if err := s.Broker.Open(ctx, w.ID); err != nil {
-			errs = append(errs, err)
-		}
-	}
-	return errors.Join(errs...)
 }
