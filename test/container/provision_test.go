@@ -239,7 +239,11 @@ func TestCreateWorkspaceThroughTheServer(t *testing.T) {
 		for repo, id := range ids {
 			var v view
 			c.get("/api/workspaces/"+id, &v)
-			if v.State == "running" || v.State == "failed" {
+			// Running is entered before step 8 runs (§6), so a running
+			// snapshot can still show step 8 started or not yet begun;
+			// the run is over when step 8 is.
+			s8 := v.Steps["session_server"].Status
+			if v.State == "failed" || v.State == "running" && (s8 == "done" || s8 == "failed") {
 				views[repo] = v
 			}
 		}

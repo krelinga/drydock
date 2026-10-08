@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -15,6 +16,7 @@ import (
 	"github.com/krelinga/drydock/internal/github/githubtest"
 	"github.com/krelinga/drydock/internal/subproc"
 	"github.com/krelinga/drydock/internal/sys"
+	"github.com/krelinga/drydock/internal/workspace"
 )
 
 // fakeDevcontainer writes a devcontainer CLI stand-in that answers as the
@@ -130,6 +132,23 @@ func TestWorkspaceRoutesEndToEnd(t *testing.T) {
 	}
 	srv.Provisioner.Cloner.BaseURL = f.URL
 	srv.Provisioner.Containers.Run = fakeDevcontainer(t, f.URL+"/krelinga/alpha.git")
+	// Step 8 is held at the hand-off until the test has seen the window it
+	// opens — running, with step 8 started — so the wait below is proved
+	// against that window on every run rather than on the runs a loaded
+	// machine happens to produce (release run 37704402342).
+	handoff := make(chan struct{})
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(handoff) }) }
+	t.Cleanup(release)
+	startSupervisor := srv.Provisioner.StartSupervisor
+	srv.Provisioner.StartSupervisor = func(ctx context.Context, w workspace.Workspace) error {
+		select {
+		case <-handoff:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+		return startSupervisor(ctx, w)
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() { done <- srv.Serve(ctx) }()
@@ -177,18 +196,43 @@ func TestWorkspaceRoutesEndToEnd(t *testing.T) {
 		t.Errorf("past the cap of 1: %+v", got)
 	}
 
-	var v wsView
-	deadline = time.Now().Add(15 * time.Second)
-	for v.State != "running" && v.State != "failed" {
-		if time.Now().After(deadline) {
-			t.Fatalf("the workspace never settled: %+v", v)
-		}
-		time.Sleep(20 * time.Millisecond)
+	// Settled is failed, or running with step 8 ended. Running is entered
+	// when the probe passes, before step 8 hands the workspace to the
+	// supervisor (design §6: step 8 runs in running, and its failure leaves
+	// the workspace there), so a snapshot that says running can still show
+	// step 8 started, or not yet begun. The run is over when step 8 is.
+	settled := func(v wsView) bool {
+		s8 := v.Steps["session_server"].Status
+		return v.State == "failed" || v.State == "running" && (s8 == "done" || s8 == "failed")
+	}
+	get := func() (v wsView) {
 		resp := r.do(t, req{method: "GET", path: "/api/workspaces/" + id.ID, cookie: cookie})
 		if resp.StatusCode != 200 {
 			t.Fatalf("GET workspace = %d", resp.StatusCode)
 		}
 		body(t, resp.Body, &v)
+		return v
+	}
+	// Control: the window is real. While step 8 is held, the workspace is
+	// running with step 8 started, and the wait must not call that settled.
+	var v wsView
+	deadline = time.Now().Add(15 * time.Second)
+	for v = get(); v.State != "failed" && !(v.State == "running" && v.Steps["session_server"].Status == "started"); v = get() {
+		if time.Now().After(deadline) {
+			t.Fatalf("never running with step 8 started: %+v", v)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if v.State != "running" || settled(v) {
+		t.Fatalf("held at step 8, the view is %+v, settled=%v", v, settled(v))
+	}
+	release()
+	for !settled(v) {
+		if time.Now().After(deadline) {
+			t.Fatalf("the workspace never settled: %+v", v)
+		}
+		time.Sleep(20 * time.Millisecond)
+		v = get()
 	}
 	if v.State != "running" || v.FullName != "krelinga/alpha" || v.Branch != "main" || v.ContainerID == nil || v.StateDetail != nil {
 		t.Errorf("view %+v", v)
