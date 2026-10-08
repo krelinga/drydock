@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"flag"
 	"os"
@@ -356,5 +357,54 @@ func TestLabelPrefixIsClaimedOnce(t *testing.T) {
 	defer db.Close()
 	if err := db.ClaimLabelPrefix(ctx, "drydock.other", now); err == nil {
 		t.Error("a different prefix was accepted for a database that already has one")
+	}
+}
+
+// TestMigrationSevenRetiresTheOldExpiring: before migration 7, 'expiring'
+// meant "the access token ends within three days", which a real login's
+// eight-hour token made true of every login (design §7.3). A row stored under
+// that meaning must not reach the banner as the new "the login ends within
+// three days", so the migration turns it into 'ok' and the boot check
+// rewrites it. The control is a row in another state, which it leaves alone.
+func TestMigrationSevenRetiresTheOldExpiring(t *testing.T) {
+	ctx := context.Background()
+	for _, c := range []struct{ stored, want string }{
+		{"expiring", "ok"},
+		{"expired", "expired"}, // control: only the old meaning is rewritten
+		{"blanked", "blanked"},
+	} {
+		t.Run(c.stored, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "drydock.db")
+			raw, err := sql.Open("sqlite", "file:"+path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for v := 0; v < 6; v++ {
+				if _, err := raw.Exec(migrations[v]); err != nil {
+					t.Fatalf("migration %d: %v", v+1, err)
+				}
+			}
+			if _, err := raw.Exec(`PRAGMA user_version = 6`); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := raw.Exec(`INSERT INTO claude_identity (id, volume_name, state, expires_at) VALUES (1, 'v', ?, '2026-10-08T20:00:00Z')`, c.stored); err != nil {
+				t.Fatal(err)
+			}
+			raw.Close()
+
+			db, err := Open(ctx, path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer db.Close()
+			var state, expires string
+			var login sql.NullString
+			if err := db.QueryRow(`SELECT state, expires_at, login_expires_at FROM claude_identity WHERE id = 1`).Scan(&state, &expires, &login); err != nil {
+				t.Fatal(err)
+			}
+			if state != c.want || expires != "2026-10-08T20:00:00Z" || login.Valid {
+				t.Errorf("after migration: state %q, expires_at %q, login_expires_at %v; want %q, kept, NULL", state, expires, login, c.want)
+			}
+		})
 	}
 }

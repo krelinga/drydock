@@ -179,9 +179,18 @@ async function signOut(everywhere: boolean): Promise<void> {
         <template v-if="id.accountEmail">
           <dt>Account</dt><dd data-test="claude-account">{{ id.accountEmail }}</dd>
         </template>
-        <template v-if="id.expiresAt">
-          <dt>{{ id.state === 'expired' ? 'Access token lapsed' : 'Expires' }}</dt>
-          <dd data-test="claude-expires">{{ relativeTime(id.expiresAt) }}</dd>
+        <!-- The login's own end (the refresh token's), when Claude Code
+             recorded one. The access token's expiry is not shown as an
+             expiry: it is hours away after every sign-in and moves with
+             every refresh (design §7.3) — only its lapse, which is
+             informational. -->
+        <template v-if="id.loginExpiresAt">
+          <dt>Login expires</dt>
+          <dd data-test="claude-expires">{{ relativeTime(id.loginExpiresAt) }}</dd>
+        </template>
+        <template v-if="id.state === 'expired' && id.expiresAt">
+          <dt>Access token lapsed</dt>
+          <dd data-test="claude-access-lapsed">{{ relativeTime(id.expiresAt) }}</dd>
         </template>
         <template v-if="id.loggedInAt">
           <dt>First seen</dt><dd>{{ relativeTime(id.loggedInAt) }}</dd>

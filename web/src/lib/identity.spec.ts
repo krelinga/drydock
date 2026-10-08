@@ -1,17 +1,18 @@
 // The identity's words (frontend §6.6, design §7.3) as a parameterised table:
 // one sentence per state, blanked and absent never alike, a countdown only for
-// expiring, and at most one button — the banner's — for any of them.
+// a login that is ending — never for the access token's hours — and at most
+// one button — the banner's — for any of them.
 
 import { describe, expect, it } from 'vitest'
 import type { IdentityState } from '../api/types'
 import type { ClaudeIdentity } from '../stores/reducer'
-import { cardOverlay, identityBanner, identitySentence, SIGN_IN_LABEL } from './identity'
+import { cardOverlay, identityBanner, identitySentence, loginEnding, SIGN_IN_LABEL } from './identity'
 
 const NOW = Date.parse('2026-10-05T09:00:00Z')
 
 function id(state: IdentityState | null, over: Partial<ClaudeIdentity> = {}): ClaudeIdentity {
   return {
-    state, accountEmail: null, expiresAt: null, loggedInAt: null, lastCheckedAt: null,
+    state, accountEmail: null, expiresAt: null, loginExpiresAt: null, loggedInAt: null, lastCheckedAt: null,
     volume: 'drydock-claude-config', checkError: null, ...over,
   }
 }
@@ -44,11 +45,36 @@ describe('the identity banner', () => {
     expect(`${b.title} ${b.body}`).not.toMatch(/\bin \d/)
   })
 
-  it('expiring counts down and may be put away', () => {
-    const b = identityBanner(id('expiring', { expiresAt: '2026-10-07T09:00:00Z' }), NOW)!
+  it('expiring counts down to the login, and may be put away', () => {
+    // The access token's eight hours are beside it, and are not the countdown.
+    const b = identityBanner(id('expiring', { expiresAt: '2026-10-05T17:00:00Z', loginExpiresAt: '2026-10-07T09:00:00Z' }), NOW)!
     expect(b.title).toBe('The Claude login expires in 2 days.')
     expect(b.dismissible).toBe(true)
     expect(b.tone).toBe('warn')
+  })
+
+  // The real deployment, 2026-10-08: a fresh sign-in's access token was
+  // about eight hours out, and the banner said the login expired in eight
+  // hours, after every sign-in. A healthy login says nothing anywhere.
+  it('a healthy login with an eight-hour access token warns nowhere', () => {
+    const healthy = id('ok', { expiresAt: '2026-10-05T17:00:00Z', loginExpiresAt: '2026-11-04T09:00:00Z', accountEmail: 'a@b.invalid' })
+    expect(identityBanner(healthy, NOW)).toBeNull()
+    expect(cardOverlay(healthy, 'running')).toBeNull()
+    expect(identitySentence(healthy)).toBe('Signed in as a@b.invalid.')
+    expect(loginEnding(healthy)).toBeNull()
+    // Positive control: the same access token beside a login that really
+    // ends in two days does warn — banner, dot, sentence.
+    const ending = { ...healthy, state: 'expiring' as const, loginExpiresAt: '2026-10-07T09:00:00Z' }
+    expect(identityBanner(ending, NOW)?.title).toBe('The Claude login expires in 2 days.')
+    expect(cardOverlay(ending, 'running')?.kind).toBe('dot')
+    expect(identitySentence(ending)).toMatch(/^Signed in\. The login expires .*; sign in again before then\.$/)
+  })
+
+  it('an expiring stored before v0.4.5 — the access token, with no login date — says nothing', () => {
+    const legacy = id('expiring', { expiresAt: '2026-10-05T17:00:00Z', accountEmail: 'a@b.invalid' })
+    expect(identityBanner(legacy, NOW)).toBeNull()
+    expect(cardOverlay(legacy, 'running')).toBeNull()
+    expect(identitySentence(legacy)).toBe('Signed in as a@b.invalid.')
   })
 
   it('ok, expired and not-loaded say nothing', () => {
@@ -56,7 +82,7 @@ describe('the identity banner', () => {
     // Expired is the access token's lapse, renewed by the next server from
     // the live refresh token (design §7.3): not a fault, so no banner and
     // no Sign in. The control is blanked, above, which has both.
-    expect(identityBanner(id('expired', { expiresAt: '2026-10-05T08:00:00Z' }), NOW)).toBeNull()
+    expect(identityBanner(id('expired', { expiresAt: '2026-10-05T08:00:00Z', loginExpiresAt: '2026-11-04T09:00:00Z' }), NOW)).toBeNull()
     expect(identityBanner(null, NOW)).toBeNull()
   })
 
@@ -80,7 +106,7 @@ describe('the card overlay', () => {
   })
 
   it('a dot while expiring, the waiting line once a session cannot run, nothing when ok', () => {
-    expect(cardOverlay(id('expiring'), 'running')?.kind).toBe('dot')
+    expect(cardOverlay(id('expiring', { loginExpiresAt: '2026-10-07T09:00:00Z' }), 'running')?.kind).toBe('dot')
     expect(cardOverlay(id('expired'), 'running')).toBeNull()
     expect(cardOverlay(id('absent'), 'running')?.kind).toBe('waiting')
     expect(cardOverlay(id('ok'), 'running')).toBeNull()
@@ -90,7 +116,8 @@ describe('the card overlay', () => {
 
 describe('the settings sentence', () => {
   it('keeps the same distinctions', () => {
-    const all = (['ok', 'expiring', 'expired', 'blanked', 'absent'] as const).map((s) => identitySentence(id(s)))
+    const all = (['ok', 'expiring', 'expired', 'blanked', 'absent'] as const)
+      .map((s) => identitySentence(id(s, s === 'expiring' ? { loginExpiresAt: '2026-10-07T09:00:00Z' } : {})))
     expect(new Set(all).size).toBe(5)
     expect(identitySentence(id('blanked'))).toBe('Signed out. Sign in again.')
     expect(identitySentence(id('absent'))).toBe('No one has signed in yet.')

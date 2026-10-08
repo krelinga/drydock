@@ -70,22 +70,46 @@ func loadIdentityFixture(t *testing.T, kind, name string) ([]byte, time.Time) {
 // tests can reason about it relative to recorded_at.
 func fixtureExpiresAt(t *testing.T, b []byte) time.Time {
 	t.Helper()
+	e, _ := fixtureDates(t, b)
+	return e
+}
+
+// fixtureDates reads both dates out of a fixture: expiresAt (the access
+// token's) and refreshTokenExpiresAt (the login's), the zero time when the
+// file has none.
+func fixtureDates(t *testing.T, b []byte) (access, login time.Time) {
+	t.Helper()
 	var c struct {
 		O struct {
-			E int64 `json:"expiresAt"`
+			E int64  `json:"expiresAt"`
+			L *int64 `json:"refreshTokenExpiresAt"`
 		} `json:"claudeAiOauth"`
 	}
 	if err := json.Unmarshal(b, &c); err != nil {
 		t.Fatal(err)
 	}
-	return time.UnixMilli(c.O.E).UTC()
+	if c.O.L != nil {
+		login = time.UnixMilli(*c.O.L).UTC()
+	}
+	return time.UnixMilli(c.O.E).UTC(), login
 }
 
-// synthCreds builds a credential document in the recorded shape. The token
-// values are obviously fake; this repository is public.
+// synthCreds builds a credential document in the recorded shape, with no
+// refreshTokenExpiresAt. The token values are obviously fake; this
+// repository is public.
 func synthCreds(access, refresh string, expiresAt time.Time) []byte {
-	return []byte(fmt.Sprintf(`{"claudeAiOauth":{"accessToken":%q,"refreshToken":%q,"expiresAt":%d,"scopes":["user:inference"],"subscriptionType":"max"}}`,
-		access, refresh, expiresAt.UnixMilli()))
+	return synthLogin(access, refresh, expiresAt, time.Time{})
+}
+
+// synthLogin is synthCreds with a refreshTokenExpiresAt, as 2.1.289 writes at
+// every login; the zero time leaves it out.
+func synthLogin(access, refresh string, expiresAt, loginExpiresAt time.Time) []byte {
+	rt := ""
+	if !loginExpiresAt.IsZero() {
+		rt = fmt.Sprintf(`"refreshTokenExpiresAt":%d,`, loginExpiresAt.UnixMilli())
+	}
+	return []byte(fmt.Sprintf(`{"claudeAiOauth":{"accessToken":%q,"refreshToken":%q,"expiresAt":%d,%s"scopes":["user:inference"],"subscriptionType":"max"}}`,
+		access, refresh, expiresAt.UnixMilli(), rt))
 }
 
 const fakeAccess, fakeRefresh = "sk-ant-oat01-TEST-FAKE", "sk-ant-ort01-TEST-FAKE"
@@ -183,19 +207,20 @@ func TestClassifyIdentityThreeJoins(t *testing.T) {
 }
 
 // TestClassifyIdentityMatrix joins all four recorded auth status documents with
-// all six credential shapes (testing §7). An empty want means an error.
+// all seven credential shapes (testing §7). An empty want means an error.
 func TestClassifyIdentityMatrix(t *testing.T) {
 	auths := []string{"absent", "valid", "expired", "blanked"}
-	creds := []string{"ok", "expiring", "expired", "blanked", "absent", "corrupt"}
+	creds := []string{"ok", "fresh-login", "expiring", "expired", "blanked", "absent", "corrupt"}
 	// Rows: credential shape. Columns: auth fixture, in the order above.
 	// "error" for live tokens beside loggedIn:false is rule 7.
 	want := map[string][4]string{
-		"ok":       {"error", "ok", "ok", "error"},
-		"expiring": {"error", "expiring", "expiring", "error"},
-		"expired":  {"error", "expired", "expired", "error"},
-		"blanked":  {"blanked", "blanked", "blanked", "blanked"},
-		"absent":   {"absent", "absent", "absent", "absent"},
-		"corrupt":  {"error", "error", "error", "error"},
+		"ok":          {"error", "ok", "ok", "error"},
+		"fresh-login": {"error", "ok", "ok", "error"},
+		"expiring":    {"error", "expiring", "expiring", "error"},
+		"expired":     {"error", "expired", "expired", "error"},
+		"blanked":     {"blanked", "blanked", "blanked", "blanked"},
+		"absent":      {"absent", "absent", "absent", "absent"},
+		"corrupt":     {"error", "error", "error", "error"},
 	}
 	var sawVerdict, sawError bool
 	for _, c := range creds {
@@ -230,25 +255,33 @@ func TestClassifyIdentityMatrix(t *testing.T) {
 }
 
 // TestClassifyIdentityDoesNotDependOnWhenItRuns pins the fixture hazard: the
-// verdicts are a function of expiresAt − now, and every now here comes from
-// recorded_at. Translating both by decades in either direction changes
-// nothing.
+// verdicts are a function of expiresAt − now and refreshTokenExpiresAt − now,
+// and every now here comes from recorded_at. Translating all three by decades
+// in either direction changes nothing.
 func TestClassifyIdentityDoesNotDependOnWhenItRuns(t *testing.T) {
 	auth, _ := loadIdentityFixture(t, "authstatus", "valid")
 	shifts := []time.Duration{0, -20 * 365 * 24 * time.Hour, 50 * 365 * 24 * time.Hour, 7 * time.Minute}
-	for _, name := range []string{"ok", "expiring", "expired"} {
+	for _, c := range []struct{ name, want string }{
+		{"ok", "ok"}, {"fresh-login", "ok"}, {"expiring", "expiring"}, {"expired", "expired"},
+	} {
+		name := c.name
 		creds, recorded := loadIdentityFixture(t, "credentials", name)
-		delta := fixtureExpiresAt(t, creds).Sub(recorded)
+		access, login := fixtureDates(t, creds)
+		delta := access.Sub(recorded)
 		base, err := ClassifyIdentity(auth, creds, recorded)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if base.State.testString() != name {
-			t.Fatalf("%s fixture at its own recorded_at = %s; the .meta's must_yield no longer holds", name, base.State.testString())
+		if base.State.testString() != c.want {
+			t.Fatalf("%s fixture at its own recorded_at = %s; the .meta's must_yield (%s) no longer holds", name, base.State.testString(), c.want)
 		}
 		for _, s := range shifts {
 			now := recorded.Add(s)
-			got, err := ClassifyIdentity(auth, synthCreds(fakeAccess, fakeRefresh, now.Add(delta)), now)
+			var shiftedLogin time.Time
+			if !login.IsZero() {
+				shiftedLogin = now.Add(login.Sub(recorded))
+			}
+			got, err := ClassifyIdentity(auth, synthLogin(fakeAccess, fakeRefresh, now.Add(delta), shiftedLogin), now)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -260,8 +293,8 @@ func TestClassifyIdentityDoesNotDependOnWhenItRuns(t *testing.T) {
 
 	// Positive control: the hazard is real. The same expiring fixture,
 	// judged three days after it was recorded — which is what a wall-clock
-	// now would do on a later run — is expired. Invariance above is
-	// therefore not vacuous.
+	// now would do on a later run — is no longer expiring: both its dates
+	// have passed. Invariance above is therefore not vacuous.
 	creds, recorded := loadIdentityFixture(t, "credentials", "expiring")
 	later, err := ClassifyIdentity(auth, creds, recorded.Add(3*24*time.Hour))
 	if err != nil {
@@ -288,53 +321,160 @@ func TestClassifyIdentityDoesNotDependOnWhenItRuns(t *testing.T) {
 	}
 }
 
-// TestClassifyIdentityBoundaries: exactly now is expired; exactly three days
-// out is still expiring; one millisecond either side flips.
+// TestClassifyIdentityBoundaries: the access token's expiry has one boundary
+// — exactly now is expired, one millisecond ahead is ok, never expiring — and
+// the login's has two: exactly three days out is still expiring, and exactly
+// now is no longer (Claude Code's own `m > 3d || m <= 0`).
 func TestClassifyIdentityBoundaries(t *testing.T) {
 	auth, _ := loadIdentityFixture(t, "authstatus", "valid")
 	_, now := loadIdentityFixture(t, "credentials", "ok")
 	ms := time.Millisecond
-	cases := []struct {
-		name  string
-		delta time.Duration
-		want  IdentityState
-	}{
-		{"one ms ago", -ms, IdentityExpired},
-		{"exactly now", 0, IdentityExpired},
-		{"one ms ahead", ms, IdentityExpiring},
-		{"one ms inside three days", ExpiringWindow - ms, IdentityExpiring},
-		{"exactly three days", ExpiringWindow, IdentityExpiring},
-		{"one ms past three days", ExpiringWindow + ms, IdentityOK},
-		{"a year out", 365 * 24 * time.Hour, IdentityOK},
-	}
 	if ExpiringWindow != 72*time.Hour {
-		t.Fatalf("ExpiringWindow = %v; §7.3 says three days", ExpiringWindow)
+		t.Fatalf("ExpiringWindow = %v; §7.3 (and Claude Code's own notice) says three days", ExpiringWindow)
 	}
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			exp := now.Add(c.delta)
-			got, err := ClassifyIdentity(auth, synthCreds(fakeAccess, fakeRefresh, exp), now)
-			if err != nil {
-				t.Fatal(err)
+
+	t.Run("the access token alone", func(t *testing.T) {
+		for _, c := range []struct {
+			name  string
+			delta time.Duration
+			want  IdentityState
+		}{
+			{"one ms ago", -ms, IdentityExpired},
+			{"exactly now", 0, IdentityExpired},
+			{"one ms ahead", ms, IdentityOK},
+			{"eight hours (a real access token)", 8 * time.Hour, IdentityOK},
+			{"exactly three days", ExpiringWindow, IdentityOK},
+			{"a year out", 365 * 24 * time.Hour, IdentityOK},
+		} {
+			t.Run(c.name, func(t *testing.T) {
+				exp := now.Add(c.delta)
+				got, err := ClassifyIdentity(auth, synthCreds(fakeAccess, fakeRefresh, exp), now)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if got.State != c.want {
+					t.Errorf("state = %s, want %s", got.State.testString(), c.want.testString())
+				}
+				if !got.ExpiresAt.Equal(exp) || !got.LoginExpiresAt.IsZero() {
+					t.Errorf("ExpiresAt = %v, LoginExpiresAt = %v; want %v and zero", got.ExpiresAt, got.LoginExpiresAt, exp)
+				}
+			})
+		}
+	})
+
+	t.Run("the login, beside an eight-hour access token", func(t *testing.T) {
+		access := now.Add(8 * time.Hour)
+		for _, c := range []struct {
+			name  string
+			delta time.Duration
+			want  IdentityState
+		}{
+			{"one ms ago", -ms, IdentityOK},
+			{"exactly now", 0, IdentityOK},
+			{"one ms ahead", ms, IdentityExpiring},
+			{"one ms inside three days", ExpiringWindow - ms, IdentityExpiring},
+			{"exactly three days", ExpiringWindow, IdentityExpiring},
+			{"one ms past three days", ExpiringWindow + ms, IdentityOK},
+			{"thirty days (2.1.289's default)", 30 * 24 * time.Hour, IdentityOK},
+		} {
+			t.Run(c.name, func(t *testing.T) {
+				login := now.Add(c.delta)
+				got, err := ClassifyIdentity(auth, synthLogin(fakeAccess, fakeRefresh, access, login), now)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if got.State != c.want {
+					t.Errorf("state = %s, want %s", got.State.testString(), c.want.testString())
+				}
+				if !got.ExpiresAt.Equal(access) || !got.LoginExpiresAt.Equal(login) {
+					t.Errorf("ExpiresAt = %v, LoginExpiresAt = %v; want %v, %v", got.ExpiresAt, got.LoginExpiresAt, access, login)
+				}
+			})
+		}
+	})
+
+	t.Run("a login expiring outranks a lapsed access token", func(t *testing.T) {
+		got, err := ClassifyIdentity(auth, synthLogin(fakeAccess, fakeRefresh, now.Add(-time.Hour), now.Add(24*time.Hour)), now)
+		if err != nil || got.State != IdentityExpiring {
+			t.Errorf("lapsed access, login a day out = %s, %v; want expiring", got.State.testString(), err)
+		}
+		// Control: the same lapsed token with the login far off is expired.
+		got, err = ClassifyIdentity(auth, synthLogin(fakeAccess, fakeRefresh, now.Add(-time.Hour), now.Add(30*24*time.Hour)), now)
+		if err != nil || got.State != IdentityExpired {
+			t.Errorf("control: lapsed access, login thirty days out = %s, %v; want expired", got.State.testString(), err)
+		}
+	})
+
+	t.Run("an access token outliving the login by more than the window", func(t *testing.T) {
+		// Claude Code's own guard: then the recorded login date is not what
+		// bounds this login, and it says nothing.
+		login := now.Add(24 * time.Hour)
+		got, err := ClassifyIdentity(auth, synthLogin(fakeAccess, fakeRefresh, login.Add(ExpiringWindow+ms), login), now)
+		if err != nil || got.State != IdentityOK {
+			t.Errorf("access past login+window = %s, %v; want ok", got.State.testString(), err)
+		}
+		got, err = ClassifyIdentity(auth, synthLogin(fakeAccess, fakeRefresh, login.Add(ExpiringWindow), login), now)
+		if err != nil || got.State != IdentityExpiring {
+			t.Errorf("control: access at exactly login+window = %s, %v; want expiring", got.State.testString(), err)
+		}
+	})
+}
+
+// TestAnEightHourAccessTokenIsNotTheLoginExpiring is the bug the real
+// deployment found on 2026-10-08: a fresh login's expiresAt was about eight
+// hours out, because it dates the access token, and the old rule — expiresAt
+// within three days — called every login "expiring" from the moment it was
+// made. Every hour of a live access token's life is ok when the login is
+// not ending, with or without a recorded refreshTokenExpiresAt.
+func TestAnEightHourAccessTokenIsNotTheLoginExpiring(t *testing.T) {
+	auth, _ := loadIdentityFixture(t, "authstatus", "valid")
+	fresh, now := loadIdentityFixture(t, "credentials", "fresh-login")
+	access, login := fixtureDates(t, fresh)
+	if d := access.Sub(now); d != 8*time.Hour {
+		t.Fatalf("precondition: fresh-login's access token is %v out; want the measured 8h", d)
+	}
+	if d := login.Sub(now); d != 30*24*time.Hour {
+		t.Fatalf("precondition: fresh-login's login is %v out; want 2.1.289's 30 days", d)
+	}
+	got, err := ClassifyIdentity(auth, fresh, now)
+	if err != nil || got.State != IdentityOK {
+		t.Fatalf("fresh-login fixture = %s, %v; want ok", got.State.testString(), err)
+	}
+	for h := 1; h < 72; h++ {
+		exp := now.Add(time.Duration(h) * time.Hour)
+		for name, creds := range map[string][]byte{
+			"without refreshTokenExpiresAt": synthCreds(fakeAccess, fakeRefresh, exp),
+			"with the login 30 days out":    synthLogin(fakeAccess, fakeRefresh, exp, now.Add(30*24*time.Hour)),
+		} {
+			got, err := ClassifyIdentity(auth, creds, now)
+			if err != nil || got.State != IdentityOK {
+				t.Errorf("access token %dh out, %s = %s, %v; want ok", h, name, got.State.testString(), err)
 			}
-			if got.State != c.want {
-				t.Errorf("state = %s, want %s", got.State.testString(), c.want.testString())
-			}
-			if !got.ExpiresAt.Equal(exp) {
-				t.Errorf("ExpiresAt = %v, want %v", got.ExpiresAt, exp)
-			}
-		})
+		}
+	}
+
+	// Positive control: the same eight-hour access token beside a login
+	// that really ends in two days is expiring — the verdict exists, and it
+	// comes from the login's date.
+	soon, _ := loadIdentityFixture(t, "credentials", "expiring")
+	if a, _ := fixtureDates(t, soon); !a.Equal(access) {
+		t.Fatalf("precondition: the expiring fixture's access token (%v) is not fresh-login's (%v)", a, access)
+	}
+	got, err = ClassifyIdentity(auth, soon, now)
+	if err != nil || got.State != IdentityExpiring {
+		t.Errorf("control: expiring fixture = %s, %v; want expiring", got.State.testString(), err)
 	}
 }
 
 // TestClassifyIdentityWithinMovesOnlyTheBoundary: the configured window moves
-// the expiring/ok line and nothing else. One day out is expiring under the
-// default window (the control) and ok under a twelve-hour one; the expired
-// boundary does not move; and a window that is not positive is refused.
+// the expiring/ok line and nothing else. A login one day out is expiring
+// under the default window (the control) and ok under a twelve-hour one; the
+// expired boundary does not move; and a window that is not positive is
+// refused.
 func TestClassifyIdentityWithinMovesOnlyTheBoundary(t *testing.T) {
 	auth, _ := loadIdentityFixture(t, "authstatus", "valid")
 	_, now := loadIdentityFixture(t, "credentials", "ok")
-	day := synthCreds(fakeAccess, fakeRefresh, now.Add(24*time.Hour))
+	day := synthLogin(fakeAccess, fakeRefresh, now.Add(8*time.Hour), now.Add(24*time.Hour))
 	if got, err := ClassifyIdentity(auth, day, now); err != nil || got.State != IdentityExpiring {
 		t.Fatalf("control: one day out under the default window = %v, %v; want expiring", got.State.testString(), err)
 	}
@@ -386,6 +526,10 @@ func TestClassifyIdentityRefusesWhatItCannotRead(t *testing.T) {
 		{"live tokens, expiresAt negative", validAuth, []byte(`{"claudeAiOauth":{"accessToken":"x","refreshToken":"y","expiresAt":-5}}`)},
 		{"live tokens, expiresAt a string", validAuth, []byte(`{"claudeAiOauth":{"accessToken":"x","refreshToken":"y","expiresAt":"1791267277000"}}`)},
 		{"live tokens, expiresAt fractional", validAuth, []byte(`{"claudeAiOauth":{"accessToken":"x","refreshToken":"y","expiresAt":1.5}}`)},
+		{"live tokens, refreshTokenExpiresAt zero", validAuth, []byte(`{"claudeAiOauth":{"accessToken":"x","refreshToken":"y","expiresAt":1793686477000,"refreshTokenExpiresAt":0}}`)},
+		{"live tokens, refreshTokenExpiresAt negative", validAuth, []byte(`{"claudeAiOauth":{"accessToken":"x","refreshToken":"y","expiresAt":1793686477000,"refreshTokenExpiresAt":-5}}`)},
+		{"live tokens, refreshTokenExpiresAt a string", validAuth, []byte(`{"claudeAiOauth":{"accessToken":"x","refreshToken":"y","expiresAt":1793686477000,"refreshTokenExpiresAt":"1793686477000"}}`)},
+		{"live tokens, refreshTokenExpiresAt fractional", validAuth, []byte(`{"claudeAiOauth":{"accessToken":"x","refreshToken":"y","expiresAt":1793686477000,"refreshTokenExpiresAt":1.5}}`)},
 		{"contradiction: loggedIn:false beside live tokens", falseAuth, okCreds},
 		{"auth status nil", nil, okCreds},
 		{"auth status empty", []byte{}, okCreds},
@@ -422,14 +566,21 @@ func TestClassifyIdentityFields(t *testing.T) {
 	if got.AccountEmail != "fixture@example.invalid" {
 		t.Errorf("AccountEmail = %q, want the auth status email", got.AccountEmail)
 	}
-	want := fixtureExpiresAt(t, creds)
+	want, wantLogin := fixtureDates(t, creds)
 	if !got.ExpiresAt.Equal(want) || got.ExpiresAt.Location() != time.UTC {
 		t.Errorf("ExpiresAt = %v, want %v in UTC", got.ExpiresAt, want)
 	}
-	// The fixture's expiresAt is two days after recording: milliseconds, not
-	// seconds, or this would land in 1970 or the year 58,000.
-	if d := got.ExpiresAt.Sub(now); d != 48*time.Hour {
-		t.Errorf("expiresAt − recorded_at = %v; want 48h (is expiresAt being read as ms?)", d)
+	if !got.LoginExpiresAt.Equal(wantLogin) || got.LoginExpiresAt.Location() != time.UTC {
+		t.Errorf("LoginExpiresAt = %v, want %v in UTC", got.LoginExpiresAt, wantLogin)
+	}
+	// The fixture's expiresAt is eight hours after recording and its
+	// refreshTokenExpiresAt two days: milliseconds, not seconds, or these
+	// would land in 1970 or the year 58,000.
+	if d := got.ExpiresAt.Sub(now); d != 8*time.Hour {
+		t.Errorf("expiresAt − recorded_at = %v; want 8h (is expiresAt being read as ms?)", d)
+	}
+	if d := got.LoginExpiresAt.Sub(now); d != 48*time.Hour {
+		t.Errorf("refreshTokenExpiresAt − recorded_at = %v; want 48h (is it being read as ms?)", d)
 	}
 
 	// No email in auth status: still classified, just no email.
@@ -450,8 +601,8 @@ func TestClassifyIdentityFields(t *testing.T) {
 		if got.State.testString() != name {
 			t.Errorf("%s beside loggedIn:true = %s", name, got.State.testString())
 		}
-		if got.AccountEmail != "" || !got.ExpiresAt.IsZero() {
-			t.Errorf("%s carried email %q / ExpiresAt %v; want neither", name, got.AccountEmail, got.ExpiresAt)
+		if got.AccountEmail != "" || !got.ExpiresAt.IsZero() || !got.LoginExpiresAt.IsZero() {
+			t.Errorf("%s carried email %q / ExpiresAt %v / LoginExpiresAt %v; want none", name, got.AccountEmail, got.ExpiresAt, got.LoginExpiresAt)
 		}
 	}
 

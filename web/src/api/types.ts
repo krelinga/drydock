@@ -403,7 +403,18 @@ export interface IdentityView {
   state: IdentityState | null
   /** Only beside a login (ok, expiring, expired). */
   account_email: string | null
+  /**
+   * The ACCESS token's expiry: about eight hours after a sign-in, moved by
+   * every refresh. Never a login countdown; past it is `expired`, which the
+   * next session server renews (design §7.3).
+   */
   expires_at: string | null
+  /**
+   * The login's own end — the refresh token's, as Claude Code records it
+   * (`refreshTokenExpiresAt`). `expiring` counts down to this. Null when the
+   * credential file carries none.
+   */
+  login_expires_at: string | null
   /** When Drydock first saw this login. */
   logged_in_at: string | null
   last_checked_at: string | null

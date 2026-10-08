@@ -18,6 +18,7 @@ import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import ActionButton from './ActionButton.vue'
 import { acceptsCode, checkCodeShape, codeRuleSentence, countdown, loginLive } from '../lib/login'
 import { LOGIN_BEGIN_KEY, LOGIN_CANCEL_KEY, LOGIN_CODE_KEY, useIdentityStore } from '../stores/identity'
+import { loginEnding } from '../lib/identity'
 import { useStreamStore } from '../stores/stream'
 
 const stream = useStreamStore()
@@ -25,7 +26,9 @@ const identity = useIdentityStore()
 const login = computed(() => stream.entities.login)
 const id = computed(() => stream.entities.identity)
 const live = computed(() => login.value !== null && loginLive(login.value.phase))
-const needsSignIn = computed(() => id.value !== null && id.value.state !== null && id.value.state !== 'ok' && id.value.state !== 'expiring')
+// Only what no session server can fix by itself needs a sign-in: expired is
+// the access token, which the next server renews (design §7.3).
+const needsSignIn = computed(() => id.value?.state === 'blanked' || id.value?.state === 'absent')
 
 // Local, and legitimately so (§4.2): the field being typed into, a shape
 // complaint about it, "Copied", and a clock for the countdown.
@@ -45,7 +48,7 @@ const left = computed(() => (login.value?.deadline ? countdown(login.value.deadl
 const startLabel = computed(() => {
   const l = login.value
   if (l !== null && (l.phase === 'timed_out' || l.phase === 'failed' || l.phase === 'cancelled')) return 'Start over'
-  return needsSignIn.value || id.value?.state === 'expiring' ? 'Sign in to Claude' : 'Sign in again'
+  return needsSignIn.value || loginEnding(id.value) !== null ? 'Sign in to Claude' : 'Sign in again'
 })
 
 async function begin(): Promise<void> {

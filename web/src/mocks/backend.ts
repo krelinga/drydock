@@ -215,14 +215,21 @@ export function endLogin(b: MockBackend, phase: 'timed_out' | 'failed' | 'cancel
   return setLogin(b, { ...b.login, phase, problem, message, deadline: null, ended_at: new Date().toISOString() })
 }
 
-/** A stored identity as the watch writes it: login details only beside a login. */
-export function identityView(state: IdentityState | null, expiresInMs = 30 * 86400e3): IdentityView {
+/**
+ * A stored identity as the watch writes it: login details only beside a
+ * login. As a real sign-in leaves them (2026-10-08): the access token about
+ * eight hours out (past, when expired) and the login thirty days out —
+ * `loginExpiresInMs` out when expiring.
+ */
+export function identityView(state: IdentityState | null, loginExpiresInMs = 30 * 86400e3): IdentityView {
   const live = state === 'ok' || state === 'expiring' || state === 'expired'
   const now = Date.now()
+  const access = state === 'expired' ? -3600e3 : 8 * 3600e3
   return {
     state,
     account_email: live ? 'operator@example.invalid' : null,
-    expires_at: live ? new Date(now + expiresInMs).toISOString() : null,
+    expires_at: live ? new Date(now + access).toISOString() : null,
+    login_expires_at: live ? new Date(now + (state === 'expiring' ? loginExpiresInMs : 30 * 86400e3)).toISOString() : null,
     logged_in_at: live ? new Date(now - 20 * 86400e3).toISOString() : null,
     last_checked_at: state === null ? null : new Date(now - 60e3).toISOString(),
     volume: 'drydock-claude-config',

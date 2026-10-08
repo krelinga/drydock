@@ -16,6 +16,7 @@
 import { defineStore } from 'pinia'
 import * as api from '../api/client'
 import { LOGIN_ENDED, type ClaudeIdentityBody, type StreamEvent } from '../api/types'
+import { loginEnding } from '../lib/identity'
 import type { ClaudeIdentity } from './reducer'
 import { useStreamStore } from './stream'
 
@@ -37,7 +38,7 @@ export const useIdentityStore = defineStore('identity', {
   state: () => ({
     status: 'idle' as 'idle' | 'loading' | 'ready' | 'error',
     error: null as api.ApiError | null,
-    /** The expiring banner put away, for this countdown only: the expires_at it was put away at. */
+    /** The expiring banner put away, for this countdown only: the login_expires_at it was put away at. */
     dismissedFor: null as string | null,
   }),
   getters: {
@@ -161,7 +162,7 @@ export const useIdentityStore = defineStore('identity', {
     },
 
     dismiss(): void {
-      this.dismissedFor = this.identity?.expiresAt ?? ''
+      this.dismissedFor = loginEnding(this.identity) ?? ''
     },
   },
 })

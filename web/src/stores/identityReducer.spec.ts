@@ -14,7 +14,8 @@ function view(state: IdentityView['state'], over: Partial<IdentityView> = {}): I
   return {
     state,
     account_email: live ? 'fixture@example.invalid' : null,
-    expires_at: live ? '2026-10-07T00:00:00Z' : null,
+    expires_at: live ? '2026-10-05T17:00:00Z' : null,
+    login_expires_at: live ? '2026-11-04T09:00:00Z' : null,
     logged_in_at: live ? at(0) : null,
     last_checked_at: at(1),
     volume: 'drydock-claude-config',

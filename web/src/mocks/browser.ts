@@ -51,7 +51,8 @@
 //   drydockMock.identity('blanked')   the watch stores a new verdict and says so:
 //                                 ok | expiring | expired | blanked | absent. The
 //                                 fleet banner and every running card follow
-//   drydockMock.identity('expiring', 36 * 3600e3)   expiring, 36 hours out
+//   drydockMock.identity('expiring', 36 * 3600e3)   the login (refresh token) ends
+//                                 36 hours out; the access token is always ~8 h
 //   drydockMock.identityCheckFails()  a check could not read the volume; the
 //                                 stored state stands and Settings says why
 
@@ -137,7 +138,7 @@ export async function startMockWorker(): Promise<void> {
     },
     fetchSecrets(id: string) { return recordSecretFetch(backend, id) },
     needsRestart(id: string) { backend.staleRestart.push(id) },
-    identity(state: IdentityState, expiresInMs?: number) { return setIdentity(backend, identityView(state, expiresInMs)) },
+    identity(state: IdentityState, loginExpiresInMs?: number) { return setIdentity(backend, identityView(state, loginExpiresInMs)) },
     identityCheckFails() { return failIdentityCheck(backend) },
     rotateElsewhere(name: string) {
       const s = backend.secrets[name]

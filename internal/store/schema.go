@@ -224,4 +224,18 @@ CREATE TABLE config_approval (
 CREATE INDEX config_approval_repository ON config_approval (repository_id, superseded_at);
 ALTER TABLE workspace ADD COLUMN pending_approval TEXT;
 `,
+
+	// 7 — the login's own expiry (design §7.3). expires_at is the ACCESS
+	// token's, which a real login sets about eight hours out (measured
+	// 2026-10-08) and every refresh moves; the login ends when the refresh
+	// token does, which Claude Code records as refreshTokenExpiresAt.
+	// login_expires_at is that, NULL when the file carries none. 'expiring'
+	// meant "the access token ends within three days" before this migration
+	// — true of every login — and means "the login ends within three days"
+	// after it, so a row stored under the old meaning becomes 'ok' (it was a
+	// live login) until the boot check, which runs at once, rewrites it.
+	`
+ALTER TABLE claude_identity ADD COLUMN login_expires_at TEXT;
+UPDATE claude_identity SET state = 'ok' WHERE state = 'expiring';
+`,
 }

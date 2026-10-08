@@ -10,7 +10,10 @@
 // "No one has signed in yet." — the first run — though `auth status` says
 // loggedIn:false for both. The banner carries the one Sign in to Claude
 // there is; cards carry none (WorkspaceIdentityNote). Only the expiring
-// countdown can be put away, and only until the countdown changes.
+// countdown can be put away, and only until the countdown changes. That
+// countdown is the login's own end (the refresh token's), never the access
+// token's hours: a real sign-in sets those about eight hours out, and a
+// banner on them would greet every login with a false warning (§7.3).
 //
 // Phase 4's: stored secrets that cannot be delivered. When the broker finds
 // a stored secret it cannot deliver it fails *every* workspace's fetch rather
@@ -25,7 +28,7 @@
 import { computed, watch } from 'vue'
 import { RouterLink, useRoute } from 'vue-router'
 import { useStreamRefetch } from '../lib/refetch'
-import { identityBanner, SIGN_IN_TARGET } from '../lib/identity'
+import { identityBanner, loginEnding, SIGN_IN_TARGET } from '../lib/identity'
 import { relativeTime } from '../lib/time'
 import { useIdentityStore } from '../stores/identity'
 import { useSecretsStore } from '../stores/secrets'
@@ -77,7 +80,7 @@ const banners = computed<Banner[]>(() => {
   const out: Banner[] = []
   const id = stream.entities.identity
   const ib = identityBanner(id)
-  if (ib !== null && !(ib.dismissible && identity.dismissedFor === (id?.expiresAt ?? ''))) {
+  if (ib !== null && !(ib.dismissible && identity.dismissedFor === (loginEnding(id) ?? ''))) {
     out.push({
       key: `identity-${ib.state}`, tone: ib.tone, title: ib.title, body: ib.body, items: [],
       link: ib.action !== null && !onSignInPage.value ? { to: ib.action.to, label: ib.action.label, button: true } : undefined,

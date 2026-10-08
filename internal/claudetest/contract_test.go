@@ -854,7 +854,7 @@ func TestAuthStatusShapes(t *testing.T) {
 
 // from-config answers from the credential file as 2.1.289 does, and the
 // identity classifier, given the fake's answer and the same file, reaches the
-// verdict its own tests expect for each of the six shapes. `corrupt` is the
+// verdict its own tests expect for each of the seven shapes. `corrupt` is the
 // refusal: the fake will not invent an answer the corpus never recorded.
 func TestAuthStatusFromConfigThroughTheIdentityClassifier(t *testing.T) {
 	root := claudetest.CorpusRoot(t)
@@ -865,6 +865,7 @@ func TestAuthStatusFromConfigThroughTheIdentityClassifier(t *testing.T) {
 		want classify.IdentityState
 	}{
 		{"ok.json", classify.IdentityOK},
+		{"fresh-login.json", classify.IdentityOK},
 		{"expiring.json", classify.IdentityExpiring},
 		{"expired.json", classify.IdentityExpired},
 		{"blanked.json", classify.IdentityBlanked},

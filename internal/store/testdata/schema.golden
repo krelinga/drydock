@@ -40,7 +40,7 @@ CREATE TABLE claude_identity (
   state           TEXT NOT NULL CHECK (state IN ('ok','expiring','expired','blanked','absent')),
   expires_at      TEXT,
   last_checked_at TEXT
-);
+, login_expires_at TEXT);
 
 -- table config_approval
 CREATE TABLE config_approval (
