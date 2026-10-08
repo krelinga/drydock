@@ -140,14 +140,21 @@ func (l *Limiter) Record(ctx context.Context, ip string, o Outcome) error {
 	return err
 }
 
-// FailuresSince reports bad-password attempts after t, for the notice the
-// sign-in screen shows once after a successful sign-in (frontend §8): a stale
-// saved password on a forgotten device is the usual cause, and the operator
-// wants to see it either way.
+// MaxFailedSources is how many addresses the notice names: the busiest, and
+// the count still covers them all.
+const MaxFailedSources = 10
+
+// FailuresSince reports failed attempts after t — bad passwords, and attempts
+// refused by the lockout before the password was checked, which a guesser
+// makes too — for the notice the sign-in screen shows once after a successful
+// sign-in (frontend §8, design §12): a stale saved password on a forgotten
+// device is the usual cause, and the operator wants to see it either way.
+// sources is the busiest MaxFailedSources addresses.
 func (l *Limiter) FailuresSince(ctx context.Context, t time.Time) (count int, sources []string, err error) {
 	rows, err := l.DB.QueryContext(ctx,
 		`SELECT source_ip, count(*) FROM auth_attempt
-		 WHERE outcome = 'bad_password' AND at > ? GROUP BY source_ip ORDER BY count(*) DESC`, ts(t))
+		 WHERE outcome IN ('bad_password', 'locked_out') AND at > ?
+		 GROUP BY source_ip ORDER BY count(*) DESC, source_ip`, ts(t))
 	if err != nil {
 		return 0, nil, err
 	}
@@ -159,7 +166,9 @@ func (l *Limiter) FailuresSince(ctx context.Context, t time.Time) (count int, so
 			return 0, nil, err
 		}
 		count += n
-		sources = append(sources, ip)
+		if len(sources) < MaxFailedSources {
+			sources = append(sources, ip)
+		}
 	}
 	return count, sources, rows.Err()
 }

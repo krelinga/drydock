@@ -354,11 +354,15 @@ func (r *runState) up(ctx context.Context, w workspace.Workspace) error {
 	}
 	if err != nil {
 		r.p.logTail(w.ID, "devcontainer up", stderr)
-		return workspace.Public("Drydock could not run devcontainer up, or could not read its result.", err)
+		// A timeout or an unreadable result is a failed build too, and its
+		// output is what says where it stopped.
+		r.p.keepBuildLog(w.ID, stderr)
+		return workspace.Public("Drydock could not run devcontainer up, or could not read its result. "+
+			"Until Drydock restarts, the workspace page shows the output it printed.", err)
 	}
 	if res.Outcome != classify.ContainerRunning {
 		r.p.logTail(w.ID, "devcontainer up", stderr)
-		r.p.keepBuildLog(w.ID, stderr, r.p.redactions(ctx, w.ID))
+		r.p.keepBuildLog(w.ID, stderr)
 		// The CLI's message can quote the repository's own commands, so it
 		// goes to the service log and the held build log, not into the
 		// detail; the detail is §12's sentence for what the Feature's own

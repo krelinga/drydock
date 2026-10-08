@@ -36,7 +36,7 @@ import { capacity } from '../lib/capacity'
 import { actionStepTitle, cardStatus, stepTitle, withRoom } from '../lib/workspaceCard'
 import { ACTION_STEPS, failedStep, liveAction, runSteps, stopFailed } from '../stores/reducer'
 import { useStreamStore } from '../stores/stream'
-import { useCatalogStore } from '../stores/catalog'
+import { catalogEvent, useCatalogStore } from '../stores/catalog'
 import { deleteKey, rebuildKey, stopKey, useWorkspacesStore } from '../stores/workspaces'
 
 const route = useRoute()
@@ -68,6 +68,9 @@ watch(id, (now) => void workspaces.loadOne(now))
 // a refetch — the move to running and `workspace.adopted` both carry the
 // container id, so the reducer has it from the event (design §6).
 useStreamRefetch({ refetch: () => workspaces.loadOne(id.value) })
+// The repository's catalog row (removed, archived) is what the read-only
+// badge and the GitHub access row read: kept current as the home list keeps it.
+useStreamRefetch({ refetch: () => catalog.load(), when: catalogEvent })
 
 const failed = computed(() => (ws.value?.state === 'failed' ? failedStep(ws.value) : null))
 
@@ -125,7 +128,11 @@ async function loadBuildLog(): Promise<void> {
 watch([id, failedAtUp, () => ws.value?.steps.up?.at], () => void loadBuildLog(), { immediate: true })
 
 // §12's GitHub rows, from the newest token event (lib/githubAccess.ts).
-const github = computed(() => githubAccess(stream.entities.feeds[id.value]))
+const github = computed(() => {
+  const repoId = ws.value?.repositoryId ?? null
+  const repo = repoId !== null ? stream.entities.repos[repoId] ?? null : null
+  return githubAccess(stream.entities.feeds[id.value], repo)
+})
 
 // What the disk figure counts (design §6 *Resources*): what a delete frees.
 const breakdown = computed(() => diskBreakdown(stream.entities.resources[id.value]))
@@ -275,16 +282,25 @@ watch(id, () => {
         </ol>
       </div>
 
-      <div v-if="buildLog?.held" class="block" data-test="build-log">
-        <div class="sec-label"><span>Build output</span><span>last {{ buildLog.lines.length }} lines</span></div>
+      <div v-if="buildLog" class="block" data-test="build-log">
+        <div class="sec-label">
+          <span>Build output</span><span v-if="buildLog.held && !buildLog.withheld">last {{ buildLog.lines.length }} lines</span>
+        </div>
         <p class="sub">The clone is kept. Fix the dev container configuration, then Rebuild.</p>
-        <pre class="build-log">{{ buildLog.lines.join('\n') }}</pre>
+        <pre v-if="buildLog.held && !buildLog.withheld" class="build-log">{{ buildLog.lines.join('\n') }}</pre>
+        <p v-else-if="buildLog.withheld" class="sub" data-test="build-log-withheld">
+          The build output is withheld: Drydock cannot read the secret values it must hide from it, so it shows none
+          rather than show them. Repair the secrets (the banner above says which), and it is shown again.
+        </p>
+        <p v-else class="sub" data-test="build-log-none">
+          Drydock holds no output from this build — it has restarted since. The service log has it.
+        </p>
       </div>
 
       <div v-if="github" class="block" data-test="github-access">
         <div class="sec-label"><span>GitHub access</span></div>
         <p class="gh" :class="github.ok ? 'ok' : 'bad'" data-test="github-access-line">
-          {{ github.sentence }}<template v-if="github.ok"> {{ relativeTime(github.at) }}</template>.
+          {{ github.sentence }}<template v-if="github.ok"> {{ relativeTime(github.at) }}.</template>
         </p>
       </div>
 

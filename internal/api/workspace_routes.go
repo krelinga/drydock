@@ -69,16 +69,19 @@ type WorkspaceRoutes struct {
 
 // BuildLogs is what the build-log route needs from internal/provision.
 type BuildLogs interface {
-	BuildLog(id string) (provision.BuildLog, bool)
+	BuildLog(ctx context.Context, id string) (provision.BuildLog, bool, error)
 }
 
 // BuildLogBody is GET /api/workspaces/{id}/build-log. held is false when
 // Drydock holds none — no failed build since it started, or a later build
-// got past it — which is not an empty log.
+// got past it — which is not an empty log. withheld is a held log not served
+// because the secret values it must be masked of cannot be read: no lines
+// rather than unmasked ones.
 type BuildLogBody struct {
-	Lines []string   `json:"lines"`
-	At    *time.Time `json:"at"`
-	Held  bool       `json:"held"`
+	Lines    []string   `json:"lines"`
+	At       *time.Time `json:"at"`
+	Held     bool       `json:"held"`
+	Withheld bool       `json:"withheld"`
 }
 
 func (wr WorkspaceRoutes) buildLog(w http.ResponseWriter, r *http.Request) {
@@ -92,7 +95,14 @@ func (wr WorkspaceRoutes) buildLog(w http.ResponseWriter, r *http.Request) {
 	}
 	body := BuildLogBody{Lines: []string{}}
 	if wr.BuildLogs != nil {
-		if b, ok := wr.BuildLogs.BuildLog(id); ok {
+		b, ok, err := wr.BuildLogs.BuildLog(r.Context(), id)
+		switch {
+		case errors.Is(err, provision.ErrLogWithheld):
+			body = BuildLogBody{Lines: []string{}, At: &b.At, Held: true, Withheld: true}
+		case err != nil:
+			WriteError(w, http.StatusInternalServerError, CodeInternal, "Could not read the build log.", "")
+			return
+		case ok:
 			body = BuildLogBody{Lines: append([]string{}, b.Lines...), At: &b.At, Held: true}
 		}
 	}

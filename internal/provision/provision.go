@@ -31,6 +31,7 @@ import (
 	"github.com/krelinga/drydock/internal/clone"
 	"github.com/krelinga/drydock/internal/container"
 	"github.com/krelinga/drydock/internal/events"
+	"github.com/krelinga/drydock/internal/redact"
 	"github.com/krelinga/drydock/internal/sys"
 	"github.com/krelinga/drydock/internal/workspace"
 )
@@ -203,9 +204,10 @@ type Provisioner struct {
 	SupervisorRestart func(ctx context.Context, id string) error
 
 	// Redact returns the values a workspace's held build log must not show:
-	// the secrets granted to its repository (the server's secretValues,
-	// as the session server's log uses). Nil masks only GitHub tokens.
-	Redact func(ctx context.Context, id string) []string
+	// the secrets granted to its repository. An error withholds the log
+	// rather than serve it unmasked (ErrLogWithheld). Nil masks credential
+	// shapes only.
+	Redact func(ctx context.Context, id string) ([]string, error)
 
 	// afterStep, in a test, runs after each stop or delete sub-step
 	// finishes; an error it returns ends the job there, as a crash between
@@ -597,13 +599,6 @@ func (p *Provisioner) run(parent context.Context, id string, first workspace.Ste
 	return err
 }
 
-func (p *Provisioner) redactions(ctx context.Context, id string) []string {
-	if p.Redact == nil {
-		return nil
-	}
-	return p.Redact(ctx, id)
-}
-
 // closeIfFailed closes a failed workspace's broker socket. GitHub access
 // follows Drydock's state, not Docker's (§9.1): a failed workspace may still
 // have a running container — a failed postCreateCommand leaves one up (§6) —
@@ -669,7 +664,7 @@ func (p *Provisioner) logTail(id, what string, b []byte) {
 		lines = lines[len(lines)-max:]
 	}
 	for _, l := range lines {
-		p.logf("drydock: workspace %s: %s: %s", id, what, ghToken.ReplaceAllString(l, "[redacted]"))
+		p.logf("drydock: workspace %s: %s: %s", id, what, redact.String(l, nil))
 	}
 }
 

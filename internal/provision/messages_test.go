@@ -2,6 +2,7 @@ package provision
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
@@ -51,7 +52,7 @@ func TestUpFailuresNameTheirCause(t *testing.T) {
 			e := newEnv(t)
 			e.cli.up = upFailing(c.stderr + "\nsecret-value-xyzzy")
 			e.wire(t)
-			e.p.Redact = func(_ context.Context, id string) []string { return []string{"secret-value-xyzzy"} }
+			e.p.Redact = func(_ context.Context, id string) ([]string, error) { return []string{"secret-value-xyzzy"}, nil }
 			v := e.create(t, alpha, "")
 			got := v.Steps[workspace.StepUp]
 			if v.State != workspace.Failed || got.Status != "failed" || !strings.Contains(got.Detail, c.want) {
@@ -62,12 +63,16 @@ func TestUpFailuresNameTheirCause(t *testing.T) {
 					t.Errorf("the detail carries %q: %s", bad, got.Detail)
 				}
 			}
-			log, ok := e.p.BuildLog(v.ID)
-			joined := strings.Join(log.Lines, "\n")
-			if !ok || len(log.Lines) == 0 || !strings.Contains(joined, canary[:6]) && !strings.Contains(joined, "drydock:") {
-				t.Errorf("no build log held: %v %q", ok, log.Lines)
+			log, ok, err := e.p.BuildLog(context.Background(), v.ID)
+			// The held lines are stderr's last ones, in order, each line
+			// the fake wrote: its own input's last line, then the masked
+			// value, then the CLI's error. Asserted line for line.
+			lastIn := c.stderr[strings.LastIndex(c.stderr, "\n")+1:]
+			n := len(log.Lines)
+			if err != nil || !ok || n < 2 || log.Lines[n-2] != lastIn || log.Lines[n-1] != "[redacted]" {
+				t.Errorf("held %v %v, lines %q; want …%q, %q", ok, err, log.Lines, lastIn, "[redacted]")
 			}
-			if strings.Contains(joined, "secret-value-xyzzy") || !strings.Contains(joined, "[redacted]") {
+			if strings.Contains(strings.Join(log.Lines, "\n"), "secret-value-xyzzy") {
 				t.Errorf("the build log was not redacted: %q", log.Lines)
 			}
 
@@ -78,7 +83,7 @@ func TestUpFailuresNameTheirCause(t *testing.T) {
 				t.Fatal(err)
 			}
 			e.p.wg.Wait()
-			if _, ok := e.p.BuildLog(v.ID); ok {
+			if _, ok, _ := e.p.BuildLog(context.Background(), v.ID); ok {
 				t.Error("a later up kept the earlier failure's build log")
 			}
 		})
@@ -96,7 +101,7 @@ func TestUpFailuresNameTheirCause(t *testing.T) {
 			t.Errorf("a successful up says %q", s)
 		}
 	}
-	if _, ok := e.p.BuildLog(v.ID); ok {
+	if _, ok, _ := e.p.BuildLog(context.Background(), v.ID); ok {
 		t.Error("a successful up holds a build log")
 	}
 }
@@ -115,5 +120,60 @@ func TestUpFailureSentenceTable(t *testing.T) {
 	}
 	if s := RemoteControlSentence([]string{"A", "B"}); !strings.Contains(s, "A, B are set") || !strings.Contains(s, "Remove them") {
 		t.Errorf("plural: %s", s)
+	}
+}
+
+// TestTheBuildLogIsMaskedLikeTheSessionLog: the held build log goes through
+// the one redactor (internal/redact) when it is served — values before
+// patterns, so a secret that contains a token shape is masked whole, not left
+// with its prefix showing — and masks a github_pat_ URL, a bearer header, an
+// Anthropic key and a token query parameter. A secret granted after the
+// failure is masked too, since masking is at serve time. Values that cannot
+// be read withhold the log rather than serve it unmasked. The control is a
+// plain line, served as written.
+func TestTheBuildLogIsMaskedLikeTheSessionLog(t *testing.T) {
+	const value = "pfx-SECRETPART-ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+	lines := []string{
+		"ARG X=" + value,
+		"url https://x:github_pat_11AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA@github.com",
+		"Authorization: Bearer sk-ant-api03-AAAAAAAAAAAAAAAAAAAA",
+		"GET /cb?code=abcdef123456&state=x",
+		"later-granted-value-77",
+		"Step 2/9 : RUN make",
+	}
+	e := newEnv(t)
+	e.cli.up = upFailing(strings.Join(lines, "\n"))
+	e.wire(t)
+	values := []string{value}
+	var valuesErr error
+	e.p.Redact = func(context.Context, string) ([]string, error) { return values, valuesErr }
+	v := e.create(t, alpha, "")
+	ctx := context.Background()
+	log, ok, err := e.p.BuildLog(ctx, v.ID)
+	if err != nil || !ok {
+		t.Fatalf("held %v %v", ok, err)
+	}
+	joined := strings.Join(log.Lines, "\n")
+	for _, leak := range []string{"SECRETPART", "pfx-", "github_pat_11", "sk-ant-api03", "abcdef123456"} {
+		if strings.Contains(joined, leak) {
+			t.Errorf("%q survived: %q", leak, log.Lines)
+		}
+	}
+	for _, want := range []string{"ARG X=[redacted]", "Bearer [redacted]", "?code=[redacted]", "Step 2/9 : RUN make", "later-granted-value-77"} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("want %q in %q", want, log.Lines)
+		}
+	}
+	// Granted after the failure: masked from the next read on.
+	values = append(values, "later-granted-value-77")
+	log, _, _ = e.p.BuildLog(ctx, v.ID)
+	if strings.Contains(strings.Join(log.Lines, "\n"), "later-granted-value-77") {
+		t.Error("a value granted after the failure was not masked")
+	}
+	// Values that cannot be read: withheld, no lines.
+	valuesErr = errors.New("a secret does not open")
+	log, ok, err = e.p.BuildLog(ctx, v.ID)
+	if !errors.Is(err, ErrLogWithheld) || !ok || len(log.Lines) != 0 {
+		t.Errorf("unreadable values: %v %v %q", ok, err, log.Lines)
 	}
 }

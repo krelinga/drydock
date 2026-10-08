@@ -1,9 +1,13 @@
 package provision
 
 import (
+	"context"
+	"errors"
 	"regexp"
 	"strings"
 	"time"
+
+	"github.com/krelinga/drydock/internal/redact"
 )
 
 // Design §12 pairs each failure with a sentence that names its cause and the
@@ -39,7 +43,7 @@ const (
 	// lifecycle command. The clone is kept, which is what makes a fix and a
 	// rebuild one click (§12, *Image build fails*).
 	UpFailedSentence = "The image build or the container's start failed. The clone is kept: fix the dev container " +
-		"configuration and Rebuild. The workspace page shows the build's last lines."
+		"configuration and Rebuild. Until Drydock restarts, the workspace page shows the build's last lines."
 	// NoBrokerSentence is §12's *Broker socket missing or stale*, at a start:
 	// "GitHub access unavailable", never a git error.
 	NoBrokerSentence = "GitHub access unavailable for this workspace: its broker socket did not answer when the " +
@@ -83,28 +87,41 @@ func upFailure(stderr []byte) string {
 
 // BuildLog is the last lines of a workspace's latest failed `devcontainer up`
 // (§12, *Image build fails*: "the last 50 build lines"), held in memory only —
-// like the session server's log, never persisted — and redacted as it is
-// kept. A start or rebuild clears it as its `up` begins.
+// like the session server's log, never persisted — and cleared when the next
+// `up` starts or the workspace is deleted. A Drydock restart loses it.
+//
+// It is held as the CLI wrote it and masked when it is served
+// (Provisioner.BuildLog), with the one redactor the session server's log uses
+// (internal/redact): granted secret values first, then credential shapes. At
+// serve time so a secret granted after the failure is masked too, and so the
+// values-before-patterns order holds — masking a pattern first can leave a
+// value that contained it no longer matchable, its prefix showing.
 type BuildLog struct {
 	Lines []string
 	At    time.Time
 }
 
-// buildLogLines is how many lines a BuildLog keeps.
-const buildLogLines = 50
+// buildLogLines is how many lines a BuildLog keeps, and maxBuildLine how
+// many bytes of each.
+const (
+	buildLogLines = 50
+	maxBuildLine  = 2000
+)
 
-func (p *Provisioner) keepBuildLog(id string, stderr []byte, values []string) {
+// ErrLogWithheld is a held build log that cannot be served because the
+// values it must be masked of cannot be read — the secrets snapshot is
+// undeliverable. It fails closed: no lines rather than unmasked ones.
+var ErrLogWithheld = errors.New("provision: the build log is withheld: the secret values to mask it of cannot be read")
+
+func (p *Provisioner) keepBuildLog(id string, stderr []byte) {
 	lines := splitLines(stderr)
 	if len(lines) > buildLogLines {
 		lines = lines[len(lines)-buildLogLines:]
 	}
 	out := make([]string, len(lines))
 	for i, l := range lines {
-		l = ghToken.ReplaceAllString(l, "[redacted]")
-		for _, v := range values {
-			if v != "" {
-				l = strings.ReplaceAll(l, v, "[redacted]")
-			}
+		if len(l) > maxBuildLine {
+			l = l[:maxBuildLine]
 		}
 		out[i] = l
 	}
@@ -122,10 +139,24 @@ func (p *Provisioner) dropBuildLog(id string) {
 	delete(p.buildLogs, id)
 }
 
-// BuildLog reports the workspace's held build log, if any.
-func (p *Provisioner) BuildLog(id string) (BuildLog, bool) {
+// BuildLog is the workspace's held build log, masked now: held is false when
+// there is none, and ErrLogWithheld when there is one that cannot be masked.
+func (p *Provisioner) BuildLog(ctx context.Context, id string) (log BuildLog, held bool, err error) {
 	p.mu.Lock()
-	defer p.mu.Unlock()
 	b, ok := p.buildLogs[id]
-	return b, ok
+	p.mu.Unlock()
+	if !ok {
+		return BuildLog{}, false, nil
+	}
+	var values []string
+	if p.Redact != nil {
+		if values, err = p.Redact(ctx, id); err != nil {
+			return BuildLog{At: b.At}, true, ErrLogWithheld
+		}
+	}
+	out := make([]string, len(b.Lines))
+	for i, l := range b.Lines {
+		out[i] = redact.String(l, values)
+	}
+	return BuildLog{Lines: out, At: b.At}, true, nil
 }

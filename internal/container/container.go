@@ -253,6 +253,9 @@ func (m Manager) ExecIn(ctx context.Context, s ExecSpec) (subproc.Result, error)
 	return m.Run.Run(ctx, subproc.Cmd{Name: "devcontainer", Args: args, Stdout: s.Stdout, Stderr: s.Stderr}), nil
 }
 
+// UpStderrTail is how much of `up`'s stderr Up returns: the last MiB.
+const UpStderrTail = 1 << 20
+
 // Up brings a workspace's container up and returns the CLI's verdict. A
 // failed `up` is a ContainerFailed result, not an error — and it may carry a
 // ContainerID, because a failed postCreateCommand leaves the container
@@ -266,8 +269,11 @@ func (m Manager) Up(ctx context.Context, s UpSpec) (classify.Container, []byte, 
 	if err != nil {
 		return classify.Container{}, nil, err
 	}
-	var stdout, stderr bytes.Buffer
-	cmd := subproc.Cmd{Name: "devcontainer", Args: args, Stdout: &stdout, Stderr: limit(&stderr, 1<<20)}
+	var stdout bytes.Buffer
+	// The tail, not the head: the lines that say why an up failed come last
+	// (tail.go).
+	stderr := newTail(UpStderrTail)
+	cmd := subproc.Cmd{Name: "devcontainer", Args: args, Stdout: &stdout, Stderr: stderr}
 	if s.TempDir != "" {
 		if !strings.HasPrefix(s.TempDir, "/") {
 			return classify.Container{}, nil, fmt.Errorf("container: temp dir %q must be absolute", s.TempDir)

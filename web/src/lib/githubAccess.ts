@@ -5,6 +5,13 @@
 // Read from the workspace's feed (the stream's events and the detail's own),
 // keyed on the event's `data.reason`, never on its message: a pure function of
 // what the reducer holds, so it invents nothing.
+//
+// The repository's own state comes first. The broker refuses a repository the
+// catalog has marked removed or archived from its own row, before asking
+// GitHub, and writes no event for it — one per git command would flood the
+// feed — so the feed's newest token event can be an issue from before. The
+// catalog is the authority on those two, and it is what the read-only badge
+// reads, so the row and the badge say one thing.
 
 import type { StreamEvent } from '../api/types'
 
@@ -26,8 +33,16 @@ const REFUSED: Record<string, string> = {
 
 const OTHER = "GitHub did not issue a token just now. The next git or gh command asks again."
 
-/** Null when the feed holds no token event. `feed` is newest first. */
-export function githubAccess(feed: readonly StreamEvent[] | undefined): GitHubAccess | null {
+/** What the catalog says of the workspace's repository, when it has read it. */
+export interface RepoState {
+  removed: boolean
+  archived: boolean
+}
+
+/** Null when nothing is known. `feed` is newest first. */
+export function githubAccess(feed: readonly StreamEvent[] | undefined, repo: RepoState | null = null): GitHubAccess | null {
+  if (repo?.removed) return { ok: false, sentence: REFUSED.revoked!, at: '' }
+  if (repo?.archived) return { ok: false, sentence: REFUSED.repo_archived!, at: '' }
   for (const ev of feed ?? []) {
     if (ev.kind === 'token.issued') return { ok: true, sentence: 'Working: a token was issued', at: ev.at }
     if (ev.kind === 'token.refused') {

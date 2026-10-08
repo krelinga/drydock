@@ -285,6 +285,8 @@ export interface BuildLogBody {
   at: string | null
   /** False when Drydock holds none — not an empty log. */
   held: boolean
+  /** Held but not served: the secret values to mask it of cannot be read. */
+  withheld?: boolean
 }
 
 /** One `workspace.action` event as the view reports it (internal/workspace ActionOutcome). */

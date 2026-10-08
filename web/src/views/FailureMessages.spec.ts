@@ -29,10 +29,18 @@ describe('a failed build', () => {
     expect(log.text()).toContain('The clone is kept')
   })
 
-  it('shows nothing when the server holds none, nor for a running workspace', async () => {
+  it('says when none is held, or it is withheld, and asks nothing for a running workspace', async () => {
     freshBackend({ signedIn: true })
     const failed = await mountApp(`/ws/${WS_FAILED}`)
-    expect(failed.wrapper.find('[data-test="build-log"]').exists()).toBe(false)
+    // The step's sentence promises lines only until a restart; with none
+    // held the page says why, rather than nothing.
+    expect(failed.wrapper.find('[data-test="build-log-none"]').text()).toContain('it has restarted since')
+    expect(failed.wrapper.find('pre').exists()).toBe(false)
+    const w = freshBackend({ signedIn: true })
+    w.workspaces[WS_FAILED]!.buildLog = { lines: [], at: null, held: true, withheld: true }
+    const withheld = await mountApp(`/ws/${WS_FAILED}`)
+    expect(withheld.wrapper.find('[data-test="build-log-withheld"]').text()).toContain('withheld')
+    expect(withheld.wrapper.find('pre').exists()).toBe(false)
     const b = freshBackend({ signedIn: true })
     b.workspaces[WS_RUNNING]!.buildLog = { lines: ['old'], at: null, held: true }
     const running = await mountApp(`/ws/${WS_RUNNING}`)
@@ -58,6 +66,23 @@ describe('GitHub access', () => {
     expect(w.find('[data-test="github-access"] button').exists()).toBe(false) // never a retry that will fail too
     expect(line.text()).not.toContain('server prose')
     expect(line.classes()).toContain('bad')
+  })
+
+  it('defers to the catalog: an issued token, then the repository removed, says read-only', async () => {
+    const b = freshBackend({ signedIn: true })
+    const { wrapper } = await mountApp(`/ws/${WS_RUNNING}`)
+    FakeEventSource.latest().open().send(tokenEvent(900, 'token.issued'))
+    await settle()
+    expect(wrapper.find('[data-test="github-access-line"]').text()).toContain('Working') // control
+    // The broker refuses from its own row and writes no event: the feed
+    // still says issued. The catalog, refreshed, says removed.
+    b.repos.find((r) => r.id === 1)!.removed = true
+    FakeEventSource.latest().send({ ...tokenEvent(901, 'repo.refreshed'), workspace_id: undefined, data: { count: 5, added: 0, removed: 1 } })
+    await settle()
+    const line = wrapper.find('[data-test="github-access-line"]').text()
+    expect(line).toContain('read-only')
+    expect(line).not.toContain('Working')
+    expect(line).not.toMatch(/\.\.$/)
   })
 
   it('a revocation says read-only; an issued token, the control, says working', async () => {
