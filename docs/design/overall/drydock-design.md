@@ -146,7 +146,7 @@ One structural rule shapes the picture below: **Drydock binds no TCP port.** It 
 
 ## 4. Data model
 
-Sixteen tables: the fifteen below, and `config_approval`, described at the end of this section. The authority is `internal/store`'s golden schema (`testdata/schema.golden`), and `test/docs` fails when a table there goes unnamed here. The design rule throughout: **Drydock stores no credential that is not the App private key**, and every mutable container fact is treated as a cache that can be rebuilt by reconciling against Docker labels.
+Eighteen tables: the fifteen below, and `config_approval`, `forwarded_port` and `preview_session`, described at the end of this section. The authority is `internal/store`'s golden schema (`testdata/schema.golden`), and `test/docs` fails when a table there goes unnamed here. The design rule throughout: **Drydock stores no credential that is not the App private key**, and every mutable container fact is treated as a cache that can be rebuilt by reconciling against Docker labels.
 
 ```bash
 -- Exactly one row, written at first run. The workspace label prefix this
