@@ -13,7 +13,7 @@ import { useRoute, useRouter } from 'vue-router'
 import BrandMark from '../components/BrandMark.vue'
 import { ApiError } from '../api/client'
 import { describeError } from '../api/messages'
-import { safeReturnPath } from '../lib/returnPath'
+import { isServerPath, navigation, safeReturnPath } from '../lib/returnPath'
 import { useSessionStore } from '../stores/session'
 
 const route = useRoute()
@@ -38,6 +38,12 @@ async function submit(): Promise<void> {
   try {
     await session.signIn(password.value)
     password.value = ''
+    // A server path (the preview handshake's /preview/authorize) is loaded,
+    // not routed: it answers with a redirect the app cannot follow itself.
+    if (isServerPath(destination.value)) {
+      navigation.assign(destination.value)
+      return
+    }
     await router.replace(destination.value)
   } catch (e) {
     error.value = describeError(e)

@@ -91,6 +91,8 @@ describe('SettingsView device list', () => {
     const sheet = wrapper.find('[data-test="confirm-everywhere"]')
     expect(sheet.exists()).toBe(true)
     expect(sheet.find('[data-test="includes-current"]').text()).toMatch(/includes this device\s+and 2 others/)
+    // And it says previews go with them (port forwarding §5: the cascade).
+    expect(sheet.find('[data-test="includes-current"]').text()).toContain('Every preview open on them closes too.')
     // The first click asked; it did not act.
     expect(deletes()).toEqual([])
 

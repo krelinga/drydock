@@ -11,13 +11,13 @@
 // look the same from inside the page.
 
 import type { BrowserContext, Page } from '@playwright/test'
-import { COOKIE, PREVIEW, PREVIEW_HOST, UI, UI_HOST } from './harness'
+import { COOKIE, PREVIEW, PREVIEW_HOST, PREVIEW_PAGE, UI, UI_HOST } from './harness'
 import { expect, seenBy, sessionCookie, test } from './fixtures'
 
 const site = (host: string) => host.split('.').slice(-2).join('.')
 
 async function onPreview(page: Page): Promise<void> {
-  await page.goto(`${PREVIEW}/`)
+  await page.goto(PREVIEW_PAGE)
   expect(new URL(page.url()).host).toBe(PREVIEW_HOST)
 }
 

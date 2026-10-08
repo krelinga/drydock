@@ -5,31 +5,42 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/krelinga/drydock/internal/preview"
 )
 
 // stubGate lets a test choose, per request, which gates pass. Every field
 // defaults to the hostile answer so a test that forgets to grant something
 // fails closed rather than passing for the wrong reason.
 type stubGate struct {
-	session bool
-	origin  bool
-	host    bool
-	token   bool
+	session        bool
+	origin         bool
+	host           bool
+	token          bool
+	previewHost    bool
+	previewSession bool
 }
 
-func (g stubGate) Authenticate(r *http.Request) (*http.Request, bool) { return r, g.session }
-func (g stubGate) OriginAllowed(*http.Request) bool                   { return g.origin }
-func (g stubGate) HostAllowed(*http.Request) bool                     { return g.host }
-func (g stubGate) PreviewTokenValid(*http.Request) bool               { return g.token }
+func (g stubGate) Authenticate(r *http.Request) (*http.Request, bool)      { return r, g.session }
+func (g stubGate) OriginAllowed(*http.Request) bool                        { return g.origin }
+func (g stubGate) HostAllowed(*http.Request) bool                          { return g.host }
+func (g stubGate) PreviewTokenValid(r *http.Request) (*http.Request, bool) { return r, g.token }
+func (g stubGate) PreviewHost(*http.Request) bool                          { return g.previewHost }
+func (g stubGate) PreviewSession(r *http.Request) (*http.Request, bool)    { return r, g.previewSession }
+func (g stubGate) PreviewAuthorizeURL(r *http.Request) string {
+	return stubAuthorize + r.URL.Path
+}
 func (g stubGate) SignInRedirect(r *http.Request) string {
 	return "/signin?return=" + r.URL.Path
 }
+
+const stubAuthorize = "https://drydock.example.com/preview/authorize?return="
 
 // allOpen is every gate satisfied: a signed-in operator on the right host with
 // the right Origin. It is the positive control for every refusal test below —
 // testing-plan §4.1, which is the rule that keeps these from passing against a
 // server that refuses everything.
-var allOpen = stubGate{session: true, origin: true, host: true, token: true}
+var allOpen = stubGate{session: true, origin: true, host: true, token: true, previewHost: true, previewSession: true}
 
 // reachedHandler marks a route's handler as having run, so a test can assert
 // "no handler was reached" rather than inferring it from a status code.
@@ -236,10 +247,11 @@ func TestNoRouteEmitsCORS(t *testing.T) {
 // preview origin serves repository code, so an API pattern reaching a handler
 // there would put the control plane on an origin a repo's dev server controls.
 // It drives what the preview socket actually serves, PreviewFrontDoor, with a
-// handler written for every route of both muxes and every gate open: each API
-// entry gets the uniform 401 and no handler runs. (preview_test.go's
-// TestPreviewFrontDoorReachesNoAPIHandler adds the API-mux control and other
-// Hosts; this one keeps the table walk and the route-set pin.)
+// handler written for every route of both muxes and every gate open: no API
+// handler runs for any API entry. With a preview session, an API path on a
+// preview host is the previewed app's own path and reaches the upstream; with
+// none, it is the handshake's redirect. (preview_test.go's
+// TestPreviewFrontDoorReachesNoAPIHandler adds the API-mux control.)
 func TestPreviewMuxServesNoAPI(t *testing.T) {
 	ran := ""
 	handlers := map[string]http.HandlerFunc{}
@@ -247,16 +259,27 @@ func TestPreviewMuxServesNoAPI(t *testing.T) {
 		name := rt.Name
 		handlers[name] = func(http.ResponseWriter, *http.Request) { ran = name }
 	}
-	front := PreviewFrontDoor(allOpen, handlers)
-	for _, rt := range APIRoutes() {
-		ran = ""
-		rec := httptest.NewRecorder()
-		front.ServeHTTP(rec, requestFor(rt))
-		if rec.Code != http.StatusUnauthorized || !strings.Contains(rec.Body.String(), `"code":"unauthenticated"`) {
-			t.Errorf("%s %s on the preview socket = %d %q; want the uniform 401", rt.Method, rt.Pattern, rec.Code, rec.Body)
+	upstream := 0
+	up := preview.UpstreamFunc(func(http.ResponseWriter, *http.Request, preview.Target) { upstream++ })
+	for gname, g := range map[string]stubGate{"signed in to the preview": allOpen, "no preview session": {previewHost: true}} {
+		front := PreviewFrontDoor(g, handlers, up)
+		upstream = 0
+		for _, rt := range APIRoutes() {
+			ran = ""
+			rec := httptest.NewRecorder()
+			front.ServeHTTP(rec, requestFor(rt))
+			if ran != "" {
+				t.Errorf("%s: %s %s on the preview socket ran handler %s", gname, rt.Method, rt.Pattern, ran)
+			}
+			if g.previewSession {
+				continue
+			}
+			if rec.Code != http.StatusFound || !strings.HasPrefix(rec.Header().Get("Location"), stubAuthorize) {
+				t.Errorf("%s: %s %s on the preview socket = %d %q; want the handshake's redirect", gname, rt.Method, rt.Pattern, rec.Code, rec.Header().Get("Location"))
+			}
 		}
-		if ran != "" {
-			t.Errorf("%s %s on the preview socket ran handler %s", rt.Method, rt.Pattern, ran)
+		if want := map[bool]int{true: len(APIRoutes()), false: 0}[g.previewSession]; upstream != want {
+			t.Errorf("%s: the upstream ran %d times; want %d", gname, upstream, want)
 		}
 	}
 	// And the converse, so the assertion above is not just "the preview
@@ -277,7 +300,7 @@ func TestPreviewMuxServesNoAPI(t *testing.T) {
 		}
 	}
 	ran = ""
-	front.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("GET", "https://a-b.drydock-preview.test/.drydock/denied", nil))
+	PreviewFrontDoor(allOpen, handlers, up).ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("GET", "https://a-b.drydock-preview.test/.drydock/denied", nil))
 	if ran != "preview.denied" {
 		t.Errorf("control: a written preview.denied was not reached (ran %q)", ran)
 	}

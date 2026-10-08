@@ -36,6 +36,7 @@ import (
 	"github.com/krelinga/drydock/internal/github"
 	"github.com/krelinga/drydock/internal/identity"
 	"github.com/krelinga/drydock/internal/login"
+	"github.com/krelinga/drydock/internal/preview"
 	"github.com/krelinga/drydock/internal/provision"
 	"github.com/krelinga/drydock/internal/reconcile"
 	"github.com/krelinga/drydock/internal/secrets"
@@ -85,6 +86,14 @@ type Server struct {
 	// filesystem (§6 *Resources*, §12 *Disk full*). Nil when env has no
 	// Disk, which only a test's env lacks; its fields are a test's seam.
 	Usage *usage.Sampler
+	// Previews is the preview handshake's state (PF §7): the one-time
+	// tokens in memory, the preview sessions in the database.
+	Previews *preview.Service
+	// PreviewUpstream is what a request with a valid preview cookie reaches
+	// (PF §13 step 2): preview.Placeholder, a fixed page, until step 3's
+	// proxy replaces it. A test's seam, read per request, so it may be set
+	// between New and Serve.
+	PreviewUpstream preview.Upstream
 	// reconciled closes when boot reconciliation has finished, so a test
 	// can set up workspace rows reconciliation would otherwise move.
 	reconciled chan struct{}
@@ -119,7 +128,11 @@ func New(ctx context.Context, cfg config.Config, env sys.Env) (*Server, error) {
 		return nil, err
 	}
 	svc := auth.New(db.DB, env)
-	gate := api.SessionGate{Sessions: svc.Sessions, UIOrigin: cfg.UIOrigin, UIHost: cfg.UIHost}
+	// A preview session dies with the auth session's idle window as well as
+	// its own (PF §5), and with its revocation by the schema's cascade.
+	previews := &preview.Service{DB: db.DB, Clock: env.Clock, Random: env.Random,
+		Domain: cfg.PreviewDomain, AuthIdle: auth.IdleLifetime}
+	gate := api.SessionGate{Sessions: svc.Sessions, UIOrigin: cfg.UIOrigin, UIHost: cfg.UIHost, Previews: previews}
 
 	ui, err := web.New(web.Dist())
 	if err != nil {
@@ -127,7 +140,8 @@ func New(ctx context.Context, cfg config.Config, env sys.Env) (*Server, error) {
 		return nil, err
 	}
 
-	s := &Server{DB: db, Auth: svc, Events: events.New(db.DB, env.Clock), reconciled: make(chan struct{})}
+	s := &Server{DB: db, Auth: svc, Events: events.New(db.DB, env.Clock), reconciled: make(chan struct{}),
+		Previews: previews, PreviewUpstream: preview.Placeholder}
 	s.Workspaces = &workspace.Store{DB: db.DB, Events: s.Events, Env: env, Root: cfg.WorkspaceRoot, Cap: cfg.ContainerCap}
 	// Drydock's own uid owns the shared credential volume (§7.1): the dev
 	// container CLI, run as Drydock, gives every workspace's remote user
@@ -281,6 +295,9 @@ func New(ctx context.Context, cfg config.Config, env sys.Env) (*Server, error) {
 			Logf:    func(f string, a ...any) { fmt.Fprintf(os.Stderr, f+"\n", a...) }}
 		routes.Resources = s.Usage
 	}
+	for name, h := range previewHandlers(previews) {
+		handlers[name] = h
+	}
 	for name, h := range routes.Handlers() {
 		handlers[name] = h
 	}
@@ -291,10 +308,14 @@ func New(ctx context.Context, cfg config.Config, env sys.Env) (*Server, error) {
 		// No WriteTimeout: /api/events is a long-lived SSE stream.
 	}
 	s.preview = &http.Server{
-		// The front door, not Build: every request it has no written
-		// route for gets one uniform 401, never ServeMux's 404 (PF §13
-		// step 1).
-		Handler:           api.PreviewFrontDoor(gate, previewHandlers()),
+		// The front door, not Build: Drydock's two reserved paths behind
+		// their gates, and everything else redirected to the handshake or
+		// handed to the upstream with the preview cookie stripped (PF §7,
+		// §13 steps 1–2). Never ServeMux's 404.
+		Handler: api.PreviewFrontDoor(gate, previewHandlers(previews), preview.UpstreamFunc(
+			func(w http.ResponseWriter, r *http.Request, t preview.Target) {
+				s.PreviewUpstream.ServePreview(w, r, t)
+			})),
 		ReadHeaderTimeout: 10 * time.Second,
 		IdleTimeout:       2 * time.Minute,
 	}
@@ -316,21 +337,21 @@ func New(ctx context.Context, cfg config.Config, env sys.Env) (*Server, error) {
 	return s, nil
 }
 
-// previewHandlers are the preview mux's handlers, by route name. None is
-// written yet — the handshake is PF §13 step 2 — so api.PreviewFrontDoor
-// mounts none of them, and every request to the preview socket, these paths
-// included, gets its one uniform 401.
+// previewHandlers are the preview handshake's handlers, by route name: the
+// API mux's /preview/authorize and the preview mux's /.drydock/session and
+// /.drydock/denied. Each mux mounts only its own (PF §6).
 //
 // The preview server deliberately carries no web.SecurityHeaders: what it
-// will mostly serve is a repository's own app, whose headers are its own.
-// That leaves one header nothing else will send. /.drydock/session carries
-// the single-use token in its query string, so its response must say
+// mostly serves is a repository's own app, whose headers are its own. That
+// leaves one header nothing else will send. /.drydock/session carries the
+// single-use token in its query string, so its response must say
 // Referrer-Policy: no-referrer, or the token URL leaks onward in the Referer
 // of whatever the app loads next (security review F4, PF §7).
-// TestPreviewSessionSendsNoReferrer holds that obligation: the moment a
-// "preview.session" handler appears here, it fails unless the handler's own
-// response carries the header.
-func previewHandlers() map[string]http.HandlerFunc { return nil }
+// TestPreviewSessionSendsNoReferrer holds that obligation on the handler
+// itself, and api.PreviewFrontDoor sets it again on every answer of Drydock's.
+func previewHandlers(p *preview.Service) map[string]http.HandlerFunc {
+	return api.PreviewHandshake{Previews: p}.Handlers()
+}
 
 // apiSocketHandler is everything the API socket serves, in one place:
 //

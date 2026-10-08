@@ -567,8 +567,8 @@ step.
   `--github-app-key`, the flag is a path, is not kept in `drydock.env`, and later runs need it only
   to change the key.
 
-  Leave out the `--preview-*` flags. Previews are optional, only their front door is built, and
-  [8.7](#87-optional-enable-previews-front-door-only) adds them with a re-run whenever you like.
+  Leave out the `--preview-*` flags. Previews are optional, only their sign-in is built, and
+  [8.7](#87-optional-enable-previews-sign-in-only-no-proxy-yet) adds them with a re-run whenever you like.
 
 **What it does, in order.** It stops at the first failure. Steps 1 to 9 only check, stage and
 decide: a refusal there leaves the installed binary, the running Drydock and every file as they
@@ -1063,13 +1063,17 @@ account.
 If a card says *Waiting for the previous session server to release the folder*, leave it: that is a
 wait of one to three minutes, not a failure, and it clears on its own.
 
-### 8.7 Optional: enable previews (front door only)
+### 8.7 Optional: enable previews (sign-in only, no proxy yet)
 
-Skip this unless you want to prepare for previews now. **Only the front door is built**
-([port forwarding §13](../design/port-forwarding/port-forwarding-design.md#13-build-plan), step 1):
-with it on, every preview URL answers `401` and nothing is proxied to a workspace yet. What it buys
-today is the certificate, the DNS and Caddy's preview site proven in place, so the later steps need
-no infrastructure change. Below, `<preview-domain>` is your preview domain.
+Skip this unless you want to prepare for previews now. **Only the front door and the sign-in
+handshake are built**
+([port forwarding §13](../design/port-forwarding/port-forwarding-design.md#13-build-plan), steps 1
+and 2): a signed-in device opening a preview URL is signed in to that preview and lands on a fixed
+Drydock page, *Signed in to this preview*, but nothing is proxied to a workspace yet, and there is
+no ports panel to enable a port from, so in practice every preview name ends on the *This preview
+is not available* page. What it buys today is the certificate, the DNS, Caddy's preview site and
+the handshake proven in place, so the later steps need no infrastructure change. Below,
+`<preview-domain>` is your preview domain.
 
 You provide three things. Drydock issues no certificate and touches no DNS
 ([port forwarding §9](../design/port-forwarding/port-forwarding-design.md#9-caddy-configuration)):
@@ -1125,12 +1129,17 @@ certificate, a renewal ends with `sudo systemctl reload caddy`.
   It refuses a domain that is not a separate registrable domain before it changes anything,
   installs `/etc/caddy/drydock.d/preview.caddy`, restarts Drydock with `--preview-domain` and
   reloads Caddy. Its final check now fetches `https://drydock-check.<preview-domain>/` through
-  Caddy as well, and wants a `401` over a certificate it verified, as it does for the UI host.
-- [ ] **From a phone or laptop on the LAN**, open `https://anything.<preview-domain>/` while
-  signed in to Drydock: the certificate is trusted, and the page is a short JSON refusal,
-  `{"error":{"code":"unauthenticated",…}}`. Any path and any name under the domain answers the same.
-  That is the front door working: no preview URL reaches the UI or the API, and nothing is
-  proxied until later steps land.
+  Caddy as well, and wants a `302` to `https://drydock-check.<preview-domain>/.drydock/denied`
+  over a certificate it verified, as it verifies the UI host. `drydock-check` is never a preview's
+  name, so that is always the denied page.
+- [ ] **From a phone or laptop on the LAN**, open `https://anything.<preview-domain>/`. The
+  certificate is trusted, and the browser goes to Drydock's own address
+  (`https://<ui-host>/preview/authorize?…`) and straight back to
+  `https://anything.<preview-domain>/.drydock/denied`: a short page, *This preview is not
+  available*, which names nothing. If the device was not signed in, it shows Drydock's sign-in
+  page first, and after signing in carries on to the same place. That is the handshake working: it
+  checked the device is signed in and that `anything` names no enabled port. A sign-in form on a
+  preview address is never Drydock's: the real one is only ever on `<ui-host>`.
 
 To turn previews off again: re-run the installer with `--no-preview`. It removes the preview site
 and forgets the three settings; afterwards a preview name gets no TLS answer at all.
@@ -1142,10 +1151,11 @@ and forgets the three settings; afterwards a preview name gets no TLS answer at 
 None of the following is a deployment fault. These are the phases still being built
 ([§14](../design/overall/drydock-design.md#14-build-plan)):
 
-- **Previews are front door only (port forwarding step 1).** With
-  [8.7](#87-optional-enable-previews-front-door-only), every preview URL answers `401`; without
-  it, a preview name gets no answer. Nothing is proxied to a workspace yet, there is no ports
-  panel, and the sign-in handshake for previews is the next step.
+- **Previews are sign-in only (port forwarding steps 1 and 2).** With
+  [8.7](#87-optional-enable-previews-sign-in-only-no-proxy-yet), a preview URL runs the sign-in
+  handshake and, since no port can be enabled yet, ends on *This preview is not available*;
+  without it, a preview name gets no answer. Nothing is proxied to a workspace yet and there is no
+  ports panel: those are steps 3 and 4.
 - **Phase 6 is partly done.** Stop, rebuild and delete work, and so do the live session count
   (the card's capacity fraction) and the log viewer. These do not exist yet: memory and
   disk per workspace on the card, and the rest of the failure-mode
@@ -1297,7 +1307,7 @@ do not want.
 
 | Symptom | Likely cause | Fix |
 |---|---|---|
-| Installer: `--preview-domain refused: … must be a different registrable domain`, or `drydock serve` refusing to start with it | The preview domain shares the UI host's registrable domain — it is the same name, a subdomain, the parent, or a sibling (`preview.example.com` beside `drydock.example.com`), all of which make previews same-site with the UI. Or the UI host is a single label (`drydock`), which has no registrable domain to compare, so every preview domain is refused | Use a separate domain you own for previews ([8.7](#87-optional-enable-previews-front-door-only)), or leave `--preview-domain` unset (only the front door is built: [step 9](#9-what-does-not-work-yet)). Before v0.4.3 only a subdomain was refused, so a configuration the old check let through is refused on upgrade |
+| Installer: `--preview-domain refused: … must be a different registrable domain`, or `drydock serve` refusing to start with it | The preview domain shares the UI host's registrable domain — it is the same name, a subdomain, the parent, or a sibling (`preview.example.com` beside `drydock.example.com`), all of which make previews same-site with the UI. Or the UI host is a single label (`drydock`), which has no registrable domain to compare, so every preview domain is refused | Use a separate domain you own for previews ([8.7](#87-optional-enable-previews-sign-in-only-no-proxy-yet)), or leave `--preview-domain` unset (only the front door is built: [step 9](#9-what-does-not-work-yet)). Before v0.4.3 only a subdomain was refused, so a configuration the old check let through is refused on upgrade |
 | Installer: `Docker is not installed` / `there is no 'docker' group` | Docker is missing, or was installed without its group | [3.1](#31-docker-engine-official-repository) |
 | Installer: `the devcontainer CLI is not installed where the service can find it` | `devcontainer` is under nvm, snap or a home directory | Install Node from NodeSource and run `npm install -g` as root ([3.2](#32-nodejs-20-and-the-devcontainer-cli-on-the-services-path)). Check with the `PATH=… command -v` line there. |
 | Installer: `…installed but does not run as the drydock user` | Node older than 20 on `/usr/bin` | `node --version` with the service `PATH`. Upgrade Node. |
@@ -1307,7 +1317,10 @@ do not want.
 | Installer: `the new Caddy configuration does not validate` | Bad certificate or key file, or a path typo | Read the five lines above the error. Nothing under `/etc/caddy` was changed. |
 | Installer: `--github-app-id must be the numeric App ID` | The Client ID (`Iv…`) was given | `--github-app-id 5189455` |
 | Installer: `Drydock is installed and running, and answers through Caddy, but this host could not verify the certificate …` | Everything works except certificate verification. `unable to get local issuer certificate`: a private CA without `--ca-cert`, or the wrong CA file, or a public certificate whose `--cert` file lacks the intermediates. `no alternative certificate subject name matches`: the certificate is for another name | Option A: re-run with `--ca-cert /etc/caddy/certs/drydock-ca.pem` ([4.2](#42-the-tls-certificate-and-key)). Otherwise check the SAN and the full chain ([1.3](#13-a-tls-certificate-every-client-trusts-for-that-hostname)). Everything else is installed, so a re-run with the fix is all it takes. |
-| Installer: `… could not verify the certificate Caddy serves for drydock-check.<preview-domain> …`, or `end-to-end check failed: https://drydock-check.<preview-domain>/ answered …` | The UI is fine; the preview site is not. Either the preview certificate does not carry `*.<preview-domain>` or is not the full chain, or (option A) it is from a CA other than `--ca-cert`; or Caddy is not serving the preview site | Check the preview certificate as in [1.3](#13-a-tls-certificate-every-client-trusts-for-that-hostname) — the SAN must show `DNS:*.<preview-domain>` — and re-run with the right `--preview-cert`/`--preview-key` ([8.7](#87-optional-enable-previews-front-door-only)). Or turn previews off with `--no-preview`. |
+| Installer: `… could not verify the certificate Caddy serves for drydock-check.<preview-domain> …`, or `end-to-end check failed: https://drydock-check.<preview-domain>/ answered …` (it wants `'302 https://drydock-check.<preview-domain>/.drydock/denied'`) | The UI is fine; the preview site is not. Either the preview certificate does not carry `*.<preview-domain>` or is not the full chain, or (option A) it is from a CA other than `--ca-cert`; or Caddy is not serving the preview site | Check the preview certificate as in [1.3](#13-a-tls-certificate-every-client-trusts-for-that-hostname) — the SAN must show `DNS:*.<preview-domain>` — and re-run with the right `--preview-cert`/`--preview-key` ([8.7](#87-optional-enable-previews-sign-in-only-no-proxy-yet)). Or turn previews off with `--no-preview`. |
+| Browser: a preview URL goes to Drydock's sign-in page every time, even signed in | The device's Drydock session is gone (signed out, *Sign out everywhere*, a password change, or 14 days unused) — a preview sign-in dies with it, by design | Sign in on the UI host and open the preview again. If it still loops, check the device allows cookies for both the UI host and the preview domain. |
+| Browser: a preview URL ends on *This preview is not available* | Expected until the ports panel exists (port forwarding step 4): no port is enabled, or its workspace is not running. The page names no reason on purpose | Nothing to fix yet. *Try again* on the page restarts the sign-in. |
+| Browser: `https://<ui-host>/preview/authorize?…` answers `{"error":{"code":"bad_request",…}}` | The link's `return` is not a preview address on `<preview-domain>`: a different domain, `http:`, a port, or a mistyped domain. Drydock never redirects anywhere else | Open the preview's own `https://<name>.<preview-domain>/` address instead. |
 | Installer: `end-to-end check failed … answered '000'` | Nothing answered over TLS: Caddy is not serving this name, or the handshake failed (`curl`'s reason is in the message) | `journalctl -u caddy -u drydock`. Check the cert/key pair ([1.3](#13-a-tls-certificate-every-client-trusts-for-that-hostname)). |
 | Installer: `--ca-cert … holds a private key` | The CA's key was given instead of its certificate | Pass the CA's certificate. Never copy the CA key to the server. |
 | Installer: `… answered '502'` | Caddy is up, Drydock is not | `journalctl -u drydock -n 50`. Check the socket with `ls -l /run/drydock/http.sock`. |

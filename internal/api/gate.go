@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/krelinga/drydock/internal/auth"
+	"github.com/krelinga/drydock/internal/preview"
 )
 
 // SessionGate is the production Gate: the session cookie, the exact-match
@@ -19,6 +20,9 @@ type SessionGate struct {
 	UIOrigin string
 	// UIHost is the one hostname Drydock answers to.
 	UIHost string
+	// Previews is the preview handshake's state (PF §7). Nil means no
+	// preview gate passes: no token is valid, no cookie, no host.
+	Previews *preview.Service
 }
 
 type sessionKey struct{}
@@ -65,10 +69,71 @@ func (g SessionGate) HostAllowed(r *http.Request) bool {
 	return host != "" && strings.EqualFold(host, g.UIHost)
 }
 
-// PreviewTokenValid fails closed until previews are built: the preview mux's
-// one-time token store is port-forwarding §7's work, and an always-false gate
-// is the honest placeholder for it.
-func (g SessionGate) PreviewTokenValid(*http.Request) bool { return false }
+// PreviewTokenValid consumes the request's ?t= token on the Host it arrived
+// on (PF §7 step 6). Exactly one t is required; the consume is atomic and
+// spends the token whatever the outcome. A missing, unknown, spent, expired or
+// other-host token is false, alike.
+func (g SessionGate) PreviewTokenValid(r *http.Request) (*http.Request, bool) {
+	if g.Previews == nil {
+		return r, false
+	}
+	ts := r.URL.Query()["t"]
+	if len(ts) != 1 {
+		return r, false
+	}
+	grant, ok := g.Previews.Consume(ts[0], r.Host)
+	if !ok {
+		return r, false
+	}
+	return r.WithContext(preview.WithGrant(r.Context(), grant)), true
+}
+
+// PreviewHost reports whether the request's Host is a preview host at all:
+// one well-formed label under the preview domain, never the reserved probe
+// name. Syntax only — whether the slug names an enabled port is decided after
+// sign-in, by /preview/authorize, so an unauthenticated caller cannot tell a
+// real slug from an invented one.
+func (g SessionGate) PreviewHost(r *http.Request) bool {
+	if g.Previews == nil {
+		return false
+	}
+	_, ok := g.Previews.Slug(r.Host)
+	return ok
+}
+
+// PreviewSession validates the preview cookie for the request's Host and
+// attaches what it may reach. Every cookie of that name is tried, since a
+// browser may send more than one; any failure is "no session", with no
+// distinction the caller can see.
+func (g SessionGate) PreviewSession(r *http.Request) (*http.Request, bool) {
+	if g.Previews == nil {
+		return r, false
+	}
+	for _, c := range r.Cookies() {
+		if c.Name != preview.CookieName {
+			continue
+		}
+		if t, ok := g.Previews.Session(r.Context(), c.Value, r.Host); ok {
+			return r.WithContext(preview.WithTarget(r.Context(), t)), true
+		}
+	}
+	return r, false
+}
+
+// PreviewAuthorizeURL is where a preview request with no valid preview cookie
+// goes (PF §7 step 2): the UI's /preview/authorize, carrying the URL it asked
+// for, rebuilt from the canonical (lowercase, port-less) preview host so the
+// value authorize validates is one this gate produced.
+func (g SessionGate) PreviewAuthorizeURL(r *http.Request) string {
+	host := r.Host
+	if g.Previews != nil {
+		if slug, ok := g.Previews.Slug(r.Host); ok {
+			host = g.Previews.HostFor(slug)
+		}
+	}
+	back := "https://" + host + r.URL.RequestURI()
+	return g.UIOrigin + "/preview/authorize?return=" + url.QueryEscape(back)
+}
 
 // SignInRedirect sends a navigation with no session to the sign-in page,
 // carrying where it was going. The value is a relative path, so it can only

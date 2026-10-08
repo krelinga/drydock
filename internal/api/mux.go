@@ -27,8 +27,18 @@ type Gate interface {
 	// independent check so the defense does not live in one config file
 	// (§13.3).
 	HostAllowed(r *http.Request) bool
-	// PreviewTokenValid consumes the single-use ?t= token, atomically.
-	PreviewTokenValid(r *http.Request) bool
+	// PreviewTokenValid consumes the single-use ?t= token, atomically, and
+	// returns the request with the token's grant attached (PF §7).
+	PreviewTokenValid(r *http.Request) (*http.Request, bool)
+	// PreviewHost reports whether the Host is a preview host by syntax
+	// alone: one label under the preview domain, not a reserved name.
+	PreviewHost(r *http.Request) bool
+	// PreviewSession validates the host-only preview cookie for this Host
+	// and returns the request with its resolved target attached.
+	PreviewSession(r *http.Request) (*http.Request, bool)
+	// PreviewAuthorizeURL is where a preview request with no valid preview
+	// cookie is sent: /preview/authorize on the UI origin, with ?return=.
+	PreviewAuthorizeURL(r *http.Request) string
 	// SignInRedirect is where an AuthRedirect route sends a caller with no
 	// session, with the original URL carried in ?return=.
 	SignInRedirect(r *http.Request) string
@@ -87,13 +97,18 @@ func wrap(rt Route, g Gate) http.Handler {
 			}
 			r = authed
 		case AuthPreviewToken:
-			if !g.PreviewTokenValid(r) {
-				// A spent, expired, or forged token is indistinguishable
-				// from no token on purpose: all three land on the same
-				// dead end rather than telling the caller which.
-				http.Redirect(w, r, "/.drydock/denied", http.StatusFound)
+			authed, ok := g.PreviewTokenValid(r)
+			if !ok {
+				// A spent, expired, forged or other-host token is
+				// indistinguishable from no token on purpose: all land on
+				// the same dead end rather than telling the caller which.
+				// The request carried a token in its URL, so the refusal
+				// says no-referrer and no-store as every other answer to
+				// a token URL does (PF §7, §13.1's second trap).
+				previewDeny(w, r)
 				return
 			}
+			r = authed
 		case AuthNone:
 			// Deliberately open. The meta-tests bound how many of these
 			// may exist on the API mux.

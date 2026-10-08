@@ -238,4 +238,63 @@ ALTER TABLE workspace ADD COLUMN pending_approval TEXT;
 ALTER TABLE claude_identity ADD COLUMN login_expires_at TEXT;
 UPDATE claude_identity SET state = 'ok' WHERE state = 'expiring';
 `,
+
+	// 8 — previews' two tables (port forwarding §5, §7; §13 step 2).
+	//
+	// forwarded_port is a permission to reach one port on one workspace:
+	// default-deny, so no enabled row, no preview. A row is retired, never
+	// deleted, so its slug stays spent and the global UNIQUE on slug is what
+	// keeps a stale bookmark from resolving to another workspace (PF §4,
+	// testing §15.4). For the same reason workspace_id has no foreign key:
+	// §5's ON DELETE CASCADE would delete the row with its workspace and free
+	// the slug for reissue, so workspace.Remove retires a workspace's ports
+	// instead. The slug's CHECKs are the DNS label PF §4 describes, and
+	// 'drydock-check' — the installer's probe name — can never be one.
+	//
+	// preview_session is a device's proof that it may view one preview host.
+	// Its id is the SHA-256 of the cookie, never the cookie, as auth_session's
+	// is. It cascades from auth_session, so a revoke — one device or all —
+	// ends every preview it minted (§13.2), and from forwarded_port, though a
+	// port is retired rather than deleted: disabling or retiring deletes the
+	// rows explicitly (preview.Store), so a re-enable never revives one.
+	`
+CREATE TABLE forwarded_port (
+  id              TEXT PRIMARY KEY,
+  workspace_id    TEXT NOT NULL,
+  container_port  INTEGER NOT NULL CHECK (container_port BETWEEN 1 AND 65535),
+  slug            TEXT NOT NULL UNIQUE CHECK (
+                    length(slug) BETWEEN 1 AND 63
+                    AND slug NOT GLOB '*[^a-z0-9-]*'
+                    AND slug NOT GLOB '-*' AND slug NOT GLOB '*-'
+                    AND slug <> 'drydock-check'),
+  label           TEXT,
+  upstream_scheme TEXT NOT NULL DEFAULT 'http' CHECK (upstream_scheme IN ('http','https')),
+  host_header     TEXT NOT NULL DEFAULT 'localhost' CHECK (host_header IN ('localhost','passthrough')),
+  enabled         INTEGER NOT NULL DEFAULT 0 CHECK (enabled IN (0,1)),
+  hidden          INTEGER NOT NULL DEFAULT 0 CHECK (hidden IN (0,1)),
+  declared        INTEGER NOT NULL DEFAULT 0 CHECK (declared IN (0,1)),
+  observed        INTEGER NOT NULL DEFAULT 0 CHECK (observed IN (0,1)),
+  manual          INTEGER NOT NULL DEFAULT 0 CHECK (manual IN (0,1)),
+  bind_addr       TEXT,
+  observed_state  TEXT CHECK (observed_state IN ('listening','gone','never_seen')),
+  first_seen_at   TEXT,
+  last_seen_at    TEXT,
+  created_at      TEXT,
+  last_used_at    TEXT,
+  retired_at      TEXT
+);
+CREATE UNIQUE INDEX forwarded_port_live
+  ON forwarded_port (workspace_id, container_port) WHERE retired_at IS NULL;
+
+CREATE TABLE preview_session (
+  id                TEXT PRIMARY KEY,  -- sha256 of the preview cookie; never the cookie
+  auth_session_id   TEXT NOT NULL REFERENCES auth_session(id) ON DELETE CASCADE,
+  forwarded_port_id TEXT NOT NULL REFERENCES forwarded_port(id) ON DELETE CASCADE,
+  preview_host      TEXT NOT NULL,
+  created_at        TEXT NOT NULL,
+  last_seen_at      TEXT NOT NULL
+);
+CREATE INDEX preview_session_auth ON preview_session (auth_session_id);
+CREATE INDEX preview_session_port ON preview_session (forwarded_port_id);
+`,
 }

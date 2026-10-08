@@ -35,3 +35,29 @@ export function safeReturnPath(raw: unknown): string {
   if (url.pathname === '/signin') return DEFAULT_RETURN
   return url.pathname + url.search + url.hash
 }
+
+// Paths the server answers rather than the app. A return to one of them must
+// be loaded by the browser, not routed to by the client: the router would
+// render its not-found view for a path the server owns. /preview/authorize is
+// the preview handshake's main-origin half (port forwarding §7), and a device
+// that was not signed in reaches sign-in from there and must go back to it.
+export const SERVER_PATHS: readonly string[] = ['/preview/authorize']
+
+/** Whether a path that safeReturnPath accepted belongs to the server. */
+export function isServerPath(path: string): boolean {
+  try {
+    return SERVER_PATHS.includes(new URL(path, 'https://return.invalid').pathname)
+  } catch {
+    return false
+  }
+}
+
+/**
+ * The browser's own navigation, behind an object so a spec can replace it
+ * (jsdom's `location.assign` cannot be spied on).
+ */
+export const navigation = {
+  assign(url: string): void {
+    window.location.assign(url)
+  },
+}
