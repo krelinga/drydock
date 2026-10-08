@@ -21,6 +21,7 @@ import (
 func TestDiskFullThroughTheServer(t *testing.T) {
 	dir := t.TempDir()
 	cfg := testConfig(t, dir)
+	cfg.DiskLimitPercent = 90 // this test is about the disk: the limit is its own, the figures injected
 	f := githubtest.New(t, 5189455, time.Now)
 	f.Installations = []githubtest.Installation{{ID: 77, Account: "krelinga", Repos: []githubtest.Repo{
 		{ID: 1, FullName: "krelinga/alpha", DefaultBranch: "main", PushedAt: time.Now(),

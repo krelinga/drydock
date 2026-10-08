@@ -27,11 +27,11 @@ func TestViewsCarryTheSamplersMeasurements(t *testing.T) {
 	at := time.Date(2026, 10, 8, 12, 0, 0, 0, time.UTC)
 	layer := uint64(300)
 	res := stubResources{
-		of: map[string]*workspace.Resources{"W2": {At: at,
+		of: map[string]*workspace.Resources{"W2": {Round: 7, Boot: "b00t",
 			Memory: &workspace.MemorySample{Bytes: 1200, At: at},
 			Disk:   &workspace.DiskSample{Bytes: 3400, DirectoryBytes: 3100, ContainerBytes: &layer, At: at, Stale: true},
 		}},
-		host: &workspace.HostDisk{UsedBytes: 91, TotalBytes: 100, LimitPercent: 90, Over: true, At: at},
+		host: &workspace.HostDisk{UsedBytes: 91, TotalBytes: 100, LimitPercent: 90, Over: true, At: at, Round: 7, Boot: "b00t"},
 	}
 	views := []workspace.View{{ID: "W2", State: workspace.Running}, {ID: "W1", State: workspace.Stopped}}
 	mux := Build(MuxAPI, stubGate{session: true, origin: true, host: true},
@@ -46,7 +46,7 @@ func TestViewsCarryTheSamplersMeasurements(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &list); err != nil || len(list.Workspaces) != 2 {
 		t.Fatalf("%d %s", rec.Code, rec.Body)
 	}
-	want := `{"at":"2026-10-08T12:00:00Z","memory":{"bytes":1200,"at":"2026-10-08T12:00:00Z","stale":false},` +
+	want := `{"round":7,"boot":"b00t","memory":{"bytes":1200,"at":"2026-10-08T12:00:00Z","stale":false},` +
 		`"disk":{"bytes":3400,"directory_bytes":3100,"container_bytes":300,"partial":false,"at":"2026-10-08T12:00:00Z","stale":true}}`
 	if got := string(list.Workspaces[0]["resources"]); got != want {
 		t.Errorf("resources\n got %s\nwant %s", got, want)
@@ -54,7 +54,7 @@ func TestViewsCarryTheSamplersMeasurements(t *testing.T) {
 	if got := string(list.Workspaces[1]["resources"]); got != "null" {
 		t.Errorf("a workspace never measured: %s, want null", got)
 	}
-	if got := string(list.Disk); got != `{"used_bytes":91,"total_bytes":100,"limit_percent":90,"over":true,"at":"2026-10-08T12:00:00Z"}` {
+	if got := string(list.Disk); got != `{"used_bytes":91,"total_bytes":100,"limit_percent":90,"over":true,"at":"2026-10-08T12:00:00Z","round":7,"boot":"b00t"}` {
 		t.Errorf("disk %s", got)
 	}
 

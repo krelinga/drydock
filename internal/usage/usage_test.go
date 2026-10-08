@@ -125,12 +125,17 @@ func TestRoundMeasuresRunningMemoryAndEveryDisk(t *testing.T) {
 	if f.Host == nil || f.Host.UsedBytes != 500 || f.Host.Over || f.Host.LimitPercent != 90 {
 		t.Errorf("host %+v", f.Host)
 	}
-	if len(*frames) != 1 {
-		t.Errorf("published %d frames", len(*frames))
+	// One frame from each half of the round, numbered in order.
+	if len(*frames) != 2 || (*frames)[0].Round != 1 || (*frames)[1].Round != 2 || (*frames)[0].Boot == "" ||
+		(*frames)[0].Boot != (*frames)[1].Boot || f.Workspaces[wsRun].Round != 2 {
+		t.Errorf("frames %+v", *frames)
+	}
+	if m := run.Memory; m.ContainerID != cRun {
+		t.Errorf("memory names container %q", m.ContainerID)
 	}
 	// Only the running container is asked for memory, in one call.
 	calls := c.took()
-	if strings.Join(calls, "|") != "list|memory "+cRun+"|sizes "+cRun+","+cStop {
+	if strings.Join(calls, "|") != "list|memory "+cRun+"|list|sizes "+cRun+","+cStop {
 		t.Errorf("calls %q", calls)
 	}
 	if got := s.Of(wsRun); got == nil || got.Memory.Bytes != 1_200_000_000 {
@@ -286,21 +291,21 @@ func TestRunSamplesOnTheMemoryInterval(t *testing.T) {
 	go func() { s.Run(ctx); close(done) }()
 	count := func() int { mu.Lock(); defer mu.Unlock(); return n }
 	waitFor := func(want int) {
-		for i := 0; i < 2000 && (count() < want || clock.Waiting() == 0); i++ {
+		for i := 0; i < 2000 && (count() < want || clock.Waiting() < 2); i++ {
 			time.Sleep(time.Millisecond)
 		}
 		if count() != want {
 			t.Fatalf("%d rounds, want %d", count(), want)
 		}
 	}
-	waitFor(1)
+	waitFor(2) // memory, then the first disk round
 	clock.Advance(DefaultMemoryInterval - time.Second)
 	time.Sleep(5 * time.Millisecond)
-	if count() != 1 {
+	if count() != 2 {
 		t.Errorf("a round before the interval")
 	}
 	clock.Advance(time.Second)
-	waitFor(2)
+	waitFor(3) // memory only: no disk is due
 	cancel()
 	<-done
 }

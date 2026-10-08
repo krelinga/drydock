@@ -1,6 +1,7 @@
 package sys
 
 import (
+	"context"
 	"io/fs"
 	"sync"
 	"time"
@@ -99,6 +100,10 @@ type FakeDisk struct {
 	Err         error
 	// Asked records every path Size was asked about, in order.
 	Asked []string
+	// Block, when set, makes Size wait for it to close — or for its
+	// context to end, which then reports what it has as partial: a walk
+	// that is slow, for a test of what waits on it.
+	Block chan struct{}
 }
 
 // FakeSize is one directory's answer.
@@ -116,10 +121,20 @@ func (d *FakeDisk) Usage(string) (uint64, uint64, error) {
 	return d.Used, d.Total, nil
 }
 
-func (d *FakeDisk) Size(path string) (uint64, bool, error) {
+func (d *FakeDisk) Size(ctx context.Context, path string) (uint64, bool, error) {
+	d.mu.Lock()
+	block := d.Block
+	d.Asked = append(d.Asked, path)
+	d.mu.Unlock()
+	if block != nil {
+		select {
+		case <-block:
+		case <-ctx.Done():
+			return 0, true, nil
+		}
+	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	d.Asked = append(d.Asked, path)
 	if d.Err != nil {
 		return 0, false, d.Err
 	}

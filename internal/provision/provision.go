@@ -296,6 +296,18 @@ func (p *Provisioner) Create(ctx context.Context, repositoryID int64, branch str
 	if !clone.ValidBranch(branch) {
 		return workspace.Workspace{}, ErrBadBranch
 	}
+	// The cheaper, truer refusal first: a repository that already has a
+	// workspace is in_progress whatever the disk says. Workspaces.Create
+	// checks it again inside its transaction; this read only orders the
+	// two refusals.
+	var held bool
+	if err := p.Workspaces.DB.QueryRowContext(ctx,
+		`SELECT EXISTS (SELECT 1 FROM workspace WHERE repository_id = ?)`, repositoryID).Scan(&held); err != nil {
+		return workspace.Workspace{}, err
+	}
+	if held {
+		return workspace.Workspace{}, workspace.ErrInProgress
+	}
 	if err := p.preflight(); err != nil {
 		return workspace.Workspace{}, err
 	}
@@ -388,9 +400,6 @@ func (p *Provisioner) restartWith(ctx context.Context, id string, rebuild bool, 
 	if err != nil {
 		return err
 	}
-	if err := p.preflight(); err != nil {
-		return err
-	}
 	first := workspace.StepResolveConfig
 	if w.State == workspace.Failed {
 		cloned, err := p.cloned(ctx, w)
@@ -432,6 +441,11 @@ func (p *Provisioner) restartWith(ctx context.Context, id string, rebuild bool, 
 	case rebuild && w.State == workspace.Running:
 	default:
 		return workspace.ErrInProgress
+	}
+	// The disk after the cheap refusals, so a start already running is
+	// in_progress rather than disk_full.
+	if err := p.preflight(); err != nil {
+		return err
 	}
 	// A start takes a container slot, so the cap applies as it does to a
 	// create. The check and the move into the first step's state happen

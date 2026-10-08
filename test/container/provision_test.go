@@ -104,6 +104,8 @@ func TestCreateWorkspaceThroughTheServer(t *testing.T) {
 	rand.Read(masterKey)
 	os.WriteFile(secretsKey, masterKey, 0o400)
 	cfg := config.Default()
+	// Not a test of the disk: the runner's own fill must never refuse its creates (design §12).
+	cfg.DiskLimitPercent = 100
 	cfg.SecretsKey = secretsKey
 	cfg.UIOrigin, cfg.UIHost = "https://drydock.test", "drydock.test"
 	cfg.DatabasePath = filepath.Join(dir, "drydock.db")

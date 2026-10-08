@@ -6,10 +6,10 @@ import type { Resources } from '../stores/resources'
 import { diskBreakdown, formatBytes, hostPercent, resourceLine } from './resources'
 
 const at = '2026-10-08T12:00:00Z'
-function r(mem: number | null, disk: number | null, o: { stale?: boolean; partial?: boolean; layer?: number | null } = {}): Resources {
+function r(mem: number | null, disk: number | null, o: { stale?: boolean; partial?: boolean; layer?: number | null; container?: string } = {}): Resources {
   return {
-    at: Date.parse(at),
-    memory: mem === null ? null : { bytes: mem, at, stale: o.stale === true },
+    boot: 'b', round: 1,
+    memory: mem === null ? null : { bytes: mem, at, stale: o.stale === true, containerId: o.container ?? null },
     disk: disk === null ? null : {
       bytes: disk, directoryBytes: disk - (o.layer ?? 0), containerBytes: o.layer ?? null,
       partial: o.partial === true, at, stale: o.stale === true,
@@ -50,6 +50,13 @@ describe('resourceLine', () => {
     expect(p?.label).toContain('at least')
   })
 
+  it('a reading of another container is not this workspace\'s: a stop and a start inside one round', () => {
+    expect(resourceLine('running', r(1_200_000_000, 1e9, { container: 'old' }), 'new')?.text).toBe('mem — · disk 1.0 GB')
+    // Controls: its own container, or no container named on either side, is shown.
+    expect(resourceLine('running', r(1_200_000_000, 1e9, { container: 'new' }), 'new')?.text).toBe('mem 1.2 GB · disk 1.0 GB')
+    expect(resourceLine('running', r(1_200_000_000, 1e9), 'new')?.text).toBe('mem 1.2 GB · disk 1.0 GB')
+  })
+
   it('a workspace before its directory exists says nothing', () => {
     expect(resourceLine('pending', undefined)).toBeNull()
     expect(resourceLine('cloning', undefined)?.text).toBe('disk —') // control: once cloning, the dash
@@ -67,7 +74,7 @@ describe('diskBreakdown', () => {
 
 describe('hostPercent', () => {
   it('rounds down, so a disk refused at 90 never reads 89', () => {
-    expect(hostPercent({ usedBytes: 905, totalBytes: 1000, limitPercent: 90, over: true, at: 0 })).toBe(90)
-    expect(hostPercent({ usedBytes: 1, totalBytes: 0, limitPercent: 90, over: false, at: 0 })).toBe(0)
+    expect(hostPercent({ usedBytes: 905, totalBytes: 1000, limitPercent: 90, over: true, boot: 'b', round: 1 })).toBe(90)
+    expect(hostPercent({ usedBytes: 1, totalBytes: 0, limitPercent: 90, over: false, boot: 'b', round: 1 })).toBe(0)
   })
 })

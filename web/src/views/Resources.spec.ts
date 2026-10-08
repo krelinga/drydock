@@ -12,12 +12,12 @@ useMockApi()
 
 const T = (s: number) => new Date(Date.UTC(2026, 9, 8, 12, 0, s)).toISOString()
 const res = (round: number, mem: number | null, disk: number): ResourcesView => ({
-  at: T(round),
+  boot: 'b00t', round,
   memory: mem === null ? null : { bytes: mem, at: T(round), stale: false },
   disk: { bytes: disk, directory_bytes: disk, container_bytes: null, partial: false, at: T(round), stale: false },
 })
 const host = (round: number, used: number): HostDiskView =>
-  ({ used_bytes: used, total_bytes: 100, limit_percent: 90, over: used >= 90, at: T(round) })
+  ({ used_bytes: used, total_bytes: 100, limit_percent: 90, over: used >= 90, at: T(round), boot: 'b00t', round })
 
 function backend() {
   const b = freshBackend({ signedIn: true })
@@ -33,13 +33,13 @@ describe('the card', () => {
     const card = () => wrapper.find('[data-test="running-row"] [data-test="resources"]')
     expect(card().text()).toContain('mem 1.2 GB · disk 3.4 GB')
     FakeEventSource.latest().open().named('resources', {
-      at: T(2), workspaces: { [WS_RUNNING]: res(2, 2_500_000_000, 3_500_000_000) }, host: host(2, 50),
+      boot: 'b00t', round: 2, at: T(2), workspaces: { [WS_RUNNING]: res(2, 2_500_000_000, 3_500_000_000) }, host: host(2, 50),
     })
     await settle()
     expect(card().text()).toContain('mem 2.5 GB · disk 3.5 GB')
     // An older round arriving late changes nothing.
     FakeEventSource.latest().named('resources', {
-      at: T(1), workspaces: { [WS_RUNNING]: res(1, 1, 1) }, host: host(1, 50),
+      boot: 'b00t', round: 1, at: T(1), workspaces: { [WS_RUNNING]: res(1, 1, 1) }, host: host(1, 50),
     })
     await settle()
     expect(card().text()).toContain('mem 2.5 GB')
@@ -64,7 +64,7 @@ describe('the disk banner', () => {
     const { wrapper } = await mountApp('/')
     expect(wrapper.find('[data-test="disk-banner"]').exists()).toBe(false) // control: 50%
     FakeEventSource.latest().open().named('resources', {
-      at: T(2), workspaces: { [WS_RUNNING]: res(2, 1_000_000_000, 12_000_000_000) }, host: host(2, 93),
+      boot: 'b00t', round: 2, at: T(2), workspaces: { [WS_RUNNING]: res(2, 1_000_000_000, 12_000_000_000) }, host: host(2, 93),
     })
     await settle()
     const banner = wrapper.find('[data-test="disk-banner"]')
@@ -74,7 +74,7 @@ describe('the disk banner', () => {
     expect(banner.find('[data-test="disk-largest"]').text()).toContain('12 GB')
     expect(banner.find('a').attributes('href')).toBe(`/ws/${WS_RUNNING}`)
     // Freed: the next round clears it.
-    FakeEventSource.latest().named('resources', { at: T(3), workspaces: {}, host: host(3, 70) })
+    FakeEventSource.latest().named('resources', { boot: 'b00t', round: 3, at: T(3), workspaces: {}, host: host(3, 70) })
     await settle()
     expect(wrapper.find('[data-test="disk-banner"]').exists()).toBe(false)
   })

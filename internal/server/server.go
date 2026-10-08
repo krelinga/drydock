@@ -271,7 +271,7 @@ func New(ctx context.Context, cfg config.Config, env sys.Env) (*Server, error) {
 	}
 	routes := api.WorkspaceRoutes{Provisioner: s.Provisioner, Workspaces: s.Workspaces, Events: s.Events}
 	if env.Disk != nil {
-		s.Usage = &usage.Sampler{Workspaces: s.Workspaces, Containers: containers, Disk: env.Disk, Clock: env.Clock,
+		s.Usage = &usage.Sampler{Workspaces: s.Workspaces, Containers: containers, Disk: env.Disk, Clock: env.Clock, Random: env.Random,
 			Root: cfg.WorkspaceRoot, LimitPercent: cfg.DiskLimitPercent,
 			Publish: func(f usage.Frame) { _ = s.Events.Broadcast(usage.FrameName, f) },
 			Logf:    func(f string, a ...any) { fmt.Fprintf(os.Stderr, f+"\n", a...) }}

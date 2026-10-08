@@ -71,6 +71,18 @@ func TestUsageAgainstRealDocker(t *testing.T) {
 		t.Errorf("host %+v", f.Host)
 	}
 
+	// A container removed between the listing and the reading — a delete or
+	// a rebuild landing mid-round — fails no one else's: real Docker answers
+	// it with exit 1 and nothing for the others, and the reader asks again.
+	gone := docker(t, "create", "--label", p+".workspace=01JVSAGEG0NEAAAAAAAAAAAAAA", image, "true")
+	docker(t, "rm", gone)
+	if mem, err := manager(p).Memory(ctx, []string{id, gone}); err != nil || mem[id] < 35_000_000 {
+		t.Errorf("memory beside a vanished container: %v, %v", mem, err)
+	}
+	if sizes, err := manager(p).WritableSizes(ctx, []string{id, gone}); err != nil || sizes[id] < 8_000_000 {
+		t.Errorf("sizes beside a vanished container: %v, %v", sizes, err)
+	}
+
 	docker(t, "stop", "-t", "1", id)
 	(*rows)[0].State = workspace.Stopped
 	clock.Advance(usage.DefaultMemoryInterval)

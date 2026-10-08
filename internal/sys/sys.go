@@ -13,6 +13,7 @@
 package sys
 
 import (
+	"context"
 	"crypto/rand"
 	"io"
 	"time"
@@ -54,9 +55,10 @@ type DiskUsage interface {
 	// counts them: blocks actually allocated, each hard-linked file once,
 	// symlinks not followed, other filesystems not entered. partial is true
 	// when some of the tree could not be read — a directory a container's
-	// root made private, say — so the figure is a lower bound, and a caller
-	// must say so rather than show it as exact.
-	Size(path string) (bytes uint64, partial bool, err error)
+	// root made private, say — or a bound was reached (ctx's deadline
+	// among them), so the figure is a lower bound, and a caller must say so
+	// rather than show it as exact.
+	Size(ctx context.Context, path string) (bytes uint64, partial bool, err error)
 }
 
 // Random is the seam for slug minting (port forwarding §4) and ULID generation.

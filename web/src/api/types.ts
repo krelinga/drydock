@@ -181,6 +181,8 @@ export interface WorkspaceView {
 export interface MemorySampleView {
   bytes: number
   at: string
+  /** The container measured, when there was one. */
+  container_id?: string
   /** The latest attempt failed; `bytes` is the last good reading, from `at`. */
   stale: boolean
 }
@@ -198,9 +200,10 @@ export interface DiskSampleView {
   stale: boolean
 }
 
-/** One workspace's measurements; `at` is the sampling round, the version. */
+/** One workspace's measurements; `boot` and `round` are the server's version for them. */
 export interface ResourcesView {
-  at: string
+  boot: string
+  round: number
   /** Null with no reading — a stopped workspace has none. Never 0 for "unknown". */
   memory: MemorySampleView | null
   disk: DiskSampleView | null
@@ -213,6 +216,8 @@ export interface HostDiskView {
   limit_percent: number
   over: boolean
   at: string
+  boot: string
+  round: number
 }
 
 /**
@@ -221,6 +226,8 @@ export interface HostDiskView {
  * workspace by id.
  */
 export interface ResourcesFrame {
+  boot: string
+  round: number
   at: string
   workspaces: Record<string, ResourcesView>
   host: HostDiskView | null

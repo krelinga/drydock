@@ -38,18 +38,16 @@ func (m Manager) Memory(ctx context.Context, ids []string) (map[string]uint64, e
 			return nil, fmt.Errorf("container: %q is not a container id", id)
 		}
 	}
-	var stdout, stderr bytes.Buffer
-	args := append([]string{"stats", "--no-stream", "--no-trunc", "--format", "{{json .}}", "--"}, ids...)
-	res := m.Run.Run(ctx, subproc.Cmd{Name: "docker", Args: args,
-		Stdout: limit(&stdout, 1<<20), Stderr: limit(&stderr, 64<<10)})
-	if err := failed("docker stats", res, &stderr); err != nil {
-		return nil, err
+	stdout, ids, err := m.dockerSurviving(ctx, "docker stats",
+		[]string{"stats", "--no-stream", "--no-trunc", "--format", "{{json .}}", "--"}, ids)
+	if err != nil || len(ids) == 0 {
+		return out, err
 	}
 	want := map[string]bool{}
 	for _, id := range ids {
 		want[id] = true
 	}
-	dec := json.NewDecoder(&stdout)
+	dec := json.NewDecoder(bytes.NewReader(stdout))
 	for dec.More() {
 		var line struct {
 			ID       string
@@ -130,18 +128,16 @@ func (m Manager) WritableSizes(ctx context.Context, ids []string) (map[string]ui
 			return nil, fmt.Errorf("container: %q is not a container id", id)
 		}
 	}
-	var stdout, stderr bytes.Buffer
-	args := append([]string{"inspect", "--type", "container", "--size", "--"}, ids...)
-	res := m.Run.Run(ctx, subproc.Cmd{Name: "docker", Args: args,
-		Stdout: limit(&stdout, 16<<20), Stderr: limit(&stderr, 64<<10)})
-	if err := failed("docker inspect --size", res, &stderr); err != nil {
-		return nil, err
+	stdout, ids, err := m.dockerSurviving(ctx, "docker inspect --size",
+		[]string{"inspect", "--type", "container", "--size", "--"}, ids)
+	if err != nil || len(ids) == 0 {
+		return out, err
 	}
 	var all []struct {
 		ID     string `json:"Id"`
 		SizeRw *int64
 	}
-	if err := json.Unmarshal(stdout.Bytes(), &all); err != nil {
+	if err := json.Unmarshal(stdout, &all); err != nil {
 		return nil, fmt.Errorf("docker inspect --size: %w", err)
 	}
 	for _, c := range all {
@@ -151,4 +147,43 @@ func (m Manager) WritableSizes(ctx context.Context, ids []string) (map[string]ui
 		out[c.ID] = uint64(*c.SizeRw)
 	}
 	return out, nil
+}
+
+// noSuchContainer is the daemon's refusal for an id that is gone:
+// "Error response from daemon: No such container: <id>".
+var noSuchContainer = regexp.MustCompile(`(?m)No such container: ([0-9a-f]{64})\s*$`)
+
+// dockerSurviving runs docker with args and ids, and when it fails only
+// because some of the ids are gone — a delete or a rebuild between the listing
+// and this call, measured on Docker 29.8.2: `stats` then prints nothing for
+// the others, and `inspect` exits 1 — runs it once more with the ids that are
+// left, rather than failing every workspace's reading for one that vanished.
+// It returns stdout and the ids it was answered for.
+func (m Manager) dockerSurviving(ctx context.Context, what string, args, ids []string) ([]byte, []string, error) {
+	for attempt := 0; ; attempt++ {
+		var stdout, stderr bytes.Buffer
+		res := m.Run.Run(ctx, subproc.Cmd{Name: "docker", Args: append(append([]string{}, args...), ids...),
+			Stdout: limit(&stdout, 16<<20), Stderr: limit(&stderr, 64<<10)})
+		err := failed(what, res, &stderr)
+		if err == nil {
+			return stdout.Bytes(), ids, nil
+		}
+		gone := map[string]bool{}
+		for _, mm := range noSuchContainer.FindAllStringSubmatch(stderr.String(), -1) {
+			gone[mm[1]] = true
+		}
+		var left []string
+		for _, id := range ids {
+			if !gone[id] {
+				left = append(left, id)
+			}
+		}
+		if attempt > 0 || res.Err != nil || len(gone) == 0 || len(left) == len(ids) {
+			return nil, nil, err
+		}
+		if len(left) == 0 {
+			return nil, nil, nil
+		}
+		ids = left
+	}
 }

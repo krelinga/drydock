@@ -32,10 +32,11 @@ const SENTENCES: Record<string, string> = {
   at_capacity:
     'Drydock is at its cap: as many workspaces as it allows are already building or running. Stop one under Running to make room — its clone survives, and Start brings it back.',
   // Design §12, *Disk full*: the pre-flight refused before anything was
-  // cloned or built. The one action is a delete, and the disk banner lists
-  // the workspaces largest first; the detail names the two percentages.
+  // cloned or built. The one action is a delete. Not worded around the
+  // banner, which follows the last sampling round and can lag the refusal by
+  // a round; every card shows its disk. The detail names the two percentages.
   disk_full:
-    'The disk that holds the workspaces is too full to clone or build another, so nothing was started. Delete a workspace you no longer need — the banner above lists the largest.',
+    'The disk that holds the workspaces is too full to clone or build another, so nothing was started. Delete a workspace you no longer need — each one shows the disk it holds.',
   // Design §5: a delete's ?confirm= is compared exactly. The sheet keeps its
   // button off until the text matches, so this is reached only when the name
   // changed under it (a renamed repository) or another client sent it.

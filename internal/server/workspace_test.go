@@ -119,7 +119,7 @@ func TestWorkspaceRoutesEndToEnd(t *testing.T) {
 		body := readBody(t, resp)
 		if err := json.Unmarshal([]byte(body), &list); err != nil || list.Workspaces == nil || len(list.Workspaces) != 0 ||
 			string(list.Capacity) != `{"cap":10,"occupied":0}` ||
-			(list.Disk != nil && (list.Disk.TotalBytes == 0 || list.Disk.LimitPercent != 90)) {
+			(list.Disk != nil && (list.Disk.TotalBytes == 0 || list.Disk.LimitPercent != 100)) {
 			t.Errorf("list with no workspaces: %s", body)
 		}
 	}

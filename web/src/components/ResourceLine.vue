@@ -9,7 +9,7 @@ import { resourceLine } from '../lib/resources'
 
 const props = defineProps<{ workspace: Workspace }>()
 const stream = useStreamStore()
-const line = computed(() => resourceLine(props.workspace.state, stream.entities.resources[props.workspace.id]))
+const line = computed(() => resourceLine(props.workspace.state, stream.entities.resources[props.workspace.id], props.workspace.containerId))
 </script>
 
 <template>

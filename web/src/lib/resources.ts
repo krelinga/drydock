@@ -37,11 +37,16 @@ export interface ResourceLine {
 }
 
 /** Null when there is nothing to say: a workspace with no directory yet and no reading. */
-export function resourceLine(state: WorkspaceState | null, r: Resources | undefined): ResourceLine | null {
+export function resourceLine(
+  state: WorkspaceState | null, r: Resources | undefined, containerId: string | null = null,
+): ResourceLine | null {
   const parts: string[] = []
   const labels: string[] = []
   if (state === 'running') {
-    const m = r?.memory ?? null
+    let m = r?.memory ?? null
+    // A reading of another container — the one before a stop and a start
+    // that landed inside one round — is not this workspace's.
+    if (m !== null && m.containerId !== null && containerId !== null && m.containerId !== containerId) m = null
     if (m === null) {
       parts.push('mem —')
       labels.push('memory not measured yet')

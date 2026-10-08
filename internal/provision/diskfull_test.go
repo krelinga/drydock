@@ -26,12 +26,24 @@ func TestDiskPreflightRefusesBeforeAnything(t *testing.T) {
 	if v.State != workspace.Running {
 		t.Fatalf("control: under the limit, state %s (%s)", v.State, deref(v.StateDetail))
 	}
+	// A start of a workspace already running is in_progress, not disk_full,
+	// whatever the disk says.
+	disk.Set(95, 100)
+	if err := e.p.Start(ctx, v.ID); !errors.Is(err, workspace.ErrInProgress) {
+		t.Errorf("start of a running workspace on a full disk = %v, want in_progress", err)
+	}
+	disk.Set(89, 100)
 	if err := e.p.Stop(ctx, v.ID); err != nil {
 		t.Fatal(err)
 	}
 	e.p.wg.Wait()
 
 	disk.Set(90, 100) // exactly at the limit: refused
+	// The cheaper, truer refusal comes first even on a full disk: a second
+	// workspace for a repository that already has one is in_progress.
+	if _, err := e.p.Create(ctx, alpha, ""); !errors.Is(err, workspace.ErrInProgress) {
+		t.Errorf("a duplicate create on a full disk = %v, want in_progress", err)
+	}
 	mints, events := len(e.fake.TokenRequests), len(e.stepEvents(t, v.ID))
 	_, err := e.p.Create(ctx, plain, "")
 	var full *DiskFullError

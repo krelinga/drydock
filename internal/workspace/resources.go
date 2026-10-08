@@ -13,10 +13,13 @@ import "time"
 // reading of zero: a stopped workspace has no memory figure at all, and one
 // whose directory has not been measured yet has no disk figure.
 type Resources struct {
-	// At is the round that produced this: the version the client orders
-	// a snapshot's copy and a frame's by. Each sample keeps its own At, the
-	// time it was measured, which a stale one's is older than.
-	At     time.Time     `json:"at"`
+	// Round and Boot are the version the client orders copies by: the
+	// sampler's round counter, and an id of this process, so a restart's
+	// round 1 is not taken for an old one. Never the wall clock, which can
+	// step backwards. Each sample keeps its own At, the time it was
+	// measured, which a stale one's is older than.
+	Round  uint64        `json:"round"`
+	Boot   string        `json:"boot"`
 	Memory *MemorySample `json:"memory"`
 	Disk   *DiskSample   `json:"disk"`
 }
@@ -26,6 +29,10 @@ type Resources struct {
 type MemorySample struct {
 	Bytes uint64    `json:"bytes"`
 	At    time.Time `json:"at"`
+	// ContainerID is the container measured, when there was one: the
+	// client shows the figure only while it is the workspace's container,
+	// so a stop and a start inside one round never show the old one's.
+	ContainerID string `json:"container_id,omitempty"`
 	// Stale is set when the latest attempt to measure failed, so Bytes is
 	// the last good reading, from At. The UI says so; it never shows a
 	// stale figure as current.
@@ -57,6 +64,9 @@ type HostDisk struct {
 	LimitPercent int       `json:"limit_percent"`
 	Over         bool      `json:"over"`
 	At           time.Time `json:"at"`
+	// Round and Boot version it, as Resources' do.
+	Round uint64 `json:"round"`
+	Boot  string `json:"boot"`
 }
 
 // OverLimit is the one rule for "too full": used at or above limitPercent of
