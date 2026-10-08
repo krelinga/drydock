@@ -1,0 +1,325 @@
+[
+    {
+        "Id": "ab2c38e59b1aefe693e10772633613ea15d15a02edcdf47679e2a28434ecf82c",
+        "Created": "2026-10-08T21:23:09.944724016Z",
+        "Path": "/bin/sh",
+        "Args": [
+            "-c",
+            "echo Container started\ntrap \"exit 0\" 15\n\nexec \"$@\"\nwhile sleep 1 & wait $!; do :; done",
+            "-"
+        ],
+        "State": {
+            "Status": "running",
+            "Running": true,
+            "Paused": false,
+            "Restarting": false,
+            "OOMKilled": false,
+            "Dead": false,
+            "Pid": 3435468,
+            "ExitCode": 0,
+            "Error": "",
+            "StartedAt": "2026-10-08T21:23:10.056748157Z",
+            "FinishedAt": "0001-01-01T00:00:00Z"
+        },
+        "Image": "sha256:8ec965181daa072361fcd9201bbd67f93e4dadb0bc85da8d35de3592e0dcf6c7",
+        "ResolvConfPath": "/var/lib/docker/containers/ab2c38e59b1aefe693e10772633613ea15d15a02edcdf47679e2a28434ecf82c/resolv.conf",
+        "HostnamePath": "/var/lib/docker/containers/ab2c38e59b1aefe693e10772633613ea15d15a02edcdf47679e2a28434ecf82c/hostname",
+        "HostsPath": "/var/lib/docker/containers/ab2c38e59b1aefe693e10772633613ea15d15a02edcdf47679e2a28434ecf82c/hosts",
+        "LogPath": "/var/lib/docker/containers/ab2c38e59b1aefe693e10772633613ea15d15a02edcdf47679e2a28434ecf82c/ab2c38e59b1aefe693e10772633613ea15d15a02edcdf47679e2a28434ecf82c-json.log",
+        "Name": "/mystifying_wescoff",
+        "RestartCount": 0,
+        "Driver": "overlayfs",
+        "Platform": "linux",
+        "MountLabel": "",
+        "ProcessLabel": "",
+        "AppArmorProfile": "unconfined",
+        "ExecIDs": null,
+        "HostConfig": {
+            "Binds": [
+                "/etc/os-release:/host-os-release:ro"
+            ],
+            "ContainerIDFile": "",
+            "LogConfig": {
+                "Type": "json-file",
+                "Config": {}
+            },
+            "NetworkMode": "host",
+            "PortBindings": {
+                "18080/tcp": [
+                    {
+                        "HostIp": "127.0.0.1",
+                        "HostPort": "18080"
+                    }
+                ],
+                "19001/tcp": [
+                    {
+                        "HostIp": "",
+                        "HostPort": "19000"
+                    }
+                ]
+            },
+            "RestartPolicy": {
+                "Name": "no",
+                "MaximumRetryCount": 0
+            },
+            "AutoRemove": false,
+            "VolumeDriver": "",
+            "VolumesFrom": null,
+            "ConsoleSize": [
+                0,
+                0
+            ],
+            "CapAdd": [
+                "CAP_SYS_ADMIN",
+                "CAP_SYS_PTRACE"
+            ],
+            "CapDrop": null,
+            "CgroupnsMode": "private",
+            "Dns": null,
+            "DnsOptions": [],
+            "DnsSearch": [],
+            "ExtraHosts": null,
+            "GroupAdd": null,
+            "IpcMode": "private",
+            "Cgroup": "",
+            "Links": null,
+            "OomScoreAdj": 0,
+            "PidMode": "host",
+            "Privileged": true,
+            "PublishAllPorts": false,
+            "ReadonlyRootfs": false,
+            "SecurityOpt": [
+                "apparmor=unconfined",
+                "seccomp=unconfined",
+                "label=disable"
+            ],
+            "UTSMode": "",
+            "UsernsMode": "",
+            "ShmSize": 67108864,
+            "Runtime": "runc",
+            "Isolation": "",
+            "CpuShares": 0,
+            "Memory": 0,
+            "NanoCpus": 0,
+            "CgroupParent": "",
+            "BlkioWeight": 0,
+            "BlkioWeightDevice": [],
+            "BlkioDeviceReadBps": [],
+            "BlkioDeviceWriteBps": [],
+            "BlkioDeviceReadIOps": [],
+            "BlkioDeviceWriteIOps": [],
+            "CpuPeriod": 0,
+            "CpuQuota": 0,
+            "CpuRealtimePeriod": 0,
+            "CpuRealtimeRuntime": 0,
+            "CpusetCpus": "",
+            "CpusetMems": "",
+            "Devices": [],
+            "DeviceCgroupRules": null,
+            "DeviceRequests": null,
+            "MemoryReservation": 0,
+            "MemorySwap": 0,
+            "MemorySwappiness": null,
+            "OomKillDisable": null,
+            "PidsLimit": null,
+            "Ulimits": null,
+            "CpuCount": 0,
+            "CpuPercent": 0,
+            "IOMaximumIOps": 0,
+            "IOMaximumBandwidth": 0,
+            "Mounts": [
+                {
+                    "Type": "bind",
+                    "Source": "/srv/drydock/ws/FIXTURE/repo",
+                    "Target": "/workspaces/hostile",
+                    "Consistency": "cached"
+                },
+                {
+                    "Type": "bind",
+                    "Source": "/etc/hostname",
+                    "Target": "/host-hostname"
+                },
+                {
+                    "Type": "bind",
+                    "Source": "/etc/hosts",
+                    "Target": "/host-hosts"
+                },
+                {
+                    "Type": "volume",
+                    "Source": "named-05iumelr57eeesgpl6hgtqpf97suaa4tm1esfs63u0agq30eknjh",
+                    "Target": "/named"
+                },
+                {
+                    "Type": "tmpfs",
+                    "Target": "/scratch"
+                },
+                {
+                    "Type": "bind",
+                    "Source": "/srv/drydock/ws/FIXTURE/sock",
+                    "Target": "/run/drydock"
+                },
+                {
+                    "Type": "volume",
+                    "Source": "drydock-record-claude",
+                    "Target": "/home/vscode/.claude"
+                }
+            ],
+            "MaskedPaths": null,
+            "ReadonlyPaths": null,
+            "Init": true
+        },
+        "Storage": {
+            "RootFS": {
+                "Snapshot": {
+                    "Name": "overlayfs"
+                }
+            }
+        },
+        "Mounts": [
+            {
+                "Type": "bind",
+                "Source": "/etc/hostname",
+                "Destination": "/host-hostname",
+                "Mode": "",
+                "RW": true,
+                "Propagation": "rprivate"
+            },
+            {
+                "Type": "bind",
+                "Source": "/etc/hosts",
+                "Destination": "/host-hosts",
+                "Mode": "",
+                "RW": true,
+                "Propagation": "rprivate"
+            },
+            {
+                "Type": "bind",
+                "Source": "/etc/os-release",
+                "Destination": "/host-os-release",
+                "Mode": "ro",
+                "RW": false,
+                "Propagation": "rprivate"
+            },
+            {
+                "Type": "volume",
+                "Name": "named-05iumelr57eeesgpl6hgtqpf97suaa4tm1esfs63u0agq30eknjh",
+                "Source": "/var/lib/docker/volumes/named-05iumelr57eeesgpl6hgtqpf97suaa4tm1esfs63u0agq30eknjh/_data",
+                "Destination": "/named",
+                "Driver": "local",
+                "Mode": "z",
+                "RW": true,
+                "Propagation": ""
+            },
+            {
+                "Type": "tmpfs",
+                "Source": "",
+                "Destination": "/scratch",
+                "Mode": "",
+                "RW": true,
+                "Propagation": ""
+            },
+            {
+                "Type": "bind",
+                "Source": "/srv/drydock/ws/FIXTURE/sock",
+                "Destination": "/run/drydock",
+                "Mode": "",
+                "RW": true,
+                "Propagation": "rprivate"
+            },
+            {
+                "Type": "bind",
+                "Source": "/srv/drydock/ws/FIXTURE/repo",
+                "Destination": "/workspaces/hostile",
+                "Mode": "",
+                "RW": true,
+                "Propagation": "rprivate"
+            },
+            {
+                "Type": "volume",
+                "Name": "drydock-record-claude",
+                "Source": "/var/lib/docker/volumes/drydock-record-claude/_data",
+                "Destination": "/home/vscode/.claude",
+                "Driver": "local",
+                "Mode": "z",
+                "RW": true,
+                "Propagation": ""
+            }
+        ],
+        "Config": {
+            "Hostname": "4ae164c8e22a",
+            "Domainname": "",
+            "User": "root",
+            "AttachStdin": false,
+            "AttachStdout": true,
+            "AttachStderr": true,
+            "ExposedPorts": {
+                "18080/tcp": {},
+                "19001/tcp": {}
+            },
+            "Tty": false,
+            "OpenStdin": false,
+            "StdinOnce": false,
+            "Env": [
+                "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+                "LANG=C.UTF-8"
+            ],
+            "Cmd": [
+                "-c",
+                "echo Container started\ntrap \"exit 0\" 15\n\nexec \"$@\"\nwhile sleep 1 & wait $!; do :; done",
+                "-"
+            ],
+            "Image": "vsc-repo-b328190faa9f0cb3281f8443dc300a98bea55dd27ccd00ffbb432d799a1f4846-uid",
+            "Volumes": null,
+            "WorkingDir": "",
+            "Entrypoint": [
+                "/bin/sh"
+            ],
+            "Labels": {
+                "dev.containers.id": "base-debian",
+                "dev.containers.release": "v0.4.34",
+                "dev.containers.source": "https://github.com/devcontainers/images",
+                "dev.containers.timestamp": "Thu, 08 Oct 2026 15:40:21 GMT",
+                "dev.containers.variant": "trixie",
+                "devcontainer.metadata": "[{\"id\":\"ghcr.io/devcontainers/features/common-utils:2\"},{\"id\":\"ghcr.io/devcontainers/features/git:1\",\"customizations\":{\"vscode\":{\"settings\":{\"github.copilot.chat.codeGeneration.instructions\":[{\"text\":\"This dev container includes an up-to-date version of Git, built from source as needed, pre-installed and available on the `PATH`.\"}]}}}},{\"remoteUser\":\"vscode\"},{\"mounts\":[\"source=/etc/hostname,target=/host-hostname,type=bind\",{\"source\":\"/etc/hosts\",\"target\":\"/host-hosts\",\"type\":\"bind\"},\"source=named-${devcontainerId},target=/named,type=volume\",\"type=tmpfs,target=/scratch\"],\"init\":true,\"privileged\":true,\"capAdd\":[\"SYS_ADMIN\",\"SYS_PTRACE\"],\"securityOpt\":[\"apparmor=unconfined\",\"seccomp=unconfined\"],\"hostRequirements\":{\"gpu\":\"optional\"}}]",
+                "drydock.branch": "main",
+                "drydock.repo": "krelinga/fixture",
+                "drydock.repository-id": "101",
+                "drydock.workspace": "01JFIXTVRE0000000000000000",
+                "version": "2.2.2"
+            }
+        },
+        "NetworkSettings": {
+            "SandboxID": "6d31992cf46b6f84a9a05192c7cf366f320cc7eebb191905ae97028c677e3d88",
+            "SandboxKey": "/var/run/docker/netns/default",
+            "Ports": {},
+            "Networks": {
+                "host": {
+                    "IPAMConfig": null,
+                    "Links": null,
+                    "Aliases": null,
+                    "DriverOpts": null,
+                    "GwPriority": 0,
+                    "NetworkID": "c3f9948dcb2dad1b818a7d4b47ce5dd34d0ff2cad418e285b7255a85819887a4",
+                    "EndpointID": "03612218deccc575f64ccd3ef31f04745bb746029be10988cfe83eb88a89d25c",
+                    "Gateway": "",
+                    "IPAddress": "",
+                    "MacAddress": "",
+                    "IPPrefixLen": 0,
+                    "IPv6Gateway": "",
+                    "GlobalIPv6Address": "",
+                    "GlobalIPv6PrefixLen": 0,
+                    "DNSNames": null
+                }
+            }
+        },
+        "ImageManifestDescriptor": {
+            "mediaType": "application/vnd.oci.image.manifest.v1+json",
+            "digest": "sha256:ce9ee604d52a7635d1c24f18f14538fd4f46b2d61c15cefc2f490d4854a12627",
+            "size": 2193,
+            "platform": {
+                "architecture": "amd64",
+                "os": "linux"
+            }
+        }
+    }
+]

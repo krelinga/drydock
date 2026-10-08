@@ -1,0 +1,7 @@
+devcontainer_version: 0.89.0
+docker_version:       29.8.2-1 (the devcontainer's inner DinD daemon)
+recorded_at:          2026-10-08T16:01:16Z
+command:              devcontainer up --docker-path <logger> --workspace-folder <ws>/repo --no-lockfile <Drydock's id-labels, mounts and remote env>    (TMPDIR=<ws>/.drydock/tmp; exit 0, outcome success); beside it docker-argv-compose.read-configuration.json, the folder's merged read-configuration
+config:               {"dockerComposeFile":"compose.yml","service":"app","workspaceFolder":"/workspaces/repo"}
+provenance:           recorded; one docker argv per line, as JSON; <ws> rewritten to /srv/drydock/ws/FIXTURE
+must_yield:           compose version and config pass; compose build and up are refused naming dockerComposeFile unless the Compose setup is approved

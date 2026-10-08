@@ -12,34 +12,35 @@ import (
 
 // Each up runs with the TMPDIR it is given, replacing Drydock's own: CLI
 // 0.89.0 stages Features under $TMPDIR in a folder named by the millisecond,
-// and two concurrent ups sharing one built each other's Features. The
-// control is the same fake without a TempDir, which sees the inherited one.
+// and two concurrent ups sharing one built each other's Features. And an up
+// without one does not run at all: the CLI's TMPDIR is where it writes what
+// it builds from, which the docker guard lets a build read, so an inherited
+// one would be shared with every other workspace. The control is the same
+// up with its TempDir, which runs and sees it.
 func TestUpRunsWithItsOwnTempDir(t *testing.T) {
 	inherited := t.TempDir()
 	t.Setenv("TMPDIR", inherited)
-	m := Manager{LabelPrefix: "drydock"}
-	seen := func(s UpSpec) string {
-		t.Helper()
-		out := filepath.Join(t.TempDir(), "tmpdir")
-		m.Run, _ = fakes(t, map[string]string{"devcontainer": "echo \"$TMPDIR\" > " + out +
-			"\ncat <<'EOF'\n" + fixture(t, "up-ok.json") + "\nEOF\n"})
-		if _, _, err := m.Up(context.Background(), s); err != nil {
-			t.Fatal(err)
+	out := filepath.Join(t.TempDir(), "tmpdir")
+	run, _ := fakes(t, map[string]string{"devcontainer": "echo \"$TMPDIR\" > " + out +
+		"\ncat <<'EOF'\n" + fixture(t, "up-ok.json") + "\nEOF\n"})
+	m := guarded(t, run, "drydock")
+	s := upSpec(t)
+	if _, _, err := m.Up(context.Background(), s); err != nil {
+		t.Fatal(err)
+	}
+	b, _ := os.ReadFile(out)
+	if got := strings.TrimSpace(string(b)); got != s.TempDir {
+		t.Errorf("up saw TMPDIR=%q, want %q (inherited %q)", got, s.TempDir, inherited)
+	}
+	os.Remove(out)
+	for _, tmp := range []string{"", "relative"} {
+		s.TempDir = tmp
+		if _, _, err := m.Up(context.Background(), s); err == nil {
+			t.Errorf("TempDir %q was accepted", tmp)
 		}
-		b, _ := os.ReadFile(out)
-		return strings.TrimSpace(string(b))
-	}
-	s := spec()
-	if got := seen(s); got != inherited {
-		t.Errorf("control: without a TempDir up saw TMPDIR=%q", got)
-	}
-	s.TempDir = "/srv/drydock/ws/" + wsID + "/.drydock/tmp"
-	if got := seen(s); got != s.TempDir {
-		t.Errorf("up saw TMPDIR=%q, want %q", got, s.TempDir)
-	}
-	s.TempDir = "relative"
-	if _, _, err := m.Up(context.Background(), s); err == nil {
-		t.Error("a relative TempDir was accepted")
+		if _, err := os.Stat(out); err == nil {
+			t.Errorf("with TempDir %q the CLI ran", tmp)
+		}
 	}
 }
 

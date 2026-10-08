@@ -1,0 +1,7 @@
+devcontainer_version: 0.89.0
+docker_version:       29.8.2-1 (the devcontainer's inner DinD daemon)
+recorded_at:          2026-10-08T17:20:52Z
+command:              devcontainer up --docker-path <logger> --workspace-folder <ws>/repo --no-lockfile <Drydock's id-labels, mounts and remote env>    (TMPDIR=<ws>/.drydock/tmp; exit 0, outcome success); beside it docker-argv-build.read-configuration.json, the folder's merged read-configuration
+config:               {"build":{"dockerfile":"Dockerfile","context":"..","args":{"A":"1"},"cacheFrom":["ghcr.io/krelinga/drydock-none:cache","TYPE=local,src=@WS@/hostcache"],"options":["--add-host","buildhost:127.0.0.1"]},"hostRequirements":{"gpu":true}}
+provenance:           recorded; one docker argv per line, as JSON; <ws> rewritten to /srv/drydock/ws/FIXTURE
+must_yield:           passed once build.cacheFrom's local cache and build.options are approved; refused naming each without; the registry cache and build.args pass alone

@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/krelinga/drydock/internal/classify"
+	"github.com/krelinga/drydock/internal/dockerguard"
 	"github.com/krelinga/drydock/internal/subproc"
 )
 
@@ -54,12 +55,48 @@ func spec() UpSpec {
 		Folder: "/srv/drydock/ws/" + wsID + "/repo"}
 }
 
+// upSpec is spec() laid out on disk as a workspace is — the clone at
+// <root>/<id>/repo, the CLI's TMPDIR at <root>/<id>/.drydock/tmp — for a
+// test that runs Up, which prepares the guard beside the clone.
+func upSpec(t *testing.T) UpSpec {
+	t.Helper()
+	root := filepath.Join(t.TempDir(), wsID)
+	s := spec()
+	s.Folder = filepath.Join(root, "repo")
+	s.TempDir = filepath.Join(root, ".drydock", "tmp")
+	for _, d := range []string{s.Folder, s.TempDir} {
+		if err := os.MkdirAll(d, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return s
+}
+
+// guarded is a Manager running run, with this test binary as its docker
+// guard (TestMain) and, unless run's resolver has one, /bin/true as the
+// docker it passes commands to.
+func guarded(t *testing.T, run subproc.Runner, prefix string) Manager {
+	t.Helper()
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	g := &dockerguard.Guard{Binary: self}
+	if e, ok := run.(subproc.Exec); ok {
+		if _, err := e.Resolver.Resolve("docker"); err != nil {
+			g.Resolver = subproc.FixedResolver{"docker": "/bin/true"}
+		}
+	}
+	return Manager{Run: run, LabelPrefix: prefix, Guard: g}
+}
+
 func TestUpBuildsTheArgvAndParsesTheResult(t *testing.T) {
 	run, dir := fakes(t, map[string]string{
 		"devcontainer": "cat <<'EOF'\n" + fixture(t, "up-ok.json") + "\nEOF\necho 'log line' >&2\n",
 	})
-	m := Manager{Run: run, LabelPrefix: "drydock.test"}
-	c, stderr, err := m.Up(context.Background(), spec())
+	m := guarded(t, run, "drydock.test")
+	s := upSpec(t)
+	c, stderr, err := m.Up(context.Background(), s)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -69,11 +106,13 @@ func TestUpBuildsTheArgvAndParsesTheResult(t *testing.T) {
 	if string(stderr) != "log line\n" {
 		t.Errorf("stderr %q", stderr)
 	}
-	want := []string{"up", "--workspace-folder", "/srv/drydock/ws/" + wsID + "/repo", "--no-lockfile",
+	want := []string{"up", "--workspace-folder", s.Folder, "--no-lockfile",
 		"--id-label", "drydock.test.workspace=" + wsID,
 		"--id-label", "drydock.test.repository-id=42",
 		"--id-label", "drydock.test.repo=krelinga/foo",
-		"--id-label", "drydock.test.branch=main", ""}
+		"--id-label", "drydock.test.branch=main",
+		"--docker-path", filepath.Join(filepath.Dir(s.Folder), ".drydock", "guard", "docker"),
+		"--docker-compose-path", filepath.Join(filepath.Dir(s.Folder), ".drydock", "guard", "docker"), ""}
 	if got := argv(t, dir, "devcontainer"); strings.Join(got, "|") != strings.Join(want, "|") {
 		t.Errorf("argv\n got %q\nwant %q", got, want)
 	}
@@ -107,7 +146,7 @@ func TestFailedUpIsAResultNotAnError(t *testing.T) {
 	run, _ := fakes(t, map[string]string{
 		"devcontainer": "cat <<'EOF'\n" + fixture(t, "up-error-postcreate.json") + "\nEOF\nexit 1\n",
 	})
-	c, _, err := Manager{Run: run, LabelPrefix: "drydock"}.Up(context.Background(), spec())
+	c, _, err := guarded(t, run, "drydock").Up(context.Background(), upSpec(t))
 	if err != nil || c.Outcome != classify.ContainerFailed || c.ContainerID == "" {
 		t.Errorf("result %+v, err %v; want a failed verdict carrying the container id", c, err)
 	}

@@ -1,0 +1,6 @@
+devcontainer_version: 0.89.0
+recorded_at:          2026-10-08T21:23:10Z
+command:              devcontainer read-configuration --workspace-folder <ws>/repo --include-merged-configuration --id-label drydock.read-configuration=none   (stdout only)
+config:               {"image":"mcr.microsoft.com/devcontainers/base:debian","runArgs":["--network=host","--pid","host","-v","/etc/os-release:/host-os-release:ro"],"appPort":[18080,"19000:19001"],"privileged":true,"capAdd":["SYS_ADMIN","SYS_PTRACE"],"securityOpt":["apparmor=unconfined","seccomp=unconfined"],"mounts":["source=/etc/hostname,target=/host-hostname,type=bind",{"source":"/etc/hosts","target":"/host-hosts","type":"bind"},"source=named-${devcontainerId},target=/named,type=volume","type=tmpfs,target=/scratch"],"workspaceMount":"source=${localWorkspaceFolder},target=/workspaces/hostile,type=bind,consistency=cached","workspaceFolder":"/workspaces/hostile","hostRequirements":{"gpu":"optional"},"init":true}
+provenance:           recorded beside docker-argv-hostile.jsonl, from the same folder; <ws> rewritten to /srv/drydock/ws/FIXTURE
+must_yield:           the host-access subset whose approval lets every command of docker-argv-hostile.jsonl pass the docker guard (internal/container TestRecordedUpsPassWithTheirApproval)

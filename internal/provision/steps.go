@@ -13,6 +13,7 @@ import (
 	"github.com/krelinga/drydock/internal/classify"
 	"github.com/krelinga/drydock/internal/clone"
 	"github.com/krelinga/drydock/internal/container"
+	"github.com/krelinga/drydock/internal/dockerguard"
 	"github.com/krelinga/drydock/internal/workspace"
 )
 
@@ -36,6 +37,12 @@ type runState struct {
 	// removeExisting passes --remove-existing-container to up: a rebuild,
 	// or a start from failed.
 	removeExisting bool
+	// approved is the repository's host-access approval as step 3 read it,
+	// and configDir the directory of the configuration it checked: up's
+	// docker guard holds every docker command to them (design §6, "The
+	// docker guard").
+	approved  []container.HostSetting
+	configDir string
 }
 
 // dir is the workspace's directory: /srv/drydock/ws/<id>.
@@ -128,23 +135,34 @@ func (r *runState) resolveConfig(ctx context.Context, w workspace.Workspace) err
 	// its paths are Drydock's.
 	ha, err := container.HostAccessOf(c, w.HostPath, r.override == "")
 	switch {
+	case errors.Is(err, container.ErrPathEscapes):
+		return workspace.Public("devcontainer.json names a Dockerfile, build context or bind mount inside the clone that is a symbolic link leading outside it. Drydock does not run it, and it cannot be approved: replace the link with what it should hold.", err)
 	case errors.Is(err, container.ErrConfigFileOutside):
 		return workspace.Public("The repository's devcontainer.json is a symbolic link or not inside the clone, so Drydock does not read it.", err)
 	case err != nil:
 		return workspace.Public("Drydock could not check what the dev container configuration asks of the host.", err)
 	}
-	approvedNote := ""
-	if !ha.Empty() {
-		approved, ok, err := r.p.Workspaces.Approved(ctx, w.RepositoryID)
-		if err != nil {
+	// The approval is read whether or not this configuration asks for
+	// anything: up's docker guard is held to it, since what `up` asks
+	// docker for may not be what read-configuration showed (§6, "The
+	// docker guard").
+	approved, ok, err := r.p.Workspaces.Approved(ctx, w.RepositoryID)
+	if err != nil {
+		return workspace.Public("Drydock could not read the repository's host-access approval.", err)
+	}
+	var granted []container.HostSetting
+	if ok {
+		if err := json.Unmarshal(approved.Settings, &granted); err != nil {
 			return workspace.Public("Drydock could not read the repository's host-access approval.", err)
 		}
-		var granted []container.HostSetting
-		if ok {
-			if err := json.Unmarshal(approved.Settings, &granted); err != nil {
-				return workspace.Public("Drydock could not read the repository's host-access approval.", err)
-			}
-		}
+	}
+	r.approved = granted
+	r.configDir = filepath.Dir(c.ConfigFile)
+	if r.override != "" {
+		r.configDir = filepath.Dir(r.override)
+	}
+	approvedNote := ""
+	if !ha.Empty() {
 		// Within what was approved — the same, or less — runs; anything
 		// new or changed asks (design §6). The approval itself stays as it
 		// was: running less does not narrow it.
@@ -329,7 +347,7 @@ func (r *runState) up(ctx context.Context, w workspace.Workspace) error {
 	// A TMPDIR of the workspace's own, beside the clone: the CLI stages
 	// Features under $TMPDIR in a folder named by the millisecond, which
 	// concurrent creates otherwise share (container.UpSpec.TempDir).
-	tmp := filepath.Join(r.dir(w), ".drydock", "tmp")
+	tmp := container.TempDirFor(w.HostPath)
 	if err := os.MkdirAll(tmp, 0o700); err != nil {
 		return workspace.Public("Drydock could not create the workspace's temporary directory.", err)
 	}
@@ -346,11 +364,18 @@ func (r *runState) up(ctx context.Context, w workspace.Workspace) error {
 		Lockfile:       r.lockfile,
 		TempDir:        tmp,
 		Rebuild:        r.removeExisting,
+		Approved:       r.approved,
+		ConfigDir:      r.configDir,
 	})
 	if res.ContainerID != "" {
 		if err := r.p.Workspaces.SetContainer(context.WithoutCancel(ctx), w.ID, res.ContainerID); err != nil {
 			return workspace.Public("Drydock could not record the workspace's container.", err)
 		}
+	}
+	var refused *container.GuardRefusal
+	if errors.As(err, &refused) {
+		r.p.logTail(ctx, w.ID, "devcontainer up", stderr)
+		return workspace.Public(GuardRefusalSentence(refused.Settings), err)
 	}
 	if err != nil {
 		r.p.logTail(ctx, w.ID, "devcontainer up", stderr)
@@ -371,6 +396,32 @@ func (r *runState) up(ctx context.Context, w workspace.Workspace) error {
 			fmt.Errorf("devcontainer up: %s %s", res.Message, res.Description))
 	}
 	return lockfileChange(before, w.HostPath)
+}
+
+// GuardRefusalSentence is step 6's sentence when the docker guard refused
+// a docker command of `up` (design §6, "The docker guard"): distinct from an
+// up that failed, because nothing ran. It names the settings from the
+// guard's closed set — never a value, which the configuration chose — and
+// says why a start may not repeat it: step 3 reads the configuration again.
+func GuardRefusalSentence(settings []string) string {
+	var names []string
+	for _, s := range settings {
+		switch s {
+		case dockerguard.SettingNoPolicy:
+			return "Drydock's docker guard had no record of what this run may ask Docker for, so it created no container. Start it again; if it repeats, the service log says why."
+		case dockerguard.SettingCommand:
+			names = append(names, "a docker command Drydock does not recognise")
+		case dockerguard.SettingExecOption:
+			names = append(names, "a docker exec option Drydock does not recognise")
+		case dockerguard.SettingStartUnread:
+			names = append(names, "an existing container whose settings Drydock could not read")
+		default:
+			names = append(names, s)
+		}
+	}
+	return "devcontainer up asked Docker for host access the operator has not approved for this repository: " +
+		strings.Join(names, ", ") + ". Drydock refused it, and no container was created. A Feature or image tag may have " +
+		"changed since the configuration was checked; starting again checks it again."
 }
 
 func (r *runState) fullName(ctx context.Context, w workspace.Workspace) (string, error) {

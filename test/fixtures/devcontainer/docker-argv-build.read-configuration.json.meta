@@ -1,0 +1,6 @@
+devcontainer_version: 0.89.0
+recorded_at:          2026-10-08T17:20:52Z
+command:              devcontainer read-configuration --workspace-folder <ws>/repo --include-merged-configuration --id-label drydock.read-configuration=none   (stdout only)
+config:               {"build":{"dockerfile":"Dockerfile","context":"..","args":{"A":"1"},"cacheFrom":["ghcr.io/krelinga/drydock-none:cache","TYPE=local,src=@WS@/hostcache"],"options":["--add-host","buildhost:127.0.0.1"]},"hostRequirements":{"gpu":true}}
+provenance:           recorded beside docker-argv-build.jsonl, from the same folder; <ws> rewritten to /srv/drydock/ws/FIXTURE
+must_yield:           the host-access subset whose approval lets every command of docker-argv-build.jsonl pass the docker guard (internal/container TestRecordedUpsPassWithTheirApproval)

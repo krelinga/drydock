@@ -1,0 +1,7 @@
+devcontainer_version: 0.89.0
+docker_version:       29.8.2-1 (the devcontainer's inner DinD daemon)
+recorded_at:          2026-10-08T21:22:54Z
+command:              devcontainer up as for docker-argv-image.jsonl, --remove-existing-container
+config:               {"image":"mcr.microsoft.com/devcontainers/base:debian"}
+provenance:           recorded; one docker argv per line, as JSON; <ws> rewritten to /srv/drydock/ws/FIXTURE
+must_yield:           rm -f of the old container, then a run like the first: every command passed

@@ -1,0 +1,254 @@
+[
+    {
+        "Id": "e940d5f8b680b4b784db6c3ea1309beb0542f25ef54d5bcfa7768169382d3655",
+        "Created": "2026-10-08T21:23:04.571341336Z",
+        "Path": "/bin/sh",
+        "Args": [
+            "-c",
+            "echo Container started\ntrap \"exit 0\" 15\n/usr/local/share/docker-init.sh\nexec \"$@\"\nwhile sleep 1 & wait $!; do :; done",
+            "-"
+        ],
+        "State": {
+            "Status": "running",
+            "Running": true,
+            "Paused": false,
+            "Restarting": false,
+            "OOMKilled": false,
+            "Dead": false,
+            "Pid": 3434116,
+            "ExitCode": 0,
+            "Error": "",
+            "StartedAt": "2026-10-08T21:23:04.694094985Z",
+            "FinishedAt": "0001-01-01T00:00:00Z"
+        },
+        "Image": "sha256:6c31cdd3a88e2de477e8fd20b7a76dde32717f2f723b5ab0f49fee05e9da9373",
+        "ResolvConfPath": "/var/lib/docker/containers/e940d5f8b680b4b784db6c3ea1309beb0542f25ef54d5bcfa7768169382d3655/resolv.conf",
+        "HostnamePath": "/var/lib/docker/containers/e940d5f8b680b4b784db6c3ea1309beb0542f25ef54d5bcfa7768169382d3655/hostname",
+        "HostsPath": "/var/lib/docker/containers/e940d5f8b680b4b784db6c3ea1309beb0542f25ef54d5bcfa7768169382d3655/hosts",
+        "LogPath": "/var/lib/docker/containers/e940d5f8b680b4b784db6c3ea1309beb0542f25ef54d5bcfa7768169382d3655/e940d5f8b680b4b784db6c3ea1309beb0542f25ef54d5bcfa7768169382d3655-json.log",
+        "Name": "/quizzical_murdock",
+        "RestartCount": 0,
+        "Driver": "overlayfs",
+        "Platform": "linux",
+        "MountLabel": "",
+        "ProcessLabel": "",
+        "AppArmorProfile": "unconfined",
+        "ExecIDs": null,
+        "HostConfig": {
+            "Binds": null,
+            "ContainerIDFile": "",
+            "LogConfig": {
+                "Type": "json-file",
+                "Config": {}
+            },
+            "NetworkMode": "bridge",
+            "PortBindings": {},
+            "RestartPolicy": {
+                "Name": "no",
+                "MaximumRetryCount": 0
+            },
+            "AutoRemove": false,
+            "VolumeDriver": "",
+            "VolumesFrom": null,
+            "ConsoleSize": [
+                0,
+                0
+            ],
+            "CapAdd": null,
+            "CapDrop": null,
+            "CgroupnsMode": "private",
+            "Dns": null,
+            "DnsOptions": [],
+            "DnsSearch": [],
+            "ExtraHosts": null,
+            "GroupAdd": null,
+            "IpcMode": "private",
+            "Cgroup": "",
+            "Links": null,
+            "OomScoreAdj": 0,
+            "PidMode": "",
+            "Privileged": true,
+            "PublishAllPorts": false,
+            "ReadonlyRootfs": false,
+            "SecurityOpt": [
+                "label=disable"
+            ],
+            "UTSMode": "",
+            "UsernsMode": "",
+            "ShmSize": 67108864,
+            "Runtime": "runc",
+            "Isolation": "",
+            "CpuShares": 0,
+            "Memory": 0,
+            "NanoCpus": 0,
+            "CgroupParent": "",
+            "BlkioWeight": 0,
+            "BlkioWeightDevice": [],
+            "BlkioDeviceReadBps": [],
+            "BlkioDeviceWriteBps": [],
+            "BlkioDeviceReadIOps": [],
+            "BlkioDeviceWriteIOps": [],
+            "CpuPeriod": 0,
+            "CpuQuota": 0,
+            "CpuRealtimePeriod": 0,
+            "CpuRealtimeRuntime": 0,
+            "CpusetCpus": "",
+            "CpusetMems": "",
+            "Devices": [],
+            "DeviceCgroupRules": null,
+            "DeviceRequests": null,
+            "MemoryReservation": 0,
+            "MemorySwap": 0,
+            "MemorySwappiness": null,
+            "OomKillDisable": null,
+            "PidsLimit": null,
+            "Ulimits": null,
+            "CpuCount": 0,
+            "CpuPercent": 0,
+            "IOMaximumIOps": 0,
+            "IOMaximumBandwidth": 0,
+            "Mounts": [
+                {
+                    "Type": "bind",
+                    "Source": "/srv/drydock/ws/FIXTURE/repo",
+                    "Target": "/workspaces/repo"
+                },
+                {
+                    "Type": "volume",
+                    "Source": "dind-var-lib-docker-05iumelr57eeesgpl6hgtqpf97suaa4tm1esfs63u0agq30eknjh",
+                    "Target": "/var/lib/docker"
+                },
+                {
+                    "Type": "bind",
+                    "Source": "/srv/drydock/ws/FIXTURE/sock",
+                    "Target": "/run/drydock"
+                },
+                {
+                    "Type": "volume",
+                    "Source": "drydock-record-claude",
+                    "Target": "/home/vscode/.claude"
+                }
+            ],
+            "MaskedPaths": null,
+            "ReadonlyPaths": null
+        },
+        "Storage": {
+            "RootFS": {
+                "Snapshot": {
+                    "Name": "overlayfs"
+                }
+            }
+        },
+        "Mounts": [
+            {
+                "Type": "bind",
+                "Source": "/srv/drydock/ws/FIXTURE/sock",
+                "Destination": "/run/drydock",
+                "Mode": "",
+                "RW": true,
+                "Propagation": "rprivate"
+            },
+            {
+                "Type": "bind",
+                "Source": "/srv/drydock/ws/FIXTURE/repo",
+                "Destination": "/workspaces/repo",
+                "Mode": "",
+                "RW": true,
+                "Propagation": "rprivate"
+            },
+            {
+                "Type": "volume",
+                "Name": "drydock-record-claude",
+                "Source": "/var/lib/docker/volumes/drydock-record-claude/_data",
+                "Destination": "/home/vscode/.claude",
+                "Driver": "local",
+                "Mode": "z",
+                "RW": true,
+                "Propagation": ""
+            },
+            {
+                "Type": "volume",
+                "Name": "dind-var-lib-docker-05iumelr57eeesgpl6hgtqpf97suaa4tm1esfs63u0agq30eknjh",
+                "Source": "/var/lib/docker/volumes/dind-var-lib-docker-05iumelr57eeesgpl6hgtqpf97suaa4tm1esfs63u0agq30eknjh/_data",
+                "Destination": "/var/lib/docker",
+                "Driver": "local",
+                "Mode": "z",
+                "RW": true,
+                "Propagation": ""
+            }
+        ],
+        "Config": {
+            "Hostname": "e940d5f8b680",
+            "Domainname": "",
+            "User": "root",
+            "AttachStdin": false,
+            "AttachStdout": true,
+            "AttachStderr": true,
+            "Tty": false,
+            "OpenStdin": false,
+            "StdinOnce": false,
+            "Env": [
+                "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+                "LANG=C.UTF-8",
+                "DOCKER_BUILDKIT=1"
+            ],
+            "Cmd": [
+                "-c",
+                "echo Container started\ntrap \"exit 0\" 15\n/usr/local/share/docker-init.sh\nexec \"$@\"\nwhile sleep 1 & wait $!; do :; done",
+                "-"
+            ],
+            "Image": "vsc-repo-2dcc42506bb8c991ff5665b898c2e944c95791f9679bf430f841c791fb574378-features-uid",
+            "Volumes": null,
+            "WorkingDir": "",
+            "Entrypoint": [
+                "/bin/sh"
+            ],
+            "Labels": {
+                "dev.containers.id": "base-debian",
+                "dev.containers.release": "v0.4.34",
+                "dev.containers.source": "https://github.com/devcontainers/images",
+                "dev.containers.timestamp": "Thu, 08 Oct 2026 15:40:21 GMT",
+                "dev.containers.variant": "trixie",
+                "devcontainer.metadata": "[ {\"id\":\"ghcr.io/devcontainers/features/common-utils:2\"}, {\"id\":\"ghcr.io/devcontainers/features/git:1\",\"customizations\":{\"vscode\":{\"settings\":{\"github.copilot.chat.codeGeneration.instructions\":[{\"text\":\"This dev container includes an up-to-date version of Git, built from source as needed, pre-installed and available on the `PATH`.\"}]}}}}, {\"remoteUser\":\"vscode\"}, {\"id\":\"ghcr.io/devcontainers/features/docker-in-docker:2\",\"privileged\":true,\"entrypoint\":\"/usr/local/share/docker-init.sh\",\"mounts\":[{\"source\":\"dind-var-lib-docker-${devcontainerId}\",\"target\":\"/var/lib/docker\",\"type\":\"volume\"}],\"customizations\":{\"vscode\":{\"extensions\":[\"ms-azuretools.vscode-containers\"],\"settings\":{\"github.copilot.chat.codeGeneration.instructions\":[{\"text\":\"This dev container includes the Docker CLI (`docker`) pre-installed and available on the `PATH` for running and managing containers using a dedicated Docker daemon running inside the dev container.\"}]}}}} ]",
+                "drydock.branch": "main",
+                "drydock.repo": "krelinga/fixture",
+                "drydock.repository-id": "101",
+                "drydock.workspace": "01JFIXTVRE0000000000000000",
+                "version": "2.2.2"
+            }
+        },
+        "NetworkSettings": {
+            "SandboxID": "b1ac00601c1343dd4cc6300ca4c16a780ee09b8932bed950328d98653ae5b45a",
+            "SandboxKey": "/var/run/docker/netns/b1ac00601c13",
+            "Ports": {},
+            "Networks": {
+                "bridge": {
+                    "IPAMConfig": null,
+                    "Links": null,
+                    "Aliases": null,
+                    "DriverOpts": null,
+                    "GwPriority": 0,
+                    "NetworkID": "f647da6f3a3f6c14d5d342460df65fba600de24ec1718b5c97656f7afaf8f77c",
+                    "EndpointID": "1a4b386c0f6cf294b095c9cc48ac7b84446068167532a5380d4a8915c25cf861",
+                    "Gateway": "172.18.0.1",
+                    "IPAddress": "172.18.0.2",
+                    "MacAddress": "da:34:fc:e8:b0:52",
+                    "IPPrefixLen": 16,
+                    "IPv6Gateway": "",
+                    "GlobalIPv6Address": "",
+                    "GlobalIPv6PrefixLen": 0,
+                    "DNSNames": null
+                }
+            }
+        },
+        "ImageManifestDescriptor": {
+            "mediaType": "application/vnd.oci.image.manifest.v1+json",
+            "digest": "sha256:5248eb9a390ad17fe0d72ac4231722bccc9ccce5d29b5802f4df82785e0d3cf0",
+            "size": 2951,
+            "platform": {
+                "architecture": "amd64",
+                "os": "linux"
+            }
+        }
+    }
+]

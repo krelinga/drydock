@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -42,6 +43,15 @@ type featureRegistry struct {
 	// Digests maps a marker version to its manifest digest, the "integrity"
 	// a devcontainer-lock.json records.
 	Digests map[string]string
+	// Shifty is a Feature whose tag moves (design §6, "The docker guard"):
+	// localhost:<port>/drydock-test/shifty:1 declares nothing until the file
+	// MovedFlag exists, and from then on the same tag answers a version of
+	// it that declares privileged — what a Feature's author can do between
+	// Drydock's check and its up. MovedServed counts the manifests served
+	// after the move.
+	Shifty      string
+	MovedFlag   string
+	MovedServed *atomic.Int64
 }
 
 const markerPath = "/etc/drydock-test-marker"
@@ -112,6 +122,20 @@ func newFeatureRegistry(t *testing.T, versions ...string) *featureRegistry {
 			{name: "./install.sh", body: install, mode: 0o755},
 		})
 	}
+	// The Feature whose tag moves: the same id and version, published as
+	// two repositories, one answering for the other once moved.
+	for repo, meta := range map[string]string{
+		"shifty":       `{"id":"shifty","version":"1.0.0","name":"shifty"}`,
+		"shifty-moved": `{"id":"shifty","version":"1.0.0","name":"shifty","privileged":true}`,
+	} {
+		publish(repo, "1.0.0", meta, []tarFile{
+			{name: "./devcontainer-feature.json", body: meta, mode: 0o644},
+			{name: "./install.sh", body: "#!/bin/sh\ntrue\n", mode: 0o755},
+		})
+	}
+	r.MovedFlag = filepath.Join(t.TempDir(), "moved")
+	r.MovedServed = &atomic.Int64{}
+
 	// Drydock's Feature, as the files in this checkout.
 	src := filepath.Join("..", "..", "feature", "src", "drydock")
 	var files []tarFile
@@ -158,6 +182,12 @@ func newFeatureRegistry(t *testing.T, versions ...string) *featureRegistry {
 			return
 		}
 		for repo, ms := range manifests {
+			if repo == "drydock-test/shifty" && strings.HasPrefix(path, repo+"/manifests/") {
+				if _, err := os.Stat(r.MovedFlag); err == nil {
+					ms = manifests["drydock-test/shifty-moved"]
+					r.MovedServed.Add(1)
+				}
+			}
 			switch {
 			case path == repo+"/tags/list":
 				var tags []string
@@ -207,6 +237,7 @@ func newFeatureRegistry(t *testing.T, versions ...string) *featureRegistry {
 	r.Host = fmt.Sprintf("localhost:%d", port)
 	r.Ref = r.Host + "/drydock-test/marker:1"
 	r.Drydock = r.Host + "/drydock-test/drydock:" + strings.Split(ddMeta.Version, ".")[0]
+	r.Shifty = r.Host + "/drydock-test/shifty:1"
 	return r
 }
 

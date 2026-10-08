@@ -128,6 +128,30 @@ check "devcontainer up works as the service, a repository with no config and all
 check "and devcontainer exec into it" in_service devcontainer exec --workspace-folder /srv/drydock/ws/probe/repo \
 	--id-label drydock.installtest.workspace=probe --override-config /srv/drydock/ws/probe/.drydock/devcontainer.json -- true
 docker ps -aq --filter label=drydock.installtest.workspace | xargs -r docker rm -f >/dev/null
+# The docker guard as the service runs it (design §6, "The docker guard"):
+# the installed binary, linked as docker in a workspace's guard directory and
+# run by the CLI under the unit's sandbox. With no policy it refuses the
+# container; with one, the same up runs through it.
+G=/srv/drydock/ws/probe/.drydock/guard
+mkdir -p "$G" /srv/drydock/ws/probe/.drydock/tmp
+ln -sf /usr/local/bin/drydock "$G/docker"
+ln -sf "$(command -v docker)" "$G/real-docker"
+chown -R drydock:drydock /srv/drydock/ws/probe
+guarded_up() {
+	in_service env TMPDIR=/srv/drydock/ws/probe/.drydock/tmp devcontainer up --docker-path "$G/docker" \
+		--workspace-folder /srv/drydock/ws/probe/repo --no-lockfile --id-label drydock.installtest.workspace=guarded \
+		--override-config /srv/drydock/ws/probe/.drydock/devcontainer.json 2>&1
+}
+upout=$(guarded_up)
+check "the installed binary is the docker guard: with no policy it refuses the container" \
+	grep -q 'drydock-docker-guard: refused: no_policy' <<<"$upout"
+check "and nothing was created" [ -z "$(docker ps -aq --filter label=drydock.installtest.workspace=guarded)" ]
+printf '%s\n' '{"version":1,"clone":"/srv/drydock/ws/probe/repo","temp_dir":"/srv/drydock/ws/probe/.drydock/tmp","config_dir":"/srv/drydock/ws/probe/.drydock","label_prefix":"drydock.installtest","id_labels":{"drydock.installtest.workspace":"guarded"},"own_mounts":[],"approved":[]}' >"$G/policy.json"
+chown drydock:drydock "$G/policy.json"
+upout=$(guarded_up)
+check "with its policy, up runs through the guard" grep -q '"outcome":"success"' <<<"$upout" || printf '%s\n' "$upout" | tail -5
+check "control: the guarded container exists" [ -n "$(docker ps -aq --filter label=drydock.installtest.workspace=guarded)" ]
+docker ps -aq --filter label=drydock.installtest.workspace | xargs -r docker rm -f >/dev/null
 rm -rf /srv/drydock/ws/probe /srv/drydock/ws/.probe
 check "the boot reconciliation reached Docker too" bash -c "! journalctl -u drydock -o cat | grep -q 'drydock: reconcile'"
 check "control: that is the service's journal" bash -c "journalctl -u drydock -o cat | grep -q 'serving on'"

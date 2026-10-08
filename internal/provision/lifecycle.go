@@ -382,6 +382,34 @@ func (p *Provisioner) SweepHelpers(ctx context.Context) (int, error) {
 	return len(ids), err
 }
 
+// SweepGuardPolicies removes the docker guard's policy (and refusal) an up
+// left behind when Drydock was killed during it, so a guard directory holds a
+// policy only while an up runs (design §6, "The docker guard"). Boot calls it
+// after reconciliation; a workspace with a job in flight here is skipped,
+// under the lock every job starts under, since its up may be running now.
+func (p *Provisioner) SweepGuardPolicies(ctx context.Context) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.closed {
+		return ErrShuttingDown
+	}
+	entries, err := os.ReadDir(p.Workspaces.Root)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	var errs []error
+	for _, e := range entries {
+		if !e.IsDir() || p.active[e.Name()] != nil {
+			continue
+		}
+		errs = append(errs, container.SweepPolicy(filepath.Join(p.Workspaces.Root, e.Name(), "repo")))
+	}
+	return errors.Join(errs...)
+}
+
 func (p *Provisioner) stopSupervisor(ctx context.Context, w workspace.Workspace) error {
 	if p.StopSupervisor == nil {
 		return workspace.Note("Nothing to do yet: the Claude Code session server arrives with Claude support.")

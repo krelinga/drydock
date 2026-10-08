@@ -16,7 +16,7 @@ func TestUpKeepsTheTailOfAVerboseBuild(t *testing.T) {
 		"devcontainer": "head -c 3000000 /dev/zero | tr '\\0' 'x' | fold -w 100 >&2\necho 'FIRST' >&2; echo '" + last + "' >&2\n" +
 			"echo '{\"outcome\":\"error\",\"message\":\"m\",\"description\":\"d\"}'; exit 1",
 	})
-	_, stderr, err := Manager{Run: run, LabelPrefix: "drydock.test"}.Up(context.Background(), spec())
+	_, stderr, err := guarded(t, run, "drydock.test").Up(context.Background(), upSpec(t))
 	if err != nil {
 		t.Fatal(err)
 	}

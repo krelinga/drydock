@@ -18,6 +18,7 @@ import (
 
 	"github.com/krelinga/drydock/internal/config"
 	"github.com/krelinga/drydock/internal/container"
+	"github.com/krelinga/drydock/internal/dockerguard"
 	"github.com/krelinga/drydock/internal/events"
 	"github.com/krelinga/drydock/internal/reconcile"
 	"github.com/krelinga/drydock/internal/store"
@@ -75,11 +76,13 @@ func prefix(t *testing.T) string {
 func claudeVolume(p string) string { return p + ".claude" }
 
 // manager is the container manager as the server builds it: this test's
-// prefix, the pinned cleanup image, and this process's uid as the owner of
-// the shared credential volume (§7.1).
+// prefix, the pinned cleanup image, this process's uid as the owner of the
+// shared credential volume (§7.1), and this test binary as the docker guard
+// (main_test.go), as the server's is its own binary.
 func manager(p string) container.Manager {
+	self, _ := os.Executable()
 	return container.Manager{Run: subproc.Exec{}, LabelPrefix: p, CleanupImage: config.DefaultCleanupImage,
-		ClaudeUID: os.Getuid(), ClaudeGID: os.Getgid()}
+		ClaudeUID: os.Getuid(), ClaudeGID: os.Getgid(), Guard: &dockerguard.Guard{Binary: self}}
 }
 
 // docker runs a docker command and returns its stdout. Stdout only: on a
