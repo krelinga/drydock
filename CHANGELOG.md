@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.5](https://github.com/krelinga/drydock/compare/v0.4.4...v0.4.5) (2026-10-08)
+
+
+### Bug Fixes
+
+* stop warning that an 8-hour access token is the login expiring ([#74](https://github.com/krelinga/drydock/issues/74)) ([7739cf9](https://github.com/krelinga/drydock/commit/7739cf9866f65a1de7d5f5cdf4ea5a744612576e))
+
 ## [0.4.4](https://github.com/krelinga/drydock/compare/v0.4.3...v0.4.4) (2026-10-08)
 
 
