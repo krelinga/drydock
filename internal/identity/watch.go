@@ -180,6 +180,19 @@ type Watch struct {
 	base     context.Context
 	stop     context.CancelFunc
 	triggers sync.WaitGroup
+
+	// observe is a test seam, nil in production: called with "joined" when a
+	// Check joins the one running (before it waits), and with "ending" when
+	// the running check has stored its result but not yet let go of running.
+	// A test that blocks in it holds the interleaving open instead of hoping
+	// the scheduler finds it.
+	observe func(point string)
+}
+
+func (w *Watch) at(point string) {
+	if w.observe != nil {
+		w.observe(point)
+	}
 }
 
 func (w *Watch) init() {
@@ -285,6 +298,7 @@ func (w *Watch) Check(ctx context.Context) (View, error) {
 	if w.running {
 		done := w.done
 		w.mu.Unlock()
+		w.at("joined")
 		select {
 		case <-done:
 		case <-ctx.Done():
@@ -297,6 +311,7 @@ func (w *Watch) Check(ctx context.Context) (View, error) {
 	w.swept = true
 	w.mu.Unlock()
 	defer func() {
+		w.at("ending")
 		w.mu.Lock()
 		w.running = false
 		close(w.done)
