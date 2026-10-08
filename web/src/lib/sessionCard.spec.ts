@@ -7,7 +7,7 @@ import { describe, expect, it } from 'vitest'
 import type { StreamEvent } from '../api/types'
 import { emptyEntities, environmentURL, reduce, reduceAll, type Workspace } from '../stores/reducer'
 import {
-  CLONE_OK, ENV, SERVE_OK, WS, listBody, sessionEvent, stateEvent, supEvent, wsView,
+  CLONE_OK, ENV, SERVE_OK, WS, listBody, sessionEvent, stateEvent, stepEvent, supEvent, wsView,
 } from '../stores/reducer.fixtures'
 import { cardStatus, stoppable, type FleetLogin } from './workspaceCard'
 
@@ -49,6 +49,24 @@ describe('the card, supervisor half (§6.1)', () => {
     const s = cardStatus(run([...CLONE_OK, ...SERVE_OK, sessionEvent(31, 2, 4)]))
     expect(s.line).toBe('Capacity 2 / 4')
     expect(s.line).not.toMatch(/session/i)
+  })
+
+  it('a step 8 boot closed after a crash does not override the server it then restarted', () => {
+    // Design §6: Drydock died inside step 8; the next boot failed the step
+    // with its sentence and started the session server again. The card is
+    // the supervisor's, as for any running workspace; the timeline keeps the
+    // closed step.
+    const closed = 'The session server step failed: Drydock stopped while this step was running.'
+    const s = cardStatus(run([
+      ...CLONE_OK, stepEvent(14, WS, 'session_server', 'started'), stepEvent(20, WS, 'session_server', 'failed', closed),
+      supEvent(21, 'starting', 'launching', 'Starting the session server.'), supEvent(22, 'serving', 'connected', '', 'starting'),
+      sessionEvent(23, 1, 4),
+    ]))
+    expect(s).toMatchObject({ line: 'Capacity 1 / 4', tone: 'ok', action: 'open' })
+    // Control: the same close with no supervisor event after it still reads running, never failed.
+    const bare = cardStatus(run([...CLONE_OK, stepEvent(14, WS, 'session_server', 'started'),
+      stepEvent(20, WS, 'session_server', 'failed', closed)]))
+    expect(bare.line).not.toMatch(/fail/i)
   })
 
   it('waiting_registration is a wait: no action, elapsed time, never the word failed', () => {

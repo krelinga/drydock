@@ -14,7 +14,7 @@ import {
   CLONE_FAILS_AT_UP, CLONE_OK, DELETE, ORPHAN, RECONCILE, REFRESH_FAILED, REFRESHED, RESTART_FAILS_EARLY,
   START_AFTER_FAIL, WS, WS2, catalogBody, detailBody, listBody, stateEvent, step, stepEvent, tokenIssued, ws2View, wsView,
   DELETE_OK, DELETE_RESUMED, DELETE_STUCK, STOP_FAILED_DETAIL, STOP_FAILS, STOP_OK, STOP_RETRIED, STUCK_DETAIL,
-  actionEvent, listWithCap,
+  actionEvent, listWithCap, supEvent,
 } from './reducer.fixtures'
 
 const events = (evs: StreamEvent[]): Action[] => evs.map((event) => ({ type: 'event', event }))
@@ -402,6 +402,53 @@ describe('the current run (frontend §6.1, steps after a start)', () => {
     expect(Object.keys(runSteps(e.workspaces[WS2]!))).toEqual(['up'])
     const ok = play(CLONE_OK).workspaces[WS]!
     expect(runSteps(ok)).toBe(ok.steps)
+  })
+})
+
+describe('a step 8 closed at boot (design §6, reconciliation)', () => {
+  // Drydock died inside step 8: the row is running with step 8 started, and
+  // the next boot fails the step with its sentence, then restarts the
+  // session server. The workspace stays running throughout.
+  const CLOSED = 'The session server step failed: Drydock stopped while this step was running.'
+  const BOOT: StreamEvent[] = [
+    stepEvent(20, WS, 'session_server', 'failed', CLOSED),
+    supEvent(21, 'starting', 'launching', 'Starting the session server.'),
+    supEvent(22, 'serving', 'connected', '', 'starting'),
+  ]
+  const DIED = [...CLONE_OK, stepEvent(14, WS, 'session_server', 'started')]
+
+  it('fails the step on a running workspace, from events and from a snapshot', () => {
+    // Control: before the boot, step 8 reads as running.
+    const before = play(DIED).workspaces[WS]!
+    expect(currentStep(before)).toMatchObject({ name: 'session_server', status: 'started' })
+
+    const w = play(BOOT, play(DIED)).workspaces[WS]!
+    expect(w.state).toBe('running')
+    expect(runSteps(w).session_server).toMatchObject({ status: 'failed', detail: CLOSED })
+    expect(currentStep(w)).toMatchObject({ name: 'session_server', status: 'failed', detail: CLOSED })
+    expect(w.supervisor).toMatchObject({ state: 'serving' })
+    // The earlier steps are still this run's: the close is the run's last row.
+    expect(Object.keys(runSteps(w))).toContain('up')
+
+    const snap = reduce(emptyEntities(), {
+      type: 'workspaces', at: 22,
+      view: listBody(wsView({ steps: { ...wsView().steps, session_server: step('failed', 20, CLOSED) } })),
+    }).workspaces[WS]!
+    expect(snap.state).toBe('running')
+    expect(runSteps(snap).session_server).toMatchObject({ status: 'failed', detail: CLOSED })
+  })
+
+  it('a later run’s step 8 replaces the closed one', () => {
+    const e = play([
+      ...BOOT,
+      stateEvent(30, WS, 'building', { from: 'running' }),
+      stepEvent(31, WS, 'resolve_config', 'started'),
+      stepEvent(32, WS, 'resolve_config', 'done'),
+      stateEvent(33, WS, 'running', { from: 'building' }),
+      stepEvent(34, WS, 'session_server', 'started'),
+      stepEvent(35, WS, 'session_server', 'done'),
+    ], play(DIED))
+    expect(runSteps(e.workspaces[WS]!).session_server).toMatchObject({ status: 'done', eventId: 35 })
   })
 })
 
