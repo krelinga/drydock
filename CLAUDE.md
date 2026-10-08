@@ -70,7 +70,7 @@ printf "%s\n" "$PW" | ./drydock passwd --db x.db  # set the operator password (n
 | `test/ansible/` | The Ansible companion's checks: `check.sh` extracts the document's YAML blocks and syntax-checks and lints them, then runs §7.1's journal assertion on localhost against journals given as data (an allowlist: a line it was never told about fails it); `live.sh` runs them against a bare Debian systemd container, installing a locally packaged release: first install, a `changed=0` re-run, an upgrade with its database backup, an App key rotation, a master-key backup that refuses a different key, and the move to a vaulted master key (the installed key vaulted: `changed=0`; a new one with no secret stored: replaced; another with one stored: refused, the key unchanged; the same refusal on a release change, leaving the old binary running; and the run after an interrupted upgrade, backed up by the running process's inode). Neither is in CI. |
 | `test/docs/` | Checks on the operator documents: every `vX.Y.Z` in the README and `docs/deploy/` is a release (`CHANGELOG.md`) or the next one, computed by release-please's rule from the commits since the manifest last moved (plus `DRYDOCK_PR_TITLE` on a PR). #49 pinned v0.3.1, which release-please never cut. Skips in a shallow clone unless `DRYDOCK_REQUIRE_RELEASE_HISTORY` is set, which CI does. |
 | `test/component/` | Real binaries, nothing mocked. Today: the Caddyfile conformance test (testing §3.2), mutation-checked against the Caddyfile itself. |
-| `test/fixtures/` | The corpus: 50 fixtures from `2.1.289` and devcontainer CLI `0.89.0`, plus `record.sh`, which is testing §11.1 step 3. Some are hand-written or synthetic, and their `.meta` says which. |
+| `test/fixtures/` | The corpus: 49 fixtures (counted by `.meta` file) from `2.1.289` and devcontainer CLI `0.89.0`, plus `record.sh`, which is testing §11.1 step 3. Some are hand-written or synthetic, and their `.meta` says which. |
 
 Three things about that code worth knowing before extending it:
 
@@ -454,9 +454,9 @@ These come from §2 (Claude Code constraints) and §13.5 (non-negotiables). Most
    watch's terminal scraping. `02` supervisor restart survival: a plain restart reconnects the same
    environment *and* sessions, plus three `.claude.json` keys gate a headless start. `03`
    `CLAUDE_ENV_FILE` is re-read and re-executed once per Bash command. Reports and re-runnable
-   harnesses in `docs/design/spikes/`. Two things stay unverified on purpose, both parked for Phase
-   5: the `Login successful` match (needs a human in a browser — run `harness-01-login/run.sh login`)
-   and whether a `--spawn worktree` path needs its own trust record.
+   harnesses in `docs/design/spikes/`. Two things were left unverified on purpose, both parked for
+   Phase 5: the `Login successful` match — **verified** by the owner's real sign-in from Settings on
+   2026-10-08 (v0.4.4) — and whether a `--spawn worktree` path needs its own trust record, still open.
 
    **A fifth spike, `04`, is also done** — the browser tier's local CA. A headless Chromium trusts a
    throwaway CA via `certutil -A` into `~/.pki/nssdb`, and all fourteen assertions pass with no
@@ -491,8 +491,8 @@ These come from §2 (Claude Code constraints) and §13.5 (non-negotiables). Most
    **Login handshake done**, server and UI (`internal/login`, the three `/api/auth/claude/login`
    routes, `auth.login`, `components/ClaudeLogin.vue` in Settings): a short-lived login container
    on Drydock's own PTY, tested against fakeclaude on a PTY, in a real container and through
-   Chromium. **Still unverified on purpose:** a real `Login successful` — it needs a human in a
-   browser (`docs/design/spikes/harness-01-login/run.sh login`, or Settings on a deployment).
+   Chromium. **The real `Login successful` is verified:** the owner signed in from Settings on a
+   real deployment on 2026-10-08 (v0.4.4, runbook §8.6), and the handshake reported success.
    **Done:** the Feature's Claude half (pinned install, `CLAUDE_CONFIG_DIR`, preflight assertions,
    the two hanging `.claude.json` keys) and step 4's volume — proven in `test/container`, where five
    workspaces share one volume and each runs the pinned `claude`. **The supervisor and session

@@ -6,7 +6,7 @@
 
 import { describe, expect, it } from 'vitest'
 import type { IdentityState, RepoView } from '../api/types'
-import { failIdentityCheck, identityView, setIdentity, type MockBackend, type MockWorkspace } from '../mocks/backend'
+import { failIdentityCheck, identityView, refreshed, setIdentity, type MockBackend, type MockWorkspace } from '../mocks/backend'
 import { FakeEventSource } from '../test/fakeEventSource'
 import { freshBackend, mountApp, settle, useMockApi } from '../test/setup'
 import { CHECK_KEY } from '../stores/identity'
@@ -169,6 +169,15 @@ describe('one fault, ten cards', () => {
     expect(wrapper.findAll('[data-test="identity-waiting"]').length).toBe(RUNNING)
   })
 
+  it('a login date already passed reads as passed, not as "expires … ago", and warns nowhere', async () => {
+    const b = fleet('ok')
+    b.identity = { ...b.identity, login_expires_at: new Date(Date.now() - 3600e3).toISOString() }
+    const { wrapper } = await mountApp('/settings')
+    expect(wrapper.find('[data-test="claude-expires"]').exists()).toBe(false)
+    expect(wrapper.find('[data-test="claude-login-date-passed"]').text()).toMatch(/ago\. The next refresh either works or signs Claude out/)
+    expect(identityBanners(wrapper).length).toBe(0)
+  })
+
   it('a lapsed access token is informational: no banner, no dot, and Settings says the next server renews it', async () => {
     fleet('expired')
     const { wrapper, router } = await mountApp('/')
@@ -209,6 +218,16 @@ describe('one fault, ten cards', () => {
     await settle()
     expect(identityBanners(wrapper).length).toBe(0)
     expect(wrapper.findAll('[data-test="identity-dot"]').length).toBe(RUNNING) // the dot stays
+
+    // A refresh moves the access token's expiry and not the login's: the
+    // same countdown, so it stays put away. Keyed by expires_at, it would
+    // come back every eight hours.
+    const before = b.identity.login_expires_at
+    setIdentity(b, refreshed(b.identity))
+    await settle()
+    expect(b.identity.login_expires_at).toBe(before) // precondition: only the access token moved
+    expect(useStreamStore().entities.identity?.expiresAt).toBe(b.identity.expires_at) // and the event landed
+    expect(identityBanners(wrapper).length).toBe(0)
 
     // A new countdown is a new warning: put away is per countdown, not forever.
     setIdentity(b, identityView('expiring', 86400e3))
