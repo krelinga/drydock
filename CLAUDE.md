@@ -508,7 +508,12 @@ These come from §2 (Claude Code constraints) and §13.5 (non-negotiables). Most
    container-tier test through provision → stop → start → rebuild → delete. Their buttons, the
    session count (the capacity fraction), the log viewer and Stop's live-session confirm are built.
    **Memory and disk on the card are done** (`internal/usage`, the `resources` frame, `ResourceLine`),
-   with §12's disk-full pre-flight and banner. Still open: the rest of §12's messages.
+   with §12's disk-full pre-flight and banner. **The rest of §12's messages are done**: a failed `up`'s
+   sentence chosen from the Feature's own lines (`provision.upFailure`: a Remote Control variable by
+   name, a broker silent at start, else the build with the clone kept), its last 50 lines held in
+   memory and served by `GET …/build-log`, `token.refused` in §12's sentence per reason, the detail
+   view's *GitHub access* row, the read-only badge on the workspace, and failed sign-ins reported once
+   by the sign-in's `200`. **Phase 6 is done.**
 
 Phases 2–4 are independently useful; if Phase 5 is blocked by something in §2, what remains is still
 most of the value.

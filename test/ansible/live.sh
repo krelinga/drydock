@@ -150,7 +150,8 @@ check "an upgrade succeeds" [ "$rc" = 0 ]
 check "the installer reported the move" grep -q "upgraded Drydock v0.0.1 -> v0.0.2" "$work/run3.log"
 check "the binary is v0.0.2" [ "$(in_server drydock version)" = v0.0.2 ]
 check "the database was backed up first, root 0600" bash -c "[ \"\$(docker exec $name sh -c 'stat -c \"%U %a\" /root/drydock.db.*')\" = 'root 600' ]"
-check "the password was not reset" [ "$(signin)" = 204 ]
+# 200, not 204: the first sign-in since the wrong password above reports it (design §12).
+check "the password was not reset" [ "$(signin)" = 200 ]
 
 play -e drydock_version=v0.0.2
 check "a re-run after the upgrade succeeds" [ "$rc" = 0 ]
