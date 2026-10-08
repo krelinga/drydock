@@ -7,7 +7,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -16,7 +15,6 @@ import (
 	"github.com/krelinga/drydock/internal/github/githubtest"
 	"github.com/krelinga/drydock/internal/subproc"
 	"github.com/krelinga/drydock/internal/sys"
-	"github.com/krelinga/drydock/internal/workspace"
 )
 
 // fakeDevcontainer writes a devcontainer CLI stand-in that answers as the
@@ -87,10 +85,7 @@ type wsView struct {
 	Steps       map[string]struct {
 		Status, Detail string
 	} `json:"steps"`
-	Events []struct {
-		ID   int64  `json:"id"`
-		Kind string `json:"kind"`
-	} `json:"events"`
+	Events []runEvent `json:"events"`
 }
 
 // TestWorkspaceRoutesEndToEnd drives the walking skeleton through the real
@@ -136,12 +131,14 @@ func TestWorkspaceRoutesEndToEnd(t *testing.T) {
 	// opens — running, with step 8 started — so the wait below is proved
 	// against that window on every run rather than on the runs a loaded
 	// machine happens to produce (release run 37704402342).
-	release := holdStep8(t, srv)
+	hold := holdStep8(t, srv)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() { done <- srv.Serve(ctx) }()
 	t.Cleanup(func() { cancel(); <-done })
 	r := &running{cfg: cfg, srv: srv, client: unixClient(cfg.APISocket)}
+	// A hang fails with a message rather than at go test's timeout.
+	r.client.Timeout = 30 * time.Second
 	cookie := r.signIn(t)
 	post := func(path, b string) *httpResp {
 		resp := r.do(t, req{method: "POST", path: path, origin: uiOrigin, cookie: cookie, body: b})
@@ -163,6 +160,14 @@ func TestWorkspaceRoutesEndToEnd(t *testing.T) {
 		time.Sleep(20 * time.Millisecond)
 	}
 
+	// Boot's work (reconciliation, then resuming session servers through
+	// the held seam) is over before the first create, so no StartSupervisor
+	// call but the run's own reaches the hold.
+	select {
+	case <-srv.reconciled:
+	case <-time.After(15 * time.Second):
+		t.Fatal("boot reconciliation never finished")
+	}
 	for _, b := range []string{`{}`, `{"repository_id":"1"}`, `not json`} {
 		if got := post("/api/workspaces", b); got.status != 400 || !strings.Contains(got.body, `"bad_request"`) {
 			t.Errorf("body %s: %+v", b, got)
@@ -184,7 +189,7 @@ func TestWorkspaceRoutesEndToEnd(t *testing.T) {
 		t.Errorf("past the cap of 1: %+v", got)
 	}
 
-	settled := func(v wsView) bool { return settled(v.State, v.Steps["session_server"].Status) }
+	settled := func(v wsView) bool { return settled(v.State, v.Events) }
 	get := func() (v wsView) {
 		resp := r.do(t, req{method: "GET", path: "/api/workspaces/" + id.ID, cookie: cookie})
 		if resp.StatusCode != 200 {
@@ -206,7 +211,10 @@ func TestWorkspaceRoutesEndToEnd(t *testing.T) {
 	if v.State != "running" || settled(v) {
 		t.Fatalf("held at step 8, the view is %+v, settled=%v", v, settled(v))
 	}
-	release()
+	if staleControl(t, v.Events) {
+		t.Errorf("a create found an earlier run's step 8: %+v", v.Events)
+	}
+	hold.release()
 	for !settled(v) {
 		if time.Now().After(deadline) {
 			t.Fatalf("the workspace never settled: %+v", v)
@@ -251,58 +259,6 @@ func TestWorkspaceRoutesEndToEnd(t *testing.T) {
 	if resp := r.do(t, req{method: "GET", path: "/api/workspaces/01JABCDEFGHJKMNPQRSTVWXYZ0", cookie: cookie}); resp.StatusCode != 404 {
 		t.Errorf("GET of no workspace: %d", resp.StatusCode)
 	}
-}
-
-// settled reports whether a provisioning run has ended, from the state and
-// step 8's status: failed, or running with step 8 ended. Running is entered
-// when the probe passes, before step 8 hands the workspace to the supervisor
-// (design §6: step 8 runs in running, and its failure leaves the workspace
-// there), so a snapshot that says running can still show step 8 started, or
-// not yet begun — and until step 8 returns the run is in flight, so a stop or
-// a rebuild is refused in_progress. The run is over when step 8 is.
-func settled(state, step8 string) bool {
-	return state == "failed" || state == "running" && (step8 == "done" || step8 == "failed")
-}
-
-// TestSettledRule pins the rule's cases, the not-yet-begun one among them,
-// which no hold at the StartSupervisor seam can show: the hold is inside
-// step 8, after its started event.
-func TestSettledRule(t *testing.T) {
-	for _, c := range []struct {
-		state, step8 string
-		want         bool
-	}{
-		{"running", "done", true}, {"running", "failed", true}, {"failed", "", true}, {"failed", "started", true},
-		{"running", "", false}, {"running", "started", false}, {"building", "", false}, {"pending", "", false},
-	} {
-		if got := settled(c.state, c.step8); got != c.want {
-			t.Errorf("settled(%q, %q) = %v, want %v", c.state, c.step8, got, c.want)
-		}
-	}
-}
-
-// holdStep8 holds every step 8 at the StartSupervisor seam, and each call of
-// the returned release lets one through, so a test acts inside the window
-// between running and step 8's end on every run rather than only on the runs
-// a loaded machine produces. Cleanup lets every held one through, and a run
-// whose context ends stops waiting.
-func holdStep8(t *testing.T, srv *Server) (release func()) {
-	t.Helper()
-	pass := make(chan struct{}, 8)
-	all := make(chan struct{})
-	var once sync.Once
-	t.Cleanup(func() { once.Do(func() { close(all) }) })
-	startSupervisor := srv.Provisioner.StartSupervisor
-	srv.Provisioner.StartSupervisor = func(ctx context.Context, w workspace.Workspace) error {
-		select {
-		case <-pass:
-		case <-all:
-		case <-ctx.Done():
-			return ctx.Err()
-		}
-		return startSupervisor(ctx, w)
-	}
-	return func() { pass <- struct{}{} }
 }
 
 type httpResp struct {

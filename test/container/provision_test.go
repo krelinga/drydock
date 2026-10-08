@@ -176,6 +176,7 @@ func TestCreateWorkspaceThroughTheServer(t *testing.T) {
 		StateDetail *string `json:"state_detail"`
 		ContainerID *string `json:"container_id"`
 		Steps       map[string]struct{ Status, Detail string }
+		Events      []runEvent
 		Supervisor  *struct{ State, Reason string }
 		Approval    *struct {
 			Hash  string
@@ -239,7 +240,7 @@ func TestCreateWorkspaceThroughTheServer(t *testing.T) {
 		for repo, id := range ids {
 			var v view
 			c.get("/api/workspaces/"+id, &v)
-			if settled(v.State, v.Steps["session_server"].Status) {
+			if settled(v.State, v.Events) {
 				views[repo] = v
 			}
 		}
@@ -484,11 +485,38 @@ func (c *client) post(path, body string) (int, string) {
 	return status, b
 }
 
+// runEvent is one of the detail view's events, as far as settled reads it.
+type runEvent struct {
+	ID   int64           `json:"id"`
+	Kind string          `json:"kind"`
+	Data json.RawMessage `json:"data"`
+}
+
 // settled reports whether a provisioning run has ended: failed, or running
-// with step 8 ended. Running is entered before step 8 runs (design §6), so a
-// running snapshot can still show step 8 started or not yet begun, and until
-// step 8 returns the run is in flight and a stop or rebuild is refused
-// in_progress. internal/server's tests hold the same rule.
-func settled(state, step8 string) bool {
-	return state == "failed" || state == "running" && (step8 == "done" || step8 == "failed")
+// with *this run's* step 8 ended — an end written after the newest move into
+// running. Running is entered before step 8 runs (design §6), and until step
+// 8 returns the run is in flight and a stop or rebuild is refused
+// in_progress; the view's steps are the newest per step across the
+// workspace's history, so on a start or a rebuild a read just after the move
+// shows the previous run's step 8 done. internal/server's settled
+// (step8_test.go) holds the same rule and pins its cases; change both
+// together.
+func settled(state string, evs []runEvent) bool {
+	if state == "failed" {
+		return true
+	}
+	var moved, ended int64
+	for _, e := range evs {
+		var d struct{ State, From, Step, Status string }
+		if json.Unmarshal(e.Data, &d) != nil {
+			continue
+		}
+		switch {
+		case e.Kind == "workspace.state" && d.State == "running" && d.From != "running":
+			moved = max(moved, e.ID)
+		case e.Kind == "workspace.step" && d.Step == "session_server" && (d.Status == "done" || d.Status == "failed"):
+			ended = max(ended, e.ID)
+		}
+	}
+	return state == "running" && moved != 0 && ended > moved
 }

@@ -71,8 +71,10 @@ func appServer(t *testing.T, dir string) (*Server, func() *running) {
 // refusal is beside the request that succeeds.
 func TestWorkspaceLifecycleThroughTheServer(t *testing.T) {
 	srv, serve := appServer(t, t.TempDir())
-	release := holdStep8(t, srv)
+	hold := holdStep8(t, srv)
 	r := serve()
+	// A hang fails with a message rather than at go test's timeout.
+	r.client.Timeout = 30 * time.Second
 	cookie := r.signIn(t)
 	call := func(method, path string) *httpResp {
 		resp := r.do(t, req{method: method, path: path, origin: uiOrigin, cookie: cookie})
@@ -92,7 +94,7 @@ func TestWorkspaceLifecycleThroughTheServer(t *testing.T) {
 	// 8 returns the run is in flight and a stop or rebuild is refused.
 	reached := func(v wsView, want string) bool {
 		if want == "running" {
-			return settled(v.State, v.Steps["session_server"].Status)
+			return settled(v.State, v.Events)
 		}
 		return v.State == want
 	}
@@ -101,13 +103,17 @@ func TestWorkspaceLifecycleThroughTheServer(t *testing.T) {
 	// so each wait for running is proved past that window: an await that
 	// returned on the state alone would leave the run held, and the stop or
 	// rebuild after it would be refused.
+	reruns := 0 // runs whose held view had an earlier run's step 8 end in it
 	await := func(id, want string) {
 		t.Helper()
 		deadline := time.Now().Add(15 * time.Second)
 		released := false
 		for v := view(id); !reached(v, want); v = view(id) {
 			if !released && v.State == "running" && v.Steps["session_server"].Status == "started" {
-				release()
+				if staleControl(t, v.Events) {
+					reruns++
+				}
+				hold.release()
 				released = true
 			}
 			if time.Now().After(deadline) {
@@ -131,6 +137,14 @@ func TestWorkspaceLifecycleThroughTheServer(t *testing.T) {
 			t.Fatal("the catalog never filled")
 		}
 		time.Sleep(20 * time.Millisecond)
+	}
+	// Boot's work (reconciliation, then resuming session servers through
+	// the held seam) is over before the first create, so no StartSupervisor
+	// call but the runs' own reaches the hold.
+	select {
+	case <-srv.reconciled:
+	case <-time.After(15 * time.Second):
+		t.Fatal("boot reconciliation never finished")
 	}
 	resp := r.do(t, req{method: "POST", path: "/api/workspaces", origin: uiOrigin, cookie: cookie, body: `{"repository_id":1}`})
 	var id struct{ ID string }
@@ -221,6 +235,10 @@ func TestWorkspaceLifecycleThroughTheServer(t *testing.T) {
 		t.Fatalf("delete: %+v", got)
 	}
 	await(id.ID, "gone")
+	// The start and the rebuild each ran the stale-step-8 control.
+	if reruns != 2 {
+		t.Errorf("%d runs found an earlier run's step 8 end, want 2 (the start and the rebuild)", reruns)
+	}
 	if _, err := os.Lstat(filepath.Join(r.cfg.WorkspaceRoot, id.ID)); !errors.Is(err, os.ErrNotExist) {
 		t.Errorf("the workspace directory survived: %v", err)
 	}
