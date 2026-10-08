@@ -4,6 +4,7 @@ package supervisor
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -42,11 +43,11 @@ func (r *rig) untouch(name string) { os.Remove(filepath.Join(r.dir, name)) }
 // control, in each case, is the same press once the fault is gone: a normal
 // restart, exited then serving.
 //
-// Each cause is tested where it can happen: on a supervisor with no
-// terminal of its own — parked, or none in memory at all, as for a server an
-// earlier Drydock left — whose stop goes through the pid file and docker
-// alone. One holding the server's terminal does not fail this way: after
-// SIGKILL Drydock ends its own end of it, which hangs the terminal up.
+// Each cause is tested here on a supervisor with no terminal of its own —
+// parked, or none in memory at all, as for a server an earlier Drydock left —
+// whose stop goes through the pid file and docker alone. One holding the
+// server's terminal is TestAHeldTerminalStopAsksTheContainer: under real
+// Docker its terminal closing proves nothing about the server.
 func TestARestartWhoseStopFailsSaysSo(t *testing.T) {
 	type tc struct {
 		name   string
@@ -103,6 +104,13 @@ func TestARestartWhoseStopFailsSaysSo(t *testing.T) {
 		name: "survives SIGKILL, a server an earlier Drydock left", reason: ReasonSurvivedKill,
 		setup: stray,
 		clear: func(r *rig) { r.untouch("kill-ignored") },
+	}, {
+		// The kernel in the container refuses the signal (the signal
+		// script's exit 4): Docker answered, so not stop_failed, and the
+		// server is still there after SIGKILL.
+		name: "the container refuses SIGKILL", reason: ReasonSurvivedKill,
+		setup: func(r *rig) { stray(r); r.untouch("kill-ignored"); r.touch("kill-refused", "") },
+		clear: func(r *rig) { r.untouch("kill-refused") },
 	}}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -137,6 +145,11 @@ func TestARestartWhoseStopFailsSaysSo(t *testing.T) {
 				if st, _ := r.row(); st != Degraded {
 					t.Errorf("press %d: row state %s, want degraded", press, st)
 				}
+				// With no supervisor in memory the row is made here, and its
+				// placeholder state is no state any server was in.
+				if press == 1 && c.name == "docker exec fails, nothing in memory" && l.From != "" {
+					t.Errorf("from %q for a row made just now, want none", l.From)
+				}
 			}
 			// The control: the fault gone, the same press restarts as usual.
 			c.clear(r)
@@ -163,7 +176,9 @@ func TestARestartWhoseStopFailsSaysSo(t *testing.T) {
 // The sentences name the action that can work, and the reasons are the
 // ones the card keys on.
 func TestStopFailureSentences(t *testing.T) {
-	if s := stopFailedSentence(ReasonStopFailed); !strings.Contains(s, "Restart the session server again") {
+	// Written by every stop — a restart's and a workspace stop's, rebuild's
+	// or delete's first sub-step — so it names none of them.
+	if s := stopFailedSentence(ReasonStopFailed); !strings.Contains(s, "Ask again once Docker answers") || strings.Contains(s, "restart") {
 		t.Errorf("stop_failed: %q", s)
 	}
 	if s := stopFailedSentence(ReasonSurvivedKill); !strings.Contains(s, "Rebuild") || !strings.Contains(s, "clone is kept") {
@@ -188,5 +203,181 @@ func TestACancelledStopWritesNoFailure(t *testing.T) {
 		if d.State == string(Degraded) {
 			t.Errorf("a cancelled stop wrote %+v", d)
 		}
+	}
+}
+
+// A stop of a server Drydock holds the terminal for asks the container
+// whether it ended, and never takes the end of Drydock's own terminal for
+// the server's: under real Docker, killing the `docker exec` client leaves
+// the process it started running (the rig's "exec-detaches" mode is that).
+// So a server that outlives SIGKILL there is survived_kill, and no second
+// server is started beside it. Before, Stop wrote "The session server was
+// stopped." and launched another over the pid file. The control is the same
+// rig and a server that honours SIGTERM: one server afterwards, the new one.
+func TestAHeldTerminalStopAsksTheContainer(t *testing.T) {
+	for _, survives := range []bool{true, false} {
+		t.Run(fmt.Sprintf("survives=%v", survives), func(t *testing.T) {
+			r := newRig(t, func(_ *rig, p *Policy) {
+				p.StopTimeout, p.KillWait = 300*time.Millisecond, 300*time.Millisecond
+			})
+			r.touch("exec-detaches", "")
+			if survives {
+				r.script("claude", stubborn)
+			} else {
+				r.script("claude", serves)
+			}
+			r.start()
+			r.waitState(Serving, ReasonServing)
+			old := r.pid()
+			if survives {
+				r.touch("kill-ignored", "")
+				t.Cleanup(func() { r.untouch("kill-ignored") })
+			}
+			err := r.m.Restart(context.Background(), wsID)
+			if survives {
+				if err == nil {
+					t.Fatal("a restart beside a server that outlived SIGKILL reported success")
+				}
+				if l := r.last(); l.State != string(Degraded) || l.Reason != string(ReasonSurvivedKill) {
+					t.Errorf("event %+v, want degraded/survived_kill", l)
+				}
+				for _, d := range r.sups() {
+					if d.Reason == string(ReasonStopped) {
+						t.Errorf("a server still running was said to be stopped: %+v", d)
+					}
+				}
+				time.Sleep(300 * time.Millisecond)
+				if n := r.launches(); n != 1 {
+					t.Errorf("%d launches: a second server was started beside the survivor", n)
+				}
+				if !alive(old) || r.pid() != old {
+					t.Errorf("the survivor: alive %v, pid file %d (was %d)", alive(old), r.pid(), old)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			r.waitFor(10*time.Second, "a new server", func() bool { p := r.pid(); return p != old && p != 0 && alive(p) })
+			r.waitState(Serving, ReasonServing)
+			if alive(old) {
+				t.Errorf("control: the old server %d is still running beside the new one", old)
+			}
+		})
+	}
+}
+
+// A start finds the server an earlier run left, and stops it first; one that
+// outlives SIGKILL is recorded and nothing is started — not a second server
+// refused as already served, which reads as a wait that never clears, over
+// a pid file that was the only way to reach the first. That start is boot
+// adoption's, a rebuild's step 8 and every registration retry. The control:
+// the same stray stopped by SIGKILL, and the start serves.
+func TestAStartBesideASurvivorStartsNothing(t *testing.T) {
+	for _, survives := range []bool{true, false} {
+		t.Run(fmt.Sprintf("survives=%v", survives), func(t *testing.T) {
+			r := newRig(t, func(_ *rig, p *Policy) {
+				p.StopTimeout, p.KillWait = 300*time.Millisecond, 300*time.Millisecond
+			})
+			r.script("claude", stubborn)
+			cmd := exec.Command("sh", "-c", container.RemoteControlLaunch, "sh", filepath.Join(r.dir, "rc.pid"), "4")
+			cmd.Env = []string{"PATH=" + r.bin + ":/usr/bin:/bin"}
+			st := claudetest.StartTerm(t, cmd, 200, 50)
+			if _, err := st.WaitFor(10*time.Second, []byte("Capacity: 0/4")); err != nil {
+				t.Fatalf("the stray did not serve: %v", err)
+			}
+			stray := r.pid()
+			if survives {
+				r.touch("kill-ignored", "")
+				t.Cleanup(func() { r.untouch("kill-ignored") })
+			}
+			r.start()
+			if !survives {
+				r.waitState(Serving, ReasonServing)
+				if alive(stray) {
+					t.Error("control: the stray is still running")
+				}
+				return
+			}
+			r.waitState(Degraded, ReasonSurvivedKill)
+			if d := r.last().Detail; d != stopFailedSentence(ReasonSurvivedKill) {
+				t.Errorf("detail %q", d)
+			}
+			time.Sleep(300 * time.Millisecond)
+			if n := r.launches(); n != 0 {
+				t.Errorf("%d launches beside a server that outlived SIGKILL", n)
+			}
+			if r.pid() != stray || !alive(stray) {
+				t.Errorf("the pid file %d (was %d), alive %v", r.pid(), stray, alive(stray))
+			}
+		})
+	}
+}
+
+// A restart whose stop worked but which a delete or shutdown cancelled
+// before its start starts nothing and writes nothing more: what cancelled it
+// ends the press (the delete's state events; after a shutdown, boot's
+// starting). The control is the same window uncancelled.
+func TestARestartCutOffAfterItsStopStartsNothing(t *testing.T) {
+	for _, cut := range []bool{true, false} {
+		t.Run(fmt.Sprintf("cancelled=%v", cut), func(t *testing.T) {
+			r := newRig(t)
+			r.script("claude", serves)
+			r.start()
+			r.waitState(Serving, ReasonServing)
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			r.m.afterStop = func() {
+				if cut {
+					cancel()
+				}
+			}
+			before := len(r.sups())
+			err := r.m.Restart(ctx, wsID)
+			if !cut {
+				if err != nil {
+					t.Fatal(err)
+				}
+				r.waitState(Serving, ReasonServing)
+				return
+			}
+			if err == nil {
+				t.Fatal("a cancelled restart reported success")
+			}
+			time.Sleep(300 * time.Millisecond)
+			var states []string
+			for _, d := range r.sups()[before:] {
+				states = append(states, d.State+"/"+d.Reason)
+			}
+			if got := strings.Join(states, " "); got != "exited/stopped" {
+				t.Errorf("events %q, want only the stop's", got)
+			}
+			if n := r.launches(); n != 1 {
+				t.Errorf("%d launches: a cancelled restart started a server", n)
+			}
+		})
+	}
+}
+
+// A restart whose stop worked and whose start could not (its row unreadable)
+// answers the press: the stop's exited does not, so degraded/start_failed
+// does, with Restart as the card's action. The control is the same restart
+// with the row there (TestRestartKeepsTheEnvironment).
+func TestARestartWhoseStartFailsSaysSo(t *testing.T) {
+	r := newRig(t)
+	r.script("claude", serves)
+	r.start()
+	r.waitState(Serving, ReasonServing)
+	r.m.afterStop = func() {
+		if _, err := r.db.Exec(`ALTER TABLE supervisor RENAME TO supervisor_gone`); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Cleanup(func() { r.db.Exec(`ALTER TABLE supervisor_gone RENAME TO supervisor`) })
+	if err := r.m.Restart(context.Background(), wsID); err == nil {
+		t.Fatal("a restart whose start failed reported success")
+	}
+	if l := r.last(); l.State != string(Degraded) || l.Reason != string(ReasonStartFailed) || l.Detail != startFailedSentence {
+		t.Errorf("event %+v, want degraded/start_failed", l)
 	}
 }

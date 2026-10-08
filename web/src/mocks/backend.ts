@@ -1101,8 +1101,8 @@ export type SupervisorStopFailure = 'stop_failed' | 'survived_kill'
 
 /** internal/supervisor's stopFailedSentence, word for word. */
 export const STOP_FAILED_SENTENCE: Record<SupervisorStopFailure, string> = {
-  stop_failed: 'Drydock could not stop the session server: Docker did not answer when asked to signal it, so it may still be running and no new one was started. Restart the session server again once Docker answers.',
-  survived_kill: 'The session server did not exit after SIGTERM or SIGKILL, so Drydock could not restart it, and it may still hold the workspace\'s environment. Rebuild the workspace to replace its container; the clone is kept.',
+  stop_failed: 'Drydock could not stop the session server: Docker did not answer when asked to signal it or whether it had exited, so it may still be running. Ask again once Docker answers.',
+  survived_kill: 'The session server was still running after SIGKILL, so Drydock could not stop it, and it may still hold the workspace\'s environment. Only its container going ends it: Rebuild the workspace to replace the container; the clone is kept.',
 }
 
 /**

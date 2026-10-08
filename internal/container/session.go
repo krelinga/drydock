@@ -70,13 +70,28 @@ const RemoteControlLaunch = `printf '%s\n' "$$" > "$1" && ` +
 // remoteControlSignal is run by `docker exec -u 0 … sh -c` with the pid file
 // and a signal name (TERM, KILL, or 0 to ask whether it is alive). Exit 3:
 // there is no session server — no pid file, or its pid is not a
-// remote-control process any more.
+// remote-control process any more, or it exited before the signal reached
+// it. Exit 4: the server is there and the kernel refused the signal (EPERM)
+// — the container answered, so it is not Docker failing.
 const remoteControlSignal = `f=$1; s=$2
 [ -r "$f" ] || exit 3
 p=$(cat "$f")
 case $p in ''|*[!0-9]*) exit 3;; esac
 tr '\000' '\n' < "/proc/$p/cmdline" 2>/dev/null | grep -qx remote-control || exit 3
-kill -"$s" "$p"`
+kill -"$s" "$p" 2>/dev/null && exit 0
+[ -d "/proc/$p" ] || exit 3
+exit 4`
+
+// ErrSessionSignalRefused: the session server is there, and the kernel in
+// its container refused the signal. Docker answered; asking it again will
+// not help.
+var ErrSessionSignalRefused = errors.New("container: the session server refused the signal")
+
+// ErrSessionSurvivedKill: SIGKILL was sent (or refused) and the session
+// server was still there after it. Asking again cannot end it; removing or
+// stopping its container does. internal/supervisor returns it from a stop,
+// and a workspace stop or delete then carries on to its container step.
+var ErrSessionSurvivedKill = errors.New("the session server did not exit after SIGKILL")
 
 // SessionSpec is one workspace's session server.
 type SessionSpec struct {
@@ -190,6 +205,9 @@ func (m Manager) SignalSession(ctx context.Context, workspaceID string, sig Sess
 		case res.ExitCode == 0:
 			found = true
 		case res.ExitCode == 3:
+		case res.ExitCode == 4:
+			found = true
+			errs = append(errs, fmt.Errorf("%w: %s", ErrSessionSignalRefused, sig))
 		default:
 			errs = append(errs, fmt.Errorf("docker exec: signalling the session server exited %d: %s",
 				res.ExitCode, strings.TrimSpace(stderr.String())))

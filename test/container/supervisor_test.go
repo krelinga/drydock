@@ -191,6 +191,47 @@ func TestSessionServerInARealContainer(t *testing.T) {
 		t.Errorf("%d starts, want 2", n)
 	}
 
+	// A restart from a serving card — the one path a Drydock holding the
+	// server's terminal takes — leaves exactly one server, and it is the new
+	// one. Killing a `docker exec` client does not end the process it
+	// started, so Drydock's own end closing proves nothing; this counts the
+	// servers in the container itself.
+	servers := func() []string {
+		t.Helper()
+		ids, err := containers.Find(ctx, ws)
+		if err != nil || len(ids) != 1 {
+			t.Fatalf("find: %v %v", ids, err)
+		}
+		out, err := exec.Command("docker", "exec", "-u", "0", ids[0], "sh", "-c",
+			`for p in /proc/[0-9]*; do tr '\000' '\n' < "$p/cmdline" 2>/dev/null | grep -qx remote-control && echo "${p#/proc/}"; done; true`).CombinedOutput()
+		if err != nil {
+			t.Fatalf("listing the servers: %v\n%s", err, out)
+		}
+		return strings.Fields(string(out))
+	}
+	pidNow := func() string {
+		t.Helper()
+		ids, _ := containers.Find(ctx, ws)
+		out, err := exec.Command("docker", "exec", "-u", "0", ids[0], "cat", container.RemoteControlPidFile).Output()
+		if err != nil {
+			t.Fatalf("reading the pid file: %v", err)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	before := servers()
+	if len(before) != 1 || before[0] != pidNow() {
+		t.Fatalf("before the restart: servers %v, pid file %s", before, pidNow())
+	}
+	m2 := mark()
+	if err := second.Restart(ctx, ws); err != nil {
+		t.Fatal(err)
+	}
+	waitServing(second, m2)
+	after := servers()
+	if len(after) != 1 || after[0] == before[0] || after[0] != pidNow() {
+		t.Errorf("after the restart: servers %v (before %v), pid file %s: want exactly one, the new one", after, before, pidNow())
+	}
+
 	// A stop is SIGTERM in the container, and leaves nothing running.
 	if err := second.Stop(ctx, ws); err != nil {
 		t.Fatal(err)
@@ -199,8 +240,8 @@ func TestSessionServerInARealContainer(t *testing.T) {
 		t.Error("a server is still running after Stop")
 	}
 	exits = claudetest.Kind(events(), claudetest.EventExit)
-	if len(exits) != 2 || exits[1].Code != 0 {
-		t.Errorf("exits %+v: the stop must be a clean SIGTERM exit", exits)
+	if len(exits) != 3 || exits[1].Code != 0 || exits[2].Code != 0 {
+		t.Errorf("exits %+v: the restart and the stop must each be a clean SIGTERM exit", exits)
 	}
 	lines, _, _ := second.Logs(ws, 0)
 	var text []string

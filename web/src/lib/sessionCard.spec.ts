@@ -36,6 +36,9 @@ describe('the card, supervisor half (§6.1)', () => {
     // replacing the container is.
     ['degraded', 'stop_failed', 'Session server did not stop', 'bad', 'restart_session'],
     ['degraded', 'survived_kill', 'Session server would not stop', 'bad', 'rebuild'],
+    // A restart that stopped the old server and could not start the new one:
+    // any other degraded, and asking again is the fix.
+    ['degraded', 'start_failed', 'Session degraded', 'bad', 'restart_session'],
     ['exited', 'stopped', 'Session stopped', 'idle', 'start_session'],
   ])('%s (%s) → "%s", %s, action %s', (state, reason, line, tone, action) => {
     expect(cardStatus(withSup(state, reason))).toMatchObject({ line, tone, action })
