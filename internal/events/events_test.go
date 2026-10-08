@@ -129,48 +129,61 @@ func TestSubscribersSeeEventsInOrder(t *testing.T) {
 
 // A subscriber that stops reading is cut off rather than allowed to block the
 // writer — and only that subscriber: one that keeps up still gets everything.
+//
+// The live subscriber is read here, between appends, not by a goroutine. A
+// reader goroutine with the same 256-slot buffer can fall 256 behind a writer
+// that never waits — under CPU load it did — and is then rightly cut off too,
+// which made this test flake with "got 256…262 events". Read in lock step,
+// the live buffer never holds more than one event, so the control is
+// deterministic: every event, in id order. Publication happens under the
+// log's lock before Emit returns, so each event is already in live.C when it
+// is read, and nothing here waits on a clock. The stalled subscriber's
+// cut-off is checked after every append, which pins it to the 257th append
+// exactly: not earlier, not later, not never.
 func TestSlowSubscriberIsCutOff(t *testing.T) {
 	ctx := context.Background()
 	l, _ := newLog(t)
 	stalled := l.Subscribe()
 	live := l.Subscribe()
 	defer l.Cancel(live)
+	subscribed := func(s *Sub) bool {
+		l.mu.Lock()
+		defer l.mu.Unlock()
+		_, ok := l.subs[s]
+		return ok
+	}
 
-	done := make(chan int)
-	go func() {
-		n := 0
-		for range live.C {
-			n++
-			if n == subBuffer+10 {
-				break
-			}
-		}
-		done <- n
-	}()
-	for i := 0; i < subBuffer+10; i++ {
-		if _, err := l.Emit(ctx, "", Info, "k", "m", nil); err != nil {
+	var ids []int64
+	for i := 1; i <= subBuffer+10; i++ {
+		e, err := l.Emit(ctx, "", Info, "k", "m", nil)
+		if err != nil {
 			t.Fatal(err)
 		}
-	}
-	select {
-	case n := <-done:
-		if n != subBuffer+10 {
-			t.Errorf("the live subscriber got %d events", n)
+		ids = append(ids, e.ID)
+		select {
+		case got, ok := <-live.C:
+			if !ok {
+				t.Fatalf("control: the live subscriber was cut off at event %d", i)
+			}
+			if got.ID != e.ID {
+				t.Fatalf("control: the live subscriber got event %d, want %d", got.ID, e.ID)
+			}
+		default:
+			t.Fatalf("control: event %d was not in the live subscriber's channel when Emit returned", i)
 		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("control: the live subscriber did not receive every event")
+		if want := i <= subBuffer; subscribed(stalled) != want {
+			t.Fatalf("after %d events the stalled subscriber is subscribed=%v, want %v (cut off after %d)",
+				i, !want, want, subBuffer)
+		}
 	}
 
+	// It is unsubscribed, so its channel is closed: this range ends.
 	n := 0
-	for open := true; open; {
-		select {
-		case _, open = <-stalled.C:
-			if open {
-				n++
-			}
-		case <-time.After(5 * time.Second):
-			t.Fatalf("the stalled subscriber was never cut off (%d buffered)", n)
+	for e := range stalled.C {
+		if e.ID != ids[n] {
+			t.Fatalf("the stalled subscriber's event %d has id %d, want %d", n+1, e.ID, ids[n])
 		}
+		n++
 	}
 	if n != subBuffer {
 		t.Errorf("the stalled subscriber had %d buffered before being cut off, want %d", n, subBuffer)
