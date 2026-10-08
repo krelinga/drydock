@@ -12,6 +12,10 @@
 // And never auto-start: a workspace found stopped stays stopped, and one that
 // was mid-build when Drydock went down is marked failed rather than resumed,
 // because the restart may have been the build's fault.
+//
+// Before the plan, Run closes the step an earlier process died inside: the
+// workspace's newest step event is started, and nothing will ever end it. It
+// is failed with InterruptedStep, so no timeline shows a step running forever.
 package reconcile
 
 import (
@@ -223,6 +227,17 @@ func (r *Reconciler) Run(ctx context.Context) ([]Action, error) {
 	}
 	plan := Plan(rows, found)
 	var p Partial
+	// Steps first, then the plan: a step the last process died inside is
+	// closed before the plan moves its workspace, so a timeline reads as a
+	// live failure does (the step's failed, then the move), and before
+	// anything after reconciliation — ResumeSupervisors above all — writes
+	// for the workspace, so this run's close is older than the next run's
+	// events.
+	for _, w := range rows {
+		if err := r.closeDangling(ctx, w); err != nil {
+			p.Errs = append(p.Errs, fmt.Errorf("closing steps of %s: %w", w.ID, err))
+		}
+	}
 	for _, a := range plan {
 		// Asked per action, after the rows were read: a job that started
 		// since is in the plan only if its row was, and owns it by now.
@@ -238,6 +253,35 @@ func (r *Reconciler) Run(ctx context.Context) ([]Action, error) {
 		return plan, &p
 	}
 	return plan, nil
+}
+
+// InterruptedStep is the public sentence a step left started by an earlier
+// process is closed with: the hard-kill counterpart of provision's "Drydock
+// shut down while this step was running", which a graceful shutdown writes
+// itself.
+const InterruptedStep = "Drydock stopped while this step was running."
+
+// closeDangling fails, under Exclusive, the step an earlier process died
+// inside: the workspace's newest step event, if it is started
+// (workspace.Store.FailDangling). Only an earlier process can have left one:
+// every step that returns writes its end, and a cancelled one is failed by
+// provision's guard. Never for a workspace this process has a job for — its
+// started step is running. A deleting row is closed too: a resumed delete
+// that sticks leaves the row, and /ws/:id with it, showing the timeline, and
+// its delete takes the lock itself, after this. The workspace's state is the
+// plan's to decide, and §6 decides it without the steps: a running row is
+// adopted or marked stopped (a step-8 failure leaves a workspace running, §6
+// step 8), and one mid-provision is marked failed.
+func (r *Reconciler) closeDangling(ctx context.Context, w workspace.Workspace) error {
+	act := func() error {
+		_, err := r.Workspaces.FailDangling(ctx, w.ID, InterruptedStep)
+		return err
+	}
+	if r.Exclusive == nil {
+		return act()
+	}
+	_, err := r.Exclusive(w.ID, act)
+	return err
 }
 
 // exclusive applies a under Exclusive. A resumed delete is the exception: it

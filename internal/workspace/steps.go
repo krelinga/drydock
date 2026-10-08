@@ -2,6 +2,8 @@ package workspace
 
 import (
 	"context"
+	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 
@@ -158,7 +160,7 @@ func (s *Store) Provision(ctx context.Context, id string, first Step, run map[St
 		detail := fmt.Sprintf("The %s step failed.", label(st))
 		var pub PublicError
 		if errors.As(runErr, &pub) {
-			detail = fmt.Sprintf("The %s step failed: %s", label(st), pub.Public())
+			detail = failedDetail(st, pub.Public())
 		}
 		if err := s.stepEvent(ctx, id, st, "failed", events.Error, detail); err != nil {
 			return err
@@ -176,6 +178,85 @@ func (s *Store) Provision(ctx context.Context, id string, first Step, run map[St
 }
 
 func (s *Store) stepEvent(ctx context.Context, id string, st Step, status string, level events.Level, detail string) error {
+	e, err := newStepEvent(id, st, status, level, detail)
+	if err != nil {
+		return err
+	}
+	_, err = s.Events.Append(ctx, e)
+	return err
+}
+
+// failedDetail is a failed step's detail when the failure has a public
+// sentence: the one wording Provision and FailDangling share.
+func failedDetail(st Step, sentence string) string {
+	return fmt.Sprintf("The %s step failed: %s", label(st), sentence)
+}
+
+// FailDangling closes the step the process running it died inside — a kill,
+// an OOM, an unrecovered panic. Provision writes an end for every step that
+// returns, and the provisioner's guard turns a cancellation into a failure,
+// so a step left started outlives only the process that started it.
+//
+// Steps run one at a time per workspace, so only the workspace's newest
+// workspace.step event overall, by id, can be a step still in flight when its
+// process died. If that event is "started", its step is written as "failed",
+// with sentence as its public half; otherwise nothing is written. A started
+// that a later run's events follow — the same step or any other — is never
+// closed: its run is over, and a close appended now would become the newest
+// step event, so the client's timeline (reducer.ts runSteps) would drop the
+// later run's steps behind it and a failed card would blame it rather than
+// the step the last run failed at. The read and the write are one
+// events.Commit, so no other writer's step event can land between the look
+// and the close, and the close is published live like any other step event.
+//
+// It moves nothing; the caller decides the workspace's state (boot
+// reconciliation, §6). The caller must know that no run of this process is
+// writing the workspace's steps — a step this process has in flight is
+// started because it is running. It returns the step it closed, or "".
+func (s *Store) FailDangling(ctx context.Context, id, sentence string) (Step, error) {
+	var closed Step
+	_, err := s.Events.Commit(ctx, func(tx *sql.Tx) ([]events.Event, error) {
+		closed = ""
+		var data string
+		err := tx.QueryRowContext(ctx, `SELECT data FROM event
+			WHERE kind = ? AND workspace_id = ? AND json_valid(data)
+			ORDER BY id DESC LIMIT 1`, KindStep, id).Scan(&data)
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, nil
+		}
+		if err != nil {
+			return nil, err
+		}
+		var d struct {
+			Step   Step   `json:"step"`
+			Status string `json:"status"`
+		}
+		if json.Unmarshal([]byte(data), &d) != nil || d.Status != "started" || stepIndex(d.Step) < 0 {
+			return nil, nil
+		}
+		e, err := newStepEvent(id, d.Step, "failed", events.Error, failedDetail(d.Step, sentence))
+		if err != nil {
+			return nil, err
+		}
+		closed = d.Step
+		return []events.Event{e}, nil
+	})
+	if err != nil {
+		return "", err
+	}
+	return closed, nil
+}
+
+func stepIndex(st Step) int {
+	for i, s := range Steps {
+		if s == st {
+			return i
+		}
+	}
+	return -1
+}
+
+func newStepEvent(id string, st Step, status string, level events.Level, detail string) (events.Event, error) {
 	data := map[string]any{"step": st, "status": status}
 	msg := fmt.Sprintf("%s: %s.", capitalize(label(st)), status)
 	if detail != "" {
@@ -185,8 +266,7 @@ func (s *Store) stepEvent(ctx context.Context, id string, st Step, status string
 			msg = fmt.Sprintf("%s: done. %s", capitalize(label(st)), detail)
 		}
 	}
-	_, err := s.Events.Emit(ctx, id, level, KindStep, msg, data)
-	return err
+	return events.NewEvent(id, level, KindStep, msg, data)
 }
 
 func label(s Step) string {

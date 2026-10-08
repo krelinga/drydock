@@ -12,8 +12,9 @@
 //   - Every run ends somewhere reconciliation understands. A run is bounded by
 //     a timeout and by Drydock's own shutdown; either one fails the step it
 //     interrupted, with a sentence saying which. A process that dies too fast
-//     to write that (kill -9) leaves the workspace mid-provision, and boot
-//     reconciliation marks it failed (§6) — but reconciliation is also told
+//     to write that (kill -9) leaves the workspace mid-provision — or running,
+//     inside step 8 — with its step started, and boot reconciliation fails
+//     the step and marks a mid-provision row failed (§6) — but reconciliation is also told
 //     which workspaces are being provisioned right now (Busy), so a create in
 //     the first seconds after boot is not mistaken for an interrupted one.
 package provision

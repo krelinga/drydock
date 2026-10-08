@@ -123,7 +123,7 @@ func newEnv(t *testing.T) env {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { db.Close() })
-	for id := 1; id <= 5; id++ {
+	for id := 1; id <= 10; id++ {
 		if _, err := db.ExecContext(ctx,
 			`INSERT INTO repository (id, installation_id, full_name, default_branch) VALUES (?, 1, ?, 'main')`,
 			id, fmt.Sprintf("krelinga/r%d", id)); err != nil {
@@ -332,4 +332,305 @@ func TestRunLeavesThisProcessesRunsAlone(t *testing.T) {
 	if inside != workspace.Failed {
 		t.Errorf("the interrupted workspace was %q when its Exclusive call returned: the act ran outside the lock", inside)
 	}
+}
+
+// ---- Steps an earlier process died inside -----------------------------------
+
+// step writes a workspace.step event, as Provision does.
+func (e env) step(t *testing.T, id string, st workspace.Step, status string) int64 {
+	t.Helper()
+	ev, err := e.log.Emit(context.Background(), id, events.Info, workspace.KindStep, "x",
+		map[string]any{"step": st, "status": status})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return ev.ID
+}
+
+// ran writes a run's step events, every step done up to last, which is
+// written as started and left there.
+func (e env) ran(t *testing.T, id string, last workspace.Step) {
+	t.Helper()
+	for _, st := range workspace.Steps {
+		e.step(t, id, st, "started")
+		if st == last {
+			return
+		}
+		e.step(t, id, st, "done")
+	}
+}
+
+type stepEv struct {
+	id                   int64
+	step, status, detail string
+}
+
+// stepEvents is the workspace's step events, oldest first.
+func (e env) stepEvents(t *testing.T, id string) []stepEv {
+	t.Helper()
+	evs, err := e.log.ForWorkspace(context.Background(), id, 1000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out []stepEv
+	for i := len(evs) - 1; i >= 0; i-- {
+		if evs[i].Kind != workspace.KindStep {
+			continue
+		}
+		var d struct{ Step, Status, Detail string }
+		json.Unmarshal(evs[i].Data, &d)
+		out = append(out, stepEv{evs[i].ID, d.Step, d.Status, d.Detail})
+	}
+	return out
+}
+
+const closedStep8 = "The session server step failed: " + InterruptedStep
+
+// TestRunClosesAStepLeftStarted: a running workspace whose step 8 was left
+// started by a process that died inside it — the hard-kill case nothing else
+// writes an end for — has the step failed with Drydock's sentence, published
+// live, and stays running: a step-8 failure never fails the workspace (§6).
+// The controls, all in the same run: a step 8 that ended done; one whose
+// started was followed by its failed; an earlier run's started that a newer
+// run's started and done followed; and a workspace this process has a job
+// for, whose step 8 is started because it is running. Each is untouched.
+func TestRunClosesAStepLeftStarted(t *testing.T) {
+	ctx := context.Background()
+	e := newEnv(t)
+	walk := func(last workspace.Step) workspace.Workspace {
+		w := e.walk(t, workspace.Cloning, workspace.Building, workspace.Running)
+		e.ws.SetContainer(ctx, w.ID, "c-"+w.ID)
+		e.ran(t, w.ID, last)
+		return w
+	}
+	dangling := walk(workspace.StepSessionServer)
+	done := walk(workspace.StepSessionServer)
+	e.step(t, done.ID, workspace.StepSessionServer, "done")
+	ended := walk(workspace.StepSessionServer)
+	e.step(t, ended.ID, workspace.StepSessionServer, "failed")
+	reran := walk(workspace.StepSessionServer)
+	e.step(t, reran.ID, workspace.StepSessionServer, "started")
+	e.step(t, reran.ID, workspace.StepSessionServer, "done")
+	mine := walk(workspace.StepSessionServer)
+	// A killed run's allocate, and then a later run that never redid it:
+	// the started is the newest of its step but not of the workspace, so
+	// its run is over. Closing it would append the newest step event and
+	// take the later run's timeline over.
+	movedPast := walk(workspace.StepAllocate)
+	for _, st := range workspace.Steps[1:] {
+		e.step(t, movedPast.ID, st, "started")
+		e.step(t, movedPast.ID, st, "done")
+	}
+
+	var found []container.Found
+	for _, w := range []workspace.Workspace{dangling, done, ended, reran, mine, movedPast} {
+		found = append(found, ctr(w.ID, "c-"+w.ID, true))
+	}
+	controls := map[string]workspace.Workspace{"done": done, "ended failed": ended, "rerun": reran, "owned": mine,
+		"moved past": movedPast}
+	before := map[string]int{}
+	for _, w := range controls {
+		before[w.ID] = len(e.stepEvents(t, w.ID))
+	}
+
+	sub := e.log.Subscribe()
+	defer e.log.Cancel(sub)
+	r := &Reconciler{Workspaces: e.ws, Events: e.log, Containers: fakeLister{found: found},
+		Exclusive: func(id string, act func() error) (bool, error) {
+			if id == mine.ID {
+				return false, nil
+			}
+			return true, act()
+		}}
+	if _, err := r.Run(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	v, err := e.ws.View(ctx, dangling.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := v.Steps[workspace.StepSessionServer]; got.Status != "failed" || got.Detail != closedStep8 {
+		t.Errorf("step 8 after reconciliation: %+v; want failed, %q", got, closedStep8)
+	}
+	if v.State != workspace.Running {
+		t.Errorf("the workspace is %s; a step-8 failure leaves it running", v.State)
+	}
+	for st, o := range v.Steps {
+		if st != workspace.StepSessionServer && o.Status != "done" {
+			t.Errorf("step %s is %s; only the dangling step is closed", st, o.Status)
+		}
+	}
+	// Published, as a live failure is: the reducer applies it from the stream.
+	live := false
+	for len(sub.C) > 0 {
+		ev := <-sub.C
+		var d struct{ Step, Status, Detail string }
+		json.Unmarshal(ev.Data, &d)
+		if ev.WorkspaceID == dangling.ID && ev.Kind == workspace.KindStep &&
+			d.Step == string(workspace.StepSessionServer) && d.Status == "failed" && d.Detail == closedStep8 {
+			live = true
+		}
+	}
+	if !live {
+		t.Error("the closed step was not published to subscribers")
+	}
+
+	for name, w := range controls {
+		if got := e.stepEvents(t, w.ID); len(got) != before[w.ID] {
+			t.Errorf("%s: step events went from %d to %d: %+v", name, before[w.ID], len(got), got[before[w.ID]:])
+		}
+	}
+	if v, _ := e.ws.View(ctx, mine.ID); v.Steps[workspace.StepSessionServer].Status != "started" {
+		t.Errorf("owned: step 8 is %+v", v.Steps[workspace.StepSessionServer])
+	}
+
+	// Idempotent: a second boot finds nothing left started.
+	n := len(e.stepEvents(t, dangling.ID))
+	if _, err := r.Run(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got := e.stepEvents(t, dangling.ID); len(got) != n {
+		t.Errorf("a second run wrote more step events: %+v", got[n:])
+	}
+}
+
+// TestRunClosesTheStepOfAnInterruptedBuild: a workspace a crash left
+// building, with the container start step started, is marked failed by the
+// plan (§6) — and its step is failed too, before the move, in the order a
+// live failure writes them, so the timeline names the step the failed state
+// is about. The control is the same row with its step ended: marked failed,
+// and no step written.
+func TestRunClosesTheStepOfAnInterruptedBuild(t *testing.T) {
+	ctx := context.Background()
+	e := newEnv(t)
+	w := e.walk(t, workspace.Cloning, workspace.Building)
+	e.ran(t, w.ID, workspace.StepUp)
+	control := e.walk(t, workspace.Cloning, workspace.Building)
+	e.ran(t, control.ID, workspace.StepUp)
+	e.step(t, control.ID, workspace.StepUp, "done")
+	before := len(e.stepEvents(t, control.ID))
+
+	r := &Reconciler{Workspaces: e.ws, Events: e.log, Containers: fakeLister{}}
+	if _, err := r.Run(ctx); err != nil {
+		t.Fatal(err)
+	}
+	v, _ := e.ws.View(ctx, w.ID)
+	if v.State != workspace.Failed || !strings.Contains(deref(v.StateDetail), "restarted while this workspace was building") {
+		t.Errorf("state %s %q", v.State, deref(v.StateDetail))
+	}
+	want := "The container start step failed: " + InterruptedStep
+	if got := v.Steps[workspace.StepUp]; got.Status != "failed" || got.Detail != want {
+		t.Errorf("step up: %+v; want failed, %q", got, want)
+	}
+	// The step's failure is older than the move it explains.
+	evs, _ := e.log.ForWorkspace(ctx, w.ID, 1000)
+	var stepID, moveID int64
+	for _, ev := range evs { // newest first
+		var d struct{ Step, Status, State string }
+		json.Unmarshal(ev.Data, &d)
+		if ev.Kind == workspace.KindStep && d.Status == "failed" && stepID == 0 {
+			stepID = ev.ID
+		}
+		if ev.Kind == workspace.KindState && d.State == string(workspace.Failed) && moveID == 0 {
+			moveID = ev.ID
+		}
+	}
+	if stepID == 0 || moveID == 0 || stepID > moveID {
+		t.Errorf("step failed at event %d, moved to failed at %d; want the step first", stepID, moveID)
+	}
+
+	if v, _ := e.ws.View(ctx, control.ID); v.State != workspace.Failed {
+		t.Errorf("control: %s", v.State)
+	}
+	if got := e.stepEvents(t, control.ID); len(got) != before {
+		t.Errorf("control: a step that ended was written again: %+v", got[before:])
+	}
+}
+
+// TestRunClosesADeletingWorkspacesStep: a resumed delete that sticks leaves
+// the row deleting, and /ws/:id still shows its timeline, so a deleting row's
+// dangling step is closed too — before the delete is resumed, which takes
+// the lock itself. The control is a deleting row this process owns: left
+// alone, and its delete not resumed by reconciliation either.
+func TestRunClosesADeletingWorkspacesStep(t *testing.T) {
+	ctx := context.Background()
+	e := newEnv(t)
+	del := e.walk(t, workspace.Cloning, workspace.Building, workspace.Running)
+	e.ran(t, del.ID, workspace.StepSessionServer)
+	e.ws.Move(ctx, del.ID, workspace.Deleting, "")
+	mine := e.walk(t, workspace.Cloning, workspace.Building, workspace.Running)
+	e.ran(t, mine.ID, workspace.StepSessionServer)
+	e.ws.Move(ctx, mine.ID, workspace.Deleting, "")
+	var closedAtDelete workspace.StepOutcome
+	r := &Reconciler{Workspaces: e.ws, Events: e.log, Containers: fakeLister{},
+		Exclusive: func(id string, act func() error) (bool, error) {
+			if id == mine.ID {
+				return false, nil
+			}
+			return true, act()
+		},
+		Delete: func(ctx context.Context, w workspace.Workspace, _ string) error {
+			v, _ := e.ws.View(ctx, w.ID)
+			closedAtDelete = v.Steps[workspace.StepSessionServer]
+			return errors.New("stuck")
+		}}
+	r.Run(ctx) // the delete sticks: a *Partial
+	if v, _ := e.ws.View(ctx, del.ID); v.State != workspace.Deleting ||
+		v.Steps[workspace.StepSessionServer].Status != "failed" || v.Steps[workspace.StepSessionServer].Detail != closedStep8 {
+		t.Errorf("a stuck delete's row: %s, step 8 %+v", v.State, v.Steps[workspace.StepSessionServer])
+	}
+	if closedAtDelete.Status != "failed" {
+		t.Errorf("step 8 was %q when the delete was resumed; want it closed first", closedAtDelete.Status)
+	}
+	if v, _ := e.ws.View(ctx, mine.ID); v.Steps[workspace.StepSessionServer].Status != "started" {
+		t.Errorf("owned: step 8 is %+v", v.Steps[workspace.StepSessionServer])
+	}
+}
+
+// TestRunNeverClosesAStepALaterRunMovedPast: an older release killed during
+// verify; a later start failed at resolve config, never reaching verify
+// again. Verify's started is the newest of its step but not the workspace's,
+// so it is left: closing it would append the newest step event, and the
+// failed card and timeline would blame verify instead of resolve config.
+// The control is the same history with the start killed inside resolve
+// config: that started is the newest overall, and it is closed.
+func TestRunNeverClosesAStepALaterRunMovedPast(t *testing.T) {
+	ctx := context.Background()
+	e := newEnv(t)
+	seed := func(lastStatus string) workspace.Workspace {
+		w := e.walk(t, workspace.Cloning, workspace.Building)
+		e.ran(t, w.ID, workspace.StepVerify)
+		e.ws.Move(ctx, w.ID, workspace.Failed, "Drydock restarted while this workspace was building.")
+		e.ws.Move(ctx, w.ID, workspace.Building, "")
+		e.step(t, w.ID, workspace.StepResolveConfig, "started")
+		if lastStatus != "" {
+			e.step(t, w.ID, workspace.StepResolveConfig, lastStatus)
+			e.ws.Move(ctx, w.ID, workspace.Failed, "The resolve config step failed.")
+		}
+		return w
+	}
+	past := seed("failed")
+	killed := seed("")
+	before := len(e.stepEvents(t, past.ID))
+
+	r := &Reconciler{Workspaces: e.ws, Events: e.log, Containers: fakeLister{}}
+	if _, err := r.Run(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got := e.stepEvents(t, past.ID); len(got) != before {
+		t.Errorf("a step a later run moved past was closed: %+v", got[before:])
+	}
+	if v, _ := e.ws.View(ctx, killed.ID); v.Steps[workspace.StepResolveConfig].Status != "failed" ||
+		v.Steps[workspace.StepVerify].Status != "started" {
+		t.Errorf("control: resolve config %+v, verify %+v; want only the newest closed",
+			v.Steps[workspace.StepResolveConfig], v.Steps[workspace.StepVerify])
+	}
+}
+
+func deref(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
 }
