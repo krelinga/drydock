@@ -356,6 +356,40 @@ func TestPreviewHeadersPassThrough(t *testing.T) {
 	}
 }
 
+// TestRoutingIsByHostAcrossSNI pins a decision rather than a defense: the
+// shipped Caddyfile does NOT set `strict_sni_host`, so Caddy routes by the
+// Host header whatever name the TLS handshake used. On, it would answer 421
+// to a request whose Host differs from its SNI — and browsers coalesce HTTP/2
+// connections across every name one certificate covers, so two tabs on two
+// preview slugs (one wildcard) would share a connection and the second would
+// get 421s, which HMR and SSE handle badly. Leaving it off costs nothing a
+// browser can use: neither certificate covers the other site's names, so no
+// browser sends one site's Host on the other's connection; a raw client can
+// pick any SNI anyway; and the API still checks Host itself (§13.3). PF §9.
+//
+// So both directions land on the socket the Host names. A change that turns
+// strict_sni_host on, or routes by SNI, fails here and has to argue with the
+// paragraph above.
+func TestRoutingIsByHostAcrossSNI(t *testing.T) {
+	need(t)
+	// SNI for a preview host, Host the UI's: the API socket.
+	if resp, err := get(t, "https://"+previewHost+"/api/repos", uiHost); err != nil || resp.StatusCode != 200 {
+		t.Fatalf("preview SNI, UI Host: %v %v", resp, err)
+	}
+	if env.api.count() != 1 || env.preview.count() != 0 {
+		t.Errorf("preview SNI, UI Host: api saw %d, preview saw %d; want 1 and 0", env.api.count(), env.preview.count())
+	}
+	env.api.reset()
+	env.preview.reset()
+	// SNI for the UI host, Host a preview's: the preview socket only.
+	if resp, err := get(t, "https://"+uiHost+"/", previewHost); err != nil || resp.StatusCode != 200 {
+		t.Fatalf("UI SNI, preview Host: %v %v", resp, err)
+	}
+	if env.preview.count() != 1 || env.api.count() != 0 {
+		t.Errorf("UI SNI, preview Host: preview saw %d, api saw %d; want 1 and 0", env.preview.count(), env.api.count())
+	}
+}
+
 // TestForeignHostOnThePreviewCertificate is DNS rebinding's defense on the
 // second site: the TLS name is a real preview host, so the wildcard
 // certificate is served, but the Host header is not one label under the

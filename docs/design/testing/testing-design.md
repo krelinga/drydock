@@ -113,6 +113,7 @@ Three of the design's defenses live in a config file: strict `Host` matching (§
 | The UI host reaches `http.sock` and nothing else | backend records the request; the preview socket records nothing |
 | A preview host reaches `preview.sock` and nothing else | converse of the above |
 | No path routes across the sockets | the UI host with `/.drydock/session?t=…` and `/.drydock/denied` still reaches only `http.sock`; two preview slugs with `/api/*` and `/preview/authorize` reach only `preview.sock` (PF §13 step 1: "no preview URL can reach an API route") |
+| Routing is by `Host` across SNI (`strict_sni_host` stays off) | SNI for a preview host with `Host:` the UI's reaches only `http.sock`; SNI for the UI with a preview `Host:` reaches only `preview.sock`. Pins PF §9's decision — on, HTTP/2 coalescing across preview slugs on the one wildcard would turn into `421`s — so a "hardening" that turns it on fails here. Mutation-checked: `servers { strict_sni_host on }` fails it |
 | The wildcard matches one label | on the wildcard's own TLS name, a `Host` two labels deep, the bare preview domain, `<slug>.<domain>.evil.example` and a foreign name reach nothing (control: the slug itself does) |
 | The preview hop passes what the preview mux authenticates on | the preview cookie, the app's own cookie and the `?t=` query arrive intact at `preview.sock`, while `X-Forwarded-For` is still replaced (PF §7's table: stripped at the next hop, never this one) |
 | `X-Forwarded-For` is replaced, not appended | client sends a forged XFF; backend sees exactly one value, Caddy's |
@@ -176,7 +177,7 @@ These are design requirements, not test code. Each exists because a tier is impo
 - every `mutating` entry refuses a wrong, lookalike, and absent `Origin`;
 - no entry emits `Access-Control-Allow-Origin` — on success *or* on any refusal path, which is where a reflexive CORS header gets added by someone debugging a `fetch`;
 - a foreign `Host` is refused on every API entry, independently of Caddy;
-- every API entry, requested on `preview.sock`, returns `404` and never reaches a handler, and every preview entry on the API socket likewise;
+- every API entry, requested on `preview.sock`, gets the preview front door's uniform `401` (port forwarding §13.1) and never reaches a handler, and every preview entry on the API socket returns `404` and never reaches one;
 - the preview mux's entry set is exactly `{GET /.drydock/session, GET /.drydock/denied}`;
 - an **unauthenticated caller cannot tell a declared-but-unimplemented route from a nonexistent one** — see the ordering note below.
 
@@ -462,7 +463,7 @@ The table CLAUDE.md's invariant list and §13.5 / PF §10.7 imply. Columns: the 
 
 | Invariant | Tier | Test | Control |
 |---|---|---|---|
-| The preview mux serves no API route | component | every API pattern on `preview.sock` → `404`, no handler reached; route set equals the two `/.drydock/*` | an enabled preview proxies on that same socket |
+| The preview mux serves no API route | component | every API pattern on `preview.sock` → the uniform `401`, no handler reached even with every API handler written and every gate open; route set equals the two `/.drydock/*` | an enabled preview proxies on that same socket |
 | The upstream is derived, never supplied | unit + component | fuzz `Host`, headers, query, and body for anything that changes the dial target | a legitimate dial reaches `fakeupstream` |
 | Re-resolve by label at every dial | container | kill X's container, start another that takes the IP, assert the dial denies rather than reaching Y | before the kill, the dial reached X |
 | Re-resolve the PID at every scan | container | kill the container, assert the scan reports empty rather than host listeners | a live container's listeners are found |

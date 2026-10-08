@@ -235,17 +235,33 @@ func TestNoRouteEmitsCORS(t *testing.T) {
 // TestPreviewMuxServesNoAPI is port-forwarding §10.2 and testing §5.1: the
 // preview origin serves repository code, so an API pattern reaching a handler
 // there would put the control plane on an origin a repo's dev server controls.
+// It drives what the preview socket actually serves, PreviewFrontDoor, with a
+// handler written for every route of both muxes and every gate open: each API
+// entry gets the uniform 401 and no handler runs. (preview_test.go's
+// TestPreviewFrontDoorReachesNoAPIHandler adds the API-mux control and other
+// Hosts; this one keeps the table walk and the route-set pin.)
 func TestPreviewMuxServesNoAPI(t *testing.T) {
-	previewMux := Build(MuxPreview, allOpen, nil)
+	ran := ""
+	handlers := map[string]http.HandlerFunc{}
+	for _, rt := range Table {
+		name := rt.Name
+		handlers[name] = func(http.ResponseWriter, *http.Request) { ran = name }
+	}
+	front := PreviewFrontDoor(allOpen, handlers)
 	for _, rt := range APIRoutes() {
+		ran = ""
 		rec := httptest.NewRecorder()
-		previewMux.ServeHTTP(rec, requestFor(rt))
-		if rec.Code != http.StatusNotFound {
-			t.Errorf("%s %s on the preview mux = %d; want 404", rt.Method, rt.Pattern, rec.Code)
+		front.ServeHTTP(rec, requestFor(rt))
+		if rec.Code != http.StatusUnauthorized || !strings.Contains(rec.Body.String(), `"code":"unauthenticated"`) {
+			t.Errorf("%s %s on the preview socket = %d %q; want the uniform 401", rt.Method, rt.Pattern, rec.Code, rec.Body)
+		}
+		if ran != "" {
+			t.Errorf("%s %s on the preview socket ran handler %s", rt.Method, rt.Pattern, ran)
 		}
 	}
-	// And the converse, so the assertion above is not just "the preview mux
-	// 404s everything".
+	// And the converse, so the assertion above is not just "the preview
+	// socket refuses everything": the route set is exactly the two
+	// /.drydock/ routes, and a written one is reached.
 	var got []string
 	for _, rt := range PreviewRoutes() {
 		got = append(got, rt.Method+" "+rt.Pattern)
@@ -259,6 +275,11 @@ func TestPreviewMuxServesNoAPI(t *testing.T) {
 			t.Errorf("preview route set = %v; want exactly %v", got, want)
 			break
 		}
+	}
+	ran = ""
+	front.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("GET", "https://a-b.drydock-preview.test/.drydock/denied", nil))
+	if ran != "preview.denied" {
+		t.Errorf("control: a written preview.denied was not reached (ran %q)", ran)
 	}
 }
 

@@ -247,7 +247,9 @@ serves_app() { "${CURL[@]}" --resolve "$1:443:127.0.0.1" "https://$1/" | grep -q
 serves_no_app() { ! serves_app "$1"; }
 check "control: the UI host serves the app" serves_app "$UI"
 check "the preview's 401 is not the UI's app" serves_no_app "a-b.$PREVIEW"
-check "two labels deep is no preview host" [ "$(pv x.a-b /)" = 000 ]
+# The certificate's half of "one label": curl refuses the wildcard for a name two
+# labels deep. Caddy's own matcher is test/component's TestForeignHostOnThePreviewCertificate.
+check "the wildcard certificate does not cover a name two labels deep" [ "$(pv x.a-b /)" = 000 ]
 check "drydock was given the preview domain" grep -q -- "--preview-domain=$PREVIEW" "/proc/$(mainpid drydock)/cmdline" 2>/dev/null ||
 	tr '\0' ' ' <"/proc/$(mainpid drydock)/cmdline" | grep -q -- "--preview-domain=$PREVIEW"
 install v0.0.2

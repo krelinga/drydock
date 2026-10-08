@@ -1087,8 +1087,11 @@ You provide three things. Drydock issues no certificate and touches no DNS
   Check from a laptop: `getent hosts anything.<preview-domain>` prints the server's address.
 - [ ] **A wildcard certificate and key** for `*.<preview-domain>`, full chain, leaf first. In
   practice that is ACME DNS-01 (option B in [1.3](#13-a-tls-certificate-every-client-trusts-for-that-hostname)),
-  or your private CA (option A) — then the same CA as `--ca-cert`, because the installer's check
-  verifies both sites against that one file. Run 1.3's two checks on it; the SAN must show
+  or your private CA (option A) — then `--ca-cert` must vouch for both, because the installer's
+  check verifies both sites against that one file. If the two certificates come from different
+  CAs, make it a bundle: concatenate both CAs' certificates (PEM, certificates only) into one file
+  and pass that. With `--ca-cert` set, the check trusts only that file, so a publicly trusted
+  certificate's root has to be in the bundle too. Run 1.3's two checks on it; the SAN must show
   `DNS:*.<preview-domain>`.
 
 Put the certificate and key where Caddy can read them, exactly as in
