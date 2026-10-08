@@ -123,6 +123,17 @@ const MOVING = new Set(['pending', 'cloning', 'building'])
 const CONFIG_FAULTS = new Set(['not_trusted', 'hang_remote_dialog', 'hang_trust', 'stale_broker_mount'])
 
 /**
+ * A restart (or a stop) whose stop half failed (design §8, internal/supervisor
+ * Stop). `survived_kill`: the server outlived SIGKILL, so asking again cannot
+ * help and replacing the container is the fix — the container's fault, not
+ * the login's, so the fleet override leaves it too. `stop_failed`: Docker
+ * could not be asked; asking again is the fix once it answers, and under a
+ * signed-out fleet it waits behind the banner like any restart.
+ */
+const SURVIVED_KILL = 'survived_kill'
+const STOP_FAILED = 'stop_failed'
+
+/**
  * §6.1's rows for `running` × `supervisor.state`, read from the supervisor
  * entity — `supervisor.state` events and the views' `supervisor`, never
  * `workspace.state` — with §6.6's fleet override over them. Its action takes
@@ -133,7 +144,8 @@ function supervisorHalf(w: Workspace, fleet: FleetLogin): CardStatus | null {
   // nothing about a session: the workspace half speaks, as it did then.
   if (!w.supervisorKnown) return null
   const s = w.supervisor
-  const configFault = s !== null && s.state === 'degraded' && CONFIG_FAULTS.has(s.reason ?? '')
+  const configFault = s !== null && s.state === 'degraded' &&
+    (CONFIG_FAULTS.has(s.reason ?? '') || s.reason === SURVIVED_KILL)
   // §6.6: a signed-out fleet replaces the session half of every running
   // card — no session line, no session button; the banner holds the one Sign
   // in to Claude — except where the card's own fault is not the login's. The
@@ -169,6 +181,12 @@ function supervisorHalf(w: Workspace, fleet: FleetLogin): CardStatus | null {
       return { line, tone: 'ok', note: null, action: link !== null ? 'open' : null, link }
     }
     case 'degraded':
+      if (s.reason === SURVIVED_KILL) {
+        return { line: 'Session server would not stop', tone: 'bad', note: s.detail, action: 'rebuild' }
+      }
+      if (s.reason === STOP_FAILED) {
+        return { line: 'Session server did not stop', tone: 'bad', note: s.detail, action: 'restart_session' }
+      }
       if (configFault) {
         // §9: the trust record or the consent key is missing — the Feature
         // writes both at create, so a rebuild is the fix, not a restart.

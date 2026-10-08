@@ -31,6 +31,11 @@ describe('the card, supervisor half (§6.1)', () => {
     // file: no broker since the restart, and only a rebuild fixes it.
     ['degraded', 'stale_broker_mount', 'Container misconfigured', 'bad', 'rebuild'],
     ['degraded', 'bad_command_line', 'Drydock built a bad command line', 'bad', null],
+    // A restart whose stop half failed (design §8): Docker could not be asked,
+    // so asking again is the fix; or the server outlived SIGKILL, so only
+    // replacing the container is.
+    ['degraded', 'stop_failed', 'Session server did not stop', 'bad', 'restart_session'],
+    ['degraded', 'survived_kill', 'Session server would not stop', 'bad', 'rebuild'],
     ['exited', 'stopped', 'Session stopped', 'idle', 'start_session'],
   ])('%s (%s) → "%s", %s, action %s', (state, reason, line, tone, action) => {
     expect(cardStatus(withSup(state, reason))).toMatchObject({ line, tone, action })
@@ -122,6 +127,16 @@ describe('one fault, ten cards (§6.6)', () => {
     expect(cardStatus(withSup('degraded', 'not_trusted'), fleet)).toMatchObject({ line: 'Container misconfigured', action: 'rebuild' })
     expect(cardStatus(withSup('degraded', 'stale_broker_mount'), fleet)).toMatchObject({ line: 'Container misconfigured', action: 'rebuild' })
     expect(cardStatus(withSup('degraded', 'bad_command_line'), fleet).line).toBe('Drydock built a bad command line')
+    // A server that outlived SIGKILL is the container's to end; a sign-in
+    // cannot.
+    expect(cardStatus(withSup('degraded', 'survived_kill'), fleet)).toMatchObject({ line: 'Session server would not stop', action: 'rebuild' })
+  })
+
+  it.each(signedOut)('%s: a stop Docker could not make waits behind the banner, as any restart does', (fleet) => {
+    // No session server can run until the sign-in, so a restart is not the
+    // button now; the card says it again once the fleet is signed in.
+    expect(cardStatus(withSup('degraded', 'stop_failed'), fleet)).toMatchObject({ line: 'Running', action: null })
+    expect(cardStatus(withSup('degraded', 'stop_failed'), 'ok')).toMatchObject({ line: 'Session server did not stop', action: 'restart_session' })
   })
 
   it('the control: ok, expiring and expired leave every card its own row', () => {

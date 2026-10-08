@@ -84,14 +84,27 @@ exec "$@"
 `, r.devc, r.bin))
 	running := filepath.Join(dir, "container-running")
 	os.WriteFile(running, nil, 0o600)
+	// Two more files make the fake docker misbehave: "docker-fails" holding
+	// a subcommand (ps, exec) or a signal (KILL, or 0 for the alive check)
+	// fails that call as an unreachable daemon does, and "kill-ignored" makes
+	// a KILL report success and deliver nothing — a server that survives
+	// SIGKILL.
 	writeExec(t, filepath.Join(fakes, "docker"), fmt.Sprintf(`#!/bin/sh
 printf '%%s\n' "$*" >> %q
+for last; do :; done
+if [ -e %q ] && { [ "$(cat %q)" = "$1" ] || [ "$(cat %q)" = "$last" ]; }; then
+	echo 'Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?' >&2
+	exit 1
+fi
 case "$1" in
 ps) [ -e %q ] && echo %s; exit 0;;
-exec) while [ "$1" != "--" ]; do shift; done; shift; shift; exec "$@";;
+exec) while [ "$1" != "--" ]; do shift; done; shift; shift
+	if [ "$last" = KILL ] && [ -e %q ]; then exit 0; fi
+	exec "$@";;
 esac
 exit 99
-`, r.docker, running, fakeCID))
+`, r.docker, filepath.Join(dir, "docker-fails"), filepath.Join(dir, "docker-fails"), filepath.Join(dir, "docker-fails"), running, fakeCID,
+		filepath.Join(dir, "kill-ignored")))
 	res := subproc.FixedResolver{"devcontainer": filepath.Join(fakes, "devcontainer"), "docker": filepath.Join(fakes, "docker")}
 	run := subproc.Exec{Resolver: res}
 	p := Policy{Capacity: 4, Backoff: 20 * time.Millisecond, BackoffMax: 80 * time.Millisecond, Budget: 6,

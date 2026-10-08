@@ -396,7 +396,9 @@ func (s *sup) stop(ctx context.Context) error {
 	proc, procDone := s.proc, s.procDone
 	s.mu.Unlock()
 	_, err := s.m.terminate(ctx, s.ws, proc, procDone)
-	s.cancel()
+	if s.cancel != nil { // nil for one with no loop (detachedLocked)
+		s.cancel()
+	}
 	select {
 	case <-s.done:
 	case <-ctx.Done():
@@ -419,6 +421,10 @@ func (m *Manager) terminate(ctx context.Context, ws string, proc subproc.Process
 	if done == nil && !found {
 		return false, err
 	}
+	// lookErr is the last failure to ask whether the server is alive: a
+	// stop that ends on one could not tell, which is Docker's failure, not a
+	// server seen alive after SIGKILL.
+	var lookErr error
 	gone := func(d time.Duration) bool {
 		deadline := m.clock().After(d)
 		if done != nil {
@@ -433,6 +439,7 @@ func (m *Manager) terminate(ctx context.Context, ws string, proc subproc.Process
 		}
 		for {
 			alive, aerr := m.Runtime.Signal(ctx, ws, container.SessionAlive, m.PidFile)
+			lookErr = aerr
 			if aerr == nil && !alive {
 				return true
 			}
@@ -462,7 +469,8 @@ func (m *Manager) terminate(ctx context.Context, ws string, proc subproc.Process
 		return true, errors.Join(err, cerr)
 	}
 	m.logf("drydock: workspace %s: the session server did not exit within %s of SIGTERM; sending SIGKILL", ws, p.StopTimeout)
-	if _, kerr := m.Runtime.Signal(ctx, ws, container.SessionKill, m.PidFile); kerr != nil {
+	_, kerr := m.Runtime.Signal(ctx, ws, container.SessionKill, m.PidFile)
+	if kerr != nil {
 		err = errors.Join(err, kerr)
 	}
 	if gone(p.KillWait) {
@@ -475,5 +483,17 @@ func (m *Manager) terminate(ctx context.Context, ws string, proc subproc.Process
 			return true, nil
 		}
 	}
-	return true, errors.Join(err, fmt.Errorf("the session server did not exit after SIGKILL"))
+	if cerr := ctx.Err(); cerr != nil {
+		return true, errors.Join(err, cerr)
+	}
+	if kerr != nil || lookErr != nil {
+		// SIGKILL could not be sent, or whether it worked could not be
+		// asked: Docker failed, which says nothing about the server.
+		return true, errors.Join(err, lookErr, errors.New("the session server could not be confirmed stopped after SIGKILL"))
+	}
+	return true, errors.Join(err, errSurvivedKill)
 }
+
+// errSurvivedKill: SIGKILL was delivered and the server was still there
+// after it — the one stop failure that asking again cannot fix.
+var errSurvivedKill = errors.New("the session server did not exit after SIGKILL")

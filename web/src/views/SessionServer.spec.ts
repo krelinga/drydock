@@ -4,10 +4,12 @@
 // sessions are live, and the log view. Negative assertions sit beside their
 // controls.
 
+import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { FakeEventSource } from '../test/fakeEventSource'
 import { freshBackend, mountApp, settle, useMockApi } from '../test/setup'
-import { emit, mockEnvironmentId, playScript, WS_RUNNING } from '../mocks/backend'
+import { emit, mockEnvironmentId, playScript, STOP_FAILED_SENTENCE, WS_RUNNING } from '../mocks/backend'
 import { useStreamStore } from '../stores/stream'
 import { sessionKey } from '../stores/workspaces'
 
@@ -54,6 +56,54 @@ describe('the session half of a running card', () => {
     await settle()
     expect(sessionKey(WS_RUNNING) in useStreamStore(pinia).inFlight).toBe(false)
     expect(card().find('[data-test="running-state"]').text()).toBe('Capacity 1 / 4')
+  })
+
+  // A restart whose stop half fails (design §8, internal/supervisor Stop)
+  // starts nothing and writes degraded with the cause's reason: the mark ends
+  // on that event, and the card offers the one action that can work. The
+  // control is the spec above, where the old server's `exited` does not end
+  // the mark. Before the fix the server wrote nothing here, and the button
+  // spun until a reload.
+  it.each([
+    ['stop_failed', 'Session server did not stop', 'restart-session'],
+    ['survived_kill', 'Session server would not stop', 'rebuild'],
+  ] as const)('a restart whose stop fails (%s) settles, saying so, and offers what can fix it', async (reason, line, action) => {
+    const b = freshBackend({ signedIn: true, supervisor: true, scriptMode: 'manual' })
+    const { wrapper, pinia } = await mountApp('/')
+    FakeEventSource.latest().open().pipe(b)
+    const card = () => runningCard(wrapper, WS_RUNNING)
+    // Serving offers no restart; get one to press from a parked server.
+    emit(b, 'supervisor.state', {
+      workspace_id: WS_RUNNING, level: 'error', message: 'Parked.',
+      data: { state: 'degraded', from: 'starting', reason: 'budget_spent', detail: 'It stopped 7 times in 10 min.', restart_count: 6 },
+    })
+    await settle()
+    b.supervisorStopFails = reason
+    await btn(card(), 'restart-session').trigger('click')
+    await settle()
+    expect(sent(b, 'POST', `/api/workspaces/${WS_RUNNING}/supervisor`)).toHaveLength(1)
+    expect(sessionKey(WS_RUNNING) in useStreamStore(pinia).inFlight).toBe(true)
+    playScript(b, WS_RUNNING)
+    await settle()
+    expect(sessionKey(WS_RUNNING) in useStreamStore(pinia).inFlight).toBe(false)
+    expect(card().find('[data-test="running-state"]').text()).toBe(line)
+    expect(card().find('.detail').text()).toBe(STOP_FAILED_SENTENCE[reason])
+    expect(btn(card(), action).exists()).toBe(true)
+    expect(btn(card(), action).attributes('disabled')).toBeUndefined()
+    if (reason === 'stop_failed') {
+      // Asking again is answered again, though it says the same thing.
+      await btn(card(), 'restart-session').trigger('click')
+      await settle()
+      expect(sessionKey(WS_RUNNING) in useStreamStore(pinia).inFlight).toBe(true)
+      playScript(b, WS_RUNNING)
+      await settle()
+      expect(sessionKey(WS_RUNNING) in useStreamStore(pinia).inFlight).toBe(false)
+    }
+  })
+
+  it('the mock says the stop failures in the server’s words', () => {
+    const go = readFileSync(resolve(process.cwd(), '../internal/supervisor/supervisor.go'), 'utf8')
+    for (const s of Object.values(STOP_FAILED_SENTENCE)) expect(go).toContain(JSON.stringify(s))
   })
 
   it('waiting_registration says it is waiting, offers nothing, and never says failed', async () => {
