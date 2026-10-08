@@ -31,6 +31,7 @@ import (
 	"github.com/krelinga/drydock/internal/clone"
 	"github.com/krelinga/drydock/internal/container"
 	"github.com/krelinga/drydock/internal/events"
+	"github.com/krelinga/drydock/internal/sys"
 	"github.com/krelinga/drydock/internal/workspace"
 )
 
@@ -69,7 +70,52 @@ var (
 	ErrBadBranch = errors.New("provision: not a branch name Drydock can clone")
 	// ErrShuttingDown: Drydock is stopping and starts nothing new.
 	ErrShuttingDown = errors.New("provision: Drydock is shutting down")
+	// ErrDiskFull: the filesystem holding the workspaces is at or above
+	// the configured limit (design §12, *Disk full*). Returned as a
+	// *DiskFullError, which carries the figures the refusal names.
+	ErrDiskFull = errors.New("provision: the workspace disk is above its limit")
 )
+
+// DiskFullError is the pre-flight's refusal, with what it measured.
+type DiskFullError struct {
+	UsedBytes, TotalBytes uint64
+	LimitPercent          int
+}
+
+func (e *DiskFullError) Error() string {
+	return fmt.Sprintf("provision: the workspace disk is %d%% full; the limit is %d%%", e.Percent(), e.LimitPercent)
+}
+
+func (e *DiskFullError) Is(target error) bool { return target == ErrDiskFull }
+
+// Percent is used over total, rounded down — so a disk refused at a limit of
+// 90 never reads as "89% full".
+func (e *DiskFullError) Percent() int {
+	if e.TotalBytes == 0 {
+		return 0
+	}
+	return int(e.UsedBytes * 100 / e.TotalBytes)
+}
+
+// preflight is §12's disk check, run before a create, start or rebuild takes
+// anything: a clone or an image build that runs out of disk fails minutes in,
+// part-way, and leaves less room than it found. A disk that cannot be read
+// is not refused — the check exists to save a doomed build, and it is not a
+// control anything else relies on — but the reason is logged.
+func (p *Provisioner) preflight() error {
+	if p.Disk == nil {
+		return nil
+	}
+	used, total, err := p.Disk.Usage(p.Workspaces.Root)
+	if err != nil {
+		p.logf("drydock: disk pre-flight: %v", err)
+		return nil
+	}
+	if workspace.OverLimit(used, total, p.DiskLimitPercent) {
+		return &DiskFullError{UsedBytes: used, TotalBytes: total, LimitPercent: p.DiskLimitPercent}
+	}
+	return nil
+}
 
 // Broker is what provisioning needs from internal/broker: step 5 opens the
 // socket, up mounts its directory, stop closes it, and delete removes it
@@ -123,6 +169,11 @@ type Provisioner struct {
 	Config []byte
 	// Timeout bounds one run (config.ProvisionTimeout).
 	Timeout time.Duration
+	// Disk and DiskLimitPercent are the pre-flight check (preflight): a
+	// create, start or rebuild is refused while the filesystem holding the
+	// workspace root is at least DiskLimitPercent full. Nil Disk skips it.
+	Disk             sys.DiskUsage
+	DiskLimitPercent int
 	// Logf receives each failed run's full error — the half that never
 	// reaches the event log (§6). Nil discards it.
 	Logf func(format string, args ...any)
@@ -245,6 +296,9 @@ func (p *Provisioner) Create(ctx context.Context, repositoryID int64, branch str
 	if !clone.ValidBranch(branch) {
 		return workspace.Workspace{}, ErrBadBranch
 	}
+	if err := p.preflight(); err != nil {
+		return workspace.Workspace{}, err
+	}
 
 	// The row and the in-flight mark are made under one lock, so Busy can
 	// never see the row without the mark.
@@ -332,6 +386,9 @@ func (p *Provisioner) restartWith(ctx context.Context, id string, rebuild bool, 
 	}
 	w, err := p.Workspaces.Get(ctx, id)
 	if err != nil {
+		return err
+	}
+	if err := p.preflight(); err != nil {
 		return err
 	}
 	first := workspace.StepResolveConfig

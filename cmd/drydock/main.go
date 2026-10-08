@@ -93,6 +93,7 @@ func serve(args []string) int {
 	fs.StringVar(&cfg.GitHubAppKey, "github-app-key", "", "path of the GitHub App's private key, mode 0400 (never the key itself)")
 	fs.StringVar(&cfg.SecretsKey, "secrets-key", "", "path of the secrets master key, 32 raw bytes, mode 0400 (never the key itself)")
 	fs.IntVar(&cfg.ContainerCap, "container-cap", cfg.ContainerCap, "how many workspaces may hold or build a container at once")
+	fs.IntVar(&cfg.DiskLimitPercent, "disk-limit-percent", cfg.DiskLimitPercent, "refuse a create, start or rebuild while the workspace filesystem is at least this full (100: never)")
 	fs.StringVar(&cfg.Feature, "feature", cfg.Feature, "the devcontainer Feature every workspace gets")
 	fs.StringVar(&cfg.BotName, "bot-name", cfg.BotName, "git user.name in workspaces: the GitHub App's bot")
 	fs.StringVar(&cfg.BotEmail, "bot-email", cfg.BotEmail, "git user.email in workspaces: <bot-user-id>+<app-slug>[bot]@users.noreply.github.com")

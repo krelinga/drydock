@@ -7,6 +7,7 @@ import { RouterView, useRoute } from 'vue-router'
 import AppHeader from './components/AppHeader.vue'
 import AppNav from './components/AppNav.vue'
 import FleetBanner from './components/FleetBanner.vue'
+import DiskBanner from './components/DiskBanner.vue'
 import BootFailure from './components/BootFailure.vue'
 import { useSessionStore } from './stores/session'
 import { useStreamStore } from './stores/stream'
@@ -50,6 +51,7 @@ watch(
     <AppNav class="shell-nav" />
     <main id="main" class="shell-main">
       <FleetBanner />
+      <DiskBanner />
       <BootFailure v-if="session.probeError" />
       <RouterView v-else />
     </main>

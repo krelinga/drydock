@@ -39,8 +39,10 @@ func (RealClock) Now() time.Time                         { return time.Now() }
 func (RealClock) Since(t time.Time) time.Duration        { return time.Since(t) }
 func (RealClock) After(d time.Duration) <-chan time.Time { return time.After(d) }
 
-// DiskUsage reports free space for the pre-flight check in design §12, which
-// refuses a clone before starting rather than failing a three-minute build.
+// DiskUsage is the disk, as two questions: how full is the filesystem holding
+// a path (the pre-flight check in design §12, which refuses a clone before
+// starting rather than failing a three-minute build), and how much does one
+// directory hold (the card's per-workspace disk, design §6 *Resources*).
 //
 // An interface because the interesting tests are the boundary ones — just over
 // and just under the threshold — and arranging a real disk to be nearly full is
@@ -48,6 +50,13 @@ func (RealClock) After(d time.Duration) <-chan time.Time { return time.After(d) 
 type DiskUsage interface {
 	// Usage reports bytes used and total for the filesystem holding path.
 	Usage(path string) (used, total uint64, err error)
+	// Size reports the bytes allocated to everything under path, as du
+	// counts them: blocks actually allocated, each hard-linked file once,
+	// symlinks not followed, other filesystems not entered. partial is true
+	// when some of the tree could not be read — a directory a container's
+	// root made private, say — so the figure is a lower bound, and a caller
+	// must say so rather than show it as exact.
+	Size(path string) (bytes uint64, partial bool, err error)
 }
 
 // Random is the seam for slug minting (port forwarding §4) and ULID generation.
@@ -77,12 +86,11 @@ type Env struct {
 	Random Random
 }
 
-// Production returns the real implementations. Disk is nil here deliberately:
-// a statfs wrapper is Phase 2's business, and a nil that panics on first use is
-// better than a stub that silently reports infinite free space.
+// Production returns the real implementations.
 func Production() Env {
 	return Env{
 		Clock:  RealClock{},
+		Disk:   HostDisk{},
 		Random: CryptoRandom{},
 	}
 }

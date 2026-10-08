@@ -170,6 +170,60 @@ export interface WorkspaceView {
   session?: SessionView | null
   /** The host-access request a stopped workspace waits on, or null (design §6). */
   approval?: ApprovalView | null
+  /**
+   * What the workspace is using, as last measured (design §6 *Resources*),
+   * or null when nothing has been. Absent from a server older than it.
+   */
+  resources?: ResourcesView | null
+}
+
+/** A container's memory as `docker stats` counts it (internal/workspace MemorySample). */
+export interface MemorySampleView {
+  bytes: number
+  at: string
+  /** The latest attempt failed; `bytes` is the last good reading, from `at`. */
+  stale: boolean
+}
+
+/** What deleting the workspace would free (internal/workspace DiskSample). */
+export interface DiskSampleView {
+  /** directory_bytes + container_bytes. */
+  bytes: number
+  directory_bytes: number
+  /** The container's writable layer; null when it has no container. */
+  container_bytes: number | null
+  /** Part of the directory could not be read: `bytes` is a lower bound. */
+  partial: boolean
+  at: string
+  stale: boolean
+}
+
+/** One workspace's measurements; `at` is the sampling round, the version. */
+export interface ResourcesView {
+  at: string
+  /** Null with no reading — a stopped workspace has none. Never 0 for "unknown". */
+  memory: MemorySampleView | null
+  disk: DiskSampleView | null
+}
+
+/** The filesystem holding the workspaces, against the pre-flight's limit (design §12). */
+export interface HostDiskView {
+  used_bytes: number
+  total_bytes: number
+  limit_percent: number
+  over: boolean
+  at: string
+}
+
+/**
+ * The stream's named `resources` frame: one sampling round. It has no id —
+ * it is a measurement, never persisted — and it lists every measured
+ * workspace by id.
+ */
+export interface ResourcesFrame {
+  at: string
+  workspaces: Record<string, ResourcesView>
+  host: HostDiskView | null
 }
 
 /** `internal/supervisor` State; the database's CHECK constraint holds the same set. */
@@ -242,6 +296,8 @@ export interface WorkspaceList {
   workspaces: WorkspaceView[]
   /** Absent from a server older than §4.5 #17. */
   capacity?: CapacityView
+  /** The workspace filesystem as last measured; null before that, absent from an older server. */
+  disk?: HostDiskView | null
 }
 
 /** `GET /api/workspaces/:id`: the view plus its latest 50 events, newest first. */

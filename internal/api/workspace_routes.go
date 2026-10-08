@@ -38,6 +38,13 @@ type EventReader interface {
 	ForWorkspace(ctx context.Context, workspaceID string, limit int) ([]events.Event, error)
 }
 
+// Resources is the sampler's latest measurements (internal/usage): read from
+// memory and set on each view as it is served, never stored.
+type Resources interface {
+	Of(id string) *workspace.Resources
+	HostDisk() *workspace.HostDisk
+}
+
 // detailEvents is how many events GET /api/workspaces/{id} carries.
 const detailEvents = 50
 
@@ -51,6 +58,9 @@ type WorkspaceRoutes struct {
 	Provisioner Provisioner
 	Workspaces  WorkspaceReader
 	Events      EventReader
+	// Resources, when set, fills each view's resources and the list's
+	// disk. Nil serves both as null: nothing measured.
+	Resources Resources
 }
 
 // Handlers returns the map Build consumes, keyed by route Name.
@@ -82,7 +92,14 @@ func (wr WorkspaceRoutes) list(w http.ResponseWriter, r *http.Request) {
 		WriteError(w, http.StatusInternalServerError, CodeInternal, "Could not read the workspaces.", "")
 		return
 	}
-	writeJSON(w, http.StatusOK, WorkspaceList{Workspaces: vs, Capacity: wr.Workspaces.CapacityOf(vs)})
+	list := WorkspaceList{Workspaces: vs, Capacity: wr.Workspaces.CapacityOf(vs)}
+	if wr.Resources != nil {
+		for i := range list.Workspaces {
+			list.Workspaces[i].Resources = wr.Resources.Of(list.Workspaces[i].ID)
+		}
+		list.Disk = wr.Resources.HostDisk()
+	}
+	writeJSON(w, http.StatusOK, list)
 }
 
 // WorkspaceList is GET /api/workspaces: every workspace with a row, and the
@@ -95,6 +112,11 @@ func (wr WorkspaceRoutes) list(w http.ResponseWriter, r *http.Request) {
 type WorkspaceList struct {
 	Workspaces []workspace.View   `json:"workspaces"`
 	Capacity   workspace.Capacity `json:"capacity"`
+	// Disk is the filesystem holding the workspaces against the limit the
+	// pre-flight refuses at (design §12, *Disk full*), as last measured;
+	// null before the first measurement. The stream's resources frames
+	// carry the same object as it changes.
+	Disk *workspace.HostDisk `json:"disk"`
 }
 
 func (wr WorkspaceRoutes) read(w http.ResponseWriter, r *http.Request) {
@@ -114,6 +136,9 @@ func (wr WorkspaceRoutes) read(w http.ResponseWriter, r *http.Request) {
 	}
 	if evs == nil {
 		evs = []events.Event{}
+	}
+	if wr.Resources != nil {
+		v.Resources = wr.Resources.Of(v.ID)
 	}
 	writeJSON(w, http.StatusOK, WorkspaceDetail{View: v, Events: evs})
 }
@@ -254,6 +279,16 @@ func (wr WorkspaceRoutes) writeProvisionError(w http.ResponseWriter, err error) 
 		}
 		WriteError(w, http.StatusConflict, CodeAtCapacity,
 			"Drydock is at its concurrent-container cap. Stop a workspace to make room.", detail)
+	case errors.Is(err, provision.ErrDiskFull):
+		// The figures are the refusal's own, so the sentence and the
+		// banner name the same numbers.
+		detail := ""
+		var full *provision.DiskFullError
+		if errors.As(err, &full) {
+			detail = fmt.Sprintf("The workspace disk is %d%% full; Drydock refuses at %d%%.", full.Percent(), full.LimitPercent)
+		}
+		WriteError(w, http.StatusInsufficientStorage, CodeDiskFull,
+			"The disk that holds the workspaces is too full to clone or build another. Delete a workspace you no longer need.", detail)
 	case errors.Is(err, provision.ErrShuttingDown):
 		WriteError(w, http.StatusServiceUnavailable, CodeUnavailable, "Drydock is shutting down.", "")
 	default:

@@ -31,6 +31,11 @@ const SENTENCES: Record<string, string> = {
   // cap it knows of, so this is reached when its count was behind.
   at_capacity:
     'Drydock is at its cap: as many workspaces as it allows are already building or running. Stop one under Running to make room — its clone survives, and Start brings it back.',
+  // Design §12, *Disk full*: the pre-flight refused before anything was
+  // cloned or built. The one action is a delete, and the disk banner lists
+  // the workspaces largest first; the detail names the two percentages.
+  disk_full:
+    'The disk that holds the workspaces is too full to clone or build another, so nothing was started. Delete a workspace you no longer need — the banner above lists the largest.',
   // Design §5: a delete's ?confirm= is compared exactly. The sheet keeps its
   // button off until the text matches, so this is reached only when the name
   // changed under it (a renamed repository) or another client sent it.
@@ -79,7 +84,9 @@ const SENTENCES: Record<string, string> = {
  * cap (internal/api writeProvisionError), which is what makes the sentence
  * worth reading. It is rendered as text (§8).
  */
-const DETAILED = new Set(['secret_name_reserved', 'secret_value_control_character', 'unknown_repository', 'at_capacity'])
+const DETAILED = new Set([
+  'secret_name_reserved', 'secret_value_control_character', 'unknown_repository', 'at_capacity', 'disk_full',
+])
 
 /**
  * The sentence for a code and its detail. A refusal the form caught before

@@ -84,6 +84,13 @@
 // not a per-workspace one: the banner and the card overlay read the same
 // field, which is the whole of frontend §6.6.
 //
+// Resources — memory and disk — have a seventh, `resources`: the stream's
+// named frame, one per sampling round, with no event id (it is a measurement
+// and is never persisted). They and the host's disk are also carried by the
+// workspace list and detail, and every copy is versioned by the server's round
+// time rather than an event id (stores/resources.ts). They live beside the
+// workspaces, not in them: a measurement changes nothing about a workspace.
+//
 // Secrets have a sixth input, `secrets` — a GET /api/secrets body — and are
 // written by it and by the secret.* events, and by nothing else. The same
 // two inputs write the fleet fault: the body's `undeliverable` (null when
@@ -108,8 +115,9 @@ import {
   IDENTITY_STATES, LOGIN_PHASES, WORKSPACE_STATES, WORKSPACE_STEPS, type CatalogView, type ClaudeIdentityBody,
   type IdentityCheckError, type IdentityState, type InstallationView, type LoginPhase, type RepoView, type SecretList,
   type SecretMeta, type StepStatus, type StreamEvent, type ApprovalView, type WorkspaceDetail, type WorkspaceList, type WorkspaceState,
-  type WorkspaceView, SUPERVISOR_STATES, type SupervisorState,
+  type WorkspaceView, SUPERVISOR_STATES, type SupervisorState, type HostDiskView, type ResourcesView,
 } from '../api/types'
+import { frameParts, mergeHostDisk, mergeResources, type HostDisk, type Resources } from './resources'
 
 /**
  * The shared Claude login as the watch last stored it (design §7.3). Named
@@ -407,6 +415,10 @@ export interface Entities {
   login: ClaudeLogin | null
   /** The event id (or snapshot position) that last wrote `login`, set or cleared. */
   loginAt: number
+  /** Each workspace's latest measurements, by id; absent until measured. */
+  resources: Record<string, Resources>
+  /** The workspace filesystem against the disk limit; null until measured. */
+  hostDisk: HostDisk | null
 }
 
 export type Action =
@@ -417,6 +429,7 @@ export type Action =
   | { type: 'workspace'; at: number; view: WorkspaceDetail }
   | { type: 'secrets'; at: number; view: SecretList }
   | { type: 'identity'; at: number; view: ClaudeIdentityBody }
+  | { type: 'resources'; frame: unknown }
 
 export function emptyEntities(): Entities {
   return {
@@ -442,6 +455,8 @@ export function emptyEntities(): Entities {
     identityAt: 0,
     login: null,
     loginAt: 0,
+    resources: {},
+    hostDisk: null,
   }
 }
 
@@ -461,10 +476,19 @@ export function reduce(prev: Entities, action: Action): Entities {
       }
     case 'snapshot':
       return applySnapshot(prev, action.at, action.view)
-    case 'workspaces':
-      return applyWorkspaceList(prev, action.at, action.view)
-    case 'workspace':
-      return applyWorkspaceDetail(prev, action.at, action.view)
+    case 'workspaces': {
+      const next = applyWorkspaceList(prev, action.at, action.view)
+      const list = Array.isArray(action.view?.workspaces) ? action.view.workspaces : []
+      return withResources(next, Object.fromEntries(list.map((v) => [v.id, v.resources])), action.view?.disk)
+    }
+    case 'workspace': {
+      const next = applyWorkspaceDetail(prev, action.at, action.view)
+      return action.view?.id ? withResources(next, { [action.view.id]: action.view.resources }, undefined) : next
+    }
+    case 'resources': {
+      const parts = frameParts(action.frame)
+      return parts === null ? prev : withResources(prev, parts.workspaces, parts.host)
+    }
     case 'secrets':
       return applySecretList(prev, action.at, action.view)
     case 'identity': {
@@ -558,6 +582,19 @@ function applyIdentityEvent(base: Entities, ev: StreamEvent): Entities {
     return { ...base, identity: { ...cur, checkError, lastCheckedAt: checkError.at || cur.lastCheckedAt }, identityAt: ev.id }
   }
   return base // an auth.* kind from a later phase
+}
+
+/**
+ * Applies measurements: a workspace's only while the entities hold it and it
+ * is not deleted, and each only if it is from the round held or a later one.
+ */
+function withResources(
+  e: Entities, incoming: Record<string, ResourcesView | null | undefined>, host: HostDiskView | null | undefined,
+): Entities {
+  const resources = mergeResources(e.resources, incoming, (id) => e.workspaces[id] !== undefined && e.gone[id] === undefined)
+  const hostDisk = mergeHostDisk(e.hostDisk, host)
+  if (resources === e.resources && hostDisk === e.hostDisk) return e
+  return { ...e, resources, hostDisk }
 }
 
 /** Folds a recorded sequence; the specs' and the store's shared entry point. */
@@ -666,7 +703,9 @@ function applyEvent(prev: Entities, ev: StreamEvent): Entities {
     delete workspaces[wsId]
     const feeds = { ...base.feeds }
     delete feeds[wsId]
-    return { ...base, workspaces, feeds, gone: { ...base.gone, [wsId]: ev.id } }
+    const resources = { ...base.resources }
+    delete resources[wsId]
+    return { ...base, workspaces, feeds, resources, gone: { ...base.gone, [wsId]: ev.id } }
   }
 
   // Every event naming a workspace joins its feed, whatever its kind.

@@ -129,6 +129,15 @@ func (e EventRoutes) stream(w http.ResponseWriter, r *http.Request) {
 			if !ok {
 				return // cut off or shutting down; the client reconnects and replays
 			}
+			if ev.Live != "" {
+				// A measurement (events.Broadcast): no id, so the browser's
+				// Last-Event-ID stays the last real event's, and nothing to
+				// replay — a missed one is replaced by the next.
+				if writeLive(w, ev.Live, ev.Data) != nil || rc.Flush() != nil {
+					return
+				}
+				continue
+			}
 			if ev.ID <= sent {
 				continue
 			}
@@ -157,6 +166,13 @@ func writeEvent(w io.Writer, ev events.Event) error {
 		return err
 	}
 	return writeFrame(w, ev.ID, "", b)
+}
+
+// writeLive writes a named frame with no id line. Per the SSE spec a frame
+// without one leaves the stream's last event id as it was.
+func writeLive(w io.Writer, name string, data []byte) error {
+	_, err := io.WriteString(w, "event: "+name+"\ndata: "+string(data)+"\n\n")
+	return err
 }
 
 // writeFrame writes one SSE frame. data must be a single line, which

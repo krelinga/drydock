@@ -26,6 +26,8 @@ import WorkspaceIdentityNote from '../components/WorkspaceIdentityNote.vue'
 import { useStreamRefetch } from '../lib/refetch'
 import { relativeTime } from '../lib/time'
 import MakeRoom from '../components/MakeRoom.vue'
+import ResourceLine from '../components/ResourceLine.vue'
+import { diskBreakdown } from '../lib/resources'
 import { capacity } from '../lib/capacity'
 import { actionStepTitle, cardStatus, stepTitle, withRoom } from '../lib/workspaceCard'
 import { ACTION_STEPS, failedStep, liveAction, runSteps, stopFailed } from '../stores/reducer'
@@ -91,6 +93,9 @@ watch(() => feed.value.length, async () => {
 })
 
 const shortId = (c: string) => c.slice(0, 12)
+
+// What the disk figure counts (design §6 *Resources*): what a delete frees.
+const breakdown = computed(() => diskBreakdown(stream.entities.resources[id.value]))
 
 // A stop's or a delete's sub-steps: while one runs, where a stop failed, and
 // for as long as a delete has not finished — a stuck one names its sub-step.
@@ -178,6 +183,7 @@ watch(id, () => {
           <span v-if="ws.branch" class="branch">{{ ws.branch }}</span>
         </div>
         <p v-if="status.note" class="note" data-test="ws-note">{{ status.note }}</p>
+        <ResourceLine :workspace="ws" />
         <WorkspaceIdentityNote :state="ws.state" part="waiting" />
         <p v-if="status.since" class="note" data-test="waiting-since">Waiting since {{ relativeTime(status.since) }}.</p>
         <WorkspaceAction :workspace="ws" :action="status.action" :link="status.link" primary />
@@ -186,6 +192,10 @@ watch(id, () => {
           <div v-if="ws.containerId"><dt>Container</dt><dd class="mono" :title="ws.containerId">{{ shortId(ws.containerId) }}</dd></div>
           <div v-if="ws.createdAt"><dt>Created</dt><dd :title="ws.createdAt">{{ relativeTime(ws.createdAt) }}</dd></div>
           <div v-if="ws.adopted"><dt>Adopted</dt><dd>Found running after a restart</dd></div>
+          <div v-if="breakdown" data-test="disk-breakdown">
+            <dt>Disk</dt>
+            <dd>{{ breakdown }}. Deleting the workspace frees it; images and the shared Claude login are not counted.</dd>
+          </div>
           <div v-if="ws.session?.url"><dt>Environment</dt><dd class="mono">{{ ws.session.environmentId }}</dd></div>
           <div v-if="ws.session && ws.session.sessions > 0"><dt>Sessions seen</dt><dd>{{ ws.session.sessions }}</dd></div>
           <div v-if="ws.supervisor && ws.supervisor.restartCount > 0">

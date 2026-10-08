@@ -209,6 +209,18 @@ export const useStreamStore = defineStore('stream', {
         const ev = parseEvent((m as MessageEvent<string>).data)
         if (ev !== null) this.receive(ev)
       })
+      // A sampling round (design §6 *Resources*): named, with no id, so it
+      // never moves lastEventId and is never replayed; the next replaces it.
+      es.addEventListener('resources', (m) => {
+        if (r.es !== es) return
+        let frame: unknown
+        try {
+          frame = JSON.parse((m as MessageEvent<string>).data)
+        } catch {
+          return
+        }
+        this.dispatch({ type: 'resources', frame })
+      })
       es.addEventListener('resync', (m) => {
         if (r.es !== es) return
         const id = Number((m as MessageEvent<string>).lastEventId)

@@ -43,6 +43,7 @@ import (
 	"github.com/krelinga/drydock/internal/subproc"
 	"github.com/krelinga/drydock/internal/supervisor"
 	"github.com/krelinga/drydock/internal/sys"
+	"github.com/krelinga/drydock/internal/usage"
 	"github.com/krelinga/drydock/internal/web"
 	"github.com/krelinga/drydock/internal/workspace"
 )
@@ -80,6 +81,10 @@ type Server struct {
 	// Login is the handshake (§7.2). Its Launcher is a test's seam, set
 	// between New and Serve.
 	Login *login.Manager
+	// Usage measures each workspace's memory and disk and the workspace
+	// filesystem (§6 *Resources*, §12 *Disk full*). Nil when env has no
+	// Disk, which only a test's env lacks; its fields are a test's seam.
+	Usage *usage.Sampler
 	// reconciled closes when boot reconciliation has finished, so a test
 	// can set up workspace rows reconciliation would otherwise move.
 	reconciled chan struct{}
@@ -141,6 +146,7 @@ func New(ctx context.Context, cfg config.Config, env sys.Env) (*Server, error) {
 	}
 	s.Provisioner = &provision.Provisioner{Workspaces: s.Workspaces, Events: s.Events, Containers: containers,
 		Feature: cfg.Feature, FeatureOptions: feature, Timeout: cfg.ProvisionTimeout,
+		Disk: env.Disk, DiskLimitPercent: cfg.DiskLimitPercent,
 		ClaudeVolume: cfg.ClaudeVolume, ClaudeCodeVersion: classify.ClaudeCodeVersion,
 		Logf: func(f string, a ...any) { fmt.Fprintf(os.Stderr, f+"\n", a...) }}
 	// The session supervisor (§8): started at step 8, at boot for every
@@ -263,7 +269,15 @@ func New(ctx context.Context, cfg config.Config, env sys.Env) (*Server, error) {
 	for name, h := range (api.ClaudeRoutes{Watch: s.Identity, Login: s.Login}).Handlers() {
 		handlers[name] = h
 	}
-	for name, h := range (api.WorkspaceRoutes{Provisioner: s.Provisioner, Workspaces: s.Workspaces, Events: s.Events}).Handlers() {
+	routes := api.WorkspaceRoutes{Provisioner: s.Provisioner, Workspaces: s.Workspaces, Events: s.Events}
+	if env.Disk != nil {
+		s.Usage = &usage.Sampler{Workspaces: s.Workspaces, Containers: containers, Disk: env.Disk, Clock: env.Clock,
+			Root: cfg.WorkspaceRoot, LimitPercent: cfg.DiskLimitPercent,
+			Publish: func(f usage.Frame) { _ = s.Events.Broadcast(usage.FrameName, f) },
+			Logf:    func(f string, a ...any) { fmt.Fprintf(os.Stderr, f+"\n", a...) }}
+		routes.Resources = s.Usage
+	}
+	for name, h := range routes.Handlers() {
 		handlers[name] = h
 	}
 	s.api = &http.Server{
@@ -492,6 +506,15 @@ func (s *Server) Serve(ctx context.Context) error {
 			fmt.Fprintf(os.Stderr, "drydock: login: removed %d leftover login container(s)\n", n)
 		}
 	}()
+	// Memory and disk, on their own cadence (§6 *Resources*): measurements
+	// for the card, published live and never written to the event log.
+	sampling := make(chan struct{})
+	go func() {
+		defer close(sampling)
+		if s.Usage != nil {
+			s.Usage.Run(ctx)
+		}
+	}()
 	refreshing := make(chan struct{})
 	go func() {
 		defer close(refreshing)
@@ -538,6 +561,7 @@ func (s *Server) Serve(ctx context.Context) error {
 	<-watching
 	<-supervising
 	<-sweeping
+	<-sampling
 	s.DB.Close()
 	if errors.Is(serveErr, http.ErrServerClosed) {
 		serveErr = nil

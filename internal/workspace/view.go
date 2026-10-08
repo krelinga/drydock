@@ -54,6 +54,10 @@ type View struct {
 	// repository. The workspace.state event that stopped it carries the
 	// same object, and every other workspace.state event carries none.
 	Approval *ApprovalView `json:"approval"`
+	// Resources is the sampler's latest measurement of the workspace
+	// (resources.go), filled in by the route from memory, never read from
+	// the database; null when this server measures nothing yet.
+	Resources *Resources `json:"resources"`
 }
 
 // Kinds the session supervisor (internal/supervisor, design §8) writes.

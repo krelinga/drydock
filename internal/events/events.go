@@ -21,6 +21,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -49,6 +50,9 @@ type Event struct {
 	// Data is what the reducer applies: a JSON object, or absent.
 	Data json.RawMessage `json:"data,omitempty"`
 	At   time.Time       `json:"at"`
+	// Live, when set, marks a frame Broadcast sent: never a row, with no id,
+	// named Live on the stream, and Data its whole payload. Never marshalled.
+	Live string `json:"-"`
 }
 
 // DefaultReplayWindow is how many events a reconnecting client may be behind
@@ -211,6 +215,34 @@ func (l *Log) publish(e Event) { // l.mu held
 			l.drop(s) // too far behind; it will reconnect and replay
 		}
 	}
+}
+
+// Broadcast sends v to every live subscriber as a frame named name, and
+// writes nothing: no row, no id, no replay. It is for a measurement (design
+// §6, *Resources*) — a value the next one replaces, which a client that missed
+// it loses nothing by missing, and which persisted every half-minute would
+// push the events that matter out of the replay window. So a subscriber whose
+// buffer is full skips it rather than being cut off for it.
+//
+// name must be a bare word; the stream writes it as the frame's `event:`.
+func (l *Log) Broadcast(name string, v any) error {
+	if name == "" || strings.ContainsAny(name, " \r\n:") {
+		return fmt.Errorf("events: %q is not a frame name", name)
+	}
+	b, err := json.Marshal(v)
+	if err != nil {
+		return fmt.Errorf("events: %s: %w", name, err)
+	}
+	e := Event{Live: name, Data: b}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	for s := range l.subs {
+		select {
+		case s.ch <- e:
+		default: // behind: this one is skipped, and the next replaces it
+		}
+	}
+	return nil
 }
 
 // NewEvent builds an Event whose Data is v marshalled: Commit's callers use

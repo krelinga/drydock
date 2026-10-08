@@ -43,6 +43,9 @@ const (
 	// A 409 like in_progress, but a different sentence and a different
 	// action — stop something — so a different code.
 	CodeAtCapacity = "at_capacity"
+	// CodeDiskFull: a create, start or rebuild refused by the disk
+	// pre-flight (design §12, *Disk full*); 507, with the figures in detail.
+	CodeDiskFull   = "disk_full"
 	CodeBadRequest = "bad_request"
 	// CodeConfirmMismatch: a workspace delete whose ?confirm= is missing or
 	// is not the repository's full name exactly (frontend §6.5). A 400 of
