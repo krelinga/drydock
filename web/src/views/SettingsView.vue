@@ -46,6 +46,8 @@ async function refreshCatalog(): Promise<void> {
 // is a 202: in flight until the check's event lands.
 const identity = useIdentityStore()
 const id = computed(() => stream.entities.identity)
+// Past the login's recorded end: shown as a passed date, never as "expires … ago".
+const loginDatePassed = computed(() => id.value?.loginExpiresAt != null && Date.parse(id.value.loginExpiresAt) <= Date.now())
 const checkFlight = computed(() => stream.inFlight[CHECK_KEY] ?? null)
 const checkError = ref<string | null>(null)
 
@@ -179,9 +181,27 @@ async function signOut(everywhere: boolean): Promise<void> {
         <template v-if="id.accountEmail">
           <dt>Account</dt><dd data-test="claude-account">{{ id.accountEmail }}</dd>
         </template>
-        <template v-if="id.expiresAt">
-          <dt>{{ id.state === 'expired' ? 'Access token lapsed' : 'Expires' }}</dt>
-          <dd data-test="claude-expires">{{ relativeTime(id.expiresAt) }}</dd>
+        <!-- The login's own end (the refresh token's), when Claude Code
+             recorded one. The access token's expiry is not shown as an
+             expiry: it is hours away after every sign-in and moves with
+             every refresh (design §7.3) — only its lapse, which is
+             informational. -->
+        <template v-if="id.loginExpiresAt && !loginDatePassed">
+          <dt>Login expires</dt>
+          <dd data-test="claude-expires">{{ relativeTime(id.loginExpiresAt) }}</dd>
+        </template>
+        <!-- Past the recorded date the login is not known to be over: the
+             next refresh either works (the date was Claude Code's thirty-day
+             default) or blanks the file, which the banner then says. -->
+        <template v-if="id.loginExpiresAt && loginDatePassed">
+          <dt>Login date passed</dt>
+          <dd data-test="claude-login-date-passed">
+            {{ relativeTime(id.loginExpiresAt) }}. The next refresh either works or signs Claude out, and then this page says so.
+          </dd>
+        </template>
+        <template v-if="id.state === 'expired' && id.expiresAt">
+          <dt>Access token lapsed</dt>
+          <dd data-test="claude-access-lapsed">{{ relativeTime(id.expiresAt) }}</dd>
         </template>
         <template v-if="id.loggedInAt">
           <dt>First seen</dt><dd>{{ relativeTime(id.loggedInAt) }}</dd>

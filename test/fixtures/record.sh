@@ -517,10 +517,14 @@ record_identity() {
 # ---------------------------------------------------------------------------
 record_credentials() {
 	say "== .credentials.json shapes (synthetic by nature — they are inputs) =="
-	local now future soon past
+	local now future soon access past
 	now=$(date +%s)
 	future=$(( (now + 86400 * 30) * 1000 ))
 	soon=$(( (now + 86400 * 2) * 1000 ))
+	# A real access token lives about eight hours (measured on the owner's
+	# login, 2026-10-08); the LOGIN's end is refreshTokenExpiresAt, which
+	# 2.1.289 writes at every login — the server's figure, or thirty days.
+	access=$(( (now + 3600 * 8) * 1000 ))
 	past=$(( (now - 3600) * 1000 ))
 	local tok=sk-ant-oat01-FIXTURE-FAKE
 	local rtok=sk-ant-ort01-FIXTURE-FAKE
@@ -537,9 +541,12 @@ record_credentials() {
 	emit ok "$(jq -nc --arg t "$tok" --arg r "$rtok" --argjson e "$future" \
 		'{claudeAiOauth:{accessToken:$t,refreshToken:$r,expiresAt:$e,scopes:["user:inference"],subscriptionType:"max"}}')" \
 		"ok"
-	emit expiring "$(jq -nc --arg t "$tok" --arg r "$rtok" --argjson e "$soon" \
-		'{claudeAiOauth:{accessToken:$t,refreshToken:$r,expiresAt:$e,scopes:["user:inference"],subscriptionType:"max"}}')" \
-		"expiring — inside the three-day window, still a countdown the operator may ignore"
+	emit fresh-login "$(jq -nc --arg t "$tok" --arg r "$rtok" --argjson e "$access" --argjson l "$future" \
+		'{claudeAiOauth:{accessToken:$t,refreshToken:$r,expiresAt:$e,refreshTokenExpiresAt:$l,scopes:["user:inference"],subscriptionType:"max"}}')" \
+		"ok — a fresh login as 2.1.289 writes it: the access token eight hours out (measured on a real login, 2026-10-08), refreshTokenExpiresAt thirty days out. NOT expiring"
+	emit expiring "$(jq -nc --arg t "$tok" --arg r "$rtok" --argjson e "$access" --argjson l "$soon" \
+		'{claudeAiOauth:{accessToken:$t,refreshToken:$r,expiresAt:$e,refreshTokenExpiresAt:$l,scopes:["user:inference"],subscriptionType:"max"}}')" \
+		"expiring — the LOGIN (refreshTokenExpiresAt) ends in two days; the access token's eight hours are not what counts"
 	emit expired "$(jq -nc --arg t "$tok" --arg r "$rtok" --argjson e "$past" \
 		'{claudeAiOauth:{accessToken:$t,refreshToken:$r,expiresAt:$e,scopes:["user:inference"],subscriptionType:"max"}}')" \
 		"expired — and note auth status still says loggedIn:true for this one"

@@ -4,6 +4,14 @@
 // banner, the cards and GET /api/auth/claude all read one stored answer
 // rather than each deriving their own (§4).
 //
+// Two dates come with a live login, and only one of them is the login's.
+// expires_at is the access token's: about eight hours on a real login
+// (measured 2026-10-08), renewed by every refresh, and it decides only the
+// informational `expired`. login_expires_at is the refresh token's —
+// Claude Code's own refreshTokenExpiresAt — and `expiring` is a countdown on
+// that alone, by Claude Code's own rule. A login that is really over is
+// neither: a refresh the server rejects blanks the file (Spike 00).
+//
 // The verdict is internal/classify's, exactly as built: the credential file
 // decides blanked and absent before `claude auth status` is consulted, so a
 // broken or reshaped second read can never hide the tombstone that takes
@@ -51,12 +59,13 @@ const (
 
 // Live reports whether a state is a login on the volume, as opposed to none.
 //
-// Expired is live. The verdicts are dated by the credential file's
-// expiresAt, which is the access token's expiry: the refresh token beside
-// it is what keeps the login alive, and Claude Code renews an expired access
-// token from it by itself (Spike 00). A login whose refresh token is dead is
-// not expired but blanked — Claude Code tombstones the file when the server
-// rejects a refresh.
+// Expired is live. It is dated by the credential file's expiresAt, which is
+// the access token's expiry: the refresh token beside it is what keeps the
+// login alive, and Claude Code renews an expired access token from it by
+// itself (Spike 00). A login whose refresh token is dead is not expired but
+// blanked — Claude Code tombstones the file when the server rejects a
+// refresh. Expiring is live too: the login still works, and ends at
+// login_expires_at unless someone signs in again.
 func (s State) Live() bool { return s == OK || s == Expiring || s == Expired }
 
 func stateOf(s classify.IdentityState) State {
@@ -115,14 +124,20 @@ type CheckError struct {
 // State is nil until a check has ever succeeded: "not yet known" is not any
 // of the five, and saying absent there would tell the operator nobody has
 // signed in when Drydock simply has not looked.
+//
+// ExpiresAt is the access token's expiry, never the login's: a real one is
+// hours away, and moves with every refresh. LoginExpiresAt is the login's —
+// the refresh token's, as Claude Code records it — and nil when the
+// credential file carries none.
 type View struct {
-	State         *State      `json:"state"`
-	AccountEmail  *string     `json:"account_email"`
-	ExpiresAt     *time.Time  `json:"expires_at"`
-	LoggedInAt    *time.Time  `json:"logged_in_at"`
-	LastCheckedAt *time.Time  `json:"last_checked_at"`
-	Volume        string      `json:"volume"`
-	CheckError    *CheckError `json:"check_error"`
+	State          *State      `json:"state"`
+	AccountEmail   *string     `json:"account_email"`
+	ExpiresAt      *time.Time  `json:"expires_at"`
+	LoginExpiresAt *time.Time  `json:"login_expires_at"`
+	LoggedInAt     *time.Time  `json:"logged_in_at"`
+	LastCheckedAt  *time.Time  `json:"last_checked_at"`
+	Volume         string      `json:"volume"`
+	CheckError     *CheckError `json:"check_error"`
 }
 
 // Watch reads the shared login and keeps claude_identity current.
@@ -133,7 +148,8 @@ type Watch struct {
 	Source Source
 	// Volume is recorded in the row (claude_identity.volume_name).
 	Volume string
-	// Window is the expiring threshold (configuration, §7.3).
+	// Window is the expiring threshold on the login's own expiry, never the
+	// access token's (configuration, §7.3).
 	Window   time.Duration
 	Interval time.Duration
 	// Timeout bounds each read (DefaultTimeout when zero); BuildTimeout the
@@ -470,19 +486,20 @@ func (w *Watch) fail(ctx context.Context, err error) (View, error) {
 }
 
 type row struct {
-	state      State
-	email      sql.NullString
-	expiresAt  sql.NullString
-	loggedInAt sql.NullString
-	checkedAt  sql.NullString
+	state          State
+	email          sql.NullString
+	expiresAt      sql.NullString
+	loginExpiresAt sql.NullString
+	loggedInAt     sql.NullString
+	checkedAt      sql.NullString
 }
 
 func (w *Watch) load(ctx context.Context) (*row, error) {
 	var r row
 	var state string
 	err := w.DB.QueryRowContext(ctx,
-		`SELECT state, account_email, expires_at, logged_in_at, last_checked_at FROM claude_identity WHERE id = 1`).
-		Scan(&state, &r.email, &r.expiresAt, &r.loggedInAt, &r.checkedAt)
+		`SELECT state, account_email, expires_at, login_expires_at, logged_in_at, last_checked_at FROM claude_identity WHERE id = 1`).
+		Scan(&state, &r.email, &r.expiresAt, &r.loginExpiresAt, &r.loggedInAt, &r.checkedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -504,7 +521,7 @@ func (w *Watch) store(ctx context.Context, id classify.Identity) (View, error) {
 		return View{}, err
 	}
 
-	var email, expires, loggedIn sql.NullString
+	var email, expires, loginExpires, loggedIn sql.NullString
 	if state.Live() {
 		// Only beside a login: an email next to "Signed out" would name an
 		// account that is not on the volume (the classifier's own rule).
@@ -512,6 +529,9 @@ func (w *Watch) store(ctx context.Context, id classify.Identity) (View, error) {
 			email = sql.NullString{String: id.AccountEmail, Valid: true}
 		}
 		expires = sql.NullString{String: ts(id.ExpiresAt), Valid: true}
+		if !id.LoginExpiresAt.IsZero() {
+			loginExpires = sql.NullString{String: ts(id.LoginExpiresAt), Valid: true}
+		}
 		// logged_in_at is when this login happened. The handshake (§7.2)
 		// knows that exactly and hands it over through LoggedIn; a login
 		// made some other way is dated by the first live verdict after
@@ -528,13 +548,14 @@ func (w *Watch) store(ctx context.Context, id classify.Identity) (View, error) {
 	}
 
 	if _, err := w.DB.ExecContext(ctx, `
-		INSERT INTO claude_identity (id, volume_name, account_email, logged_in_at, state, expires_at, last_checked_at)
-		VALUES (1, ?, ?, ?, ?, ?, ?)
+		INSERT INTO claude_identity (id, volume_name, account_email, logged_in_at, state, expires_at, login_expires_at, last_checked_at)
+		VALUES (1, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
 		  volume_name = excluded.volume_name, account_email = excluded.account_email,
 		  logged_in_at = excluded.logged_in_at, state = excluded.state,
-		  expires_at = excluded.expires_at, last_checked_at = excluded.last_checked_at`,
-		w.Volume, email, loggedIn, string(state), expires, ts(now)); err != nil {
+		  expires_at = excluded.expires_at, login_expires_at = excluded.login_expires_at,
+		  last_checked_at = excluded.last_checked_at`,
+		w.Volume, email, loggedIn, string(state), expires, loginExpires, ts(now)); err != nil {
 		return View{}, err
 	}
 
@@ -547,7 +568,8 @@ func (w *Watch) store(ctx context.Context, id classify.Identity) (View, error) {
 	if err != nil {
 		return View{}, err
 	}
-	changed := prev == nil || prev.state != state || prev.email != email || prev.expiresAt != expires || prev.loggedInAt != loggedIn
+	changed := prev == nil || prev.state != state || prev.email != email || prev.expiresAt != expires ||
+		prev.loginExpiresAt != loginExpires || prev.loggedInAt != loggedIn
 	if changed || recovered {
 		w.Events.Emit(ctx, "", levelOf(state), KindIdentity, message(state, id), map[string]any{"identity": v})
 	}
@@ -578,7 +600,9 @@ func message(s State, id classify.Identity) string {
 		// Code to use the volume renews it (Spike 00). Not a fault.
 		return "Claude is signed in. The access token on the shared volume has lapsed; the next session server to start renews it."
 	case Expiring:
-		return "The Claude login expires " + id.ExpiresAt.UTC().Format("2006-01-02 15:04 MST") + ". Sign in again before then."
+		// The login's own end — the refresh token's — never the access
+		// token's, which is always hours away (§7.3).
+		return "The Claude login expires " + id.LoginExpiresAt.UTC().Format("2006-01-02 15:04 MST") + ". Sign in again before then."
 	}
 	return "Claude is signed in."
 }
@@ -598,6 +622,7 @@ func (w *Watch) Read(ctx context.Context) (View, error) {
 			v.AccountEmail = &e
 		}
 		v.ExpiresAt = parseTS(r.expiresAt)
+		v.LoginExpiresAt = parseTS(r.loginExpiresAt)
 		v.LoggedInAt = parseTS(r.loggedInAt)
 		v.LastCheckedAt = parseTS(r.checkedAt)
 	}

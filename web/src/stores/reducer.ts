@@ -120,7 +120,10 @@ export interface ClaudeIdentity {
   /** Null: no check has ever succeeded — not yet known, never "absent". */
   state: IdentityState | null
   accountEmail: string | null
+  /** The access token's expiry: hours, renewed by every refresh. Never a countdown. */
   expiresAt: string | null
+  /** The login's (the refresh token's) expiry; what `expiring` counts down to. */
+  loginExpiresAt: string | null
   loggedInAt: string | null
   lastCheckedAt: string | null
   volume: string
@@ -494,6 +497,7 @@ function toIdentity(v: unknown): ClaudeIdentity | null {
     state,
     accountEmail: str(x.account_email),
     expiresAt: str(x.expires_at),
+    loginExpiresAt: str(x.login_expires_at),
     loggedInAt: str(x.logged_in_at),
     lastCheckedAt: str(x.last_checked_at),
     volume: typeof x.volume === 'string' ? x.volume : '',
@@ -548,7 +552,8 @@ function applyIdentityEvent(base: Entities, ev: StreamEvent): Entities {
     // fact, and the event's own sentence says it.
     const checkError = toCheckError(data.check_error) ?? { at: ev.at, problem: '', message: ev.message }
     const cur: ClaudeIdentity = base.identity ?? {
-      state: null, accountEmail: null, expiresAt: null, loggedInAt: null, lastCheckedAt: null, volume: '', checkError: null,
+      state: null, accountEmail: null, expiresAt: null, loginExpiresAt: null, loggedInAt: null, lastCheckedAt: null, volume: '',
+      checkError: null,
     }
     return { ...base, identity: { ...cur, checkError, lastCheckedAt: checkError.at || cur.lastCheckedAt }, identityAt: ev.id }
   }

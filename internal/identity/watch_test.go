@@ -163,6 +163,7 @@ func TestEveryFixtureGetsItsVerdict(t *testing.T) {
 		email               bool
 	}{
 		{"ok", "ok.json", "valid.json", OK, true},
+		{"a fresh login: access token eight hours out", "fresh-login.json", "valid.json", OK, true},
 		{"expiring", "expiring.json", "valid.json", Expiring, true},
 		{"expired despite loggedIn:true", "expired.json", "expired.json", Expired, true},
 		{"blanked", "blanked.json", "blanked.json", Blanked, false},
@@ -365,8 +366,8 @@ func TestFirstCheckFailingInventsNothing(t *testing.T) {
 	}
 }
 
-// TestTheWindowIsConfiguration: the expiring fixture is about two days out —
-// expiring under the default three days, ok under one day.
+// TestTheWindowIsConfiguration: the expiring fixture's login is two days out
+// — expiring under the default three days, ok under one day.
 func TestTheWindowIsConfiguration(t *testing.T) {
 	for _, c := range []struct {
 		window time.Duration
@@ -453,5 +454,87 @@ func waitFor(t *testing.T, cond func() bool) {
 			t.Fatal("condition not reached")
 		}
 		time.Sleep(time.Millisecond)
+	}
+}
+
+// TestAFreshLoginIsNotExpiring is the real deployment's finding (2026-10-08):
+// after a real sign-in the credential's expiresAt was about eight hours out,
+// because it dates the access token, and the watch called the login
+// "expiring" from the moment it was made. Through the watch, a fresh login —
+// eight-hour access token, refreshTokenExpiresAt thirty days out — is ok:
+// stored ok, announced at info with no expiry in its sentence, and the View
+// carries both dates, each under its own name. The positive control is the
+// expiring fixture — the same access token beside a login that really ends
+// in two days — which is stored expiring, announced as a warning, and dated
+// by the login, not by the access token.
+func TestAFreshLoginIsNotExpiring(t *testing.T) {
+	for _, c := range []struct {
+		name, creds string
+		want        State
+		level       events.Level
+	}{
+		{"fresh login", "fresh-login.json", OK, events.Info},
+		{"control: the login ends in two days", "expiring.json", Expiring, events.Warn},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			h := newHarness(t)
+			now := h.clock.Now()
+			h.src.set(fixture(t, "credentials", c.creds), fixture(t, "authstatus", "valid.json"), nil, nil)
+			v, err := h.w.Check(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			stateIs(t, v, c.want)
+			if got := h.rowState(t); got != string(c.want) {
+				t.Errorf("stored state = %s; want %s", got, c.want)
+			}
+			if v.ExpiresAt == nil || v.ExpiresAt.Sub(now) != 8*time.Hour {
+				t.Errorf("expires_at = %v; want the access token's, eight hours out", v.ExpiresAt)
+			}
+			if v.LoginExpiresAt == nil || v.LoginExpiresAt.Sub(now) <= 24*time.Hour {
+				t.Fatalf("login_expires_at = %v; want the refresh token's, days out", v.LoginExpiresAt)
+			}
+			evs := h.events(t)
+			if len(evs) != 1 {
+				t.Fatalf("events = %v", h.kinds(t))
+			}
+			if evs[0].Level != c.level {
+				t.Errorf("event level = %s; want %s", evs[0].Level, c.level)
+			}
+			if says := strings.Contains(evs[0].Message, "expires"); says != (c.want == Expiring) {
+				t.Errorf("event message %q; want an expiry sentence only when expiring", evs[0].Message)
+			}
+			if c.want == Expiring && !strings.Contains(evs[0].Message, v.LoginExpiresAt.UTC().Format("2006-01-02 15:04")) {
+				t.Errorf("expiring message %q is not dated by the login (%v)", evs[0].Message, v.LoginExpiresAt)
+			}
+		})
+	}
+}
+
+// TestALapsedAccessTokenIsInformational: past its eight hours, with no
+// session server running to refresh it, the access token's expiresAt is in
+// the past while the login is fine. That is expired — live, an info event,
+// no countdown — and never a warning. (#61 keeps it from blocking a start:
+// supervisor's TestAnExpiredAccessTokenStillStarts.)
+func TestALapsedAccessTokenIsInformational(t *testing.T) {
+	h := newHarness(t)
+	h.src.set(fixture(t, "credentials", "fresh-login.json"), fixture(t, "authstatus", "valid.json"), nil, nil)
+	if v, err := h.w.Check(context.Background()); err != nil {
+		t.Fatal(err)
+	} else {
+		stateIs(t, v, OK) // control: the same file, before its access token lapses
+	}
+	h.clock.Advance(9 * time.Hour)
+	v, err := h.w.Check(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	stateIs(t, v, Expired)
+	if !Expired.Live() {
+		t.Error("expired is not live; a start would be refused")
+	}
+	evs := h.events(t)
+	if last := evs[len(evs)-1]; last.Level != events.Info || strings.Contains(last.Message, "Sign in") {
+		t.Errorf("expired announced as %s %q; want info, asking nothing", last.Level, last.Message)
 	}
 }

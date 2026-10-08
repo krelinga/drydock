@@ -6,7 +6,7 @@
 
 import { describe, expect, it } from 'vitest'
 import type { IdentityState, RepoView } from '../api/types'
-import { failIdentityCheck, identityView, setIdentity, type MockBackend, type MockWorkspace } from '../mocks/backend'
+import { failIdentityCheck, identityView, refreshed, setIdentity, type MockBackend, type MockWorkspace } from '../mocks/backend'
 import { FakeEventSource } from '../test/fakeEventSource'
 import { freshBackend, mountApp, settle, useMockApi } from '../test/setup'
 import { CHECK_KEY } from '../stores/identity'
@@ -136,6 +136,75 @@ describe('one fault, ten cards', () => {
     expect(signInButtons(wrapper).length).toBe(0)
   })
 
+  // The real deployment, 2026-10-08: right after a real sign-in the access
+  // token's expiry was about eight hours out, and every screen said the
+  // login was expiring. A healthy login with exactly that credential warns
+  // nowhere — home, cards, Settings. The positive control is a blanked
+  // login on the same fleet, which still makes its one banner.
+  it('a fresh sign-in, access token eight hours out: no warning anywhere', async () => {
+    const b = fleet('ok')
+    const eight = new Date(Date.now() + 8 * 3600e3).toISOString()
+    expect(b.identity.expires_at!.slice(0, 13)).toBe(eight.slice(0, 13)) // precondition: the measured shape
+    const { wrapper, router } = await mountApp('/')
+    FakeEventSource.latest().open().pipe(b)
+    expect(identityBanners(wrapper).length).toBe(0)
+    expect(wrapper.findAll('[data-test="identity-dot"]').length).toBe(0)
+    expect(wrapper.text()).not.toMatch(/expir/i)
+
+    await router.push('/settings')
+    await settle()
+    const section = wrapper.find('[data-test="claude-identity"]')
+    expect(section.find('[data-test="claude-state"]').text()).toBe('Signed in as operator@example.invalid.')
+    expect(section.find('[data-test="claude-expires"]').text()).toBe('in 1 month') // the login's, not the token's
+    expect(section.text()).not.toMatch(/in 8 hours|in 7 hours/)
+    expect(identityBanners(wrapper).length).toBe(0)
+
+    // Control: the fleet-wide fault still takes over every card.
+    setIdentity(b, identityView('blanked'))
+    await settle()
+    expect(identityBanners(wrapper).length).toBe(1)
+    expect(identityBanners(wrapper)[0]!.find('[data-test="fleet-title"]').text()).toBe('Signed out. Sign in again.')
+    await router.push('/')
+    await settle()
+    expect(wrapper.findAll('[data-test="identity-waiting"]').length).toBe(RUNNING)
+  })
+
+  it('a login date already passed reads as passed, not as "expires … ago", and warns nowhere', async () => {
+    const b = fleet('ok')
+    b.identity = { ...b.identity, login_expires_at: new Date(Date.now() - 3600e3).toISOString() }
+    const { wrapper } = await mountApp('/settings')
+    expect(wrapper.find('[data-test="claude-expires"]').exists()).toBe(false)
+    expect(wrapper.find('[data-test="claude-login-date-passed"]').text()).toMatch(/ago\. The next refresh either works or signs Claude out/)
+    expect(identityBanners(wrapper).length).toBe(0)
+  })
+
+  it('a lapsed access token is informational: no banner, no dot, and Settings says the next server renews it', async () => {
+    fleet('expired')
+    const { wrapper, router } = await mountApp('/')
+    expect(identityBanners(wrapper).length).toBe(0)
+    expect(wrapper.findAll('[data-test="identity-dot"]').length).toBe(0)
+    expect(wrapper.findAll('[data-test="identity-waiting"]').length).toBe(0)
+    expect(signInButtons(wrapper).length).toBe(0)
+    await router.push('/settings')
+    await settle()
+    expect(wrapper.find('[data-test="claude-state"]').text()).toBe('Signed in. The access token has lapsed; the next session server to start renews it.')
+    expect(wrapper.find('[data-test="claude-access-lapsed"]').exists()).toBe(true)
+    expect(identityBanners(wrapper).length).toBe(0)
+  })
+
+  it('an expiring stored before v0.4.5 (no login date) says nothing until the next check', async () => {
+    const b = fleet('ok')
+    b.identity = { ...b.identity, state: 'expiring', login_expires_at: null }
+    const { wrapper } = await mountApp('/')
+    expect(identityBanners(wrapper).length).toBe(0)
+    expect(wrapper.findAll('[data-test="identity-dot"]').length).toBe(0)
+    // Control: the same state with the login's date does warn.
+    FakeEventSource.latest().open().pipe(b)
+    setIdentity(b, identityView('expiring', 2 * 86400e3 + 3600e3))
+    await settle()
+    expect(identityBanners(wrapper).length).toBe(1)
+  })
+
   it('expiring: a countdown that can be put away, and a dot on every running card', async () => {
     const b = fleet('expiring', 2 * 86400e3 + 3600e3)
     const { wrapper } = await mountApp('/')
@@ -149,6 +218,16 @@ describe('one fault, ten cards', () => {
     await settle()
     expect(identityBanners(wrapper).length).toBe(0)
     expect(wrapper.findAll('[data-test="identity-dot"]').length).toBe(RUNNING) // the dot stays
+
+    // A refresh moves the access token's expiry and not the login's: the
+    // same countdown, so it stays put away. Keyed by expires_at, it would
+    // come back every eight hours.
+    const before = b.identity.login_expires_at
+    setIdentity(b, refreshed(b.identity))
+    await settle()
+    expect(b.identity.login_expires_at).toBe(before) // precondition: only the access token moved
+    expect(useStreamStore().entities.identity?.expiresAt).toBe(b.identity.expires_at) // and the event landed
+    expect(identityBanners(wrapper).length).toBe(0)
 
     // A new countdown is a new warning: put away is per countdown, not forever.
     setIdentity(b, identityView('expiring', 86400e3))
@@ -199,6 +278,7 @@ describe('the Claude section in Settings', () => {
     expect(section.find('[data-test="claude-state"]').text()).toBe('Signed in as operator@example.invalid.')
     expect(section.find('[data-test="claude-account"]').text()).toBe('operator@example.invalid')
     expect(section.find('[data-test="claude-expires"]').text()).toBe('in 1 month')
+    expect(section.find('[data-test="claude-access-lapsed"]').exists()).toBe(false)
     expect(section.find('[data-test="claude-sign-in-next"]').exists()).toBe(false)
   })
 
@@ -226,12 +306,12 @@ describe('the Claude section in Settings', () => {
   })
 
   it('a failed check keeps the stored state and says why', async () => {
-    const b = fleet('expiring')
+    const b = fleet('expiring', 2 * 86400e3 + 3600e3)
     const { wrapper } = await mountApp('/settings')
     FakeEventSource.latest().open().pipe(b)
     failIdentityCheck(b)
     await settle()
-    expect(wrapper.find('[data-test="claude-state"]').text()).toBe('Signed in, and the login expires soon.')
+    expect(wrapper.find('[data-test="claude-state"]').text()).toBe('Signed in. The login expires in 2 days; sign in again before then.')
     expect(wrapper.find('[data-test="claude-check-error"]').text()).toContain('The last known state is kept.')
   })
 })

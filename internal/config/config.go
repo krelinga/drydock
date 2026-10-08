@@ -141,9 +141,11 @@ type Config struct {
 	// IdentityInterval is how often the identity watch reads the volume
 	// (§7.3: six hours). It also runs at boot and on demand.
 	IdentityInterval time.Duration
-	// IdentityExpiringWindow is §7.3's warning window: a login that
-	// expires within it is `expiring` rather than `ok`. Three days, which
-	// is when Claude Code itself starts warning (§2.4).
+	// IdentityExpiringWindow is §7.3's warning window: a login whose
+	// refresh token (Claude Code's refreshTokenExpiresAt) expires within it
+	// is `expiring` rather than `ok`. Three days, which is when Claude Code
+	// itself starts warning (§2.4). Never measured against the access
+	// token's expiresAt, which a real login sets about eight hours out.
 	IdentityExpiringWindow time.Duration
 	// IdentityCheckTimeout bounds each read an identity check makes (the
 	// credential file, `auth status`): each is a container that should be
@@ -300,7 +302,7 @@ func (c Config) Validate() error {
 		return fmt.Errorf("identity interval %s is shorter than a minute: each check starts a container", c.IdentityInterval)
 	}
 	// Zero would make `expiring` unreachable, and the banner would go from
-	// nothing straight to "expired" — the one warning §2.4 says to give.
+	// nothing straight to "signed out" — the one warning §2.4 says to give.
 	if c.IdentityExpiringWindow <= 0 {
 		return fmt.Errorf("identity expiring window %s must be positive", c.IdentityExpiringWindow)
 	}

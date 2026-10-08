@@ -215,19 +215,37 @@ export function endLogin(b: MockBackend, phase: 'timed_out' | 'failed' | 'cancel
   return setLogin(b, { ...b.login, phase, problem, message, deadline: null, ended_at: new Date().toISOString() })
 }
 
-/** A stored identity as the watch writes it: login details only beside a login. */
-export function identityView(state: IdentityState | null, expiresInMs = 30 * 86400e3): IdentityView {
+/**
+ * A stored identity as the watch writes it: login details only beside a
+ * login. As a real sign-in leaves them (2026-10-08): the access token about
+ * eight hours out (past, when expired) and the login thirty days out —
+ * `loginExpiresInMs` out when expiring. The two dates move independently, as
+ * they do for real: `refreshed(view)` moves only the access token's.
+ */
+export function identityView(state: IdentityState | null, loginExpiresInMs = 30 * 86400e3, accessExpiresInMs?: number): IdentityView {
   const live = state === 'ok' || state === 'expiring' || state === 'expired'
   const now = Date.now()
+  const access = accessExpiresInMs ?? (state === 'expired' ? -3600e3 : 8 * 3600e3)
   return {
     state,
     account_email: live ? 'operator@example.invalid' : null,
-    expires_at: live ? new Date(now + expiresInMs).toISOString() : null,
+    expires_at: live ? new Date(now + access).toISOString() : null,
+    login_expires_at: live ? new Date(now + (state === 'expiring' ? loginExpiresInMs : 30 * 86400e3)).toISOString() : null,
     logged_in_at: live ? new Date(now - 20 * 86400e3).toISOString() : null,
     last_checked_at: state === null ? null : new Date(now - 60e3).toISOString(),
     volume: 'drydock-claude-config',
     check_error: null,
   }
+}
+
+/**
+ * The same login after a refresh: a new access token, its expiry `byMs`
+ * later, and the login's own date untouched — what every eight hours of a
+ * running session server looks like to the watch.
+ */
+export function refreshed(view: IdentityView, byMs = 8 * 3600e3): IdentityView {
+  const base = view.expires_at !== null ? Date.parse(view.expires_at) : Date.now()
+  return { ...view, expires_at: new Date(base + byMs).toISOString() }
 }
 
 /** Stores a new identity and announces it, as a check that saw it would. */
