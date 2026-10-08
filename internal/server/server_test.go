@@ -52,6 +52,9 @@ func testConfig(t *testing.T, dir string) config.Config {
 		t.Fatal(err)
 	}
 	c := config.Default()
+	// Not a test of the disk: the host's own fill must never refuse a create here.
+	// The disk-full tests set their own limit and inject the figures.
+	c.DiskLimitPercent = 100
 	c.UIOrigin, c.UIHost, c.PreviewDomain = uiOrigin, uiHost, "drydock-preview.test"
 	c.DatabasePath = filepath.Join(dir, "drydock.db")
 	c.APISocket = filepath.Join(dir, "run", "http.sock")

@@ -103,9 +103,25 @@ func TestWorkspaceRoutesEndToEnd(t *testing.T) {
 		body: `{"repository_id":1}`}); resp.StatusCode != 503 || code(t, resp) != api.CodeAppNotConfigured {
 		t.Errorf("create with no App: %d", resp.StatusCode)
 	}
-	if resp := plain.do(t, req{method: "GET", path: "/api/workspaces", cookie: pc}); resp.StatusCode != 200 ||
-		readBody(t, resp) != `{"workspaces":[],"capacity":{"cap":10,"occupied":0}}`+"\n" {
+	// disk is the sampler's reading of the real filesystem — null until its
+	// first round — so it is checked for shape, not value.
+	if resp := plain.do(t, req{method: "GET", path: "/api/workspaces", cookie: pc}); resp.StatusCode != 200 {
 		t.Errorf("list with no workspaces: %d", resp.StatusCode)
+	} else {
+		var list struct {
+			Workspaces []json.RawMessage
+			Capacity   json.RawMessage
+			Disk       *struct {
+				TotalBytes   uint64 `json:"total_bytes"`
+				LimitPercent int    `json:"limit_percent"`
+			}
+		}
+		body := readBody(t, resp)
+		if err := json.Unmarshal([]byte(body), &list); err != nil || list.Workspaces == nil || len(list.Workspaces) != 0 ||
+			string(list.Capacity) != `{"cap":10,"occupied":0}` ||
+			(list.Disk != nil && (list.Disk.TotalBytes == 0 || list.Disk.LimitPercent != 100)) {
+			t.Errorf("list with no workspaces: %s", body)
+		}
 	}
 
 	dir := t.TempDir()

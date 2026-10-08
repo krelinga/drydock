@@ -64,6 +64,12 @@ export class FakeEventSource extends EventTarget {
     return this
   }
 
+  /** A named frame with no id, as events.Broadcast writes one (`resources`). */
+  named(name: string, data: unknown): this {
+    this.dispatchEvent(new MessageEvent(name, { data: typeof data === 'string' ? data : JSON.stringify(data) }))
+    return this
+  }
+
   /** A network drop: the browser is already retrying (readyState CONNECTING). */
   drop(): this {
     this.readyState = FakeEventSource.CONNECTING

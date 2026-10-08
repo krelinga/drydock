@@ -17,7 +17,7 @@
 
 import { http, HttpResponse, sse, type HttpHandler } from 'msw'
 import type {
-  ActionView, ApprovalView, HostSettingView, CatalogView, Device, IdentityState, IdentityView, InstallationView, LoginView, PutSecretResult, RepoView, SecretMeta, SessionInfo, SessionView, Stale, StaleWorkspace, SupervisorView,
+  ActionView, ApprovalView, HostDiskView, ResourcesView, HostSettingView, CatalogView, Device, IdentityState, IdentityView, InstallationView, LoginView, PutSecretResult, RepoView, SecretMeta, SessionInfo, SessionView, Stale, StaleWorkspace, SupervisorView,
   StepView, StreamEvent, Undeliverable, UndeliverableSecret, WorkspaceDetail, WorkspaceList, WorkspaceState, WorkspaceView,
 } from '../api/types'
 import { checkDescription, checkName, checkReach, checkValue, type SecretRefusal } from '../lib/secretRules'
@@ -69,6 +69,8 @@ export interface MockBackend {
    * `POST /api/workspaces` answers `409 at_capacity` against.
    */
   capacity: number
+  /** The workspace filesystem as the sampler last read it; absent: not measured. */
+  disk?: HostDiskView | null
   /**
    * `auto` plays a create's or a start's events on a timer, one per
    * `scriptIntervalMs`, as the server's own goroutine would — the create's
@@ -292,6 +294,8 @@ export interface MockWorkspace {
   environment_id?: string | null
   /** The host-access request it waits on (design §6), or none. */
   approval?: ApprovalView | null
+  /** The sampler's latest measurements (design §6 *Resources*); absent: none. */
+  resources?: ResourcesView | null
   /** The stopped run's --remove-existing-container, which an approval continues. */
   approvalRebuild?: boolean
 }
@@ -568,6 +572,7 @@ export function workspaceView(b: MockBackend, w: MockWorkspace): WorkspaceView {
     steps: structuredClone(w.steps),
     last_action: w.last_action ? { ...w.last_action } : null,
     approval: w.approval ? structuredClone(w.approval) : null,
+    ...(w.resources !== undefined ? { resources: structuredClone(w.resources) } : {}),
     ...(b.supervisor ? {
       supervisor: w.supervisor ? { ...w.supervisor } : null,
       session: w.session ? { ...w.session } : null,
@@ -588,6 +593,7 @@ export function workspaceList(b: MockBackend): WorkspaceList {
       .sort((x, y) => y.id.localeCompare(x.id))
       .map((w) => workspaceView(b, w)),
     capacity: capacityView(b),
+    ...(b.disk !== undefined ? { disk: structuredClone(b.disk) } : {}),
   }
 }
 
@@ -1150,6 +1156,16 @@ export function handlersFor(b: MockBackend): HttpHandler[] {
   // internal/api writeProvisionError: the detail names the configured cap.
   const atCapacity = () => envelope(409, 'at_capacity',
     'Drydock is at its concurrent-container cap. Stop a workspace to make room.', {}, `The cap is ${b.capacity}.`)
+  // internal/api writeProvisionError's disk_full: the pre-flight (design §12),
+  // refusing while the sampler's last reading of the workspace disk is over.
+  const diskFull = () => {
+    const d = b.disk
+    if (d === undefined || d === null || !d.over) return null
+    const pct = d.total_bytes > 0 ? Math.floor((d.used_bytes * 100) / d.total_bytes) : 0
+    return envelope(507, 'disk_full',
+      'The disk that holds the workspaces is too full to clone or build another. Delete a workspace you no longer need.',
+      {}, `The workspace disk is ${pct}% full; Drydock refuses at ${d.limit_percent}%.`)
+  }
   const record = (request: Request) => {
     b.log.push({
       method: request.method,
@@ -1276,6 +1292,8 @@ export function handlersFor(b: MockBackend): HttpHandler[] {
       if (rows.some((w) => w.repository_id === repoId)) {
         return envelope(409, 'in_progress', 'That repository already has a workspace.')
       }
+      const full = diskFull()
+      if (full !== null) return full
       if (rows.filter((w) => OCCUPYING.has(w.state)).length >= b.capacity) return atCapacity()
       const id = nextWorkspaceId(b)
       const failAt = b.failNext ?? undefined
@@ -1302,6 +1320,8 @@ export function handlersFor(b: MockBackend): HttpHandler[] {
         return envelope(409, 'in_progress', 'The workspace is not stopped or failed.')
       }
       // A start takes a container slot, so the cap applies as to a create.
+      const full = diskFull()
+      if (full !== null) return full
       if (Object.values(b.workspaces).filter((x) => OCCUPYING.has(x.state)).length >= b.capacity) return atCapacity()
       const failAt = b.failNext ?? undefined
       b.failNext = null
@@ -1402,6 +1422,8 @@ export function handlersFor(b: MockBackend): HttpHandler[] {
       if (body.hash !== w.approval.hash) {
         return envelope(409, 'approval_stale', 'The configuration changed after it was shown, so nothing was approved. Review the new request.')
       }
+      const full = diskFull()
+      if (full !== null) return full
       if (Object.values(b.workspaces).filter((x) => OCCUPYING.has(x.state)).length >= b.capacity) return atCapacity()
       const cur = b.hostAccess[w.repository_id]
       if (cur !== undefined) b.approved[w.repository_id] = structuredClone(cur)

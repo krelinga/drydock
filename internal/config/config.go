@@ -76,6 +76,12 @@ type Config struct {
 	// workspace on its own, so the operator chooses what to stop.
 	ContainerCap int
 
+	// DiskLimitPercent is how full the filesystem holding WorkspaceRoot may
+	// be before a create, start or rebuild is refused (design §12, *Disk
+	// full*): at or above it, the pre-flight check refuses rather than let a
+	// clone or an image build fail part-way. 100 turns the check off.
+	DiskLimitPercent int
+
 	// GitHubAppID and GitHubAppKey are the GitHub App (§9): its numeric App
 	// ID — not the Client ID — and the path of its private key, a file
 	// readable by Drydock alone (mode 0400, §13.5). Never the key itself and
@@ -203,6 +209,7 @@ func Default() Config {
 		LabelPrefix:        "drydock",
 		SupervisorCapacity: 4,
 		ContainerCap:       10,
+		DiskLimitPercent:   90,
 		Feature:            DefaultFeature,
 		// The production App, krelinga-drydock (App ID 5189455), whose bot
 		// user is 337840004 — measured, §9.3.
@@ -267,6 +274,9 @@ func (c Config) Validate() error {
 	}
 	if c.ContainerCap < 1 {
 		return fmt.Errorf("container cap must be at least 1")
+	}
+	if c.DiskLimitPercent < 1 || c.DiskLimitPercent > 100 {
+		return fmt.Errorf("the disk limit is a percentage from 1 to 100 (100 turns the check off)")
 	}
 	if (c.GitHubAppID != 0) != (c.GitHubAppKey != "") {
 		return fmt.Errorf("the GitHub App needs both its App ID and its private key path, or neither")

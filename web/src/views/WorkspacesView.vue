@@ -21,6 +21,7 @@ import { RouterLink } from 'vue-router'
 import { describeError } from '../api/messages'
 import ActionButton from '../components/ActionButton.vue'
 import MakeRoom from '../components/MakeRoom.vue'
+import ResourceLine from '../components/ResourceLine.vue'
 import WorkspaceAction from '../components/WorkspaceAction.vue'
 import WorkspaceIdentityNote from '../components/WorkspaceIdentityNote.vue'
 import { catalogEvent, useCatalogStore, type CatalogRow } from '../stores/catalog'
@@ -87,6 +88,7 @@ function rowNote(r: CatalogRow): string | null {
             </span>
           </div>
           <p v-if="status(r.workspace).note" class="detail">{{ status(r.workspace).note }}</p>
+          <ResourceLine :workspace="r.workspace" />
           <WorkspaceIdentityNote :state="r.workspace.state" part="waiting" />
           <p v-if="status(r.workspace).since" class="detail" data-test="waiting-since">
             Waiting since {{ relativeTime(status(r.workspace).since!) }}.
@@ -175,6 +177,8 @@ function rowNote(r: CatalogRow): string | null {
               <span v-if="r.repo.private" class="badge">private</span>
               <span v-if="r.repo.pushedAt" class="pushed">pushed {{ relativeTime(r.repo.pushedAt) }}</span>
             </div>
+            <!-- A stopped workspace still holds disk: it is what an operator deletes to free some. -->
+            <ResourceLine v-if="r.workspace" :workspace="r.workspace" />
             <!--
               One action per row (§6.1), from lib/workspaceCard.ts rowAction:
               Clone only when no workspace holds the repo in any state;

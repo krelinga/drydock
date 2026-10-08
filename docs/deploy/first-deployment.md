@@ -994,8 +994,11 @@ before every command ([§10.3](../design/overall/drydock-design.md#103--delivery
 
 ### 8.5 Optional: the reboot drill
 
-This is the one Phase 2 check that has not yet been run on real hardware
-([§14](../design/overall/drydock-design.md#14-build-plan), testing §11.5).
+The Phase 2 check that proves boot reconciliation on real hardware
+([§14](../design/overall/drydock-design.md#14-build-plan), testing §11.5). It was run on the real
+server on 8 October 2026 and passed. The one snag was the host's own: a systemd unit ordered
+before a network mount it needed, in that deployment's Ansible, not Drydock. If your workspace
+root or Docker's data lives on a network mount, order both services after it.
 
 - [ ] With one workspace *Running*, run `sudo reboot`.
 - [ ] After boot, both services are active and the UI loads. The workspace shows *Stopped*: Docker

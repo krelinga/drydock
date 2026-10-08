@@ -1,6 +1,8 @@
 package sys
 
 import (
+	"context"
+	"io/fs"
 	"sync"
 	"time"
 )
@@ -86,4 +88,76 @@ func (c *FakeClock) Timer(d time.Duration) (<-chan time.Time, func()) {
 		}
 		c.waiters = kept
 	}
+}
+
+// FakeDisk is a DiskUsage a test sets by hand: Used and Total for every
+// filesystem, and Sizes by directory. A directory with no entry is an error,
+// as a path that does not exist would be; Err, when set, fails everything.
+type FakeDisk struct {
+	mu          sync.Mutex
+	Used, Total uint64
+	Sizes       map[string]FakeSize
+	Err         error
+	// Asked records every path Size was asked about, in order.
+	Asked []string
+	// Block, when set, makes Size wait for it to close — or for its
+	// context to end, which then reports what it has as partial: a walk
+	// that is slow, for a test of what waits on it.
+	Block chan struct{}
+}
+
+// FakeSize is one directory's answer.
+type FakeSize struct {
+	Bytes   uint64
+	Partial bool
+}
+
+func (d *FakeDisk) Usage(string) (uint64, uint64, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.Err != nil {
+		return 0, 0, d.Err
+	}
+	return d.Used, d.Total, nil
+}
+
+func (d *FakeDisk) Size(ctx context.Context, path string) (uint64, bool, error) {
+	d.mu.Lock()
+	block := d.Block
+	d.Asked = append(d.Asked, path)
+	d.mu.Unlock()
+	if block != nil {
+		select {
+		case <-block:
+		case <-ctx.Done():
+			return 0, true, nil
+		}
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.Err != nil {
+		return 0, false, d.Err
+	}
+	s, ok := d.Sizes[path]
+	if !ok {
+		return 0, false, fs.ErrNotExist
+	}
+	return s.Bytes, s.Partial, nil
+}
+
+// Set changes the filesystem's figures under the lock.
+func (d *FakeDisk) Set(used, total uint64) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.Used, d.Total = used, total
+}
+
+// SetSize changes one directory's answer under the lock.
+func (d *FakeDisk) SetSize(path string, s FakeSize) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.Sizes == nil {
+		d.Sizes = map[string]FakeSize{}
+	}
+	d.Sizes[path] = s
 }

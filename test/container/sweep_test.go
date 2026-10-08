@@ -55,6 +55,8 @@ func TestBootSweepsLeftoverHelpers(t *testing.T) {
 	u, _ := user.Current()
 	g, _ := user.LookupGroupId(u.Gid)
 	cfg := config.Default()
+	// Not a test of the disk: the runner's own fill must never refuse its creates (design §12).
+	cfg.DiskLimitPercent = 100
 	cfg.UIOrigin, cfg.UIHost = "https://drydock.test", "drydock.test"
 	cfg.DatabasePath = filepath.Join(dir, "drydock.db")
 	cfg.APISocket, cfg.PreviewSocket = filepath.Join(dir, "http.sock"), filepath.Join(dir, "preview.sock")
