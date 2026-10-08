@@ -79,7 +79,7 @@ func harness() (*Sampler, *fakeContainers, *sys.FakeDisk, *sys.FakeClock, *rows,
 	c := &fakeContainers{
 		found: []container.Found{
 			{ContainerID: cRun, WorkspaceID: wsRun, Running: true},
-			{ContainerID: cStop, WorkspaceID: wsStop, Running: false},
+			{ContainerID: cStop, WorkspaceID: wsStop, Running: true}, // its row stopped: never asked about
 		},
 		mem:    map[string]uint64{cRun: 1_200_000_000},
 		layers: map[string]uint64{cRun: 300_000_000, cStop: 50_000_000},
