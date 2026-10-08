@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.0](https://github.com/krelinga/drydock/compare/v0.4.5...v0.5.0) (2026-10-08)
+
+
+### Features
+
+* serve the preview front door — every preview URL answers 401 and none reaches the API ([#76](https://github.com/krelinga/drydock/issues/76)) ([d5faf61](https://github.com/krelinga/drydock/commit/d5faf61e040de1599713fea65a4f01669d6d9b1a))
+
 ## [0.4.5](https://github.com/krelinga/drydock/compare/v0.4.4...v0.4.5) (2026-10-08)
 
 
