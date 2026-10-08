@@ -273,7 +273,10 @@ func New(ctx context.Context, cfg config.Config, env sys.Env) (*Server, error) {
 		// No WriteTimeout: /api/events is a long-lived SSE stream.
 	}
 	s.preview = &http.Server{
-		Handler:           api.Build(api.MuxPreview, gate, previewHandlers()),
+		// The front door, not Build: every request it has no written
+		// route for gets one uniform 401, never ServeMux's 404 (PF §13
+		// step 1).
+		Handler:           api.PreviewFrontDoor(gate, previewHandlers()),
 		ReadHeaderTimeout: 10 * time.Second,
 		IdleTimeout:       2 * time.Minute,
 	}
@@ -296,8 +299,9 @@ func New(ctx context.Context, cfg config.Config, env sys.Env) (*Server, error) {
 }
 
 // previewHandlers are the preview mux's handlers, by route name. None is
-// written yet — previews are their own phase — so every preview route is
-// Build's 501 behind a token gate that fails closed.
+// written yet — the handshake is PF §13 step 2 — so api.PreviewFrontDoor
+// mounts none of them, and every request to the preview socket, these paths
+// included, gets its one uniform 401.
 //
 // The preview server deliberately carries no web.SecurityHeaders: what it
 // will mostly serve is a repository's own app, whose headers are its own.

@@ -2,7 +2,7 @@
 
 *Reaching a dev server running inside a workspace container from a phone or tablet on the LAN — without giving repository code a foothold on Drydock's own origin.*
 
-**Status** design document, draft v6 · **Date** 7 October 2026 · §4: the separate registrable domain is checked by the Public Suffix List at startup and in the installer, so a parent or sibling of the UI host is refused as a subdomain is (it was accepted, and same-site) · §9 points at the shipped `deploy/Caddyfile` and its admin-socket global option · slugs are retired rather than deleted, so a stale bookmark cannot be reissued to another workspace ([testing plan](../testing/testing-design.md) §15.4); previews moved to a separate registrable domain (cross-site) per the [security review](../security-review.md)
+**Status** design document, draft v7 · **Date** 8 October 2026 · §13 step 1, the front door, as built: the preview socket answers every request it has no written route for — any path, method, `Host` or credential, the UI's own session cookie and the right password included — with one `401`, byte for byte (`api.PreviewFrontDoor`), and an unwritten preview route is that `401` rather than a `501`; the preview site is tested under real Caddy (one label under the domain, cookies and the query passed through, no access log), and the installer's final check now proves the wildcard too · §5, §8.3, §14: owner decisions of 8 October 2026 — `host_header` defaults to `localhost`, with `passthrough` a per-port switch (§14.1's second question, closed); the preview domain, its wildcard certificate and its LAN DNS are the operator's, never Drydock's; the product defaults stand as designed (off until enabled, discovery never exposes or notifies, no sharing, HTTP and websockets only) · §4: the separate registrable domain is checked by the Public Suffix List at startup and in the installer, so a parent or sibling of the UI host is refused as a subdomain is (it was accepted, and same-site) · §9 points at the shipped `deploy/Caddyfile` and its admin-socket global option · slugs are retired rather than deleted, so a stale bookmark cannot be reissued to another workspace ([testing plan](../testing/testing-design.md) §15.4); previews moved to a separate registrable domain (cross-site) per the [security review](../security-review.md)
 
 **Supplements** [`../overall/drydock-design.md`](../overall/drydock-design.md) · **Depends on** §3, §6, §13 of that document
 
@@ -112,7 +112,7 @@ forwarded_port(
   slug TEXT NOT NULL UNIQUE,         -- the DNS label; stable for the life of the row
   label TEXT,                        -- "vite dev server"
   upstream_scheme TEXT NOT NULL DEFAULT 'http',   -- http | https (rare; self-signed upstreams)
-  host_header TEXT NOT NULL DEFAULT 'passthrough',-- passthrough | localhost  (§8.2)
+  host_header TEXT NOT NULL DEFAULT 'localhost',  -- localhost | passthrough  (§8.3)
   enabled INTEGER NOT NULL DEFAULT 0,
   hidden INTEGER NOT NULL DEFAULT 0,  -- muted from the panel; the escape hatch for noise
 
@@ -198,6 +198,8 @@ The requirement is that a preview is behind the same sign-in as everything else,
 6. Preview mux consumes the token, writes `preview_session`, sets a host-only cookie (`Secure`, `HttpOnly`, `SameSite=Lax`, `Path=/`), and redirects to the path from step 1.
 
 Steps 2–6 are four redirects with no user interaction, so in practice the first request to a new preview host renders the app. If you are not signed in, step 3 lands on the ordinary sign-in page and `return` carries you back afterwards.
+
+*As built, §13 step 1:* until step 2 builds `/preview/authorize` and the token, there is nothing for step 2 of this list to redirect to, so the preview socket answers every request with one uniform `401` instead (§13). The redirect replaces that `401` for a request with no valid preview cookie; the answer to a spent, expired or forged token stays the same for all three.
 
 > [!WARNING]
 > **Strip the preview cookie before proxying — at the second hop, not the first**
@@ -297,10 +299,12 @@ Dev servers increasingly reject unexpected `Host` values — Vite's `server.allo
 
 | `host_header` | Sends upstream | Use when |
 |---|---|---|
-| `passthrough` *(default)* | The preview hostname | The app builds absolute URLs from `Host` and you want them to work. Requires adding the preview host to the app's allowlist. |
-| `localhost` | `localhost:<port>` | The app's host allowlist cannot be changed and it does not generate absolute URLs. |
+| `localhost` *(default)* | `localhost:<port>` | Almost always. The app's host allowlist accepts it without being edited, and a framework that honours `X-Forwarded-Host` still builds absolute URLs on the preview host. |
+| `passthrough` | The preview hostname | The app builds absolute URLs from `Host` itself and ignores `X-Forwarded-*`. Requires adding the preview host to the app's allowlist. |
 
 `X-Forwarded-Proto: https`, `X-Forwarded-Host: <preview host>`, and `X-Forwarded-For` are always set, so a framework that honors them produces correct absolute URLs even under `localhost`.
+
+*Decided 8 October 2026 (owner, §14.3):* the default is `localhost`, not the `passthrough` earlier drafts chose. The allowlist group is the one that grows — Vite now refuses an unknown `Host` out of the box — and a preview that answers *"Blocked request"* on first open looks like a Drydock bug, while an app that needs its own hostname is the rarer case and is one switch on its port. Step 3 (§13) builds it.
 
 ### 8.4 Websockets and streaming
 
@@ -441,7 +445,7 @@ Extending §12. The first row is the one that will actually happen, repeatedly.
 | A port flaps (test run opens and closes sockets) | Repeated appear/disappear within the debounce window | The two-scan threshold and the disappearance grace period absorb it. Nothing is emitted, so nothing is noticed. |
 | Workspace stopped | State check before dialing | `/.drydock/denied` naming the state, with a start button. Never a proxy error. |
 | Container restarted, IP changed | Dial fails against the cached address | Re-resolve once and retry transparently. Only a second failure is user-visible. |
-| App rejects the `Host` header | Upstream returns 400/403 with a recognizable body (`Blocked request`, `Invalid HTTP_HOST`) | Detect the signature and suggest the fix for that framework, or switching the port to `host_header: localhost`. A raw 403 here reads as a Drydock bug. |
+| App rejects the `Host` header | Upstream returns 400/403 with a recognizable body (`Blocked request`, `Invalid HTTP_HOST`) | Detect the signature and suggest the fix for that framework, or switching a `passthrough` port back to the default, `host_header: localhost`. A raw 403 here reads as a Drydock bug. |
 | Websocket upgrade fails | `Upgrade` request returns non-101 | Usually `flush_interval` or a buffering layer. Surface it as "live reload unavailable" rather than breaking the page. |
 | Wildcard certificate missing or expired | TLS failure at Caddy, before Drydock | Previews fail; the UI is unaffected because it is a different block with a different cert. Health check warns on preview-cert expiry separately from the UI cert. |
 | Slug collision, live or retired | `UNIQUE` violation on insert | Regenerate the random suffix and retry. The constraint covers retired rows too, which is what makes the retry mandatory rather than cosmetic: without it the collision would be resolved by handing a spent hostname to a new port. |
@@ -463,7 +467,7 @@ Small enough to be one phase, ordered so the risky part is first. This slots in 
 
 | Step | Deliverable | Done when |
 |---|---|---|
-| **1 — Front door** | Second socket, second mux, wildcard Caddy block, wildcard cert in place. Preview mux returns 401 for everything. | Every preview URL returns 401 from a device on the LAN, and no preview URL can reach an API route. |
+| **1 — Front door** | Second socket, second mux, wildcard Caddy block, wildcard cert in place. Preview mux returns 401 for everything. **Done** — see *As built* below. | ✅ Every preview URL returns 401 from a device on the LAN, and no preview URL can reach an API route. |
 | **2 — Handshake** | `/preview/authorize`, one-time tokens, `preview_session`, cookie stripping. | A signed-in device reaches a hardcoded upstream; an unsigned-in one is bounced to sign-in and returned. Revoke-all closes it. |
 | **3 — Proxy** | Container IP resolution, dial, websocket upgrade, `Host` handling, `X-Forwarded-*`. | Vite with HMR works end to end on a phone. |
 | **4 — Registry** | `forwarded_port`, declared-port parsing from the resolved config, the ports UI, probe endpoint. | Enable a port from the card, open it, disable it, and watch it close. |
@@ -472,12 +476,23 @@ Small enough to be one phase, ordered so the risky part is first. This slots in 
 
 Step 1 before anything else, for the same reason §14 puts the front door before the skeleton: retrofitting auth onto a proxy that already works is how open proxies happen.
 
+### 13.1 As built — step 1
+
+- **The preview socket is `api.PreviewFrontDoor`, not `api.Build`.** It mounts only the preview routes (§6) that have a written handler, each behind its gate as on the API mux, and answers every other request with `api.PreviewUnauthorized`: `401`, the API's own `unauthenticated` envelope, `Referrer-Policy: no-referrer` and `Cache-Control: no-store` — the request may carry a `?t=` token — and no CSP or framing rule, because the preview origin's headers are the previewed app's own. Nothing is written yet, so that is every request: any path (an API path, `/.drydock/session?t=…`, `/preview/authorize`), any method, any `Host`, and any credential — a forged preview cookie, a token, the UI's own session cookie, the right password on the sign-in `POST`. All get the same bytes, so a refusal says nothing about what was tried.
+- **An unwritten preview route is not a `501`.** On the API socket a declared, unbuilt route answers `501` behind its gate. On the preview socket nobody is signed in yet, so a `501` — or `ServeMux`'s own `404` and `405`, which is what the socket answered before — would only tell the LAN which `/.drydock/` paths exist. When step 2 writes `/.drydock/session`, it is mounted behind its token gate and the rest keeps the `401`.
+- **"No preview URL can reach an API route" is a property of which routes the door can mount**: `PreviewRoutes()` and nothing else. Its test hands the door a handler for every route of both muxes and asserts no API handler runs; the control is the same handlers on the API mux, where every one does. Over the real server's sockets, a live session reads `GET /api/auth/session` on the API socket and the same cookie reads the `401` on the preview socket, under the preview host, the UI host and a foreign one.
+- **Caddy, under real Caddy** (testing §3.2): a preview host — any slug, any path including `/api/*` and `/preview/authorize` — reaches the preview socket and never the API socket; the UI host — `/.drydock/*` included — never reaches the preview socket; on the wildcard's TLS name, a `Host` two labels deep, the bare preview domain, a suffix trick or a foreign name matches no site; the preview cookie, the query and an ordinary header arrive intact while `X-Forwarded-For` is replaced; the token is in nothing Caddy writes; and nothing listens on `:2019`. Each was mutation-checked against `deploy/preview.caddy` or `deploy/Caddyfile`.
+- **The wildcard certificate is proved at install.** With `--preview-domain`, the installer's final check also asks `https://drydock-check.<domain>/` for its `401`, verified against `--ca-cert` or the system store exactly as the UI host is, so a preview certificate without the wildcard's names fails the install naming the preview host and `--preview-cert`. The certificate, the domain and its LAN wildcard record are the operator's (§14.3); Drydock issues nothing.
+- **In a browser** (testing §10.4): a signed-in Chromium clicking through to a preview host arrives cross-site with no session cookie and gets the `401`; a forged host-only preview cookie and a `?t=` token reach the preview socket through Caddy and change nothing; and another slug is sent no cookie.
+
+What step 2 inherits: the fallback is the one place to turn into §7's redirect; `PreviewTokenValid` is still `false`; the uniform answer has to survive the redirect (a spent, expired and forged token alike); and the preview socket has no host check of its own yet — today every `Host` is the same `401`, and step 2's slug resolution is where an unknown host becomes `/.drydock/denied`. §10.7's connection cap and upgrade idle timeout are step 3's, with the proxy they bound.
+
 ## 14. Open questions
 
 ### 14.1 Still open
 
 1. **Does the cross-site boundary hold end to end?** With previews on a separate registrable domain, `SameSite=Lax` should refuse a preview-origin state-changing `POST` to `/api/*` before the `Origin` check is even reached — worth confirming in a real browser rather than assuming, because it depends on the cookie attribute *and* the domain split both being right. The test: from a preview origin, (a) a state-changing `POST` to `/api/*` is refused and logged; (b) it is still refused with `Origin` stripped (the belt behind `SameSite`); and (c) a data `GET` cannot be *read* cross-origin (no reflected CORS). Cheap, and it catches a misconfigured cookie or a preview domain that accidentally shares a registrable suffix with the UI.
-2. **Does `host_header: passthrough` want to be the default?** It is the correct behavior for apps that generate absolute URLs and the wrong one for apps with strict host allowlists, and the second group is growing. The answer is one afternoon of pointing it at the repos actually in the installation.
+2. ~~**Does `host_header: passthrough` want to be the default?** It is the correct behavior for apps that generate absolute URLs and the wrong one for apps with strict host allowlists, and the second group is growing. The answer is one afternoon of pointing it at the repos actually in the installation.~~ **Decided** — `localhost` is the default, `passthrough` a per-port switch (§8.3, §14.3).
 3. **What actually belongs on the discovery denylist?** §8.2 asserts that a workspace's socket table is mostly noise, which is true, but the specific noise is an empirical question — the remote-control process is certain, MCP servers and language servers are likely, and the rest is guesswork until a real workspace has been running for a week. Ship the `hidden` flag first and let the denylist be whatever people keep hiding. Getting this wrong is cosmetic, which is why it is not worth designing in advance.
 
 ### 14.2 Deferred, and what would reopen each
@@ -500,6 +515,9 @@ Step 1 before anything else, for the same reason §14 puts the front door before
 | Publish container ports on the host? | **No.** Drydock dials the container's Docker-network address from the host. Publishing would put listeners on the dev server's interfaces, which is the thing §13.5 exists to prevent. |
 | Discover ports with an in-container agent, like VS Code does? | **No — read the netns from the host.** VS Code can afford an agent because it already runs a server inside the container. Drydock does not, and `/proc/<pid>/net/tcp` gives the same answer as an unprivileged file read: no exec, no image dependency, no cost per poll, and the container stays unaware it is being previewed (§8.2). |
 | Should a newly discovered port notify the operator? | **No.** Ambient count on the card, decisions in the panel. A prompt that fires whenever a test run opens a socket trains a click-through reflex — the same argument §13.5 of the overall document uses to refuse a re-auth prompt on delete (§8.2). |
+| Which `Host` does the upstream see by default? *(owner, 8 October 2026)* | **`localhost:<port>`**, with `passthrough` a per-port toggle (§5's `host_header`, §8.3). Strict host allowlists are the growing group, and an app that rejects the preview host on first open reads as a Drydock bug; `X-Forwarded-Host` still carries the preview host for frameworks that honour it. Was §14.1's second question. |
+| Who provides the preview domain, its certificate and its DNS? *(owner, 8 October 2026)* | **The operator.** A second registrable domain, a wildcard certificate for it and a LAN wildcard record pointing at Caddy are the operator's infrastructure, provisioned like the UI's certificate; Drydock never issues a certificate (§1's out-of-scope line, §9). The repository names no real domain: tests use `drydock-preview.test`. |
+| Do the product defaults stand? *(owner, 8 October 2026)* | **Yes, as designed.** Ports are off until enabled; discovered ports are listed but never auto-exposed and never notified (§8.2, §12); there is no sharing (§12, §14.2); HTTP and websockets only (§1). |
 | Delete a `forwarded_port` row, or retire it? | **Retire it.** A deleted row frees its slug, and a reissued slug makes a stale bookmark resolve to a different workspace rather than failing closed (§4). Soft-deleting costs one column and a partial index, and it moves that guarantee from the odds into the schema. |
 
 ---

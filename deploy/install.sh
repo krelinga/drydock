@@ -835,15 +835,29 @@ set_password() {
 # should: an unauthenticated API request is refused with 401, over a TLS
 # connection this host verified. Against --ca-cert alone when one was given (a
 # private CA), otherwise against the system's trust store.
+#
+# With previews on, the same for the preview site (port forwarding §13 step
+# 1): one name under the wildcard, which the preview socket answers with 401
+# — over the wildcard certificate, verified the same way. A preview site Caddy
+# serves with a certificate no device trusts is a preview no device can open.
 verify() {
-	local url="https://$UI_HOST/api/auth/session" code rc=0 err reason trust="this host's trust store" ca=()
+	verify_site "$UI_HOST" "https://$UI_HOST/api/auth/session" --cert
+	if [ -n "${PREVIEW_DOMAIN:-}" ]; then
+		verify_site "drydock-check.$PREVIEW_DOMAIN" "https://drydock-check.$PREVIEW_DOMAIN/" --preview-cert
+	fi
+}
+
+# verify_site HOST URL CERT_FLAG: URL, resolved to this host, answers 401 over
+# TLS this host verified. CERT_FLAG names the flag that gave the certificate.
+verify_site() {
+	local host="$1" url="$2" flag="$3" code rc=0 err reason trust="this host's trust store" ca=()
 	if [ -n "${CA_CERT:-}" ]; then
 		ca=(--cacert "$CA_CERT")
 		trust="$CA_CERT"
 	fi
 	err=$(mktemp)
 	code=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 10 "${ca[@]}" \
-		--resolve "$UI_HOST:443:127.0.0.1" "$url" 2>"$err") || rc=$?
+		--resolve "$host:443:127.0.0.1" "$url" 2>"$err") || rc=$?
 	reason=$(tr '\n' ' ' <"$err" | sed 's/^curl: ([0-9]*) //; s/ *$//')
 	rm -f "$err"
 	[ "$rc" = 0 ] && [ "$code" = 401 ] && return 0
@@ -855,10 +869,10 @@ verify() {
 	# works, or something else is broken too. It never turns a failure into a
 	# pass.
 	if [ "$rc" = 60 ] && [ "$(curl -sk -o /dev/null -w '%{http_code}' --max-time 10 \
-		--resolve "$UI_HOST:443:127.0.0.1" "$url" 2>/dev/null)" = 401 ]; then
+		--resolve "$host:443:127.0.0.1" "$url" 2>/dev/null)" = 401 ]; then
 		local hint="If the certificate is from a private CA, re-run with --ca-cert <the CA's certificate, PEM> (it is kept for later runs)."
-		[ -n "${CA_CERT:-}" ] && hint="Check that $CA_CERT is the certificate of the CA that issued --cert (re-run with the right one, or --no-ca-cert for a publicly trusted certificate)."
-		die "Drydock is installed and running, and answers through Caddy, but this host could not verify the certificate Caddy serves for $UI_HOST against $trust: $reason. $hint Also check that its names include $UI_HOST and that --cert is the full chain, leaf first, then the intermediates: a phone needs them too."
+		[ -n "${CA_CERT:-}" ] && hint="Check that $CA_CERT is the certificate of the CA that issued $flag (re-run with the right one, or --no-ca-cert for a publicly trusted certificate)."
+		die "Drydock is installed and running, and answers through Caddy, but this host could not verify the certificate Caddy serves for $host against $trust: $reason. $hint Also check that its names include $host and that $flag is the full chain, leaf first, then the intermediates: a phone needs them too."
 	fi
 	die "end-to-end check failed: $url answered '$code' through Caddy, want 401${reason:+ ($reason)}. See: journalctl -u caddy -u drydock"
 }
