@@ -420,24 +420,88 @@ func TestLoggedInAtIsWhenTheLoginWasFirstSeen(t *testing.T) {
 
 // TestRunChecksAtBootAndOnTheInterval: Run checks at once, then again when
 // the interval passes, and not before.
+//
+// "Run is parked on its interval" is the seam's "parked", never
+// clock.Waiting() == 1: since #61 each read puts its own timeout on the same
+// clock, so mid-check one timer is waiting too. That is what this test used to
+// wait on, and under load it read the boot check's count before the check had
+// read anything, or advanced the clock past the read's timeout instead of the
+// interval. The gate holds the boot check inside its read to prove the point:
+// one timer is waiting there and no check has finished.
 func TestRunChecksAtBootAndOnTheInterval(t *testing.T) {
 	h := newHarness(t)
 	h.src.set(nil, nil, nil, nil)
+	src := &gatedSource{fakeSource: h.src, in: make(chan struct{}), gate: make(chan struct{})}
+	h.w.Source = src
+	parked := make(chan struct{}, 4)
+	h.w.observe = func(p string) {
+		if p == "parked" {
+			parked <- struct{}{}
+		}
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() { h.w.Run(ctx); close(done) }()
-	waitFor(t, func() bool { return h.clock.Waiting() == 1 })
-	if n := h.calls(); n != 1 {
-		t.Fatalf("checks at boot = %d; want 1", n)
+	t.Cleanup(func() {
+		cancel()
+		receive(t, done, "Run did not return when its context ended")
+	})
+
+	receive(t, src.in, "Run did not check at boot")
+	if n, w := h.calls(), h.clock.Waiting(); n != 0 || w != 1 {
+		t.Fatalf("inside the boot read: %d reads done, %d timers; want 0 and the read's own timeout", n, w)
 	}
+	close(src.gate)
+	receive(t, parked, "Run did not park after its boot check")
+	if n, w := h.calls(), h.clock.Waiting(); n != 1 || w != 1 {
+		t.Fatalf("parked after boot: %d checks, %d timers; want 1 and only the interval's", n, w)
+	}
+
+	// Advance fires due timers synchronously, so a timer still waiting
+	// afterwards is one that did not fire: no early check, without a sleep.
 	h.clock.Advance(6*time.Hour - time.Second)
-	if n := h.calls(); n != 1 {
-		t.Fatalf("checked before the interval: %d", n)
+	if w := h.clock.Waiting(); w != 1 {
+		t.Fatalf("a second before the interval: %d timers waiting; want the interval's still pending", w)
 	}
 	h.clock.Advance(time.Second)
-	waitFor(t, func() bool { return h.calls() == 2 && h.clock.Waiting() == 1 })
-	cancel()
-	<-done
+	receive(t, parked, "Run did not check again when the interval passed")
+	if n, w := h.calls(), h.clock.Waiting(); n != 2 || w != 1 {
+		t.Fatalf("parked after the interval: %d checks, %d timers; want 2 and the next interval's", n, w)
+	}
+}
+
+// gatedSource holds the first credential read until gate closes, announcing
+// it on in.
+type gatedSource struct {
+	*fakeSource
+	once     sync.Once
+	in, gate chan struct{}
+}
+
+func (g *gatedSource) Credentials(ctx context.Context) ([]byte, error) {
+	g.once.Do(func() {
+		close(g.in)
+		<-g.gate
+	})
+	return g.fakeSource.Credentials(ctx)
+}
+
+// receive fails the test, rather than hanging it, when ch does not deliver.
+func receive[T any](t *testing.T, ch <-chan T, msg string) {
+	t.Helper()
+	select {
+	case <-ch:
+	case <-time.After(5 * time.Second):
+		t.Fatal(msg)
+	}
+}
+
+// drained waits for wg, failing the test rather than hanging it.
+func drained(t *testing.T, wg *sync.WaitGroup, msg string) {
+	t.Helper()
+	ch := make(chan struct{})
+	go func() { wg.Wait(); close(ch) }()
+	receive(t, ch, msg)
 }
 
 func (h *harness) calls() int {

@@ -160,8 +160,17 @@ func TestAShutdownEndsATriggeredCheck(t *testing.T) {
 
 	src.set(nil, nil, nil, nil)
 	h.w.Trigger()
-	waitFor(t, func() bool { src.mu.Lock(); defer src.mu.Unlock(); return src.credsCalls == 1 })
-	waitFor(t, func() bool { v, _ := h.w.Read(context.Background()); return v.State != nil && *v.State == Absent })
+	// Wait for the triggered check to end, not for its verdict: a check
+	// stores its verdict before it lets go of running, and a Trigger in that
+	// window joins it and reads nothing (TestATriggerJoinsACheckInFlight) —
+	// which left `<-src.entered` below waiting for ever.
+	drained(t, &h.w.triggers, "the first triggered check did not end")
+	src.mu.Lock()
+	calls := src.credsCalls
+	src.mu.Unlock()
+	if v, _ := h.w.Read(context.Background()); calls != 1 || v.State == nil || *v.State != Absent {
+		t.Fatalf("control: %d credential reads, state %v; want one read, stored absent", calls, v.State)
+	}
 
 	src.setHang(true)
 	h.w.Trigger()
@@ -177,12 +186,68 @@ func TestAShutdownEndsATriggeredCheck(t *testing.T) {
 	if src.sweepCount() != before+1 {
 		t.Errorf("sweeps %d → %d; want the cut-off read swept", before, src.sweepCount())
 	}
-	// After shutdown a Trigger starts nothing.
+	// After shutdown a Trigger starts nothing. A check it did start would run
+	// under the cancelled context and still reach the hanging read, which
+	// returns at once; triggers.Wait outlasts any such check, so no sleep
+	// stands in for "long enough".
 	h.w.Trigger()
+	drained(t, &h.w.triggers, "a Trigger after Shutdown left a check running")
 	select {
 	case <-src.entered:
 		t.Error("a Trigger after Shutdown started a check")
-	case <-time.After(50 * time.Millisecond):
+	default:
+	}
+}
+
+// TestATriggerJoinsACheckInFlight pins the interleaving the test above used
+// to hang on (CI, PR #78): a Trigger while a check is running joins it — the
+// check route's documented "start a check, or join the one running" — and
+// that includes a check that has already stored its verdict but not yet let
+// go of running. The joiner reads nothing, so waiting on a stored verdict is
+// no proof the next Trigger will read. The seam holds the first check in that
+// tail until the Trigger has joined, so the interleaving is forced rather
+// than hoped for. The positive control is a Trigger after the check has
+// ended, which reads.
+func TestATriggerJoinsACheckInFlight(t *testing.T) {
+	h := newHarness(t)
+	src := newHanging()
+	h.w.Source = src
+	h.w.Timeout = time.Hour
+	src.set(nil, nil, nil, nil)
+	reads := func() int { src.mu.Lock(); defer src.mu.Unlock(); return src.credsCalls }
+
+	tail, joined := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	h.w.observe = func(p string) {
+		switch p {
+		case "ending":
+			once.Do(func() {
+				close(tail)
+				<-joined
+			})
+		case "joined":
+			close(joined)
+		}
+	}
+
+	h.w.Trigger()
+	<-tail // the first check has stored its verdict and still holds running
+	if v, _ := h.w.Read(context.Background()); v.State == nil || *v.State != Absent {
+		t.Fatalf("in the tail the verdict is %v; want absent already stored", v.State)
+	}
+	h.w.Trigger() // joins; joining releases the first check
+	// The first check waits in its tail for the join, so a Trigger that
+	// started a check of its own instead leaves both waiting here.
+	drained(t, &h.w.triggers, "the Trigger did not join the check in flight (or the joined check never ended)")
+	if n := reads(); n != 1 {
+		t.Fatalf("%d credential reads; want 1: a Trigger joining a check in flight reads nothing", n)
+	}
+
+	h.w.observe = nil
+	h.w.Trigger()
+	drained(t, &h.w.triggers, "control: the Trigger after the check ended did not end")
+	if n := reads(); n != 2 {
+		t.Fatalf("control: %d credential reads; want 2: a Trigger after the check ended reads", n)
 	}
 }
 
