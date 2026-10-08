@@ -54,6 +54,19 @@ type Catalog struct {
 	// memory only: it is what a reloaded page reads instead of the event it
 	// missed, and a restarted server refreshes at once anyway.
 	failure *RefreshError
+
+	// base is what Trigger's refreshes run under. Shutdown cancels it and
+	// waits for them, so none outlives the database it writes to. triggers
+	// is added to under mu, and Shutdown cancels under mu, so no refresh is
+	// added once Shutdown has started waiting.
+	once     sync.Once
+	base     context.Context
+	stop     context.CancelFunc
+	triggers sync.WaitGroup
+}
+
+func (c *Catalog) init() {
+	c.once.Do(func() { c.base, c.stop = context.WithCancel(context.Background()) })
 }
 
 // Result summarises one refresh.
@@ -107,8 +120,45 @@ func (c *Catalog) Refresh(ctx context.Context) (Result, error) {
 
 // Trigger starts a refresh in the background and returns at once: POST
 // /api/repos/refresh answers 202 and the client follows the event stream.
-func (c *Catalog) Trigger() {
-	go c.Refresh(context.Background())
+// It runs under the catalog's own context, which Shutdown ends; after
+// Shutdown it starts nothing. A refresh already running — triggered, or
+// Run's — is joined: its outcome reaches the stream as this one's would, so
+// there is nothing to start.
+func (c *Catalog) Trigger() { c.trigger() }
+
+// trigger is Trigger, reporting whether it started a refresh.
+func (c *Catalog) trigger() bool {
+	c.init()
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.base.Err() != nil || c.running {
+		return false
+	}
+	c.triggers.Add(1)
+	go func() {
+		defer c.triggers.Done()
+		c.Refresh(c.base)
+	}()
+	return true
+}
+
+// Shutdown ends the refreshes Trigger started and waits up to wait for them,
+// so none calls GitHub or writes to the database after Serve closes it.
+// Run's refreshes end with Run's context; a caller's Refresh with its.
+func (c *Catalog) Shutdown(wait time.Duration) {
+	c.init()
+	c.mu.Lock()
+	c.stop()
+	c.mu.Unlock()
+	done := make(chan struct{})
+	go func() {
+		c.triggers.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(wait):
+	}
 }
 
 // Run refreshes now and then every Interval until ctx ends. Failures are
