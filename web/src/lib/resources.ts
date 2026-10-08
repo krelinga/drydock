@@ -44,8 +44,9 @@ export function resourceLine(
   const labels: string[] = []
   if (state === 'running') {
     let m = r?.memory ?? null
-    // A reading of another container — the one before a stop and a start
-    // that landed inside one round — is not this workspace's.
+    // A reading of another container — the one a rebuild replaced
+    // inside one round, which gives the workspace a new container id — is
+    // not this workspace's. A plain stop and start keeps the id.
     if (m !== null && m.containerId !== null && containerId !== null && m.containerId !== containerId) m = null
     if (m === null) {
       parts.push('mem —')

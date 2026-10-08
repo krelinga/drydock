@@ -11,7 +11,6 @@ import "bytes"
 type tail struct {
 	b   bytes.Buffer
 	max int
-	cut bool // something was dropped from the front
 }
 
 func newTail(max int) *tail { return &tail{max: max} }
@@ -37,7 +36,6 @@ func (t *tail) trim() {
 	kept := append([]byte(nil), keep...)
 	t.b.Reset()
 	t.b.Write(kept)
-	t.cut = true
 }
 
 // Bytes is the kept tail.

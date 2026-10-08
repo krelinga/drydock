@@ -24,7 +24,6 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"regexp"
 	"sync"
 	"time"
 
@@ -649,22 +648,27 @@ func interrupted(ctx context.Context, timeout time.Duration, err error) error {
 	return workspace.Public("Drydock shut down while this step was running.", err)
 }
 
-// ghToken matches an installation token's shape, so a log line quoting one —
-// a repository's postCreateCommand printing `gh auth token`, say — is
-// redacted before it is written down (§13.5).
-var ghToken = regexp.MustCompile(`gh[soupr]_[A-Za-z0-9]{20,}`)
-
 // logTail writes the last lines of a subprocess's log to the service log,
 // redacted. Never to the event log: it can quote anything a repository's own
 // commands printed (§6).
-func (p *Provisioner) logTail(id, what string, b []byte) {
+//
+// The journal is a file, so the lines are masked as the build log is — the
+// workspace's granted secret values, then credential shapes — and when the
+// values cannot be read, the lines are not written: a count says they were
+// withheld.
+func (p *Provisioner) logTail(ctx context.Context, id, what string, b []byte) {
 	const max = 50
 	lines := splitLines(b)
 	if len(lines) > max {
 		lines = lines[len(lines)-max:]
 	}
+	values, err := p.values(context.WithoutCancel(ctx), id)
+	if err != nil {
+		p.logf("drydock: workspace %s: %s: %d lines withheld: the secret values to mask them of cannot be read", id, what, len(lines))
+		return
+	}
 	for _, l := range lines {
-		p.logf("drydock: workspace %s: %s: %s", id, what, redact.String(l, nil))
+		p.logf("drydock: workspace %s: %s: %s", id, what, redact.String(l, values))
 	}
 }
 

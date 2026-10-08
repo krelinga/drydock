@@ -232,7 +232,10 @@ export function identityView(state: IdentityState | null, loginExpiresInMs = 30 
     state,
     account_email: live ? 'operator@example.invalid' : null,
     expires_at: live ? new Date(now + access).toISOString() : null,
-    login_expires_at: live ? new Date(now + (state === 'expiring' ? loginExpiresInMs : 30 * 86400e3)).toISOString() : null,
+    // 35 days, not 30: relativeTime turns "month" at exactly 30 days, so a
+    // spec reading this a moment after it was made under load flipped between
+    // "in 1 month" and "in 30 days". 35 is "in 1 month" with days to spare.
+    login_expires_at: live ? new Date(now + (state === 'expiring' ? loginExpiresInMs : 35 * 86400e3)).toISOString() : null,
     logged_in_at: live ? new Date(now - 20 * 86400e3).toISOString() : null,
     last_checked_at: state === null ? null : new Date(now - 60e3).toISOString(),
     volume: 'drydock-claude-config',

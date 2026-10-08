@@ -90,47 +90,70 @@ func upFailure(stderr []byte) string {
 // like the session server's log, never persisted — and cleared when the next
 // `up` starts or the workspace is deleted. A Drydock restart loses it.
 //
-// It is held as the CLI wrote it and masked when it is served
-// (Provisioner.BuildLog), with the one redactor the session server's log uses
-// (internal/redact): granted secret values first, then credential shapes. At
-// serve time so a secret granted after the failure is masked too, and so the
-// values-before-patterns order holds — masking a pattern first can leave a
-// value that contained it no longer matchable, its prefix showing.
+// Masked twice, with the one redactor the session server's log uses
+// (internal/redact: granted secret values first, then credential shapes):
+//
+//   - when it is kept, with the values granted then — and only that masked
+//     copy is held, so the raw log never stays in memory, and a value later
+//     rotated, ungranted or deleted stays masked (the session log's
+//     never-forget property, by another route);
+//   - when it is served, with the values granted now, so a secret granted
+//     after the failure is masked too.
+//
+// Each line is masked whole and only then cut to maxBuildLine, at serve time,
+// so no value or token straddling the cut can show its prefix. Values that
+// cannot be read fail closed at either point: a log that could not be masked
+// when kept holds no lines at all and is withheld for good, and one that
+// cannot be masked now is withheld until it can.
 type BuildLog struct {
 	Lines []string
 	At    time.Time
+	// unmasked: the values could not be read when the log was kept, so no
+	// line was kept (Lines is empty) and it is never served.
+	unmasked bool
 }
 
 // buildLogLines is how many lines a BuildLog keeps, and maxBuildLine how
-// many bytes of each.
+// many bytes of each are served. The lines kept are bounded already: they
+// come from the last MiB of `up`'s stderr (container.UpStderrTail).
 const (
 	buildLogLines = 50
 	maxBuildLine  = 2000
 )
 
 // ErrLogWithheld is a held build log that cannot be served because the
-// values it must be masked of cannot be read — the secrets snapshot is
+// values it must be masked of could not be read — the secrets snapshot is
 // undeliverable. It fails closed: no lines rather than unmasked ones.
 var ErrLogWithheld = errors.New("provision: the build log is withheld: the secret values to mask it of cannot be read")
 
-func (p *Provisioner) keepBuildLog(id string, stderr []byte) {
+// values is the workspace's granted secret values, for masking.
+func (p *Provisioner) values(ctx context.Context, id string) ([]string, error) {
+	if p.Redact == nil {
+		return nil, nil
+	}
+	return p.Redact(ctx, id)
+}
+
+func (p *Provisioner) keepBuildLog(ctx context.Context, id string, stderr []byte) {
 	lines := splitLines(stderr)
 	if len(lines) > buildLogLines {
 		lines = lines[len(lines)-buildLogLines:]
 	}
-	out := make([]string, len(lines))
-	for i, l := range lines {
-		if len(l) > maxBuildLine {
-			l = l[:maxBuildLine]
+	b := BuildLog{At: p.Workspaces.Env.Clock.Now()}
+	if values, err := p.values(context.WithoutCancel(ctx), id); err != nil {
+		b.unmasked = true // nothing raw is held
+	} else {
+		b.Lines = make([]string, len(lines))
+		for i, l := range lines {
+			b.Lines[i] = redact.String(l, values)
 		}
-		out[i] = l
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if p.buildLogs == nil {
 		p.buildLogs = map[string]BuildLog{}
 	}
-	p.buildLogs[id] = BuildLog{Lines: out, At: p.Workspaces.Env.Clock.Now()}
+	p.buildLogs[id] = b
 }
 
 func (p *Provisioner) dropBuildLog(id string) {
@@ -141,22 +164,27 @@ func (p *Provisioner) dropBuildLog(id string) {
 
 // BuildLog is the workspace's held build log, masked now: held is false when
 // there is none, and ErrLogWithheld when there is one that cannot be masked.
-func (p *Provisioner) BuildLog(ctx context.Context, id string) (log BuildLog, held bool, err error) {
+func (p *Provisioner) BuildLog(ctx context.Context, id string) (BuildLog, bool, error) {
 	p.mu.Lock()
 	b, ok := p.buildLogs[id]
 	p.mu.Unlock()
 	if !ok {
 		return BuildLog{}, false, nil
 	}
-	var values []string
-	if p.Redact != nil {
-		if values, err = p.Redact(ctx, id); err != nil {
-			return BuildLog{At: b.At}, true, ErrLogWithheld
-		}
+	if b.unmasked {
+		return BuildLog{At: b.At}, true, ErrLogWithheld
+	}
+	values, err := p.values(ctx, id)
+	if err != nil {
+		return BuildLog{At: b.At}, true, ErrLogWithheld
 	}
 	out := make([]string, len(b.Lines))
 	for i, l := range b.Lines {
-		out[i] = redact.String(l, values)
+		l = redact.String(l, values) // masked whole, then cut
+		if len(l) > maxBuildLine {
+			l = l[:maxBuildLine]
+		}
+		out[i] = l
 	}
 	return BuildLog{Lines: out, At: b.At}, true, nil
 }

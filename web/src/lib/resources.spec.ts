@@ -50,7 +50,7 @@ describe('resourceLine', () => {
     expect(p?.label).toContain('at least')
   })
 
-  it('a reading of another container is not this workspace\'s: a stop and a start inside one round', () => {
+  it('a reading of another container is not this workspace\'s: a rebuild inside one round', () => {
     expect(resourceLine('running', r(1_200_000_000, 1e9, { container: 'old' }), 'new')?.text).toBe('mem — · disk 1.0 GB')
     // Controls: its own container, or no container named on either side, is shown.
     expect(resourceLine('running', r(1_200_000_000, 1e9, { container: 'new' }), 'new')?.text).toBe('mem 1.2 GB · disk 1.0 GB')

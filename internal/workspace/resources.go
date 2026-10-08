@@ -31,7 +31,9 @@ type MemorySample struct {
 	At    time.Time `json:"at"`
 	// ContainerID is the container measured, when there was one: the
 	// client shows the figure only while it is the workspace's container,
-	// so a stop and a start inside one round never show the old one's.
+	// so a rebuild inside one round — which replaces the container, and its
+	// id — never shows the old one's. (A plain stop and start keeps the
+	// container and its id.)
 	ContainerID string `json:"container_id,omitempty"`
 	// Stale is set when the latest attempt to measure failed, so Bytes is
 	// the last good reading, from At. The UI says so; it never shows a
