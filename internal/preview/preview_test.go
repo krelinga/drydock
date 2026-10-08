@@ -5,8 +5,13 @@ import (
 	"crypto/rand"
 	"database/sql"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/http/httptrace"
+	"net/http/httputil"
+	"net/textproto"
+	"net/url"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -136,7 +141,7 @@ func TestParseReturn(t *testing.T) {
 	for _, raw := range []string{
 		"", "/", "//" + host + "/", "http://" + host + "/", "https://evil.example/",
 		"https://" + host + ".evil.example/", "https://evil.example/?https://" + host,
-		"https://" + host + ":8443/", "https://user@" + host + "/", "https://" + host + "@evil.example/",
+		"https://" + host + ":8443/", "https://" + host + ":/", "https://" + host + ":", "https://user@" + host + "/", "https://" + host + "@evil.example/",
 		"https://drydock-check." + domain + "/", "https://" + domain + "/", "https://a.b." + domain + "/",
 		"https://drydock.test/", "javascript:alert(1)", "https:" + host, "https:/" + host + "/",
 		"https://" + host + "\\@evil.example/", "https://" + host + "/\t/x", " https://" + host + "/",
@@ -400,23 +405,45 @@ func TestStoredValuesAreHashes(t *testing.T) {
 	}
 }
 
+// TestPendingTokensAreBounded: one auth session looping on authorize is
+// refused after its own share, while another device still mints; and the
+// table as a whole has a ceiling however many sessions mint.
 func TestPendingTokensAreBounded(t *testing.T) {
 	f := newFixture(t)
-	n := 0
-	for ; n < 5000; n++ {
-		if _, err := f.svc.Mint(f.grant()); err != nil {
-			if !errors.Is(err, preview.ErrTooManyPending) {
-				t.Fatal(err)
+	mintUntilRefused := func(sess string, limit int) int {
+		g := f.grant()
+		g.AuthSessionID = sess
+		for n := 0; n < limit; n++ {
+			if _, err := f.svc.Mint(g); err != nil {
+				if !errors.Is(err, preview.ErrTooManyPending) {
+					t.Fatal(err)
+				}
+				return n
 			}
-			break
 		}
+		return limit
 	}
-	if n == 5000 {
-		t.Fatal("5000 pending tokens were minted: the table is unbounded")
+	looping := mintUntilRefused(f.authID, 5000)
+	if looping == 5000 || looping > 100 {
+		t.Fatalf("one session minted %d pending tokens: its share is unbounded", looping)
+	}
+	if got := mintUntilRefused("another-device", 1); got != 1 {
+		t.Fatal("one looping session refused another device's mint: the cap is global, not per session")
+	}
+	// The ceiling: many sessions together.
+	total := looping + 1
+	for i := 0; total < 5000 && i < 200; i++ {
+		total += mintUntilRefused(fmt.Sprintf("s%d", i), 5000)
+	}
+	if total >= 5000 {
+		t.Fatalf("%d pending tokens across sessions: no global ceiling", total)
+	}
+	if got := mintUntilRefused("yet-another", 1); got != 0 {
+		t.Error("a new session minted past the global ceiling")
 	}
 	f.clock.Advance(preview.TokenTTL)
-	if _, err := f.svc.Mint(f.grant()); err != nil {
-		t.Errorf("control: after the pending tokens expired, a mint was refused: %v", err)
+	if got := mintUntilRefused(f.authID, 1); got != 1 {
+		t.Error("control: after the pending tokens expired, a mint was refused")
 	}
 }
 
@@ -481,5 +508,67 @@ func TestPlaceholderNamesNoValue(t *testing.T) {
 	}
 	if strings.Contains(body, "<b>") {
 		t.Error("a cookie name reached the page unescaped")
+	}
+}
+
+// hostileEarlyHints is a dev server that sends a 103 Early Hints carrying the
+// preview cookie, then plants another after the 103 for the final response.
+// Beside each, an app cookie that must pass: the control.
+func hostileEarlyHints(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Add("Link", "</app.css>; rel=preload")
+	w.Header().Add("Set-Cookie", preview.CookieName+"=early")
+	w.Header().Add("Set-Cookie", "app-early=kept")
+	w.WriteHeader(http.StatusEarlyHints)
+	w.Header().Del("Set-Cookie")
+	w.Header().Add("Set-Cookie", preview.CookieName+"=planted; Path=/; Secure; HttpOnly")
+	w.Header().Add("Set-Cookie", "app=kept")
+	w.WriteHeader(http.StatusOK)
+	w.Write([]byte("ok"))
+}
+
+// TestCookieGuardFiltersInformationalResponses is the guard against a 1xx: a
+// guard that stopped filtering at the first WriteHeader would send the 103's
+// preview cookie and let the one added after it ride the final 200. Through
+// httputil.ReverseProxy — which forwards an upstream's 1xx by default, and is
+// step 3's likely proxy — and with the upstream writing to the guard directly.
+func TestCookieGuardFiltersInformationalResponses(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(hostileEarlyHints))
+	defer upstream.Close()
+	target, _ := url.Parse(upstream.URL)
+	for name, inner := range map[string]http.Handler{
+		"through httputil.ReverseProxy": httputil.NewSingleHostReverseProxy(target),
+		"written to the guard directly": http.HandlerFunc(hostileEarlyHints),
+	} {
+		front := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			inner.ServeHTTP(&preview.CookieGuard{ResponseWriter: w}, r)
+		}))
+		var infos []http.Header
+		trace := &httptrace.ClientTrace{Got1xxResponse: func(code int, h textproto.MIMEHeader) error {
+			infos = append(infos, http.Header(h).Clone())
+			return nil
+		}}
+		req, _ := http.NewRequestWithContext(httptrace.WithClientTrace(context.Background(), trace), "GET", front.URL, nil)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		resp.Body.Close()
+		front.Close()
+		// Controls: the 103 really arrived, with its Link and the app's
+		// cookie; the final response carries the app's cookie.
+		if len(infos) != 1 || infos[0].Get("Link") == "" || !strings.Contains(strings.Join(infos[0].Values("Set-Cookie"), "|"), "app-early=kept") {
+			t.Fatalf("%s: control: the 103 did not arrive as sent: %v", name, infos)
+		}
+		final := resp.Header.Values("Set-Cookie")
+		if !strings.Contains(strings.Join(final, "|"), "app=kept") {
+			t.Errorf("%s: control: the app's cookie did not reach the final response: %q", name, final)
+		}
+		for what, vals := range map[string][]string{"the 103": infos[0].Values("Set-Cookie"), "the final response": final} {
+			for _, v := range vals {
+				if strings.Contains(strings.ToLower(v), strings.ToLower(preview.CookieName)) {
+					t.Errorf("%s: %s carried %q", name, what, v)
+				}
+			}
+		}
 	}
 }

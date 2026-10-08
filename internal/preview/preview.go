@@ -70,6 +70,12 @@ const touchEvery = time.Minute
 // mint, but a loop that never consumes must not grow memory without end.
 const maxPending = 4096
 
+// maxPendingPerSession bounds one auth session's share of it, so one tab
+// looping on /preview/authorize refuses only its own device, never every
+// other device's preview. A real handshake has one token pending per
+// preview host being opened; 64 is far above any honest burst.
+const maxPendingPerSession = 64
+
 // ReservedLabel is the name the installer's final check asks for. It must
 // never be a slug, or that check could someday land on a real preview; the
 // schema refuses it too.
@@ -201,6 +207,15 @@ func (s *Service) Mint(g Grant) (string, error) {
 	if len(s.pending) >= maxPending {
 		return "", ErrTooManyPending
 	}
+	mine := 0
+	for _, p := range s.pending {
+		if p.grant.AuthSessionID == g.AuthSessionID {
+			mine++
+		}
+	}
+	if mine >= maxPendingPerSession {
+		return "", ErrTooManyPending
+	}
 	s.pending[hash(tok)] = pendingToken{grant: g, expires: now.Add(TokenTTL)}
 	return tok, nil
 }
@@ -304,7 +319,10 @@ func (s *Service) StartSession(ctx context.Context, g Grant) (string, Target, er
 }
 
 // Session validates a preview cookie presented on host and resolves what it
-// may reach. It is false — and the caller answers alike — for a cookie that
+// may reach. A stopped workspace's sessions are refused here, not deleted: a
+// stop is not a revocation (the device would mint a new one on its next
+// request anyway), so after a start within the idle window the same cookie
+// works again (PF §13.2). Disable, retire, removal and sign-out delete. It is false — and the caller answers alike — for a cookie that
 // is unknown, for another host, idle past IdleLifetime, whose auth session has
 // ended, whose port is disabled or retired, or whose workspace is not
 // running. A live one slides its idle window.

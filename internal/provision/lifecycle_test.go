@@ -2,6 +2,7 @@ package provision
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -897,6 +898,19 @@ func TestDeleteIsResumableAfterEverySubStep(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			e := lifecycleEnv(t)
 			v := e.running(t, alpha)
+			// A forwarded port and a preview session on it: the resumed
+			// delete must retire the port (never delete it, so its slug stays
+			// spent) and take the session (port forwarding §4–§5).
+			db := e.p.Workspaces.DB
+			for _, q := range []string{
+				`INSERT INTO forwarded_port (id, workspace_id, container_port, slug, enabled) VALUES ('pcrash', '` + v.ID + `', 5173, 'alpha-5173-crsh', 1)`,
+				`INSERT INTO auth_session (id, created_at, last_seen_at, absolute_expires_at) VALUES ('acrash', 'x', 'x', 'x')`,
+				`INSERT INTO preview_session (id, auth_session_id, forwarded_port_id, preview_host, created_at, last_seen_at) VALUES ('scrash', 'acrash', 'pcrash', 'h', 'x', 'x')`,
+			} {
+				if _, err := db.ExecContext(ctx, q); err != nil {
+					t.Fatal(err)
+				}
+			}
 			if crashAfter == "" {
 				if _, err := e.p.Workspaces.Move(ctx, v.ID, workspace.Deleting, ""); err != nil {
 					t.Fatal(err)
@@ -947,6 +961,15 @@ func TestDeleteIsResumableAfterEverySubStep(t *testing.T) {
 			}
 			if n := e.kinds(t, v.ID, workspace.KindGone); n != 1 {
 				t.Errorf("%d workspace.gone events", n)
+			}
+			var enabled, sessions int
+			var retired sql.NullString
+			if err := db.QueryRowContext(ctx, `SELECT enabled, retired_at FROM forwarded_port WHERE id = 'pcrash'`).Scan(&enabled, &retired); err != nil {
+				t.Errorf("the resumed delete took the port row (its slug is now free): %v", err)
+			}
+			db.QueryRowContext(ctx, `SELECT count(*) FROM preview_session`).Scan(&sessions)
+			if enabled != 0 || !retired.Valid || sessions != 0 {
+				t.Errorf("after the resumed delete: port enabled=%d retired=%v, %d preview sessions; want 0, set, 0", enabled, retired, sessions)
 			}
 
 			// Idempotent: a second boot finds nothing, and a late resume is

@@ -578,6 +578,47 @@ func TestRemoveTakesTheSupervisorRowAndKeepsTheHistory(t *testing.T) {
 	}
 }
 
+// TestRemoveRetiresItsPorts is port forwarding §4–§5 as built: forwarded_port
+// has no foreign key to workspace — a cascade would delete the rows and free
+// their slugs for reissue — so Remove retires the workspace's ports (enabled
+// off, retired_at set, the rows and their slugs kept) and deletes their
+// preview sessions, in its own transaction. The control is another
+// workspace's live port and its session, untouched.
+func TestRemoveRetiresItsPorts(t *testing.T) {
+	ctx := context.Background()
+	f := newFixture(t)
+	gone, kept := f.create(t, 1), f.create(t, 2)
+	db := f.store.DB
+	for _, q := range []string{
+		`INSERT INTO forwarded_port (id, workspace_id, container_port, slug, enabled) VALUES ('pg', '` + gone.ID + `', 5173, 'gone-5173-aaaa', 1)`,
+		`INSERT INTO forwarded_port (id, workspace_id, container_port, slug, enabled) VALUES ('pk', '` + kept.ID + `', 5173, 'kept-5173-bbbb', 1)`,
+		`INSERT INTO auth_session (id, created_at, last_seen_at, absolute_expires_at) VALUES ('a1', 'x', 'x', 'x')`,
+		`INSERT INTO preview_session (id, auth_session_id, forwarded_port_id, preview_host, created_at, last_seen_at) VALUES
+			('sg', 'a1', 'pg', 'h', 'x', 'x'), ('sk', 'a1', 'pk', 'h', 'x', 'x')`,
+	} {
+		if _, err := db.ExecContext(ctx, q); err != nil {
+			t.Fatal(err)
+		}
+	}
+	f.store.Move(ctx, gone.ID, Deleting, "")
+	if err := f.store.Remove(ctx, gone.ID); err != nil {
+		t.Fatal(err)
+	}
+	port := func(id string) (enabled int, retired sql.NullString, sessions int) {
+		if err := db.QueryRowContext(ctx, `SELECT enabled, retired_at FROM forwarded_port WHERE id = ?`, id).Scan(&enabled, &retired); err != nil {
+			t.Fatalf("port %s: %v (a removed workspace's port must be retired, never deleted)", id, err)
+		}
+		db.QueryRowContext(ctx, `SELECT count(*) FROM preview_session WHERE forwarded_port_id = ?`, id).Scan(&sessions)
+		return
+	}
+	if en, ret, n := port("pg"); en != 0 || !ret.Valid || n != 0 {
+		t.Errorf("the removed workspace's port: enabled=%d retired=%v sessions=%d; want 0, set, 0", en, ret, n)
+	}
+	if en, ret, n := port("pk"); en != 1 || ret.Valid || n != 1 {
+		t.Errorf("control: another workspace's port: enabled=%d retired=%v sessions=%d; want 1, unset, 1", en, ret, n)
+	}
+}
+
 // TestRemoveAnnouncesAReleasedRepository: when a workspace's removal takes
 // a repository row the installation had dropped, the same commit writes a
 // repo.removed event naming it, after workspace.gone — a repo.* event is

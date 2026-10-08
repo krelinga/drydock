@@ -468,6 +468,50 @@ func TestPreviewCookieIdleAndStopped(t *testing.T) {
 	}
 }
 
+// TestPreviewSessionTriesOneCookie: however many cookies of the preview
+// cookie's name a request carries, the gate looks up one — the first — so a
+// pile of forged ones costs one lookup, not one each. The live cookie behind
+// a thousand forgeries is not found (the proof that only one was tried); the
+// same live cookie first is (the control).
+func TestPreviewSessionTriesOneCookie(t *testing.T) {
+	f := newHandshake(t)
+	live := f.previewCookie(t, testPreviewHost)
+	var forged []*http.Cookie
+	for i := 0; i < 1000; i++ {
+		forged = append(forged, &http.Cookie{Name: preview.CookieName, Value: fmt.Sprintf("forged-%d", i)})
+	}
+	page := "https://" + testPreviewHost + "/page"
+	none := f.get(t, page)
+	if got := f.get(t, page, append(forged, live)...); !sameAnswer(got, none) {
+		t.Errorf("the live cookie after 1,000 forged ones = %s; want the no-cookie answer: only the first may be tried", got)
+	}
+	if got := f.get(t, page, append([]*http.Cookie{live}, forged...)...); got.status != 200 {
+		t.Errorf("control: the live cookie first = %s; want the upstream", got)
+	}
+}
+
+// TestTooLongForTheHandshakeIsDenied: a preview URL longer than authorize
+// will carry lands on the preview's own denied page, not on a 400 on the UI
+// origin; one just short of the limit runs the handshake, and authorize mints
+// for it (the control that the two limits agree).
+func TestTooLongForTheHandshakeIsDenied(t *testing.T) {
+	f := newHandshake(t)
+	prefix := "https://" + testPreviewHost + "/p?q="
+	fits := prefix + strings.Repeat("a", preview.MaxReturn-len(prefix))
+	a := f.get(t, fits)
+	if a.status != http.StatusFound || !strings.HasPrefix(a.header.Get("Location"), testUIOrigin+"/preview/authorize?") {
+		t.Fatalf("a URL of exactly MaxReturn = %d %q; want the handshake", a.status, a.header.Get("Location"))
+	}
+	if b := f.get(t, a.header.Get("Location"), f.uiCookie()); b.status != http.StatusFound || !strings.Contains(b.header.Get("Location"), preview.SessionPath) {
+		t.Fatalf("control: authorize refused the longest URL the front door sends it: %d", b.status)
+	}
+	a = f.get(t, fits+"a")
+	if a.status != http.StatusFound || a.header.Get("Location") != preview.DeniedPath {
+		t.Errorf("a URL one byte over = %d %q; want the denied page", a.status, a.header.Get("Location"))
+	}
+	checkNoStore(t, "too long", a.header)
+}
+
 // TestAuthorizeRefusesOpenRedirects: return must be an https URL on exactly
 // one preview host; everything else is a 400 with no Location and no token.
 func TestAuthorizeRefusesOpenRedirects(t *testing.T) {

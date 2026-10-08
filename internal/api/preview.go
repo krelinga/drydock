@@ -77,8 +77,16 @@ func previewFallback(g Gate, up preview.Upstream, w http.ResponseWriter, r *http
 	}
 	// 3. The preview cookie. With none that validates, the handshake: the
 	// UI origin decides whether this device is signed in and whether the
-	// slug is previewable.
+	// slug is previewable. A URL too long to carry through it (authorize
+	// refuses a return over preview.MaxReturn) ends here, on the preview's
+	// own dead end, rather than on a 400 on the UI origin. Measured on the
+	// raw Host, which is never shorter than the canonical one the redirect
+	// carries, so nothing that passes here is refused there for length.
 	authed, ok := g.PreviewSession(r)
+	if !ok && len("https://")+len(r.Host)+len(r.URL.RequestURI()) > preview.MaxReturn {
+		previewDeny(w, r)
+		return
+	}
 	if !ok {
 		previewNoStore(w)
 		http.Redirect(w, r, g.PreviewAuthorizeURL(r), http.StatusFound)

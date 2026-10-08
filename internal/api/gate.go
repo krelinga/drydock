@@ -102,22 +102,29 @@ func (g SessionGate) PreviewHost(r *http.Request) bool {
 }
 
 // PreviewSession validates the preview cookie for the request's Host and
-// attaches what it may reach. Every cookie of that name is tried, since a
-// browser may send more than one; any failure is "no session", with no
+// attaches what it may reach. Any failure is "no session", with no
 // distinction the caller can see.
+//
+// Only the first cookie of that name is tried — one database lookup per
+// request, however many a caller sends. A browser never sends two: the
+// __Host- prefix forces Path=/ and no Domain, so a second cookie of the same
+// name for the same host replaces the first rather than joining it. Trying
+// each would let an unauthenticated request of ~3,000 forged cookies buy
+// ~45 ms of database work (measured in review), with nothing yet bounding
+// connections (PF §10.7 is step 3's).
 func (g SessionGate) PreviewSession(r *http.Request) (*http.Request, bool) {
 	if g.Previews == nil {
 		return r, false
 	}
-	for _, c := range r.Cookies() {
-		if c.Name != preview.CookieName {
-			continue
-		}
-		if t, ok := g.Previews.Session(r.Context(), c.Value, r.Host); ok {
-			return r.WithContext(preview.WithTarget(r.Context(), t)), true
-		}
+	c, err := r.Cookie(preview.CookieName)
+	if err != nil {
+		return r, false
 	}
-	return r, false
+	t, ok := g.Previews.Session(r.Context(), c.Value, r.Host)
+	if !ok {
+		return r, false
+	}
+	return r.WithContext(preview.WithTarget(r.Context(), t)), true
 }
 
 // PreviewAuthorizeURL is where a preview request with no valid preview cookie

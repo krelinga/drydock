@@ -12,15 +12,21 @@ import (
 	"strings"
 )
 
+// MaxReturn is the longest preview URL the handshake carries. A longer one
+// is refused by ParseReturn, so the preview mux sends it to its own denied
+// page before the round trip rather than to authorize's 400 on the UI origin.
+const MaxReturn = 8 << 10
+
 // ParseReturn validates /preview/authorize's `return` (PF §7 step 2): it must
 // be an https URL on a preview host under domain — one label, not the
-// reserved probe name — with no port, no user info, and nothing a browser
+// reserved probe name — with no port (an empty one, `host:`, included), no
+// user info, and nothing a browser
 // would read differently from Go. It returns the host and the request URI to
 // land on. Anything else is refused rather than repaired: authorize redirects
 // only to the preview host it was asked about, so it is never an open
 // redirect.
 func ParseReturn(raw, domain string) (host, uri string, ok bool) {
-	if raw == "" || len(raw) > 8<<10 {
+	if raw == "" || len(raw) > MaxReturn {
 		return "", "", false
 	}
 	for _, c := range raw {
@@ -32,7 +38,7 @@ func ParseReturn(raw, domain string) (host, uri string, ok bool) {
 		}
 	}
 	u, err := url.Parse(raw)
-	if err != nil || u.Scheme != "https" || u.Opaque != "" || u.User != nil || u.Host == "" || u.Port() != "" {
+	if err != nil || u.Scheme != "https" || u.Opaque != "" || u.User != nil || u.Host == "" || strings.Contains(u.Host, ":") {
 		return "", "", false
 	}
 	if u.Host != strings.ToLower(u.Host) {
@@ -132,9 +138,19 @@ func StripCookie(r *http.Request) *http.Request {
 }
 
 // CookieGuard wraps the response writer an upstream writes to, and drops any
-// Set-Cookie whose name is the preview cookie's before the header is sent —
-// so a previewed app can neither overwrite the device's preview session nor
-// read one back by setting it. Every other Set-Cookie passes.
+// Set-Cookie whose name is the preview cookie's before any header block is
+// sent — so a previewed app can neither overwrite the device's preview session
+// nor read one back by setting it. Every other Set-Cookie passes.
+//
+// It filters on every WriteHeader, informational ones included, and stops
+// only once the final header block has gone (a status of 200 or more, or a
+// 101, or the implicit 200 of a first Write or Flush). A 1xx is sent with the
+// header map as it stands and the map is still writable afterwards, so a guard
+// that latched on the first WriteHeader would pass a 103 Early Hints carrying
+// the cookie — and, worse, let a Set-Cookie added after the 103 ride the
+// final response. httputil.ReverseProxy forwards an upstream's 1xx by default
+// (its Got1xxResponse copies the headers and calls WriteHeader), so that is
+// the path step 3's proxy would open.
 //
 // Step 3 must keep this true for a websocket upgrade too: a 101 written
 // through a hijacked connection bypasses this writer, so the proxy has to
@@ -142,16 +158,17 @@ func StripCookie(r *http.Request) *http.Request {
 // ModifyResponse runs for a 101 as well).
 type CookieGuard struct {
 	http.ResponseWriter
-	wrote bool
+	final bool
 }
 
-func (g *CookieGuard) filter() {
-	if g.wrote {
+// filter strips the preview cookie from the header map unless the final
+// header block has already gone; final marks that it is going now.
+func (g *CookieGuard) filter(final bool) {
+	if g.final {
 		return
 	}
-	g.wrote = true
-	h := g.ResponseWriter.Header()
-	FilterSetCookie(h)
+	FilterSetCookie(g.ResponseWriter.Header())
+	g.final = final
 }
 
 // FilterSetCookie removes every Set-Cookie in h that names the preview
@@ -174,21 +191,21 @@ func FilterSetCookie(h http.Header) {
 	}
 }
 
-// WriteHeader filters, then writes.
+// WriteHeader filters, then writes — every time, 1xx included.
 func (g *CookieGuard) WriteHeader(code int) {
-	g.filter()
+	g.filter(code >= 200 || code == http.StatusSwitchingProtocols)
 	g.ResponseWriter.WriteHeader(code)
 }
 
 // Write filters before an implicit 200.
 func (g *CookieGuard) Write(b []byte) (int, error) {
-	g.filter()
+	g.filter(true)
 	return g.ResponseWriter.Write(b)
 }
 
 // Flush keeps streaming responses streaming (PF §8.4).
 func (g *CookieGuard) Flush() {
-	g.filter()
+	g.filter(true)
 	if f, ok := g.ResponseWriter.(http.Flusher); ok {
 		f.Flush()
 	}
@@ -197,7 +214,7 @@ func (g *CookieGuard) Flush() {
 // Hijack is passed through for step 3's websocket upgrade; see the type's
 // note on what that obliges the proxy to do.
 func (g *CookieGuard) Hijack() (net.Conn, *bufio.ReadWriter, error) {
-	g.filter()
+	g.filter(true)
 	if h, ok := g.ResponseWriter.(http.Hijacker); ok {
 		return h.Hijack()
 	}
