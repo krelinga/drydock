@@ -164,7 +164,7 @@ func TestAShutdownEndsATriggeredCheck(t *testing.T) {
 	// stores its verdict before it lets go of running, and a Trigger in that
 	// window joins it and reads nothing (TestATriggerJoinsACheckInFlight) —
 	// which left `<-src.entered` below waiting for ever.
-	h.w.triggers.Wait()
+	drained(t, &h.w.triggers, "the first triggered check did not end")
 	src.mu.Lock()
 	calls := src.credsCalls
 	src.mu.Unlock()
@@ -191,7 +191,7 @@ func TestAShutdownEndsATriggeredCheck(t *testing.T) {
 	// returns at once; triggers.Wait outlasts any such check, so no sleep
 	// stands in for "long enough".
 	h.w.Trigger()
-	h.w.triggers.Wait()
+	drained(t, &h.w.triggers, "a Trigger after Shutdown left a check running")
 	select {
 	case <-src.entered:
 		t.Error("a Trigger after Shutdown started a check")
@@ -236,20 +236,16 @@ func TestATriggerJoinsACheckInFlight(t *testing.T) {
 		t.Fatalf("in the tail the verdict is %v; want absent already stored", v.State)
 	}
 	h.w.Trigger() // joins; joining releases the first check
-	ended := make(chan struct{})
-	go func() { h.w.triggers.Wait(); close(ended) }()
-	select {
-	case <-ended:
-	case <-time.After(5 * time.Second):
-		t.Fatal("the joined Trigger and the check it joined did not end")
-	}
+	// The first check waits in its tail for the join, so a Trigger that
+	// started a check of its own instead leaves both waiting here.
+	drained(t, &h.w.triggers, "the Trigger did not join the check in flight (or the joined check never ended)")
 	if n := reads(); n != 1 {
 		t.Fatalf("%d credential reads; want 1: a Trigger joining a check in flight reads nothing", n)
 	}
 
 	h.w.observe = nil
 	h.w.Trigger()
-	h.w.triggers.Wait()
+	drained(t, &h.w.triggers, "control: the Trigger after the check ended did not end")
 	if n := reads(); n != 2 {
 		t.Fatalf("control: %d credential reads; want 2: a Trigger after the check ended reads", n)
 	}
