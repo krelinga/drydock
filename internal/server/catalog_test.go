@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -13,12 +14,55 @@ import (
 	"github.com/krelinga/drydock/internal/sys"
 )
 
+// slowListing holds the next GitHub listing it is armed for, in the client:
+// past the moment its context ends, the way a slow step would, for a little
+// while — or, if Serve returns first, until the test has looked. So a Serve
+// that waits for the refresh returns after the listing has ended, and one
+// that does not returns with it still held.
+type slowListing struct {
+	mu       sync.Mutex
+	armed    bool
+	entered  chan struct{}
+	served   chan struct{} // Serve has returned
+	looked   chan struct{} // the test has checked
+	finished atomic.Bool   // the held listing has returned
+}
+
+func (s *slowListing) RoundTrip(req *http.Request) (*http.Response, error) {
+	s.mu.Lock()
+	held := s.armed && req.URL.Path == "/app/installations"
+	s.armed = s.armed && !held
+	s.mu.Unlock()
+	if !held {
+		return http.DefaultTransport.RoundTrip(req)
+	}
+	defer s.finished.Store(true)
+	close(s.entered)
+	select {
+	case <-req.Context().Done():
+		select {
+		case <-s.served:
+			<-s.looked
+		case <-time.After(200 * time.Millisecond):
+		}
+	case <-s.served:
+		<-s.looked
+	}
+	if err := req.Context().Err(); err != nil {
+		return nil, err
+	}
+	return http.DefaultTransport.RoundTrip(req)
+}
+
 // TestShutdownEndsATriggeredCatalogRefresh: a refresh POST /api/repos/refresh
-// started is ended by Serve's shutdown and waited for, so it neither outlives
-// Serve nor reaches GitHub or the database after it. The GitHub request it is
-// blocked in must have been abandoned by the time Serve returns; before the
-// fix it ran under context.Background() and stayed open, and once let go it
-// went on to the database Serve had closed ("sql: database is closed").
+// started is ended by Serve's shutdown and waited for before the database
+// closes, so it neither outlives Serve nor reaches GitHub or the database
+// after it. Before the fix it ran under context.Background(), and once its
+// GitHub call answered it went on to the database Serve had closed ("sql:
+// database is closed"). The listing it is held in ends a moment after its
+// context, in the client: a hold in the fake GitHub would see the client
+// give up at once, and pass a Serve that closed the database without
+// waiting for the refresh to end.
 func TestShutdownEndsATriggeredCatalogRefresh(t *testing.T) {
 	dir := t.TempDir()
 	cfg := testConfig(t, dir)
@@ -34,32 +78,11 @@ func TestShutdownEndsATriggeredCatalogRefresh(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-
-	// Armed below, once the boot refresh is over: the next listing blocks
-	// until it is abandoned (its request context ends) or released.
-	var (
-		armed     bool
-		entered   = make(chan struct{})
-		abandoned = make(chan struct{})
-		release   = make(chan struct{})
-		once      sync.Once
-	)
-	f.Fail = func(r *http.Request) (int, string) { // f.Mu held
-		if r.URL.Path != "/app/installations" || !armed {
-			return 0, ""
-		}
-		armed = false
-		close(entered)
-		f.Mu.Unlock() // let other requests through while this one waits
-		select {
-		case <-r.Context().Done():
-			close(abandoned)
-		case <-release:
-		}
-		f.Mu.Lock()
-		return 0, ""
-	}
-	t.Cleanup(func() { once.Do(func() { close(release) }) })
+	slow := &slowListing{entered: make(chan struct{}), served: make(chan struct{}), looked: make(chan struct{})}
+	srv.Catalog.GitHub.HTTP = &http.Client{Transport: slow}
+	var looked sync.Once
+	look := func() { looked.Do(func() { close(slow.looked) }) }
+	t.Cleanup(look)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -69,7 +92,7 @@ func TestShutdownEndsATriggeredCatalogRefresh(t *testing.T) {
 
 	// The boot refresh has started; a refresh of the test's own then either
 	// joins it or runs after it, and either way returns with none running,
-	// so the POST below leads a refresh of its own rather than joining.
+	// so the POST below leads a refresh of its own.
 	deadline := time.Now().Add(10 * time.Second)
 	for f.Count("GET /app/installations") == 0 {
 		if time.Now().After(deadline) {
@@ -87,15 +110,15 @@ func TestShutdownEndsATriggeredCatalogRefresh(t *testing.T) {
 	}
 
 	cookie := r.signIn(t)
-	f.Mu.Lock()
-	armed = true
-	f.Mu.Unlock()
+	slow.mu.Lock()
+	slow.armed = true
+	slow.mu.Unlock()
 	resp := r.do(t, req{method: "POST", path: "/api/repos/refresh", origin: uiOrigin, cookie: cookie})
 	if resp.StatusCode != http.StatusAccepted {
 		t.Fatalf("POST /api/repos/refresh = %d; want 202", resp.StatusCode)
 	}
 	select {
-	case <-entered:
+	case <-slow.entered:
 	case <-time.After(10 * time.Second):
 		t.Fatal("control: the triggered refresh never reached GitHub")
 	}
@@ -109,22 +132,19 @@ func TestShutdownEndsATriggeredCatalogRefresh(t *testing.T) {
 	case <-time.After(60 * time.Second):
 		t.Fatal("Serve did not return")
 	}
-	before := len(requests(f))
-	select {
-	case <-abandoned:
-	case <-time.After(10 * time.Second):
-		// The bug: the refresh is still in GitHub, under a context nothing
-		// ends, and once let go its next step reads the closed database.
-		t.Fatal("Serve returned with the triggered refresh still in its GitHub request")
+	close(slow.served)
+	if !slow.finished.Load() {
+		// The bug: Serve closed the database with the refresh still in its
+		// GitHub call, and once that returns its next step reads the closed
+		// database.
+		t.Error("Serve returned, and closed the database, with the triggered refresh still running")
 	}
-	once.Do(func() { close(release) })
-	if got := requests(f)[before:]; len(got) != 0 {
-		t.Errorf("GitHub saw %v after Serve returned", got)
+	before := f.Count("")
+	look()
+	if !slow.finished.Load() {
+		return
 	}
-}
-
-func requests(f *githubtest.Fake) []string {
-	f.Mu.Lock()
-	defer f.Mu.Unlock()
-	return append([]string(nil), f.Requests...)
+	if n := f.Count(""); n != before {
+		t.Errorf("GitHub saw %d requests after Serve returned", n-before)
+	}
 }

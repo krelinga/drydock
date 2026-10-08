@@ -247,7 +247,8 @@ func New(ctx context.Context, cfg config.Config, env sys.Env) (*Server, error) {
 		// One client, so the catalog and the broker share its token cache.
 		gh := &github.Client{AppID: cfg.GitHubAppID, Key: key, BaseURL: cfg.GitHubAPI, Clock: env.Clock,
 			HTTP: &http.Client{Timeout: 30 * time.Second}}
-		s.Catalog = &catalog.Catalog{DB: db.DB, Events: s.Events, Clock: env.Clock, GitHub: gh}
+		s.Catalog = &catalog.Catalog{DB: db.DB, Events: s.Events, Clock: env.Clock, GitHub: gh,
+			Logf: func(f string, a ...any) { fmt.Fprintf(os.Stderr, f+"\n", a...) }}
 		s.Broker = &broker.Broker{Dir: cfg.BrokerDir, GitHub: gh, DB: db.DB, Events: s.Events, Env: env,
 			Logf: func(f string, a ...any) { fmt.Fprintf(os.Stderr, f+"\n", a...) }}
 		if s.Secrets != nil {
