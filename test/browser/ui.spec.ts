@@ -33,8 +33,11 @@ test('signing in through the real UI lands on the home screen', async ({ page, c
   // where Safari's and Firefox's `Origin: null` is caught.
   const post = await seenBy(stack.apiTap.seen, (s) => s.method === 'POST' && s.path === '/api/auth/session', 'the sign-in POST')
   expect(post.origin).toBe(UI)
-  expect(post.status).toBe(204)
+  // 200, not 204: the wrong password above is reported by the next sign-in
+  // (design §12, *Repeated failed sign-ins*), once, above the home screen.
+  expect(post.status).toBe(200)
   await expect(page.getByRole('heading', { name: 'Workspaces' })).toBeVisible()
+  await expect(page.locator('[data-test="failed-sign-ins"]')).toContainText('failed sign-in')
   expect(await sessionCookie(context)).toBeDefined()
 })
 

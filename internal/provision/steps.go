@@ -119,7 +119,7 @@ func (r *runState) resolveConfig(ctx context.Context, w workspace.Workspace) err
 	case errors.Is(err, container.ErrUnbuildable):
 		return workspace.Public("The repository's devcontainer.json names no image, Dockerfile or Compose file; it may not parse.", err)
 	case errors.As(err, &readErr):
-		r.p.logTail(w.ID, "read-configuration", []byte(readErr.Stderr))
+		r.p.logTail(ctx, w.ID, "read-configuration", []byte(readErr.Stderr))
 		return workspace.Public("devcontainer could not read the dev container configuration.", err)
 	case err != nil:
 		return workspace.Public("Drydock could not read devcontainer's answer about the configuration.", err)
@@ -334,6 +334,7 @@ func (r *runState) up(ctx context.Context, w workspace.Workspace) error {
 		return workspace.Public("Drydock could not create the workspace's temporary directory.", err)
 	}
 	defer os.RemoveAll(tmp)
+	r.p.dropBuildLog(w.ID) // this run's build replaces the last one's
 	res, stderr, err := r.p.Containers.Up(ctx, container.UpSpec{
 		WorkspaceID: w.ID, RepositoryID: w.RepositoryID, FullName: fullName, Branch: w.Branch,
 		Folder:         w.HostPath,
@@ -352,14 +353,21 @@ func (r *runState) up(ctx context.Context, w workspace.Workspace) error {
 		}
 	}
 	if err != nil {
-		r.p.logTail(w.ID, "devcontainer up", stderr)
-		return workspace.Public("Drydock could not run devcontainer up, or could not read its result.", err)
+		r.p.logTail(ctx, w.ID, "devcontainer up", stderr)
+		// A timeout or an unreadable result is a failed build too, and its
+		// output is what says where it stopped.
+		r.p.keepBuildLog(ctx, w.ID, stderr)
+		return workspace.Public("Drydock could not run devcontainer up, or could not read its result. "+
+			"Until Drydock restarts, the workspace page shows the output it printed.", err)
 	}
 	if res.Outcome != classify.ContainerRunning {
-		r.p.logTail(w.ID, "devcontainer up", stderr)
+		r.p.logTail(ctx, w.ID, "devcontainer up", stderr)
+		r.p.keepBuildLog(ctx, w.ID, stderr)
 		// The CLI's message can quote the repository's own commands, so it
-		// goes to the service log with the rest, not into the detail.
-		return workspace.Public("devcontainer up did not bring the container up; the service log has its output.",
+		// goes to the service log and the held build log, not into the
+		// detail; the detail is §12's sentence for what the Feature's own
+		// lines say happened (messages.go).
+		return workspace.Public(upFailure(stderr),
 			fmt.Errorf("devcontainer up: %s %s", res.Message, res.Description))
 	}
 	return lockfileChange(before, w.HostPath)
@@ -420,27 +428,27 @@ func (r *runState) verify(ctx context.Context, w workspace.Workspace) error {
 		return string(out.b), nil
 	}
 	if out, err := exec("drydock-probe"); err != nil {
-		r.p.logTail(w.ID, "probe", []byte(out))
-		return workspace.Public("The probe inside the container failed: the GitHub access socket did not answer.", err)
+		r.p.logTail(ctx, w.ID, "probe", []byte(out))
+		return workspace.Public(NoBrokerSentence, err)
 	}
 	out, err := exec("git", "-C", r.folder, "remote", "-v")
 	if err != nil {
-		r.p.logTail(w.ID, "probe", []byte(out))
+		r.p.logTail(ctx, w.ID, "probe", []byte(out))
 		return workspace.Public("The probe inside the container failed: git found no clone at the workspace folder.", err)
 	}
 	want := "origin\t" + r.cloneURL(fullName) + " (fetch)"
 	if !strings.Contains(out, want) {
-		r.p.logTail(w.ID, "probe", []byte(out))
+		r.p.logTail(ctx, w.ID, "probe", []byte(out))
 		return workspace.Public("The probe inside the container failed: the clone's origin is not the repository.",
 			fmt.Errorf("git remote -v has no %q", want))
 	}
 	out, err = exec("claude", "--version")
 	if err != nil {
-		r.p.logTail(w.ID, "probe", []byte(out))
+		r.p.logTail(ctx, w.ID, "probe", []byte(out))
 		return workspace.Public("The probe inside the container failed: Claude Code did not run.", err)
 	}
 	if v := r.p.ClaudeCodeVersion; v != "" && !strings.HasPrefix(out, v+" ") {
-		r.p.logTail(w.ID, "probe", []byte(out))
+		r.p.logTail(ctx, w.ID, "probe", []byte(out))
 		return workspace.Public(fmt.Sprintf("The probe inside the container failed: Claude Code is not version %s, the one Drydock was built for.", v),
 			fmt.Errorf("claude --version said %q", strings.TrimSpace(out)))
 	}

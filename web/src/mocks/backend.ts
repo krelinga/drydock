@@ -17,7 +17,7 @@
 
 import { http, HttpResponse, sse, type HttpHandler } from 'msw'
 import type {
-  ActionView, ApprovalView, HostDiskView, ResourcesView, HostSettingView, CatalogView, Device, IdentityState, IdentityView, InstallationView, LoginView, PutSecretResult, RepoView, SecretMeta, SessionInfo, SessionView, Stale, StaleWorkspace, SupervisorView,
+  ActionView, ApprovalView, BuildLogBody, HostDiskView, ResourcesView, HostSettingView, CatalogView, Device, IdentityState, IdentityView, InstallationView, LoginView, PutSecretResult, RepoView, SecretMeta, SessionInfo, SessionView, Stale, StaleWorkspace, SupervisorView,
   StepView, StreamEvent, Undeliverable, UndeliverableSecret, WorkspaceDetail, WorkspaceList, WorkspaceState, WorkspaceView,
 } from '../api/types'
 import { checkDescription, checkName, checkReach, checkValue, type SecretRefusal } from '../lib/secretRules'
@@ -232,7 +232,10 @@ export function identityView(state: IdentityState | null, loginExpiresInMs = 30 
     state,
     account_email: live ? 'operator@example.invalid' : null,
     expires_at: live ? new Date(now + access).toISOString() : null,
-    login_expires_at: live ? new Date(now + (state === 'expiring' ? loginExpiresInMs : 30 * 86400e3)).toISOString() : null,
+    // 35 days, not 30: relativeTime turns "month" at exactly 30 days, so a
+    // spec reading this a moment after it was made under load flipped between
+    // "in 1 month" and "in 30 days". 35 is "in 1 month" with days to spare.
+    login_expires_at: live ? new Date(now + (state === 'expiring' ? loginExpiresInMs : 35 * 86400e3)).toISOString() : null,
     logged_in_at: live ? new Date(now - 20 * 86400e3).toISOString() : null,
     last_checked_at: state === null ? null : new Date(now - 60e3).toISOString(),
     volume: 'drydock-claude-config',
@@ -294,6 +297,8 @@ export interface MockWorkspace {
   environment_id?: string | null
   /** The host-access request it waits on (design §6), or none. */
   approval?: ApprovalView | null
+  /** The latest failed up's build log the server holds (design §12); absent: none. */
+  buildLog?: BuildLogBody
   /** The sampler's latest measurements (design §6 *Resources*); absent: none. */
   resources?: ResourcesView | null
   /** The stopped run's --remove-existing-container, which an approval continues. */
@@ -1218,9 +1223,13 @@ export function handlersFor(b: MockBackend): HttpHandler[] {
         if (b.failures >= LOCKOUT_AFTER) b.lockedUntil = now + LOCKOUT_SECONDS * 1000
         return envelope(401, 'bad_password', 'That password is not right.')
       }
+      // internal/api's sign-in: 200 with the failures since the last
+      // success (design §12), or the bare 204 when there were none.
+      const failed = b.failures
       b.failures = 0
       b.signedIn = true
       if (!b.devices.some((d) => d.is_current)) b.devices = sampleDevices(now)
+      if (failed > 0) return HttpResponse.json({ failed_attempts: failed, failed_sources: ['192.0.2.66'] })
       return new HttpResponse(null, { status: 204 })
     }),
 
@@ -1361,6 +1370,15 @@ export function handlersFor(b: MockBackend): HttpHandler[] {
     }),
 
     // The session server's log: redacted lines, in memory on the server.
+    // Design §12's build log: what the server holds of the latest failed up.
+    http.get('/api/workspaces/:id/build-log', ({ request, params }) => {
+      record(request)
+      if (!b.signedIn) return unauthenticated()
+      const w = b.workspaces[String(params.id)]
+      if (w === undefined) return envelope(404, 'not_found', 'There is no such workspace.')
+      return HttpResponse.json(w.buildLog ?? { lines: [], at: null, held: false })
+    }),
+
     http.get('/api/workspaces/:id/logs', ({ request, params }) => {
       record(request)
       if (!b.signedIn) return unauthenticated()

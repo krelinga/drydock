@@ -24,13 +24,13 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"regexp"
 	"sync"
 	"time"
 
 	"github.com/krelinga/drydock/internal/clone"
 	"github.com/krelinga/drydock/internal/container"
 	"github.com/krelinga/drydock/internal/events"
+	"github.com/krelinga/drydock/internal/redact"
 	"github.com/krelinga/drydock/internal/sys"
 	"github.com/krelinga/drydock/internal/workspace"
 )
@@ -202,6 +202,12 @@ type Provisioner struct {
 	// route with ErrNoSupervisor.
 	SupervisorRestart func(ctx context.Context, id string) error
 
+	// Redact returns the values a workspace's held build log must not show:
+	// the secrets granted to its repository. An error withholds the log
+	// rather than serve it unmasked (ErrLogWithheld). Nil masks credential
+	// shapes only.
+	Redact func(ctx context.Context, id string) ([]string, error)
+
 	// afterStep, in a test, runs after each stop or delete sub-step
 	// finishes; an error it returns ends the job there, as a crash between
 	// sub-steps would.
@@ -209,11 +215,13 @@ type Provisioner struct {
 
 	mu     sync.Mutex
 	active map[string]*job // jobs in flight: a run, a stop or a delete
-	owned  map[string]bool // every workspace a job was started for
-	base   context.Context
-	stop   context.CancelFunc
-	closed bool
-	wg     sync.WaitGroup
+	// buildLogs holds each workspace's latest failed `up` (messages.go).
+	buildLogs map[string]BuildLog
+	owned     map[string]bool // every workspace a job was started for
+	base      context.Context
+	stop      context.CancelFunc
+	closed    bool
+	wg        sync.WaitGroup
 }
 
 func (p *Provisioner) logf(format string, args ...any) {
@@ -640,22 +648,27 @@ func interrupted(ctx context.Context, timeout time.Duration, err error) error {
 	return workspace.Public("Drydock shut down while this step was running.", err)
 }
 
-// ghToken matches an installation token's shape, so a log line quoting one —
-// a repository's postCreateCommand printing `gh auth token`, say — is
-// redacted before it is written down (§13.5).
-var ghToken = regexp.MustCompile(`gh[soupr]_[A-Za-z0-9]{20,}`)
-
 // logTail writes the last lines of a subprocess's log to the service log,
 // redacted. Never to the event log: it can quote anything a repository's own
 // commands printed (§6).
-func (p *Provisioner) logTail(id, what string, b []byte) {
+//
+// The journal is a file, so the lines are masked as the build log is — the
+// workspace's granted secret values, then credential shapes — and when the
+// values cannot be read, the lines are not written: a count says they were
+// withheld.
+func (p *Provisioner) logTail(ctx context.Context, id, what string, b []byte) {
 	const max = 50
 	lines := splitLines(b)
 	if len(lines) > max {
 		lines = lines[len(lines)-max:]
 	}
+	values, err := p.values(context.WithoutCancel(ctx), id)
+	if err != nil {
+		p.logf("drydock: workspace %s: %s: %d lines withheld: the secret values to mask them of cannot be read", id, what, len(lines))
+		return
+	}
 	for _, l := range lines {
-		p.logf("drydock: workspace %s: %s: %s", id, what, ghToken.ReplaceAllString(l, "[redacted]"))
+		p.logf("drydock: workspace %s: %s: %s", id, what, redact.String(l, values))
 	}
 }
 

@@ -44,7 +44,8 @@ test("the app's own requests carry the page's exact Origin: sign-in and sign-out
   await page.getByRole('button', { name: 'Sign in' }).click()
   const signIn = await seenBy(front.tap.seen, (s) => s.method === 'POST' && s.path === '/api/auth/session', 'the sign-in POST')
   expect(signIn.origin, `${browserName}: the Origin of the form's sign-in`).toBe(front.url)
-  expect(signIn.status).toBe(204)
+  // 200: the control's wrong password above is reported by this sign-in (design §12).
+  expect(signIn.status).toBe(200)
   await expect(page).toHaveURL(`${front.url}/`)
   await expect(page.getByRole('heading', { name: 'Workspaces' })).toBeVisible()
 

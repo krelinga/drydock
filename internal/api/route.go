@@ -235,6 +235,14 @@ var Table = []Route{
 		Auth: AuthRequired,
 		Name: "workspaces.logs", Doc: "GET /api/workspaces/:id/logs?tail=n",
 	},
+	{
+		Method: "GET", Pattern: "/api/workspaces/{id}/build-log", Mux: MuxAPI,
+		// Design §12, *Image build fails*: the last 50 lines of the latest
+		// failed `devcontainer up`, held in memory, redacted, never
+		// persisted — the detail view's, beside the step's sentence.
+		Auth: AuthRequired,
+		Name: "workspaces.build_log", Doc: "GET /api/workspaces/:id/build-log",
+	},
 
 	// ---- secrets ---------------------------------------------------------
 	{

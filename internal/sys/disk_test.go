@@ -167,3 +167,47 @@ func TestHostDiskUsageOfAPathNotYetMade(t *testing.T) {
 		t.Errorf("a path not yet made: total %d (want %d), %v", t2, t1, err)
 	}
 }
+
+// TestHostDiskSizeRefusesARenamedDirectory: the swap O_NOFOLLOW cannot see.
+// Between the listing and the descent, the second directory to be entered is
+// moved out of the tree and the first — already walked — is renamed into its
+// name. Opening that name now opens the first directory's inode; the walk's
+// (dev, ino) check against the listing's stat refuses it and says partial,
+// rather than counting the first subtree twice and calling the total exact.
+// The control is the same tree with no swap: exact, not partial.
+func TestHostDiskSizeRefusesARenamedDirectory(t *testing.T) {
+	root := t.TempDir()
+	ws := filepath.Join(root, "ws")
+	mkfile(t, filepath.Join(ws, "a", "big"), 4<<20)
+	mkfile(t, filepath.Join(ws, "b", "big"), 4<<20)
+	ctx := context.Background()
+	exact, partial, err := HostDisk{}.Size(ctx, ws)
+	if err != nil || partial {
+		t.Fatalf("control: %d %v %v", exact, partial, err)
+	}
+	var first string
+	swapped := false
+	d := HostDisk{beforeOpen: func(parent, name string) {
+		if first == "" {
+			first = name
+			return
+		}
+		if swapped {
+			return
+		}
+		swapped = true
+		if err := os.Rename(filepath.Join(ws, name), filepath.Join(root, "moved-out")); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Rename(filepath.Join(ws, first), filepath.Join(ws, name)); err != nil {
+			t.Fatal(err)
+		}
+	}}
+	got, partial, err := d.Size(ctx, ws)
+	if !swapped {
+		t.Fatal("the seam never swapped")
+	}
+	if err != nil || !partial || got > exact {
+		t.Errorf("after a rename swap: %d (exact %d), partial %v, %v — a subtree counted twice as exact", got, exact, partial, err)
+	}
+}

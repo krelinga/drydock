@@ -1,13 +1,14 @@
 package supervisor
 
 import (
-	"regexp"
 	"slices"
 	"sort"
 	"strings"
 	"sync"
 	"time"
 	"unicode/utf8"
+
+	"github.com/krelinga/drydock/internal/redact"
 )
 
 // Line is one line of a session server's log as Drydock keeps it: the
@@ -93,8 +94,8 @@ func (r *Ring) mergeLocked(vals []string) { // r.mu held
 }
 
 const (
-	minMask     = 4    // the shortest literal value Redact masks
-	maxLine     = 2000 // bytes of text kept per line
+	minMask     = redact.MinMask // the shortest literal value Redact masks
+	maxLine     = 2000           // bytes of text kept per line
 	maxPending  = 8 << 10
 	recentLines = 16
 )
@@ -211,36 +212,9 @@ func lastBreak(b []byte) int {
 	return -1
 }
 
-// tokenPatterns are credentials by shape: GitHub's token prefixes, Anthropic
-// keys and OAuth tokens, a bearer header, and a credential-looking query
-// parameter. Matched in the visible text, after escapes are gone, so an
-// escape inside a token cannot split it past the pattern.
-var tokenPatterns = []*regexp.Regexp{
-	regexp.MustCompile(`gh[pousr]_[A-Za-z0-9]{20,}`),
-	regexp.MustCompile(`github_pat_[A-Za-z0-9_]{20,}`),
-	regexp.MustCompile(`sk-ant-[A-Za-z0-9_-]{10,}`),
-	regexp.MustCompile(`(?i)(bearer\s+)[A-Za-z0-9._~+/=-]{8,}`),
-	regexp.MustCompile(`(?i)([?&](?:code|token|access_token|refresh_token|key)=)[^&\s"']+`),
-}
-
-// Redact masks credential shapes and the given literal values in s. A value
-// shorter than four bytes is not masked: masking "a" everywhere would make
-// the log unreadable and protect nothing.
-func Redact(s string, values []string) string {
-	for _, v := range values {
-		if len(v) >= minMask {
-			s = strings.ReplaceAll(s, v, "[redacted]")
-		}
-	}
-	for _, re := range tokenPatterns {
-		if re.NumSubexp() > 0 {
-			s = re.ReplaceAllString(s, "${1}[redacted]")
-		} else {
-			s = re.ReplaceAllString(s, "[redacted]")
-		}
-	}
-	return s
-}
+// Redact masks credential shapes and the given literal values in s: the one
+// rule (internal/redact), shared with the build log.
+func Redact(s string, values []string) string { return redact.String(s, values) }
 
 // visible returns the text a terminal would show for b, line breaks kept:
 // CSI, OSC and the other string controls removed (an OSC 8 hyperlink keeps

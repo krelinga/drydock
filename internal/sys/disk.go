@@ -181,7 +181,11 @@ func (w *walk) entry(dirfd int, parent, name string, depth int) {
 		w.d.beforeOpen(parent, name)
 	}
 	// Relative to the parent's descriptor and never through a symlink: a
-	// name the container swapped since the listing is refused here.
+	// name the container swapped for a symlink since the listing is refused
+	// here. The (dev, ino) check below would refuse that too — O_NOFOLLOW is
+	// deliberate defence in depth, so the walk never even opens a link's
+	// target — and the check is what refuses a swap O_NOFOLLOW cannot see:
+	// another real directory renamed into this name.
 	fd, err := unix.Openat(dirfd, name, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
 	if err != nil {
 		w.partial = true

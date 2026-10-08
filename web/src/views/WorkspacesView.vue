@@ -22,6 +22,7 @@ import { describeError } from '../api/messages'
 import ActionButton from '../components/ActionButton.vue'
 import MakeRoom from '../components/MakeRoom.vue'
 import ResourceLine from '../components/ResourceLine.vue'
+import ReadOnlyNote from '../components/ReadOnlyNote.vue'
 import WorkspaceAction from '../components/WorkspaceAction.vue'
 import WorkspaceIdentityNote from '../components/WorkspaceIdentityNote.vue'
 import { catalogEvent, useCatalogStore, type CatalogRow } from '../stores/catalog'
@@ -89,6 +90,7 @@ function rowNote(r: CatalogRow): string | null {
           </div>
           <p v-if="status(r.workspace).note" class="detail">{{ status(r.workspace).note }}</p>
           <ResourceLine :workspace="r.workspace" />
+          <ReadOnlyNote :workspace="r.workspace" />
           <WorkspaceIdentityNote :state="r.workspace.state" part="waiting" />
           <p v-if="status(r.workspace).since" class="detail" data-test="waiting-since">
             Waiting since {{ relativeTime(status(r.workspace).since!) }}.

@@ -333,7 +333,7 @@ func memoryOf(found []container.Found, mem map[string]uint64, err error,
 	m := &workspace.MemorySample{Bytes: total, At: now}
 	if len(ids) == 1 {
 		// Which container it is, so a card whose workspace has moved to
-		// another container since (a stop and a start inside one round)
+		// another container since (a rebuild inside one round)
 		// does not show this one's figure as its own.
 		m.ContainerID = ids[0]
 	}

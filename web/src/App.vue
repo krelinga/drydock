@@ -8,6 +8,7 @@ import AppHeader from './components/AppHeader.vue'
 import AppNav from './components/AppNav.vue'
 import FleetBanner from './components/FleetBanner.vue'
 import DiskBanner from './components/DiskBanner.vue'
+import SignInNotice from './components/SignInNotice.vue'
 import BootFailure from './components/BootFailure.vue'
 import { useSessionStore } from './stores/session'
 import { useStreamStore } from './stores/stream'
@@ -52,6 +53,7 @@ watch(
     <main id="main" class="shell-main">
       <FleetBanner />
       <DiskBanner />
+      <SignInNotice />
       <BootFailure v-if="session.probeError" />
       <RouterView v-else />
     </main>

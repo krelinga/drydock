@@ -196,6 +196,9 @@ func New(ctx context.Context, cfg config.Config, env sys.Env) (*Server, error) {
 		// A granted secret's value a session server prints is masked in its
 		// log as it is written (§13.5: redact by default).
 		s.Supervisor.Redact = s.secretValues
+		// …and so is one a failed build printed, in the build log it holds —
+		// failing closed: values that cannot be read withhold the log.
+		s.Provisioner.Redact = s.secretValuesStrict
 		// A removed repository's grants are deleted when nothing holds it
 		// any more (§4), by a workspace's removal or by a refresh; the
 		// broker's snapshot must not outlive them.
@@ -269,7 +272,8 @@ func New(ctx context.Context, cfg config.Config, env sys.Env) (*Server, error) {
 	for name, h := range (api.ClaudeRoutes{Watch: s.Identity, Login: s.Login}).Handlers() {
 		handlers[name] = h
 	}
-	routes := api.WorkspaceRoutes{Provisioner: s.Provisioner, Workspaces: s.Workspaces, Events: s.Events}
+	routes := api.WorkspaceRoutes{Provisioner: s.Provisioner, Workspaces: s.Workspaces, Events: s.Events,
+		BuildLogs: s.Provisioner}
 	if env.Disk != nil {
 		s.Usage = &usage.Sampler{Workspaces: s.Workspaces, Containers: containers, Disk: env.Disk, Clock: env.Clock, Random: env.Random,
 			Root: cfg.WorkspaceRoot, LimitPercent: cfg.DiskLimitPercent,
@@ -400,6 +404,25 @@ func (s *Server) secretValues(ctx context.Context, workspaceID string) []string 
 		out = append(out, e.Value)
 	}
 	return out
+}
+
+// secretValuesStrict is secretValues for a log served on request: an error
+// when the values cannot be read, so the caller withholds rather than serves
+// a log it could not mask.
+func (s *Server) secretValuesStrict(ctx context.Context, workspaceID string) ([]string, error) {
+	w, err := s.Workspaces.Get(ctx, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	entries, err := s.Secrets.Resolve(ctx, w.RepositoryID)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]string, 0, len(entries))
+	for _, e := range entries {
+		out = append(out, e.Value)
+	}
+	return out, nil
 }
 
 func (s *Server) supervisorLogs(id string, n int) ([]api.LogLine, bool, bool) {
