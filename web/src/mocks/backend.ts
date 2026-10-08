@@ -154,6 +154,16 @@ export interface MockBackend {
   identity: IdentityView
   /** How many POST /api/auth/claude/check requests arrived. */
   identityChecks: number
+  /**
+   * The check running, as internal/identity.Watch runs one at a time: null
+   * when none, and `requested` once a POST is owed an answer. A POST while
+   * one runs joins it, as Trigger does. `auto` finishes a requested check at
+   * once; `manual` holds it for `finishIdentityCheck`.
+   */
+  identityCheck: { requested: boolean } | null
+  identityCheckMode: 'auto' | 'manual'
+  /** The watch has shut down: a check is refused 503 `unavailable`, as Trigger's ErrShutdown is. */
+  identityWatchStopped: boolean
 
   /** The login handshake internal/login.Manager holds (design §7.2); null when none. */
   login: LoginView | null
@@ -264,7 +274,55 @@ export function setIdentity(b: MockBackend, view: IdentityView): StreamEvent {
 export function failIdentityCheck(b: MockBackend, message = 'Could not check the Claude login: Docker did not answer. The last known state is kept.'): StreamEvent {
   const check_error = { at: new Date().toISOString(), problem: 'docker', message }
   b.identity = { ...b.identity, check_error, last_checked_at: check_error.at }
+  if (b.identityCheck !== null) b.identityCheck.requested = false // answered, as fail() is
   return emit(b, 'auth.identity_check_failed', { level: 'warn', message, data: { check_error } })
+}
+
+/** A check begins — the interval's (`requested` false) or a POST's — unless one is running, which a POST joins. */
+export function startIdentityCheck(b: MockBackend, requested: boolean): void {
+  if (b.identityCheck === null) b.identityCheck = { requested }
+  else if (requested) b.identityCheck.requested = true
+}
+
+/**
+ * The running check ends, exactly as internal/identity.Watch's does: it
+ * stores what it `found` (the stored login, unchanged, by default) and
+ * announces auth.identity only when the stored view changed or a standing
+ * failure cleared; otherwise a check someone asked for — a POST, or one that
+ * joined — is answered by auth.identity_checked, and the interval's says
+ * nothing. `'fail'` is a check that could not read its inputs.
+ */
+export function finishIdentityCheck(b: MockBackend, found: IdentityView | 'fail' = b.identity): StreamEvent | null {
+  const run = b.identityCheck
+  if (run === null) throw new Error('finishIdentityCheck: no check is running')
+  let ev: StreamEvent | null = null
+  if (found === 'fail') {
+    ev = failIdentityCheck(b)
+  } else {
+    const prev = b.identity
+    const at = new Date().toISOString()
+    const next: IdentityView = { ...found, check_error: null, last_checked_at: at }
+    const changed = (['state', 'account_email', 'expires_at', 'login_expires_at', 'logged_in_at'] as const).some((k) => prev[k] !== next[k])
+    if (changed || prev.check_error !== null) {
+      run.requested = false
+      ev = setIdentity(b, next)
+    } else {
+      b.identity = next
+    }
+  }
+  if (run.requested) {
+    ev = emit(b, 'auth.identity_checked', { level: 'info', message: 'Checked the Claude login: nothing has changed.', data: { identity: b.identity } })
+  }
+  b.identityCheck = null
+  return ev
+}
+
+/** The interval's check: start to end, unrequested — silent unless something changed. */
+export function intervalIdentityCheck(b: MockBackend, found?: IdentityView | 'fail'): StreamEvent | null {
+  // With a check running the interval's would join it, not run its own.
+  if (b.identityCheck !== null) throw new Error('intervalIdentityCheck: a check is already running')
+  startIdentityCheck(b, false)
+  return finishIdentityCheck(b, found)
 }
 
 export interface MockSecret {
@@ -421,6 +479,9 @@ function newBackendBare(now: number, overrides: Partial<MockBackend>): MockBacke
     undeliverable: null,
     identity: identityView('ok'),
     identityChecks: 0,
+    identityCheck: null,
+    identityCheckMode: 'auto',
+    identityWatchStopped: false,
     supervisor: false,
     login: null,
     loginAccepts: 'mockcode123#mockstate',
@@ -1545,13 +1606,22 @@ export function handlersFor(b: MockBackend): HttpHandler[] {
       return HttpResponse.json({}, { status: 202 })
     }),
 
-    // A check reads the same stored state again — or, in a spec, whatever
-    // the spec set — and announces it, as the watch does after a 202.
+    // A check reads the stored login again and answers the request as the
+    // watch does after a 202 (finishIdentityCheck): auth.identity only for a
+    // change, auth.identity_checked for none. A POST while a check runs
+    // joins it; `manual` holds the check for the spec.
     http.post('/api/auth/claude/check', ({ request }) => {
       record(request)
       if (!b.signedIn) return unauthenticated()
       b.identityChecks++
-      setTimeout(() => setIdentity(b, { ...b.identity, check_error: null, last_checked_at: new Date().toISOString() }), 0)
+      if (b.identityWatchStopped) return envelope(503, 'unavailable', 'Drydock is shutting down.')
+      const joined = b.identityCheck !== null
+      startIdentityCheck(b, true)
+      if (!joined && b.identityCheckMode === 'auto') {
+        setTimeout(() => {
+          if (b.identityCheck !== null) finishIdentityCheck(b)
+        }, 0)
+      }
       return HttpResponse.json({}, { status: 202 })
     }),
 

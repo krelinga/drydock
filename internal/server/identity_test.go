@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/krelinga/drydock/internal/identity"
 	"github.com/krelinga/drydock/internal/sys"
 )
 
@@ -121,5 +122,36 @@ func TestClaudeIdentityEndToEnd(t *testing.T) {
 		if time.Now().After(deadline) {
 			t.Fatal("POST /api/auth/claude/check ran no check")
 		}
+	}
+	// The check found the same blanked login it found at boot, and is
+	// still answered: an auth.identity_checked, the event "Check now"
+	// settles on (frontend §4.2). Without it the button never comes back.
+	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(10 * time.Millisecond) {
+		evs, err := srv.Events.Since(context.Background(), 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var checked, changed int
+		for _, e := range evs {
+			switch e.Kind {
+			case identity.KindChecked:
+				checked++
+			case identity.KindIdentity:
+				changed++
+			}
+		}
+		if checked == 1 && changed == 1 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("after an unchanged requested check: %d %s and %d %s; want 1 and 1",
+				checked, identity.KindChecked, changed, identity.KindIdentity)
+		}
+	}
+	// Once the watch has shut down nothing would answer a check, so the
+	// route refuses it rather than accepting it; the 202 above is the control.
+	srv.Identity.Shutdown(5 * time.Second)
+	if resp := r.do(t, req{method: "POST", path: "/api/auth/claude/check", cookie: cookie, origin: uiOrigin}); resp.StatusCode != http.StatusServiceUnavailable {
+		t.Errorf("check after the watch shut down = %d; want 503", resp.StatusCode)
 	}
 }

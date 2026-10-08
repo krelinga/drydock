@@ -92,6 +92,14 @@ const (
 	// KindCheckFailed: a check could not read its inputs. The stored state
 	// stands. data: {check_error: {at, problem, message}}.
 	KindCheckFailed = "auth.identity_check_failed"
+	// KindChecked: a check someone asked for (Trigger, behind POST
+	// /api/auth/claude/check) found nothing to announce — the same verdict,
+	// no failure to clear. It is that request's settling event (frontend
+	// §4.2): without it "Check now" stays in flight until a reload. A check
+	// nobody asked for — the interval's, boot's, a handshake's — stays
+	// silent when nothing changed, and the supervisors do not wake on this
+	// kind. data: {identity: View}, last_checked_at moved.
+	KindChecked = "auth.identity_checked"
 )
 
 // DefaultInterval is §7.3's six hours.
@@ -169,6 +177,14 @@ type Watch struct {
 	// login is when a handshake (§7.2) just signed the volume in, consumed
 	// by the next check that finds a live login. Set by LoggedIn.
 	login *time.Time
+	// requested: a Trigger is owed a settling event. Set by Trigger, and
+	// cleared by whichever event answers it: the check's own auth.identity or
+	// auth.identity_check_failed, or — when the check had nothing to
+	// announce, or the Trigger came after it announced — KindChecked as the
+	// check ends. end clears it and running under one lock, so a Trigger is
+	// either answered by the check it joined or starts its own: never
+	// neither.
+	requested bool
 	// swept: the boot sweep of helpers an earlier process left has run. It
 	// runs inside the first check, under running, so it can never remove a
 	// helper of a check in flight.
@@ -186,7 +202,10 @@ type Watch struct {
 	// the running check has stored its result but not yet let go of running,
 	// and with "parked" when Run has finished a check and registered its
 	// interval timer — the only timer left on Clock then, since each read's
-	// own timeout is stopped when the read returns. A test that blocks in it holds the interleaving open instead of hoping
+	// own timeout is stopped when the read returns, and with "announced"
+	// right after a check writes the event that answers the Triggers so far
+	// (auth.identity, auth.identity_check_failed, auth.identity_checked). A
+	// test that blocks in it holds the interleaving open instead of hoping
 	// the scheduler finds it.
 	observe func(point string)
 }
@@ -201,15 +220,38 @@ func (w *Watch) init() {
 	w.once.Do(func() { w.base, w.stop = context.WithCancel(context.Background()) })
 }
 
-// Trigger starts a check in the background and returns at once. It runs
-// under the watch's own context, which Shutdown ends.
-func (w *Watch) Trigger() {
+// Trigger starts a check in the background and returns at once — or, with
+// one already running, joins it. It runs under the watch's own context,
+// which Shutdown ends.
+//
+// Every Trigger is answered by an event written after it: the verdict when it
+// changed or a failure cleared (auth.identity), a failure
+// (auth.identity_check_failed), and otherwise auth.identity_checked — so the
+// request that asked can settle whatever the check found. A joined Trigger is
+// answered by the check it joined; one whose check was cut off by its own
+// caller's context (the handshake's) gets a fresh check of its own.
+//
+// After Shutdown it starts nothing and returns ErrShutdown, so the route can
+// refuse rather than accept a request nothing will answer.
+func (w *Watch) Trigger() error {
 	w.init()
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	if w.base.Err() != nil {
-		return
+		return ErrShutdown
 	}
+	w.requested = true
+	w.spawnLocked()
+	return nil
+}
+
+// ErrShutdown: Trigger after Shutdown. Nothing will check, or answer.
+var ErrShutdown = errors.New("identity: the watch is shut down")
+
+// spawnLocked starts a check under the watch's own context. w.mu is held,
+// and base is live: Shutdown cancels it under the same lock before it waits,
+// so it never waits on a check added after.
+func (w *Watch) spawnLocked() {
 	w.triggers.Add(1)
 	go func() {
 		defer w.triggers.Done()
@@ -314,13 +356,7 @@ func (w *Watch) Check(ctx context.Context) (View, error) {
 	boot := !w.swept
 	w.swept = true
 	w.mu.Unlock()
-	defer func() {
-		w.at("ending")
-		w.mu.Lock()
-		w.running = false
-		close(w.done)
-		w.mu.Unlock()
-	}()
+	defer w.end(ctx)
 
 	if boot {
 		// Helpers an earlier process left: killed mid-read, or a read it
@@ -337,7 +373,70 @@ func (w *Watch) Check(ctx context.Context) (View, error) {
 		}
 		return w.fail(ctx, err)
 	}
-	return w.store(ctx, id)
+	v, err := w.store(ctx, id)
+	if err != nil && ctx.Err() == nil {
+		// A verdict the database would not take is a failed check, said
+		// as one — never end's "nothing has changed".
+		return w.fail(ctx, &ReadError{Problem: ProblemUnknown, Detail: "storing the verdict: " + err.Error()})
+	}
+	return v, err
+}
+
+// end finishes a check. It answers every Trigger the check's own
+// announcement did not — one that came while it ran and found nothing to
+// announce, or came after it announced — and only then lets the next check
+// start. Finding no request and clearing running happen under one lock, which
+// is what leaves no gap: a Trigger after that is not joined but starts a
+// check of its own.
+//
+// A check whose context ended before it finished checked nothing, so it
+// answers nothing: what a pending request gets then depends on whose
+// context it was. The watch's own (Shutdown) — nothing; the stream it would
+// answer on is closing, and Trigger refuses from then on. A caller's — the
+// handshake's LoggedIn runs under its own five-minute bound, shorter than a
+// first build — is not the watch ending, so the request stays owed and a
+// fresh check under the watch's context is started for it, which answers.
+func (w *Watch) end(ctx context.Context) {
+	w.at("ending")
+	// Answers are written under a context the caller's ending cannot cut:
+	// a check that finished has finished, whoever was waiting on it.
+	actx := context.WithoutCancel(ctx)
+	for {
+		w.mu.Lock()
+		cut := ctx.Err() != nil
+		if !w.requested || cut {
+			w.running = false
+			close(w.done)
+			if w.requested && cut && w.base.Err() == nil {
+				w.spawnLocked()
+			}
+			w.mu.Unlock()
+			return
+		}
+		w.requested = false
+		w.mu.Unlock()
+		w.checked(actx)
+	}
+}
+
+// answered clears requested: the caller is about to write the event that
+// answers every Trigger so far.
+func (w *Watch) answered() {
+	w.mu.Lock()
+	w.requested = false
+	w.mu.Unlock()
+}
+
+// checked writes KindChecked: the stored view, as it stands. If the view
+// cannot be read the answer is a failure, never silence.
+func (w *Watch) checked(ctx context.Context) {
+	v, err := w.Read(ctx)
+	if err != nil {
+		w.failed(ctx, &ReadError{Problem: ProblemUnknown, Detail: "reading the stored identity: " + err.Error()})
+		return
+	}
+	w.Events.Emit(ctx, "", events.Info, KindChecked, "Checked the Claude login: nothing has changed.", map[string]any{"identity": v})
+	w.at("announced")
 }
 
 // sweep removes the Source's helpers, if it leaves any, bounded on its own
@@ -485,23 +584,33 @@ func (w *Watch) fail(ctx context.Context, err error) (View, error) {
 	if !errors.As(err, &re) {
 		re = &ReadError{Problem: ProblemUnknown, Detail: "unexpected failure"}
 	}
-	now := w.Clock.Now().UTC()
-	ce := &CheckError{At: now, Problem: re.Problem, Message: sentence(re.Problem)}
-	w.logf("drydock: identity: %s (%s)", ce.Message, re.Detail)
-	// §7.3: keep the state, update last_checked_at. No row yet means there
-	// is no state to keep, and none is invented.
-	if _, dbErr := w.DB.ExecContext(ctx, `UPDATE claude_identity SET last_checked_at = ? WHERE id = 1`, ts(now)); dbErr != nil {
-		return View{}, dbErr
-	}
-	w.mu.Lock()
-	w.failure = ce
-	w.mu.Unlock()
-	w.Events.Emit(ctx, "", events.Warn, KindCheckFailed, ce.Message, map[string]any{"check_error": ce})
+	w.failed(ctx, re)
 	v, rerr := w.Read(ctx)
 	if rerr != nil {
 		return View{}, rerr
 	}
 	return v, re
+}
+
+// failed records and announces a failed check: last_checked_at moved (§7.3:
+// the state is kept), the failure held for GET, and
+// auth.identity_check_failed, which answers every Trigger so far. A
+// database that will not take last_checked_at is logged and the failure is
+// still announced: the event is the answer someone may be waiting on.
+func (w *Watch) failed(ctx context.Context, re *ReadError) {
+	now := w.Clock.Now().UTC()
+	ce := &CheckError{At: now, Problem: re.Problem, Message: sentence(re.Problem)}
+	w.logf("drydock: identity: %s (%s)", ce.Message, re.Detail)
+	// No row yet means there is no state to keep, and none is invented.
+	if _, dbErr := w.DB.ExecContext(ctx, `UPDATE claude_identity SET last_checked_at = ? WHERE id = 1`, ts(now)); dbErr != nil {
+		w.logf("drydock: identity: recording when the check ran: %v", dbErr)
+	}
+	w.mu.Lock()
+	w.failure = ce
+	w.requested = false // the event below answers every Trigger so far
+	w.mu.Unlock()
+	w.Events.Emit(ctx, "", events.Warn, KindCheckFailed, ce.Message, map[string]any{"check_error": ce})
+	w.at("announced")
 }
 
 type row struct {
@@ -590,8 +699,14 @@ func (w *Watch) store(ctx context.Context, id classify.Identity) (View, error) {
 	changed := prev == nil || prev.state != state || prev.email != email || prev.expiresAt != expires ||
 		prev.loginExpiresAt != loginExpires || prev.loggedInAt != loggedIn
 	if changed || recovered {
+		// This answers every Trigger so far; one that comes after it is
+		// answered by end.
+		w.answered()
 		w.Events.Emit(ctx, "", levelOf(state), KindIdentity, message(state, id), map[string]any{"identity": v})
+		w.at("announced")
 	}
+	// Unchanged, nothing is said here: a check someone asked for is
+	// answered by end, with KindChecked, and the interval's stays silent.
 	return v, nil
 }
 

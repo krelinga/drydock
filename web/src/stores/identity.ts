@@ -4,8 +4,10 @@
 // It writes no entity itself. GET /api/auth/claude is handed to the reducer
 // as a snapshot tagged with the stream position it was asked at; the verdict
 // after that arrives as auth.identity, a failed check as
-// auth.identity_check_failed. POST /api/auth/claude/check answers 202 and its
-// body is discarded (§2.1): the check's outcome is the event.
+// auth.identity_check_failed, and a check someone asked for that found
+// nothing to announce as auth.identity_checked. POST /api/auth/claude/check
+// answers 202 and its body is discarded (§2.1): the check's outcome is the
+// event, and every request is answered by one of the three.
 //
 // The body's `login` — the handshake (design §7.2) — goes to the reducer with
 // it, and auth.login carries every phase after. The three login actions
@@ -29,6 +31,16 @@ export const LOGIN_CANCEL_KEY = 'claude:login:cancel'
 function loginPhase(ev: StreamEvent): string | null {
   const l = (ev.data ?? {}).login as { phase?: unknown } | undefined
   return l !== undefined && l !== null && typeof l.phase === 'string' ? l.phase : null
+}
+
+/**
+ * The events that end a requested check: the verdict changed or a failure
+ * cleared, the check failed, or — the common, healthy case — it found
+ * nothing to announce.
+ */
+export const CHECK_SETTLERS: readonly string[] = ['auth.identity', 'auth.identity_check_failed', 'auth.identity_checked']
+export function settlesCheck(ev: StreamEvent): boolean {
+  return CHECK_SETTLERS.includes(ev.kind)
 }
 
 let inFlight: Promise<void> | null = null
@@ -85,15 +97,17 @@ export const useIdentityStore = defineStore('identity', {
     },
 
     /**
-     * POST /api/auth/claude/check. In flight until the check's event lands —
-     * an auth.identity or auth.identity_check_failed newer than the request —
-     * or the request is refused.
+     * POST /api/auth/claude/check. In flight until one of the check's events
+     * lands newer than the request (`settlesCheck`), or the request is
+     * refused. The server answers every request — a joined one with the
+     * check it joined — and an unchanged verdict with auth.identity_checked
+     * (design §7.3), which a check nobody asked for never writes.
      */
     async check(): Promise<void> {
       const stream = useStreamStore()
       if (CHECK_KEY in stream.inFlight) return
       const from = stream.lastEventId
-      stream.begin(CHECK_KEY, (ev) => ev.id > from && ev.kind.startsWith('auth.identity'))
+      stream.begin(CHECK_KEY, (ev) => ev.id > from && settlesCheck(ev))
       try {
         await api.send('POST', '/api/auth/claude/check')
       } catch (e) {
