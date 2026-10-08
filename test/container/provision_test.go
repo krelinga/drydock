@@ -239,11 +239,7 @@ func TestCreateWorkspaceThroughTheServer(t *testing.T) {
 		for repo, id := range ids {
 			var v view
 			c.get("/api/workspaces/"+id, &v)
-			// Running is entered before step 8 runs (§6), so a running
-			// snapshot can still show step 8 started or not yet begun;
-			// the run is over when step 8 is.
-			s8 := v.Steps["session_server"].Status
-			if v.State == "failed" || v.State == "running" && (s8 == "done" || s8 == "failed") {
+			if settled(v.State, v.Steps["session_server"].Status) {
 				views[repo] = v
 			}
 		}
@@ -486,4 +482,13 @@ func (c *client) post(path, body string) (int, string) {
 	c.t.Helper()
 	status, b, _ := c.do("POST", path, body)
 	return status, b
+}
+
+// settled reports whether a provisioning run has ended: failed, or running
+// with step 8 ended. Running is entered before step 8 runs (design §6), so a
+// running snapshot can still show step 8 started or not yet begun, and until
+// step 8 returns the run is in flight and a stop or rebuild is refused
+// in_progress. internal/server's tests hold the same rule.
+func settled(state, step8 string) bool {
+	return state == "failed" || state == "running" && (step8 == "done" || step8 == "failed")
 }

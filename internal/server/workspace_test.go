@@ -136,19 +136,7 @@ func TestWorkspaceRoutesEndToEnd(t *testing.T) {
 	// opens — running, with step 8 started — so the wait below is proved
 	// against that window on every run rather than on the runs a loaded
 	// machine happens to produce (release run 37704402342).
-	handoff := make(chan struct{})
-	var releaseOnce sync.Once
-	release := func() { releaseOnce.Do(func() { close(handoff) }) }
-	t.Cleanup(release)
-	startSupervisor := srv.Provisioner.StartSupervisor
-	srv.Provisioner.StartSupervisor = func(ctx context.Context, w workspace.Workspace) error {
-		select {
-		case <-handoff:
-		case <-ctx.Done():
-			return ctx.Err()
-		}
-		return startSupervisor(ctx, w)
-	}
+	release := holdStep8(t, srv)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() { done <- srv.Serve(ctx) }()
@@ -196,15 +184,7 @@ func TestWorkspaceRoutesEndToEnd(t *testing.T) {
 		t.Errorf("past the cap of 1: %+v", got)
 	}
 
-	// Settled is failed, or running with step 8 ended. Running is entered
-	// when the probe passes, before step 8 hands the workspace to the
-	// supervisor (design §6: step 8 runs in running, and its failure leaves
-	// the workspace there), so a snapshot that says running can still show
-	// step 8 started, or not yet begun. The run is over when step 8 is.
-	settled := func(v wsView) bool {
-		s8 := v.Steps["session_server"].Status
-		return v.State == "failed" || v.State == "running" && (s8 == "done" || s8 == "failed")
-	}
+	settled := func(v wsView) bool { return settled(v.State, v.Steps["session_server"].Status) }
 	get := func() (v wsView) {
 		resp := r.do(t, req{method: "GET", path: "/api/workspaces/" + id.ID, cookie: cookie})
 		if resp.StatusCode != 200 {
@@ -271,6 +251,58 @@ func TestWorkspaceRoutesEndToEnd(t *testing.T) {
 	if resp := r.do(t, req{method: "GET", path: "/api/workspaces/01JABCDEFGHJKMNPQRSTVWXYZ0", cookie: cookie}); resp.StatusCode != 404 {
 		t.Errorf("GET of no workspace: %d", resp.StatusCode)
 	}
+}
+
+// settled reports whether a provisioning run has ended, from the state and
+// step 8's status: failed, or running with step 8 ended. Running is entered
+// when the probe passes, before step 8 hands the workspace to the supervisor
+// (design §6: step 8 runs in running, and its failure leaves the workspace
+// there), so a snapshot that says running can still show step 8 started, or
+// not yet begun — and until step 8 returns the run is in flight, so a stop or
+// a rebuild is refused in_progress. The run is over when step 8 is.
+func settled(state, step8 string) bool {
+	return state == "failed" || state == "running" && (step8 == "done" || step8 == "failed")
+}
+
+// TestSettledRule pins the rule's cases, the not-yet-begun one among them,
+// which no hold at the StartSupervisor seam can show: the hold is inside
+// step 8, after its started event.
+func TestSettledRule(t *testing.T) {
+	for _, c := range []struct {
+		state, step8 string
+		want         bool
+	}{
+		{"running", "done", true}, {"running", "failed", true}, {"failed", "", true}, {"failed", "started", true},
+		{"running", "", false}, {"running", "started", false}, {"building", "", false}, {"pending", "", false},
+	} {
+		if got := settled(c.state, c.step8); got != c.want {
+			t.Errorf("settled(%q, %q) = %v, want %v", c.state, c.step8, got, c.want)
+		}
+	}
+}
+
+// holdStep8 holds every step 8 at the StartSupervisor seam, and each call of
+// the returned release lets one through, so a test acts inside the window
+// between running and step 8's end on every run rather than only on the runs
+// a loaded machine produces. Cleanup lets every held one through, and a run
+// whose context ends stops waiting.
+func holdStep8(t *testing.T, srv *Server) (release func()) {
+	t.Helper()
+	pass := make(chan struct{}, 8)
+	all := make(chan struct{})
+	var once sync.Once
+	t.Cleanup(func() { once.Do(func() { close(all) }) })
+	startSupervisor := srv.Provisioner.StartSupervisor
+	srv.Provisioner.StartSupervisor = func(ctx context.Context, w workspace.Workspace) error {
+		select {
+		case <-pass:
+		case <-all:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+		return startSupervisor(ctx, w)
+	}
+	return func() { pass <- struct{}{} }
 }
 
 type httpResp struct {
