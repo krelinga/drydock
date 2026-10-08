@@ -4,11 +4,9 @@ import (
 	"bufio"
 	"context"
 	"fmt"
-	"html"
 	"net"
 	"net/http"
 	"net/url"
-	"sort"
 	"strings"
 )
 
@@ -61,11 +59,11 @@ func ParseReturn(raw, domain string) (host, uri string, ok bool) {
 	return slug + "." + domain, uri, true
 }
 
-// Upstream is what a request with a valid preview cookie is handed to. Step 2
-// serves Placeholder; step 3 replaces it with the proxy, which re-resolves the
-// workspace's container by label before every dial (PF §8.1). The request it
-// receives has already had the preview cookie removed, and its response
-// passes through a writer that drops any Set-Cookie claiming that name.
+// Upstream is what a request with a valid preview cookie is handed to: in
+// production the Proxy, which re-resolves the workspace's container by label
+// before every dial (PF §8.1). The request it receives has already had the
+// preview cookie removed, and its response passes through a writer that drops
+// any Set-Cookie claiming that name.
 type Upstream interface {
 	ServePreview(w http.ResponseWriter, r *http.Request, t Target)
 }
@@ -89,6 +87,22 @@ func TargetFrom(ctx context.Context) (Target, bool) {
 	return t, ok
 }
 
+type recheckKey struct{}
+
+// WithRecheck attaches the question "does this request's preview session
+// still hold?" to its context. The gate attaches it; the proxy asks it again
+// while an upgraded connection stays open, because a websocket has no next
+// request for a revocation to refuse (PF §13.4).
+func WithRecheck(ctx context.Context, f func(context.Context) bool) context.Context {
+	return context.WithValue(ctx, recheckKey{}, f)
+}
+
+// RecheckFrom returns the gate's recheck, if it attached one.
+func RecheckFrom(ctx context.Context) (func(context.Context) bool, bool) {
+	f, ok := ctx.Value(recheckKey{}).(func(context.Context) bool)
+	return f, ok && f != nil
+}
+
 type grantKey struct{}
 
 // WithGrant attaches a consumed token's grant to a request's context.
@@ -110,10 +124,16 @@ func isPreviewCookie(name string) bool {
 	return strings.EqualFold(strings.TrimSpace(name), CookieName)
 }
 
+// UICookieName is the UI's session cookie (internal/auth's CookieName, which
+// a test holds this to). A browser never sends it to a preview host — it is
+// host-only on another registrable domain — so stripping it too costs nothing
+// and holds even if the two are ever misconfigured onto one domain (PF §10.3).
+const UICookieName = "__Host-drydock"
+
 // StripCookie returns a copy of r whose Cookie header no longer carries the
-// preview cookie (PF §7's warning box, second hop). Every other cookie — the
-// app's own — passes through in its order; a request left with no cookie at
-// all carries no Cookie header.
+// preview cookie (PF §7's warning box, second hop) or the UI's session
+// cookie. Every other cookie — the app's own — passes through in its order; a
+// request left with no cookie at all carries no Cookie header.
 func StripCookie(r *http.Request) *http.Request {
 	out := r.Clone(r.Context())
 	var kept []string
@@ -124,7 +144,7 @@ func StripCookie(r *http.Request) *http.Request {
 				continue
 			}
 			name, _, _ := strings.Cut(p, "=")
-			if isPreviewCookie(name) {
+			if isPreviewCookie(name) || strings.EqualFold(strings.TrimSpace(name), UICookieName) {
 				continue
 			}
 			kept = append(kept, p)
@@ -150,12 +170,11 @@ func StripCookie(r *http.Request) *http.Request {
 // the cookie — and, worse, let a Set-Cookie added after the 103 ride the
 // final response. httputil.ReverseProxy forwards an upstream's 1xx by default
 // (its Got1xxResponse copies the headers and calls WriteHeader), so that is
-// the path step 3's proxy would open.
+// the path the Proxy opens.
 //
-// Step 3 must keep this true for a websocket upgrade too: a 101 written
-// through a hijacked connection bypasses this writer, so the proxy has to
-// filter the upstream's headers itself (httputil.ReverseProxy's
-// ModifyResponse runs for a 101 as well).
+// A websocket upgrade's 101 is the one block this writer cannot see:
+// ReverseProxy writes it through the hijacked connection. The Proxy filters
+// it itself, in ModifyResponse, which runs for a 101 before the hijack.
 type CookieGuard struct {
 	http.ResponseWriter
 	final bool
@@ -211,7 +230,7 @@ func (g *CookieGuard) Flush() {
 	}
 }
 
-// Hijack is passed through for step 3's websocket upgrade; see the type's
+// Hijack is passed through for the Proxy's websocket upgrade; see the type's
 // note on what that obliges the proxy to do.
 func (g *CookieGuard) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 	g.filter(true)
@@ -223,32 +242,3 @@ func (g *CookieGuard) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 
 // Unwrap lets http.ResponseController reach the underlying writer.
 func (g *CookieGuard) Unwrap() http.ResponseWriter { return g.ResponseWriter }
-
-// Placeholder is step 2's hardcoded upstream: a fixed page inside Drydock,
-// standing where step 3's proxy to the workspace's container will. It says the
-// device is signed in to this preview, and names the cookies the request
-// carried for the app — names only, never values — so a reader (and the
-// browser tier) can see the preview cookie is not among them.
-var Placeholder Upstream = UpstreamFunc(func(w http.ResponseWriter, r *http.Request, t Target) {
-	var names []string
-	for _, c := range r.Cookies() {
-		names = append(names, c.Name)
-	}
-	sort.Strings(names)
-	list := "none"
-	if len(names) > 0 {
-		list = html.EscapeString(strings.Join(names, ", "))
-	}
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.Header().Set("Cache-Control", "no-store")
-	w.Header().Set("X-Content-Type-Options", "nosniff")
-	w.Header().Set("Content-Security-Policy", "default-src 'none'")
-	if r.Method == http.MethodHead {
-		return
-	}
-	fmt.Fprintf(w, `<!doctype html><meta charset="utf-8"><title>Preview signed in</title>`+
-		`<h1>Signed in to this preview</h1>`+
-		`<p data-test="placeholder">This device may view port %d of this workspace. Drydock does not proxy to the container yet; that is the next step of previews.</p>`+
-		`<p>Cookies this request carried for the app: <span data-test="app-cookies">%s</span>.</p>`,
-		t.ContainerPort, list)
-})

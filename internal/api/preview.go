@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"path"
 	"strings"
 
 	"github.com/krelinga/drydock/internal/preview"
@@ -60,8 +61,10 @@ func PreviewFrontDoor(g Gate, handlers map[string]http.HandlerFunc, up preview.U
 }
 
 // previewFallback is the preview socket's gate for every path the app owns.
-// It is outside the route table, so it has meta-tests of its own in
-// preview_test.go (§13.1's third trap): the order below, under a stub gate.
+// It is outside the route table, so it has meta-tests of its own (§13.1's
+// third trap): the order below, under a stub gate (TestPreviewFallbackOrder),
+// and the real preview.Proxy behind it reached for no route's path without
+// all three gates (TestTheProxyIsReachedOnlyThroughEveryGate, proxy_test.go).
 func previewFallback(g Gate, up preview.Upstream, w http.ResponseWriter, r *http.Request) {
 	// 1. Host, by syntax. Caddy sends only one label under the preview
 	// domain here, but a LAN client can reach the socket's other side only
@@ -70,8 +73,9 @@ func previewFallback(g Gate, up preview.Upstream, w http.ResponseWriter, r *http
 		previewDeny(w, r)
 		return
 	}
-	// 2. The reserved prefix is never the app's (PF §6), mounted or not.
-	if r.URL.Path == "/.drydock" || strings.HasPrefix(r.URL.Path, preview.ReservedPrefix) {
+	// 2. The reserved prefix is never the app's (PF §6), mounted or not —
+	// judged on the path as an app's router might read it (reservedPath).
+	if reservedPath(r.URL.Path) {
 		previewDeny(w, r)
 		return
 	}
@@ -100,6 +104,19 @@ func previewFallback(g Gate, up preview.Upstream, w http.ResponseWriter, r *http
 	// 4. The upstream, which never sees the preview cookie and cannot set
 	// one (PF §7's warning box, §10.7).
 	up.ServePreview(&preview.CookieGuard{ResponseWriter: w}, preview.StripCookie(authed), t)
+}
+
+// reservedPath reports whether a decoded request path names Drydock's
+// reserved /.drydock/ prefix once it is read the way an app's router might:
+// dot segments and doubled slashes cleaned (//.drydock/x, /a/../.drydock/x),
+// a ;parameter dropped from the first segment (/.drydock;/x), and case
+// ignored. The path sent upstream is not cleaned (PF §13.4); this only decides
+// that such a path is Drydock's, not the app's.
+func reservedPath(p string) bool {
+	clean := path.Clean("/" + p)
+	first, _, _ := strings.Cut(strings.TrimPrefix(clean, "/"), "/")
+	first, _, _ = strings.Cut(first, ";")
+	return strings.EqualFold(first, strings.Trim(preview.ReservedPrefix, "/"))
 }
 
 // previewNoStore is the two headers every Drydock-made answer on a preview

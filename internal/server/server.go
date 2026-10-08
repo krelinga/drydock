@@ -90,10 +90,13 @@ type Server struct {
 	// Previews is the preview handshake's state (PF §7): the one-time
 	// tokens in memory, the preview sessions in the database.
 	Previews *preview.Service
-	// PreviewUpstream is what a request with a valid preview cookie reaches
-	// (PF §13 step 2): preview.Placeholder, a fixed page, until step 3's
-	// proxy replaces it. A test's seam, read per request, so it may be set
-	// between New and Serve.
+	// Proxy is the preview proxy (PF §8, §13 step 3): it resolves the
+	// workspace's container by label before every dial. Its exported fields
+	// are a test's seam, set between New and Serve.
+	Proxy *preview.Proxy
+	// PreviewUpstream is what a request with a valid preview cookie reaches:
+	// Proxy. A test's seam, read per request, so it may be set between New
+	// and Serve.
 	PreviewUpstream preview.Upstream
 	// reconciled closes when boot reconciliation has finished, so a test
 	// can set up workspace rows reconciliation would otherwise move.
@@ -142,7 +145,7 @@ func New(ctx context.Context, cfg config.Config, env sys.Env) (*Server, error) {
 	}
 
 	s := &Server{DB: db, Auth: svc, Events: events.New(db.DB, env.Clock), reconciled: make(chan struct{}),
-		Previews: previews, PreviewUpstream: preview.Placeholder}
+		Previews: previews}
 	s.Workspaces = &workspace.Store{DB: db.DB, Events: s.Events, Env: env, Root: cfg.WorkspaceRoot, Cap: cfg.ContainerCap}
 	// Drydock's own uid owns the shared credential volume (§7.1): the dev
 	// container CLI, run as Drydock, gives every workspace's remote user
@@ -153,7 +156,17 @@ func New(ctx context.Context, cfg config.Config, env sys.Env) (*Server, error) {
 	// invocation then fails rather than run unguarded.
 	self, _ := os.Executable()
 	containers := container.Manager{Run: subproc.Exec{}, LabelPrefix: cfg.LabelPrefix, CleanupImage: cfg.CleanupImage,
-		ClaudeUID: os.Getuid(), ClaudeGID: os.Getgid(), Guard: &dockerguard.Guard{Binary: self}}
+		ClaudeUID: os.Getuid(), ClaudeGID: os.Getgid(), Guard: &dockerguard.Guard{Binary: self},
+		LocalAddrs: previewLocalAddrs}
+	if browserTierBuild {
+		fmt.Fprintln(os.Stderr, "drydock: built for the browser tier (-tags browsertier): a preview container at one of this host's own addresses is dialled. Never a release.")
+	}
+	// The preview proxy dials the container's Docker-network address,
+	// resolved from Docker by label before every dial (PF §8.1).
+	s.Proxy = &preview.Proxy{Resolver: containerResolver{containers}, Clock: env.Clock,
+		IdleTimeout: cfg.PreviewIdleTimeout,
+		Logf:        func(f string, a ...any) { fmt.Fprintf(os.Stderr, f+"\n", a...) }}
+	s.PreviewUpstream = s.Proxy
 	// The Claude Code version is this binary's, not the Feature's default:
 	// the classifiers compiled in here were recorded against it, so a
 	// Feature release under the same major tag cannot move it (§11).
@@ -245,7 +258,12 @@ func New(ctx context.Context, cfg config.Config, env sys.Env) (*Server, error) {
 		s.Provisioner.Broker = s.Broker
 		s.Provisioner.Cloner = &clone.Cloner{DB: db.DB, GitHub: gh, Runner: subproc.Exec{}}
 	}
-	handlers := api.SessionRoutes{Auth: svc}.Handlers()
+	// A sign-out closes the preview websockets its sessions authorized at
+	// once; anything else that ends a preview session — `drydock passwd`, a
+	// disabled port, an expiry — closes them at the proxy's next recheck.
+	handlers := api.SessionRoutes{Auth: svc, Revoked: func(all bool, id string) {
+		s.Proxy.CloseWhere(func(t preview.Target) bool { return all || t.AuthSessionID == id })
+	}}.Handlers()
 	for name, h := range (api.SupervisorRoutes{Provisioner: s.Provisioner, Workspaces: s.Workspaces, Logs: s.supervisorLogs}).Handlers() {
 		handlers[name] = h
 	}
@@ -317,11 +335,13 @@ func New(ctx context.Context, cfg config.Config, env sys.Env) (*Server, error) {
 		// The front door, not Build: Drydock's two reserved paths behind
 		// their gates, and everything else redirected to the handshake or
 		// handed to the upstream with the preview cookie stripped (PF §7,
-		// §13 steps 1–2). Never ServeMux's 404.
-		Handler: api.PreviewFrontDoor(gate, previewHandlers(previews), preview.UpstreamFunc(
+		// §13 steps 1–3). Never ServeMux's 404. The cap is outside it, so
+		// it counts the handshake's redirects as well as the proxied
+		// requests and their websockets (PF §10.7).
+		Handler: preview.Limit(cfg.PreviewMaxConnections, api.PreviewFrontDoor(gate, previewHandlers(previews), preview.UpstreamFunc(
 			func(w http.ResponseWriter, r *http.Request, t preview.Target) {
 				s.PreviewUpstream.ServePreview(w, r, t)
-			})),
+			}))),
 		ReadHeaderTimeout: 10 * time.Second,
 		IdleTimeout:       2 * time.Minute,
 	}
@@ -357,6 +377,28 @@ func New(ctx context.Context, cfg config.Config, env sys.Env) (*Server, error) {
 // itself, and api.PreviewFrontDoor sets it again on every answer of Drydock's.
 func previewHandlers(p *preview.Service) map[string]http.HandlerFunc {
 	return api.PreviewHandshake{Previews: p}.Handlers()
+}
+
+// containerResolver is the preview proxy's view of the container manager.
+type containerResolver struct{ m container.Manager }
+
+func (c containerResolver) Resolve(ctx context.Context, workspaceID string) (preview.Endpoint, error) {
+	a, err := c.m.Address(ctx, workspaceID)
+	if errors.Is(err, container.ErrNotRunning) || errors.Is(err, container.ErrNoAddress) || errors.Is(err, container.ErrAmbiguous) {
+		return preview.Endpoint{}, fmt.Errorf("%w: %v", preview.ErrNotRunning, err)
+	}
+	if err != nil {
+		return preview.Endpoint{}, err
+	}
+	return preview.Endpoint{ContainerID: a.ContainerID, IP: a.IP}, nil
+}
+
+func (c containerResolver) Confirm(ctx context.Context, workspaceID string, e preview.Endpoint) error {
+	err := c.m.Confirm(ctx, workspaceID, container.Address{ContainerID: e.ContainerID, IP: e.IP})
+	if errors.Is(err, container.ErrMoved) {
+		return fmt.Errorf("%w: %v", preview.ErrNotRunning, err)
+	}
+	return err
 }
 
 // apiSocketHandler is everything the API socket serves, in one place:
@@ -610,6 +652,9 @@ func (s *Server) Serve(ctx context.Context) error {
 	defer cancel()
 	_ = s.api.Shutdown(shutCtx)
 	_ = s.preview.Shutdown(shutCtx)
+	// Shutdown does not track a hijacked connection: a preview's websocket
+	// is closed here, or it would outlive the server that proxied it.
+	s.Proxy.Close()
 	<-reconciled // they may still be writing; the database closes after them
 	<-refreshing
 	<-watching

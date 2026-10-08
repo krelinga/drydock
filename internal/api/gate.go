@@ -110,8 +110,8 @@ func (g SessionGate) PreviewHost(r *http.Request) bool {
 // __Host- prefix forces Path=/ and no Domain, so a second cookie of the same
 // name for the same host replaces the first rather than joining it. Trying
 // each would let an unauthenticated request of ~3,000 forged cookies buy
-// ~45 ms of database work (measured in review), with nothing yet bounding
-// connections (PF §10.7 is step 3's).
+// ~45 ms of database work (measured in review) — a cost the preview socket's
+// connection cap (preview.Limit, PF §10.7) bounds in number but not in size.
 func (g SessionGate) PreviewSession(r *http.Request) (*http.Request, bool) {
 	if g.Previews == nil {
 		return r, false
@@ -124,7 +124,15 @@ func (g SessionGate) PreviewSession(r *http.Request) (*http.Request, bool) {
 	if !ok {
 		return r, false
 	}
-	return r.WithContext(preview.WithTarget(r.Context(), t)), true
+	// The same question, asked again while an upgrade stays open: a
+	// websocket has no next request for a revocation to refuse.
+	svc, cookie, host := g.Previews, c.Value, r.Host
+	ctx := preview.WithTarget(r.Context(), t)
+	ctx = preview.WithRecheck(ctx, func(ctx context.Context) bool {
+		_, ok := svc.Session(ctx, cookie, host)
+		return ok
+	})
+	return r.WithContext(ctx), true
 }
 
 // PreviewAuthorizeURL is where a preview request with no valid preview cookie

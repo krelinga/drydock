@@ -126,7 +126,7 @@ func seedPreview(t *testing.T, r *running) {
 	}
 }
 
-// recordingUpstream stands in for step 3's proxy: it records what it was
+// recordingUpstream stands in for the proxy (preview.Proxy): it records what it was
 // handed and tries to set the preview cookie itself.
 type recordingUpstream struct {
 	mu   sync.Mutex

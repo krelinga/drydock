@@ -87,10 +87,23 @@ func start(t *testing.T) *running {
 // startIn is start with its state under dir, for a test that sweeps it.
 func startIn(t *testing.T, dir string) *running {
 	t.Helper()
+	return startWith(t, dir, nil, nil)
+}
+
+// startWith is startIn with a change to the configuration before New and to
+// the server between New and Serve, where its seams are set.
+func startWith(t *testing.T, dir string, conf func(*config.Config), seam func(*Server)) *running {
+	t.Helper()
 	cfg := testConfig(t, dir)
+	if conf != nil {
+		conf(&cfg)
+	}
 	srv, err := New(context.Background(), cfg, sys.Production())
 	if err != nil {
 		t.Fatalf("New: %v", err)
+	}
+	if seam != nil {
+		seam(srv)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)

@@ -1,19 +1,26 @@
-// Previews in a browser (port forwarding §7, §13 steps 1–2; testing §10.2
+// Previews in a browser (port forwarding §7, §8, §13 steps 1–3; testing §10.2
 // items 5 and 6, §10.4): the real `drydock serve` and real Caddy, Chromium
 // trusting the tier's CA.
 //
 // Step 2's handshake: a signed-in device clicks through to a preview host and
-// lands on the hardcoded upstream (internal/preview.Placeholder) after three
-// redirects — preview host → /preview/authorize on the UI → the preview host's
-// /.drydock/session?t=… → the clean URL — holding only the host-only preview
-// cookie there; a device that is not signed in is bounced to sign-in and
-// brought back; and Sign out everywhere closes the preview on its next
-// request. The token is in no file the stack wrote.
+// lands on the app after three redirects — preview host → /preview/authorize
+// on the UI → the preview host's /.drydock/session?t=… → the clean URL —
+// holding only the host-only preview cookie there; a device that is not signed
+// in is bounced to sign-in and brought back; and Sign out everywhere closes
+// the preview on its next request. The token is in no file the stack wrote.
+//
+// Step 3's proxy: the app is a real Vite dev server, reached through the
+// proxy at the address the stand-in docker reports for the seeded workspace's
+// container (harness.ts) — this host's own non-loopback address, since Drydock
+// refuses a loopback one. The page loads, Vite's HMR websocket connects
+// through Caddy and the proxy, a custom event goes up it and comes back, and
+// an edit to the module on disk updates the page in place. With the container
+// gone, the next request is the denied page.
 //
 // Assertions about cookies are made at the server, through the taps, as in
 // crosssite.spec.ts.
 
-import { readdirSync, readFileSync, statSync } from 'node:fs'
+import { readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import {
@@ -26,6 +33,8 @@ import {
   SLUG,
   SLUG_HOST,
   UI,
+  DevServer,
+  hostAddress,
   type Stack,
 } from './harness'
 import { expect, seenBy, sessionCookie, test } from './fixtures'
@@ -44,26 +53,77 @@ async function clickTo(page: import('@playwright/test').Page, href: string): Pro
   await page.click('#go')
 }
 
-/** What PF §13 step 4's registry will write: one enabled port on a running workspace. */
+/** The seeded workspace: a ULID, since the container is found by its label. */
+const WS = '01JPREV0000000000000000000'
+
+/**
+ * The previewed app, a Vite project: a page whose module accepts its own hot
+ * updates and echoes a custom event over the HMR socket, and a plugin that
+ * answers the handshake tests' landing paths with the names — never the
+ * values — of the cookies the app was sent.
+ */
+const MAIN = (version: string) => `document.getElementById('out').textContent = '${version}'
+if (import.meta.hot) {
+  import.meta.hot.accept()
+  import.meta.hot.on('drydock:echo', (d) => { document.getElementById('echo').textContent = d.n })
+  import.meta.hot.send('drydock:echo', { n: 'round trip' })
+}
+`
+const APP = {
+  'index.html': `<!doctype html><html><head><meta charset="utf-8"><title>vite app</title></head>
+<body><p id="out">loading</p><p id="echo">no echo</p><script type="module" src="/main.js"></script></body></html>`,
+  'main.js': MAIN('version one'),
+  'vite.config.mjs': `export default {
+  logLevel: 'warn',
+  plugins: [{
+    name: 'drydock-browser-tier',
+    configureServer(server) {
+      server.middlewares.use((req, res, next) => {
+        const p = new URL(req.url, 'http://x').pathname
+        if (!(p.startsWith('/app/') || p === '/hello' || p === '/after')) return next()
+        const names = (req.headers.cookie ?? '').split(';').map((c) => c.split('=')[0].trim()).filter(Boolean).sort()
+        res.setHeader('Content-Type', 'text/html; charset=utf-8')
+        res.end('<!doctype html><meta charset="utf-8"><title>app</title><p data-test="upstream">the app</p>' +
+          '<p>Cookies: <span data-test="app-cookies">' + (names.join(', ').replace(/[<>&]/g, '') || 'none') + '</span></p>')
+      })
+      server.ws.on('drydock:echo', (data, client) => client.send('drydock:echo', data))
+    },
+  }],
+}
+`,
+}
+
+let dev: DevServer
+
+test.beforeAll(async ({ stack }) => {
+  dev = await DevServer.start(path.join(stack.root, 'vite-app'), APP)
+})
+test.afterAll(async () => {
+  await dev?.stop()
+})
+
+/** What PF §13 step 4's registry will write: one enabled port on a running workspace, whose container runs. */
 function seed(stack: Stack): void {
   const db = new DatabaseSync(stack.db)
   try {
     db.exec('PRAGMA busy_timeout = 5000')
     db.exec(`INSERT INTO repository (id, installation_id, full_name, default_branch) VALUES (424242, 1, 'o/myapp', 'main')`)
-    db.exec(`INSERT INTO workspace (id, repository_id, host_path, branch, state) VALUES ('wpreview', 424242, '/x', 'main', 'running')`)
-    db.exec(`INSERT INTO forwarded_port (id, workspace_id, container_port, slug, enabled) VALUES ('ppreview', 'wpreview', 5173, '${SLUG}', 1)`)
+    db.exec(`INSERT INTO workspace (id, repository_id, host_path, branch, state) VALUES ('${WS}', 424242, '/x', 'main', 'running')`)
+    db.exec(`INSERT INTO forwarded_port (id, workspace_id, container_port, slug, enabled) VALUES ('ppreview', '${WS}', ${dev.port}, '${SLUG}', 1)`)
   } finally {
     db.close()
   }
+  stack.previewContainer(WS, hostAddress())
 }
 
 function unseed(stack: Stack): void {
+  stack.previewContainer(WS, null)
   const db = new DatabaseSync(stack.db)
   try {
     db.exec('PRAGMA busy_timeout = 5000')
     db.exec(`DELETE FROM preview_session WHERE forwarded_port_id = 'ppreview'`)
     db.exec(`DELETE FROM forwarded_port WHERE id = 'ppreview'`)
-    db.exec(`DELETE FROM workspace WHERE id = 'wpreview'`)
+    db.exec(`DELETE FROM workspace WHERE id = '${WS}'`)
     db.exec(`DELETE FROM repository WHERE id = 424242`)
   } finally {
     db.close()
@@ -104,7 +164,7 @@ test.describe('the handshake', () => {
 
     const landing = `${TARGET}/app/page?x=1`
     await clickTo(page, landing)
-    await expect(page.locator('[data-test=placeholder]')).toBeVisible()
+    await expect(page.locator('[data-test=upstream]')).toBeVisible()
     // The landing URL is clean: the token URL is never the app's address.
     expect(page.url()).toBe(landing)
 
@@ -186,17 +246,17 @@ test.describe('the handshake', () => {
 
     await page.getByLabel('Password').fill(stack.password)
     await page.getByRole('button', { name: 'Sign in' }).click()
-    await expect(page.locator('[data-test=placeholder]')).toBeVisible()
+    await expect(page.locator('[data-test=upstream]')).toBeVisible()
     expect(page.url()).toBe(landing)
   })
 
   test('Sign out everywhere closes an open preview on its next request', async ({ signedIn: page, context, stack }) => {
-    await clickTo(page, `${TARGET}/`)
-    await expect(page.locator('[data-test=placeholder]')).toBeVisible()
+    await clickTo(page, `${TARGET}/app/`)
+    await expect(page.locator('[data-test=upstream]')).toBeVisible()
     // Control: the next request is served, without a handshake.
     stack.previewTap.clear()
     await page.reload()
-    await expect(page.locator('[data-test=placeholder]')).toBeVisible()
+    await expect(page.locator('[data-test=upstream]')).toBeVisible()
     expect(stack.previewTap.seen.map((s) => s.status)).toEqual([200])
 
     // The Settings page's own button.
@@ -215,6 +275,43 @@ test.describe('the handshake', () => {
     expect(seen.status).toBe(302)
     expect(String(seen.responseHeaders!.location)).toContain('/preview/authorize?')
     await expect(page.getByRole('heading', { name: 'Sign in' })).toBeVisible()
+  })
+
+  test('Vite with HMR through Caddy and the proxy: the page loads, its websocket carries both ways, and an edit updates it in place', async ({
+    signedIn: page,
+    stack,
+  }) => {
+    await clickTo(page, `${TARGET}/`)
+    await expect(page.locator('#out')).toHaveText('version one')
+    // Up and back down the HMR socket: the module sends a custom event and
+    // the plugin answers it to the same client.
+    await expect(page.locator('#echo')).toHaveText('round trip')
+    const ws = await seenBy(stack.previewTap.seen, (s) => s.upgrade === 'websocket', 'the HMR websocket')
+    expect(ws.status).toBe(101)
+    expect(ws.host).toBe(SLUG_HOST)
+    expect(ws.cookieNames).toContain(PREVIEW_COOKIE)
+    expect(ws.responseHeaders!['set-cookie'] ?? []).toEqual([])
+
+    // A hot update, not a reload: the marker survives.
+    await page.evaluate(() => ((window as unknown as { marker: number }).marker = 42))
+    writeFileSync(path.join(dev.root, 'main.js'), MAIN('version two'))
+    await expect(page.locator('#out')).toHaveText('version two')
+    expect(await page.evaluate(() => (window as unknown as { marker?: number }).marker)).toBe(42)
+
+    // The container gone behind Drydock's back — its dev server with it, and
+    // Docker reporting nothing running — while the row still says running:
+    // the next request is the dead end, never a dial to the address it had
+    // (PF §8.1).
+    stack.previewContainer(WS, null)
+    await dev.stop()
+    const resp = await page.goto(`${TARGET}/`)
+    expect(resp?.status()).toBe(403)
+    expect(page.url()).toBe(`${TARGET}/.drydock/denied`)
+    // And back: resolved again, served again.
+    await dev.restart()
+    stack.previewContainer(WS, hostAddress())
+    await page.goto(`${TARGET}/`)
+    await expect(page.locator('#out')).toHaveText('version two')
   })
 })
 

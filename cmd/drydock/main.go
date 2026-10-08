@@ -116,6 +116,8 @@ func serve(args []string) int {
 	fs.DurationVar(&cfg.IdentityInterval, "identity-interval", cfg.IdentityInterval, "how often to check the shared Claude login")
 	fs.DurationVar(&cfg.IdentityExpiringWindow, "identity-expiring-window", cfg.IdentityExpiringWindow, "warn when the Claude login (its refresh token, not the hours-long access token) expires within this long")
 	fs.DurationVar(&cfg.IdentityCheckTimeout, "identity-check-timeout", cfg.IdentityCheckTimeout, "give up on each read of the shared Claude login after this long")
+	fs.IntVar(&cfg.PreviewMaxConnections, "preview-max-connections", cfg.PreviewMaxConnections, "how many requests the preview socket serves at once, an open websocket counting until it closes; past it, 503")
+	fs.DurationVar(&cfg.PreviewIdleTimeout, "preview-idle-timeout", cfg.PreviewIdleTimeout, "close a preview's websocket after this long with no traffic either way")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}

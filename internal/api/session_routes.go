@@ -14,6 +14,11 @@ import (
 // SessionRoutes are the three /api/auth/session handlers (design §5, §13.2).
 type SessionRoutes struct {
 	Auth *auth.Service
+	// Revoked is told of each sign-out once its sessions are gone: all for
+	// *Sign out everywhere*, else the one session id. The server closes the
+	// preview websockets those sessions authorized (PF §13.4). Nil does
+	// nothing.
+	Revoked func(all bool, sessionID string)
 }
 
 // Handlers returns the map Build consumes, keyed by route Name.
@@ -127,6 +132,9 @@ func (s SessionRoutes) signOut(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		WriteError(w, http.StatusInternalServerError, CodeInternal, "Sign-out failed.", "")
 		return
+	}
+	if s.Revoked != nil {
+		s.Revoked(r.URL.Query().Get("all") == "true", cur.ID)
 	}
 	setSessionCookie(w, "", 0)
 	w.WriteHeader(http.StatusNoContent)
