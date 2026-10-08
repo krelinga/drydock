@@ -189,7 +189,7 @@ func TestWorkspaceRoutesEndToEnd(t *testing.T) {
 		t.Errorf("past the cap of 1: %+v", got)
 	}
 
-	settled := func(v wsView) bool { return settled(v.State, v.Events) }
+	settled := func(v wsView) bool { return settled(t, v.State, v.Events) }
 	get := func() (v wsView) {
 		resp := r.do(t, req{method: "GET", path: "/api/workspaces/" + id.ID, cookie: cookie})
 		if resp.StatusCode != 200 {

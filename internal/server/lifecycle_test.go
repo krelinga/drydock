@@ -94,7 +94,7 @@ func TestWorkspaceLifecycleThroughTheServer(t *testing.T) {
 	// 8 returns the run is in flight and a stop or rebuild is refused.
 	reached := func(v wsView, want string) bool {
 		if want == "running" {
-			return settled(v.State, v.Events)
+			return settled(t, v.State, v.Events)
 		}
 		return v.State == want
 	}

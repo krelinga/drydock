@@ -135,7 +135,7 @@ func TestStopStartRebuildDelete(t *testing.T) {
 			for _, w := range want {
 				// Running counts once the run has ended (settled): until
 				// step 8 returns, a stop or rebuild is refused.
-				if ok && v.State == w && (w != "running" || settled(v.State, v.Events)) {
+				if ok && v.State == w && (w != "running" || settled(t, v.State, v.Events)) {
 					return v
 				}
 			}

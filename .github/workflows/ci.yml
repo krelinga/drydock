@@ -67,16 +67,19 @@ jobs:
     timeout-minutes: 15
     container:
       image: mcr.microsoft.com/playwright:v1.63.0-noble@sha256:eff16c30e6f3f4af0a03fa4b706120d5e9b0891c344a27d64559aff5900a4a27
-      # Playwright's documented setting for its image. Not for /dev/shm:
-      # Playwright starts Chromium with --disable-dev-shm-usage, so Docker's
-      # 64 MB there is never what Chromium sizes against. Kept because it is
-      # the configuration the image is tested under, and on a VM that lives
-      # for one job the host IPC namespace holds nothing to reach.
+      # Playwright's documented setting for its image, and the configuration
+      # the image is tested under. Chromium does not size against Docker's
+      # 64 MB /dev/shm (Playwright starts it with --disable-dev-shm-usage),
+      # but Firefox and WebKit, which run engines.spec.ts, get no such
+      # switch. On a VM that lives for one job the host IPC namespace holds
+      # nothing to reach.
       options: --ipc=host
-    # certutil's .deb, pinned: the image's libnss3 is fixed by its digest, and
-    # libnss3-tools needs only libnss3 >= 2:3.94. Launchpad's +files URL is
-    # permanent (the archive's pool drops a version once it is superseded),
-    # and the SHA-256 is the one noble-updates' signed Packages index lists.
+    # certutil's .deb, pinned. It depends on libc6, libnspr4, libnss3 and
+    # zlib1g, all in the image (pinned by digest) as libnss3's own
+    # dependencies; one missing fails dpkg -i, and the step with it.
+    # Launchpad's +files URL is permanent (the archive's pool drops a version
+    # once it is superseded), and the SHA-256 is the one noble-updates'
+    # signed Packages index lists.
     env:
       NSS_TOOLS_URL: https://launchpad.net/ubuntu/+archive/primary/+files/libnss3-tools_3.98-1ubuntu0.2_amd64.deb
       NSS_TOOLS_SHA256: e5b42390b02c21851bc04e9557ec48539a913f9b09637220c4b1db0d1386b3fb
@@ -84,10 +87,14 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       # The same Go and the same pinned Caddy as the go job. The job is root
-      # here, and the image has neither.
+      # here, and the image has neither. No Go cache: setup-go would save it
+      # in its post step, after HOME is pwuser's and npm ci has run, and the
+      # only thing keeping that entry from other jobs today is a key that
+      # reads `undefined` in this container.
       - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
+          cache: false
       - name: Install Caddy
         run: .github/actions/go-suite/install-caddy.sh
       # certutil: how the test CA gets into Chromium's NSS store (Spike 04).
@@ -101,7 +108,10 @@ jobs:
       # right after the download, before pwuser runs anything, from a root-
       # owned directory outside the workspace pwuser is handed. And the
       # checksum is checked again on every run before dpkg -i: the pinned hash
-      # is in this file, not in the cache.
+      # is in this file, not in the cache. A hit that fails that check fails
+      # closed, and keeps failing every run in its scope (a hit skips the
+      # fetch) until the entry goes: `gh cache list --key libnss3-tools-`,
+      # then `gh cache delete <id>`, and re-run.
       - uses: actions/cache/restore@v4
         id: nss-tools
         with:
@@ -112,7 +122,7 @@ jobs:
         timeout-minutes: 5
         run: |
           install -d -m 0755 "$NSS_TOOLS_DIR"
-          curl -fsSL --retry 3 --max-time 60 -o "$NSS_TOOLS_DIR/libnss3-tools.deb" "$NSS_TOOLS_URL"
+          curl -fsSL --proto-redir =https --retry 3 --max-time 60 -o "$NSS_TOOLS_DIR/libnss3-tools.deb" "$NSS_TOOLS_URL"
           echo "$NSS_TOOLS_SHA256  $NSS_TOOLS_DIR/libnss3-tools.deb" | sha256sum -c -
       - uses: actions/cache/save@v4
         if: steps.nss-tools.outputs.cache-hit != 'true'
@@ -128,7 +138,7 @@ jobs:
       # run the login as root (login.spec.ts), and a root browser is not what
       # an operator runs. pwuser is uid 1001, the runner's own, so the files
       # it writes are the runner's outside the container too. HOME is the
-      # job's /github/home, where setup-go restored the Go caches.
+      # job's /github/home, where the tier's go build keeps its caches.
       - name: Hand the workspace to pwuser
         run: chown -R pwuser:pwuser "$GITHUB_WORKSPACE" "$HOME"
       - run: npm ci
