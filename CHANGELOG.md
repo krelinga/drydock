@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.4](https://github.com/krelinga/drydock/compare/v0.4.3...v0.4.4) (2026-10-08)
+
+
+### Bug Fixes
+
+* close a step left started when Drydock stopped mid-step, at boot ([#72](https://github.com/krelinga/drydock/issues/72)) ([f4f6e11](https://github.com/krelinga/drydock/commit/f4f6e1101b4f5625d646330add823b8833a51184))
+
 ## [0.4.3](https://github.com/krelinga/drydock/compare/v0.4.2...v0.4.3) (2026-10-07)
 
 
