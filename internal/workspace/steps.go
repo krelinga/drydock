@@ -192,73 +192,68 @@ func failedDetail(st Step, sentence string) string {
 	return fmt.Sprintf("The %s step failed: %s", label(st), sentence)
 }
 
-// FailDangling closes every step of the workspace whose newest
-// workspace.step event is "started" — one that no "done", "failed" or
-// "needs_approval" followed, because the process running it died before the
-// step returned: a kill, an OOM, an unrecovered panic. Provision writes an end
-// for every step that returns, and the provisioner's guard turns a
-// cancellation into a failure, so a step left started outlives only the
-// process that started it. Each is written as "failed", with sentence as its
-// public half, in the order the steps run. The read and the writes are one
-// events.Commit, so no other writer's step event can land between the look
-// and the close, and every closed step is published live like any other.
+// FailDangling closes the step the process running it died inside — a kill,
+// an OOM, an unrecovered panic. Provision writes an end for every step that
+// returns, and the provisioner's guard turns a cancellation into a failure,
+// so a step left started outlives only the process that started it.
 //
-// "Newest" is by event id, which is monotonic: a started is dangling only
-// if its id is larger than every end of the same step.
+// Steps run one at a time per workspace, so only the workspace's newest
+// workspace.step event overall, by id, can be a step still in flight when its
+// process died. If that event is "started", its step is written as "failed",
+// with sentence as its public half; otherwise nothing is written. A started
+// that a later run's events follow — the same step or any other — is never
+// closed: its run is over, and a close appended now would become the newest
+// step event, so the client's timeline (reducer.ts runSteps) would drop the
+// later run's steps behind it and a failed card would blame it rather than
+// the step the last run failed at. The read and the write are one
+// events.Commit, so no other writer's step event can land between the look
+// and the close, and the close is published live like any other step event.
 //
 // It moves nothing; the caller decides the workspace's state (boot
 // reconciliation, §6). The caller must know that no run of this process is
 // writing the workspace's steps — a step this process has in flight is
-// started because it is running. It returns the steps it closed.
-func (s *Store) FailDangling(ctx context.Context, id, sentence string) ([]Step, error) {
-	var closed []Step
+// started because it is running. It returns the step it closed, or "".
+func (s *Store) FailDangling(ctx context.Context, id, sentence string) (Step, error) {
+	var closed Step
 	_, err := s.Events.Commit(ctx, func(tx *sql.Tx) ([]events.Event, error) {
-		closed = nil
-		rows, err := tx.QueryContext(ctx, `SELECT data FROM event WHERE id IN (
-			SELECT max(id) FROM event
+		closed = ""
+		var data string
+		err := tx.QueryRowContext(ctx, `SELECT data FROM event
 			WHERE kind = ? AND workspace_id = ? AND json_valid(data)
-			GROUP BY json_extract(data, '$.step')
-		)`, KindStep, id)
+			ORDER BY id DESC LIMIT 1`, KindStep, id).Scan(&data)
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, nil
+		}
 		if err != nil {
 			return nil, err
 		}
-		latest := map[Step]string{}
-		for rows.Next() {
-			var data string
-			if err := rows.Scan(&data); err != nil {
-				rows.Close()
-				return nil, err
-			}
-			var d struct {
-				Step   Step   `json:"step"`
-				Status string `json:"status"`
-			}
-			if json.Unmarshal([]byte(data), &d) == nil {
-				latest[d.Step] = d.Status
-			}
+		var d struct {
+			Step   Step   `json:"step"`
+			Status string `json:"status"`
 		}
-		rows.Close()
-		if err := rows.Err(); err != nil {
+		if json.Unmarshal([]byte(data), &d) != nil || d.Status != "started" || stepIndex(d.Step) < 0 {
+			return nil, nil
+		}
+		e, err := newStepEvent(id, d.Step, "failed", events.Error, failedDetail(d.Step, sentence))
+		if err != nil {
 			return nil, err
 		}
-		var out []events.Event
-		for _, st := range Steps {
-			if latest[st] != "started" {
-				continue
-			}
-			e, err := newStepEvent(id, st, "failed", events.Error, failedDetail(st, sentence))
-			if err != nil {
-				return nil, err
-			}
-			out = append(out, e)
-			closed = append(closed, st)
-		}
-		return out, nil
+		closed = d.Step
+		return []events.Event{e}, nil
 	})
 	if err != nil {
-		return nil, err
+		return "", err
 	}
 	return closed, nil
+}
+
+func stepIndex(st Step) int {
+	for i, s := range Steps {
+		if s == st {
+			return i
+		}
+	}
+	return -1
 }
 
 func newStepEvent(id string, st Step, status string, level events.Level, detail string) (events.Event, error) {

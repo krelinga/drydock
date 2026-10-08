@@ -123,7 +123,7 @@ func newEnv(t *testing.T) env {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { db.Close() })
-	for id := 1; id <= 5; id++ {
+	for id := 1; id <= 10; id++ {
 		if _, err := db.ExecContext(ctx,
 			`INSERT INTO repository (id, installation_id, full_name, default_branch) VALUES (?, 1, ?, 'main')`,
 			id, fmt.Sprintf("krelinga/r%d", id)); err != nil {
@@ -412,12 +412,22 @@ func TestRunClosesAStepLeftStarted(t *testing.T) {
 	e.step(t, reran.ID, workspace.StepSessionServer, "started")
 	e.step(t, reran.ID, workspace.StepSessionServer, "done")
 	mine := walk(workspace.StepSessionServer)
+	// A killed run's allocate, and then a later run that never redid it:
+	// the started is the newest of its step but not of the workspace, so
+	// its run is over. Closing it would append the newest step event and
+	// take the later run's timeline over.
+	movedPast := walk(workspace.StepAllocate)
+	for _, st := range workspace.Steps[1:] {
+		e.step(t, movedPast.ID, st, "started")
+		e.step(t, movedPast.ID, st, "done")
+	}
 
 	var found []container.Found
-	for _, w := range []workspace.Workspace{dangling, done, ended, reran, mine} {
+	for _, w := range []workspace.Workspace{dangling, done, ended, reran, mine, movedPast} {
 		found = append(found, ctr(w.ID, "c-"+w.ID, true))
 	}
-	controls := map[string]workspace.Workspace{"done": done, "ended failed": ended, "rerun": reran, "owned": mine}
+	controls := map[string]workspace.Workspace{"done": done, "ended failed": ended, "rerun": reran, "owned": mine,
+		"moved past": movedPast}
 	before := map[string]int{}
 	for _, w := range controls {
 		before[w.ID] = len(e.stepEvents(t, w.ID))
@@ -538,28 +548,83 @@ func TestRunClosesTheStepOfAnInterruptedBuild(t *testing.T) {
 	}
 }
 
-// TestRunLeavesADeletingWorkspacesStepsAlone: a deleting row's resumed
-// delete removes it, timeline and all; closing its steps first would only
-// write events about a workspace about to be gone. The control is a stopped
-// row with the same dangling step, which is closed.
-func TestRunLeavesADeletingWorkspacesStepsAlone(t *testing.T) {
+// TestRunClosesADeletingWorkspacesStep: a resumed delete that sticks leaves
+// the row deleting, and /ws/:id still shows its timeline, so a deleting row's
+// dangling step is closed too — before the delete is resumed, which takes
+// the lock itself. The control is a deleting row this process owns: left
+// alone, and its delete not resumed by reconciliation either.
+func TestRunClosesADeletingWorkspacesStep(t *testing.T) {
 	ctx := context.Background()
 	e := newEnv(t)
 	del := e.walk(t, workspace.Cloning, workspace.Building, workspace.Running)
 	e.ran(t, del.ID, workspace.StepSessionServer)
 	e.ws.Move(ctx, del.ID, workspace.Deleting, "")
-	stopped := e.walk(t, workspace.Cloning, workspace.Building, workspace.Running)
-	e.ran(t, stopped.ID, workspace.StepSessionServer)
-	e.ws.Move(ctx, stopped.ID, workspace.Stopped, "")
+	mine := e.walk(t, workspace.Cloning, workspace.Building, workspace.Running)
+	e.ran(t, mine.ID, workspace.StepSessionServer)
+	e.ws.Move(ctx, mine.ID, workspace.Deleting, "")
+	var closedAtDelete workspace.StepOutcome
+	r := &Reconciler{Workspaces: e.ws, Events: e.log, Containers: fakeLister{},
+		Exclusive: func(id string, act func() error) (bool, error) {
+			if id == mine.ID {
+				return false, nil
+			}
+			return true, act()
+		},
+		Delete: func(ctx context.Context, w workspace.Workspace, _ string) error {
+			v, _ := e.ws.View(ctx, w.ID)
+			closedAtDelete = v.Steps[workspace.StepSessionServer]
+			return errors.New("stuck")
+		}}
+	r.Run(ctx) // the delete sticks: a *Partial
+	if v, _ := e.ws.View(ctx, del.ID); v.State != workspace.Deleting ||
+		v.Steps[workspace.StepSessionServer].Status != "failed" || v.Steps[workspace.StepSessionServer].Detail != closedStep8 {
+		t.Errorf("a stuck delete's row: %s, step 8 %+v", v.State, v.Steps[workspace.StepSessionServer])
+	}
+	if closedAtDelete.Status != "failed" {
+		t.Errorf("step 8 was %q when the delete was resumed; want it closed first", closedAtDelete.Status)
+	}
+	if v, _ := e.ws.View(ctx, mine.ID); v.Steps[workspace.StepSessionServer].Status != "started" {
+		t.Errorf("owned: step 8 is %+v", v.Steps[workspace.StepSessionServer])
+	}
+}
+
+// TestRunNeverClosesAStepALaterRunMovedPast: an older release killed during
+// verify; a later start failed at resolve config, never reaching verify
+// again. Verify's started is the newest of its step but not the workspace's,
+// so it is left: closing it would append the newest step event, and the
+// failed card and timeline would blame verify instead of resolve config.
+// The control is the same history with the start killed inside resolve
+// config: that started is the newest overall, and it is closed.
+func TestRunNeverClosesAStepALaterRunMovedPast(t *testing.T) {
+	ctx := context.Background()
+	e := newEnv(t)
+	seed := func(lastStatus string) workspace.Workspace {
+		w := e.walk(t, workspace.Cloning, workspace.Building)
+		e.ran(t, w.ID, workspace.StepVerify)
+		e.ws.Move(ctx, w.ID, workspace.Failed, "Drydock restarted while this workspace was building.")
+		e.ws.Move(ctx, w.ID, workspace.Building, "")
+		e.step(t, w.ID, workspace.StepResolveConfig, "started")
+		if lastStatus != "" {
+			e.step(t, w.ID, workspace.StepResolveConfig, lastStatus)
+			e.ws.Move(ctx, w.ID, workspace.Failed, "The resolve config step failed.")
+		}
+		return w
+	}
+	past := seed("failed")
+	killed := seed("")
+	before := len(e.stepEvents(t, past.ID))
+
 	r := &Reconciler{Workspaces: e.ws, Events: e.log, Containers: fakeLister{}}
 	if _, err := r.Run(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if v, _ := e.ws.View(ctx, del.ID); v.Steps[workspace.StepSessionServer].Status != "started" {
-		t.Errorf("deleting: %+v", v.Steps[workspace.StepSessionServer])
+	if got := e.stepEvents(t, past.ID); len(got) != before {
+		t.Errorf("a step a later run moved past was closed: %+v", got[before:])
 	}
-	if v, _ := e.ws.View(ctx, stopped.ID); v.Steps[workspace.StepSessionServer].Status != "failed" {
-		t.Errorf("control: a stopped row's dangling step is %+v", v.Steps[workspace.StepSessionServer])
+	if v, _ := e.ws.View(ctx, killed.ID); v.Steps[workspace.StepResolveConfig].Status != "failed" ||
+		v.Steps[workspace.StepVerify].Status != "started" {
+		t.Errorf("control: resolve config %+v, verify %+v; want only the newest closed",
+			v.Steps[workspace.StepResolveConfig], v.Steps[workspace.StepVerify])
 	}
 }
 

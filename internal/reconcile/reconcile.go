@@ -13,9 +13,9 @@
 // was mid-build when Drydock went down is marked failed rather than resumed,
 // because the restart may have been the build's fault.
 //
-// Before the plan, Run closes any step an earlier process died inside: its
-// newest event is started, and nothing will ever end it. It is failed with
-// InterruptedStep, so no timeline shows a step running forever.
+// Before the plan, Run closes the step an earlier process died inside: the
+// workspace's newest step event is started, and nothing will ever end it. It
+// is failed with InterruptedStep, so no timeline shows a step running forever.
 package reconcile
 
 import (
@@ -261,19 +261,18 @@ func (r *Reconciler) Run(ctx context.Context) ([]Action, error) {
 // itself.
 const InterruptedStep = "Drydock stopped while this step was running."
 
-// closeDangling fails, under Exclusive, every step of w whose newest event is
-// started (workspace.Store.FailDangling). Only an earlier process can have
-// left one: every step that returns writes its end, and a cancelled one is
-// failed by provision's guard. Not for a workspace this process has a job
-// for — its started step is running — and not for a deleting one, whose
-// resumed delete removes the row and its timeline with it. The workspace's
-// state is the plan's to decide, and §6 decides it without the steps: a
-// running row is adopted or marked stopped (a step-8 failure leaves a
-// workspace running, §6 step 8), and one mid-provision is marked failed.
+// closeDangling fails, under Exclusive, the step an earlier process died
+// inside: the workspace's newest step event, if it is started
+// (workspace.Store.FailDangling). Only an earlier process can have left one:
+// every step that returns writes its end, and a cancelled one is failed by
+// provision's guard. Never for a workspace this process has a job for — its
+// started step is running. A deleting row is closed too: a resumed delete
+// that sticks leaves the row, and /ws/:id with it, showing the timeline, and
+// its delete takes the lock itself, after this. The workspace's state is the
+// plan's to decide, and §6 decides it without the steps: a running row is
+// adopted or marked stopped (a step-8 failure leaves a workspace running, §6
+// step 8), and one mid-provision is marked failed.
 func (r *Reconciler) closeDangling(ctx context.Context, w workspace.Workspace) error {
-	if w.State == workspace.Deleting {
-		return nil
-	}
 	act := func() error {
 		_, err := r.Workspaces.FailDangling(ctx, w.ID, InterruptedStep)
 		return err
