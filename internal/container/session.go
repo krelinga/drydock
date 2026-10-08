@@ -141,7 +141,13 @@ func (m Manager) StartSession(ctx context.Context, r subproc.PTYRunner, s Sessio
 	if err != nil {
 		return nil, nil, err
 	}
-	return r.StartPTY(ctx, subproc.Cmd{Name: "devcontainer", Args: args}, cols, rows)
+	// Through the guard, which passes exec's docker commands straight to
+	// docker (execve, so the terminal and signals are docker's own).
+	dp, err := m.dockerPath(s.Folder)
+	if err != nil {
+		return nil, nil, err
+	}
+	return r.StartPTY(ctx, subproc.Cmd{Name: "devcontainer", Args: withDockerPath(args, dp)}, cols, rows)
 }
 
 // SessionSignal names the signals SignalSession sends. Alive sends none and

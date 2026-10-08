@@ -11,6 +11,8 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+
+	"github.com/krelinga/drydock/internal/dockerguard"
 )
 
 // The host-access subset (design §6, "What a configuration may ask of the
@@ -86,6 +88,14 @@ func sortSettings(s []HostSetting) {
 		return s[i].Source < s[j].Source
 	})
 }
+
+// ErrPathEscapes is a Dockerfile, build context or bind-mount source that the
+// configuration names inside the clone but that resolves, through a symbolic
+// link, outside it. It is not a setting to approve: an approval is of the
+// path as written, the container can move the link, and docker follows it —
+// so the docker guard refuses such a path even when approved, and step 3
+// refuses it first rather than ask for an approval that could never run.
+var ErrPathEscapes = errors.New("container: a path the configuration names inside the clone leads outside it")
 
 // ErrConfigFileOutside is a configuration file that is a symbolic link, not a
 // regular file, or not inside the clone. It is not a setting to approve: the
@@ -250,7 +260,15 @@ func subset(cfg map[string]json.RawMessage, extra map[string]bool, canon func(js
 			}
 			for bk, v := range b {
 				switch bk {
-				case "dockerfile", "context", "target", "args", "cacheFrom":
+				case "cacheFrom":
+					// A registry cache names an image; any other — a
+					// type=local cache reads a host directory — is in, read
+					// as buildx reads it (dockerguard.CacheFromIsRegistry),
+					// the parser the docker guard holds up to.
+					if bad := nonRegistryCaches(v); bad != nil {
+						add("build.cacheFrom", bad)
+					}
+				case "dockerfile", "context", "target", "args":
 				default:
 					// options are extra `docker build` flags, which can
 					// hand the build host files (--build-context,
@@ -268,6 +286,31 @@ func subset(cfg map[string]json.RawMessage, extra map[string]bool, canon func(js
 		}
 	}
 	return out
+}
+
+// nonRegistryCaches is build.cacheFrom's entries that are not registry
+// caches, as a JSON list, or nil. The CLI takes a string or a list of them.
+func nonRegistryCaches(raw json.RawMessage) json.RawMessage {
+	var list []string
+	var one string
+	switch {
+	case json.Unmarshal(raw, &one) == nil:
+		list = []string{one}
+	case json.Unmarshal(raw, &list) == nil:
+	default:
+		return raw
+	}
+	var bad []string
+	for _, c := range list {
+		if !dockerguard.CacheFromIsRegistry(c) {
+			bad = append(bad, c)
+		}
+	}
+	if bad == nil {
+		return nil
+	}
+	b, _ := json.Marshal(bad)
+	return b
 }
 
 // notAllowed is a string list's entries outside allowed (after norm), as a
@@ -430,6 +473,24 @@ func pathSettings(c Configuration, root string, canon func(json.RawMessage) json
 	if s, ok := str(c.Own["context"]); ok {
 		context, hasCtx = s, true
 	}
+	// Lexically inside, but resolving outside: a link the container made.
+	escapes := func(p string) bool {
+		c := filepath.Clean(p)
+		if _, err := os.Lstat(c); err != nil {
+			return false // nothing there to follow; a path that does not exist builds nothing
+		}
+		return (c == root || strings.HasPrefix(c, filepath.Clean(root)+"/")) && !inside(c)
+	}
+	if (hasDF && escapes(at(dockerfile))) || (hasCtx && escapes(at(context))) {
+		return nil, ErrPathEscapes
+	}
+	for _, cfg := range []map[string]json.RawMessage{c.Own, c.Merged} {
+		for _, src := range bindSources(cfg) {
+			if escapes(src) {
+				return nil, ErrPathEscapes
+			}
+		}
+	}
 	var out []HostSetting
 	val := func(s string) json.RawMessage { v, _ := json.Marshal(s); return canon(v) }
 	if hasDF && !inside(at(dockerfile)) {
@@ -439,6 +500,46 @@ func pathSettings(c Configuration, root string, canon func(json.RawMessage) json
 		out = append(out, HostSetting{Field: "build.context", Source: SourceRepository, Value: val(context)})
 	}
 	return out, nil
+}
+
+// bindSources are the sources of a configuration's bind mounts — mounts and
+// workspaceMount, in either of the CLI's forms — as absolute paths.
+func bindSources(cfg map[string]json.RawMessage) []string {
+	var entries []json.RawMessage
+	var list []json.RawMessage
+	if json.Unmarshal(cfg["mounts"], &list) == nil {
+		entries = append(entries, list...)
+	}
+	if cfg["workspaceMount"] != nil {
+		entries = append(entries, cfg["workspaceMount"])
+	}
+	var out []string
+	for _, e := range entries {
+		fields := map[string]string{}
+		var str string
+		var obj map[string]json.RawMessage
+		switch {
+		case json.Unmarshal(e, &str) == nil:
+			for _, kv := range strings.Split(str, ",") {
+				k, v, _ := strings.Cut(kv, "=")
+				fields[strings.ToLower(k)] = v
+			}
+		case json.Unmarshal(e, &obj) == nil:
+			for k, v := range obj {
+				var s string
+				json.Unmarshal(v, &s)
+				fields[strings.ToLower(k)] = s
+			}
+		}
+		src := fields["source"]
+		if src == "" {
+			src = fields["src"]
+		}
+		if strings.EqualFold(fields["type"], "bind") && filepath.IsAbs(src) {
+			out = append(out, src)
+		}
+	}
+	return out
 }
 
 // canonicalizer returns the canonical form of a value: decoded and encoded
@@ -543,7 +644,7 @@ func empty(raw json.RawMessage) bool {
 // sequence ("-v", "/a:/b" is one option; "--mount", "/a:/b" another), so a
 // shorter or reordered runArgs could recombine approved words into something
 // never approved. It must equal the approved value.
-var itemLists = set("capAdd", "securityOpt", "mounts")
+var itemLists = set("capAdd", "securityOpt", "mounts", "build.cacheFrom")
 
 // Covered reports whether every entry of current is within approved — the
 // rule that lets a run proceed without asking (design §6): less host access

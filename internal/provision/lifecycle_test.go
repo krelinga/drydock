@@ -74,6 +74,9 @@ rm)
     awk -v id="$id" '$1!=id' "$hs" > "$hs.t" && mv "$hs.t" "$hs"
   done ;;
 run)
+  # A dev container's own docker run, as the CLI writes it through the
+  # guard (guard_test.go): recorded above, and nothing else to do.
+  case " $* " in *" --sig-proxy=false "*) exit 0 ;; esac
   owner=
   for a in "$@"; do
     case "$a" in type=bind,source=*) src=${a#type=bind,source=}; src=${src%%,target=*} ;; esac

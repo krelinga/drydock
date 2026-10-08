@@ -1,0 +1,7 @@
+devcontainer_version: 0.89.0
+docker_version:       29.8.2-1 (the devcontainer's inner DinD daemon)
+recorded_at:          2026-10-08T21:23:10Z
+command:              docker inspect --type container -- <the container docker-argv-hostile.jsonl's up made>
+config:               {"image":"mcr.microsoft.com/devcontainers/base:debian","runArgs":["--network=host","--pid","host","-v","/etc/os-release:/host-os-release:ro"],"appPort":[18080,"19000:19001"],"privileged":true,"capAdd":["SYS_ADMIN","SYS_PTRACE"],"securityOpt":["apparmor=unconfined","seccomp=unconfined"],"mounts":["source=/etc/hostname,target=/host-hostname,type=bind",{"source":"/etc/hosts","target":"/host-hosts","type":"bind"},"source=named-${devcontainerId},target=/named,type=volume","type=tmpfs,target=/scratch"],"workspaceMount":"source=${localWorkspaceFolder},target=/workspaces/hostile,type=bind,consistency=cached","workspaceFolder":"/workspaces/hostile","hostRequirements":{"gpu":"optional"},"init":true}
+provenance:           recorded; <ws> rewritten to /srv/drydock/ws/FIXTURE
+must_yield:           a docker start of it passes the docker guard with docker-argv-hostile.read-configuration.json's subset approved, and is refused, naming the same settings as the run, without (internal/container TestRecordedStartsPassWithTheirApproval)

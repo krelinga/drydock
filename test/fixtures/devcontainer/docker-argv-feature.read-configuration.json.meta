@@ -1,0 +1,6 @@
+devcontainer_version: 0.89.0
+recorded_at:          2026-10-08T16:00:57Z
+command:              devcontainer read-configuration --workspace-folder <ws>/repo --include-merged-configuration --id-label drydock.read-configuration=none   (stdout only)
+config:               {"image":"mcr.microsoft.com/devcontainers/base:debian","features":{"./hostish":{}}}
+provenance:           recorded beside docker-argv-feature.jsonl, from the same folder; <ws> rewritten to /srv/drydock/ws/FIXTURE
+must_yield:           the host-access subset whose approval lets every command of docker-argv-feature.jsonl pass the docker guard (internal/container TestRecordedUpsPassWithTheirApproval)

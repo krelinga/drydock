@@ -100,8 +100,15 @@ func (m Manager) ReadConfiguration(ctx context.Context, folder, overrideConfig s
 		}
 		args = append(args, "--override-config", overrideConfig)
 	}
+	// Through the guard, with no policy: read-configuration creates nothing
+	// (measured: ps and inspect), and should a later CLI make it build, the
+	// guard refuses rather than run that unchecked.
+	dp, err := m.dockerPath(folder)
+	if err != nil {
+		return Configuration{}, err
+	}
 	var stdout, stderr bytes.Buffer
-	res := m.Run.Run(ctx, subproc.Cmd{Name: "devcontainer", Args: args,
+	res := m.Run.Run(ctx, subproc.Cmd{Name: "devcontainer", Args: withDockerPath(args, dp),
 		Stdout: limit(&stdout, 4<<20), Stderr: limit(&stderr, 64<<10)})
 	if res.Err != nil {
 		return Configuration{}, fmt.Errorf("devcontainer read-configuration: %w", res.Err)

@@ -7,6 +7,11 @@
 //	                                refuse a preview domain same-site with the UI
 //	drydock version                 print the release this binary was built from
 //
+// Run under the name "docker", by the link a workspace's --docker-path names,
+// it is the docker guard instead: it checks the docker command it was given
+// against the run's approved host access and either refuses it or execs the
+// real docker (internal/dockerguard).
+//
 // There is deliberately nothing else. In particular there is no flag that binds a
 // TCP port (design §13.5), and no way to set the password except from a shell
 // on the host (§13.2) — which removes the "unauthenticated bootstrap endpoint
@@ -29,6 +34,7 @@ import (
 
 	"github.com/krelinga/drydock/internal/auth"
 	"github.com/krelinga/drydock/internal/config"
+	"github.com/krelinga/drydock/internal/dockerguard"
 	"github.com/krelinga/drydock/internal/server"
 	"github.com/krelinga/drydock/internal/store"
 	"github.com/krelinga/drydock/internal/sys"
@@ -39,6 +45,12 @@ import (
 var version = "dev"
 
 func main() {
+	// Run as "docker" — the link a workspace's --docker-path names — the
+	// binary is the docker guard (design §6, "The docker guard"), with
+	// docker's arguments rather than a subcommand.
+	if dockerguard.IsGuard(os.Args[0]) {
+		os.Exit(dockerguard.Main(os.Args[0], os.Args[1:], os.Stderr))
+	}
 	if len(os.Args) < 2 {
 		usage(os.Stderr)
 		os.Exit(2)

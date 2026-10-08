@@ -1,0 +1,7 @@
+devcontainer_version: 0.89.0
+docker_version:       29.8.2-1 (the devcontainer's inner DinD daemon)
+recorded_at:          2026-10-08T21:22:50Z
+command:              devcontainer up as for docker-argv-image.jsonl, its container stopped
+config:               {"image":"mcr.microsoft.com/devcontainers/base:debian"}
+provenance:           recorded; one docker argv per line, as JSON; <ws> rewritten to /srv/drydock/ws/FIXTURE
+must_yield:           start of the stopped container, and no run: every command passed

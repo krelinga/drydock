@@ -1,0 +1,7 @@
+devcontainer_version: 0.89.0
+docker_version:       29.8.2-1 (the devcontainer's inner DinD daemon)
+recorded_at:          2026-10-08T21:23:05Z
+command:              devcontainer up --docker-path <logger> --workspace-folder <ws>/repo --no-lockfile <Drydock's id-labels, mounts and remote env>    (TMPDIR=<ws>/.drydock/tmp; exit 0, outcome success); beside it docker-argv-dind.read-configuration.json, the folder's merged read-configuration
+config:               {"image":"mcr.microsoft.com/devcontainers/base:debian","features":{"ghcr.io/devcontainers/features/docker-in-docker:2":{"moby":false}}}
+provenance:           recorded; one docker argv per line, as JSON; <ws> rewritten to /srv/drydock/ws/FIXTURE
+must_yield:           passed once privileged is approved, refused naming privileged without; its dind-var-lib-docker-${devcontainerId} volume passes alone

@@ -250,6 +250,50 @@ func TestDiffSettings(t *testing.T) {
 	}
 }
 
+// TestALinkOutOfTheCloneIsNotApprovable: a Dockerfile, build context or bind
+// source the configuration names inside the clone that leads, through a link,
+// outside it is ErrPathEscapes — the approval would be of the path, which the
+// container can point elsewhere, so the docker guard refuses it even
+// approved, and step 3 says so first. The controls: the same names without
+// the link are inside, and a path outside the clone, written as such, is an
+// approvable setting (TestHostAccessPaths).
+func TestALinkOutOfTheCloneIsNotApprovable(t *testing.T) {
+	top := t.TempDir()
+	clone := filepath.Join(top, "repo")
+	devc := filepath.Join(clone, ".devcontainer")
+	outside := filepath.Join(top, "outside")
+	os.MkdirAll(devc, 0o755)
+	os.MkdirAll(outside, 0o755)
+	os.WriteFile(filepath.Join(outside, "Dockerfile"), []byte("FROM x\n"), 0o644)
+	file := filepath.Join(devc, "devcontainer.json")
+	os.WriteFile(file, []byte("{}"), 0o644)
+	cases := []string{
+		`{"build":{"dockerfile":"Dockerfile","context":"../escape"}}`,
+		`{"build":{"dockerfile":"../escape/Dockerfile"}}`,
+		`{` + base + `,"mounts":["source=` + clone + `/escape,target=/x,type=bind"]}`,
+		`{` + base + `,"mounts":[{"source":"` + clone + `/escape","target":"/x","type":"bind"}]}`,
+		`{` + base + `,"workspaceMount":"source=` + clone + `/escape,target=/w,type=bind"}`,
+	}
+	os.MkdirAll(filepath.Join(clone, "escape"), 0o755) // control: a directory
+	os.WriteFile(filepath.Join(clone, "escape", "Dockerfile"), []byte("FROM x\n"), 0o644)
+	for _, own := range cases {
+		c := cfg(t, own)
+		c.ConfigFile = file
+		if _, err := HostAccessOf(c, clone, true); err != nil {
+			t.Errorf("control %s: %v", own, err)
+		}
+	}
+	os.RemoveAll(filepath.Join(clone, "escape"))
+	os.Symlink(outside, filepath.Join(clone, "escape"))
+	for _, own := range cases {
+		c := cfg(t, own)
+		c.ConfigFile = file
+		if _, err := HostAccessOf(c, clone, true); !errors.Is(err, ErrPathEscapes) {
+			t.Errorf("%s: %v, want ErrPathEscapes", own, err)
+		}
+	}
+}
+
 // TestHostAccessPaths: the configuration file must be a regular file inside
 // the clone, and a build's Dockerfile or context that resolves outside it,
 // symbolic links followed, is in the subset — the host's daemon reads it.
@@ -285,13 +329,15 @@ func TestHostAccessPaths(t *testing.T) {
 		}
 	}
 	for own, want := range map[string]string{
-		`{"build":{"dockerfile":"Dockerfile","context":"../.."}}`:             `build.context/repo="../.."`,
-		`{"build":{"dockerfile":"Dockerfile","context":"/etc"}}`:              `build.context/repo="/etc"`,
-		`{"build":{"dockerfile":"Dockerfile","context":"../escape"}}`:         `build.context/repo="../escape"`,
-		`{"build":{"dockerfile":"../../outside/Dockerfile"}}`:                 `build.dockerfile/repo="../../outside/Dockerfile"`,
-		`{"build":{"dockerfile":"../escape/Dockerfile"}}`:                     `build.dockerfile/repo="../escape/Dockerfile"`,
-		`{"dockerFile":"Dockerfile","context":"../.."}`:                       `build.context/repo="../.."`,
-		`{"build":{"dockerfile":"Dockerfile","context":"../does-not-exist"}}`: `build.context/repo="../does-not-exist"`,
+		`{"build":{"dockerfile":"Dockerfile","context":"../.."}}`: `build.context/repo="../.."`,
+		`{"build":{"dockerfile":"Dockerfile","context":"/etc"}}`:  `build.context/repo="/etc"`,
+		`{"build":{"dockerfile":"../../outside/Dockerfile"}}`:     `build.dockerfile/repo="../../outside/Dockerfile"`,
+		`{"dockerFile":"Dockerfile","context":"../.."}`:           `build.context/repo="../.."`,
+		// A cache buildx would import from a host directory, read as buildx
+		// reads it; the registry one beside it is the control.
+		`{"build":{"dockerfile":"Dockerfile","cacheFrom":["ghcr.io/x/y:c","TYPE=local,src=/x"]}}`:   `build.cacheFrom/repo=["TYPE=local,src=/x"]`,
+		`{"build":{"dockerfile":"Dockerfile","cacheFrom":"type=registry,ref=x,type=local,src=/x"}}`: `build.cacheFrom/repo=["type=registry,ref=x,type=local,src=/x"]`,
+		`{"build":{"dockerfile":"Dockerfile","context":"../does-not-exist"}}`:                       `build.context/repo="../does-not-exist"`,
 	} {
 		h, err := check(own, file)
 		if err != nil || !reflect.DeepEqual(fields(h), []string{want}) {

@@ -24,6 +24,7 @@ import (
 
 	"github.com/krelinga/drydock/internal/classify"
 	"github.com/krelinga/drydock/internal/config"
+	"github.com/krelinga/drydock/internal/dockerguard"
 	"github.com/krelinga/drydock/internal/subproc"
 )
 
@@ -41,6 +42,11 @@ type Manager struct {
 	// ClaudeUID and ClaudeGID own the shared credential volume: Drydock's
 	// own, which every workspace's remote user is given (volumeowner.go).
 	ClaudeUID, ClaudeGID int
+	// Guard is the docker guard every devcontainer invocation is given as
+	// --docker-path (guard.go). Up refuses to run without one; read-
+	// configuration and exec, which create nothing, run without it only
+	// when it is nil.
+	Guard *dockerguard.Guard
 }
 
 // Label keys, under the prefix. Workspace is the id-label `up` matches on;
@@ -101,6 +107,13 @@ type UpSpec struct {
 	// a repository that has none (§6 step 3), so the repository is never
 	// modified. Empty uses the repository's own.
 	OverrideConfig string
+	// Approved is the repository's current host-access approval (§6), which
+	// the docker guard holds every docker command of this up to, beside
+	// Drydock's own flags. Empty approves nothing.
+	Approved []HostSetting
+	// ConfigDir is the directory of the configuration file up reads, which
+	// an approved relative build context is resolved against.
+	ConfigDir string
 }
 
 const (
@@ -152,34 +165,25 @@ func (m Manager) Args(s UpSpec) ([]string, error) {
 		// honour, and a lockfile beside the override is never read.
 		return nil, errors.New("container: honouring a lockfile with an override config")
 	}
-	args := []string{"up", "--workspace-folder", s.Folder}
-	if lock != "" {
-		args = append(args, lock)
-	}
-	args = append(args,
-		"--id-label", m.key(LabelWorkspace)+"="+s.WorkspaceID,
-		"--id-label", m.key(LabelRepositoryID)+"="+strconv.FormatInt(s.RepositoryID, 10),
-		"--id-label", m.key(LabelRepo)+"="+s.FullName,
-		"--id-label", m.key(LabelBranch)+"="+s.Branch,
-	)
 	if s.BrokerDir != "" {
 		// --mount is comma-separated key=value pairs, so a comma or an equals
 		// sign in the path would let it add mount options of its own.
 		if !strings.HasPrefix(s.BrokerDir, "/") || strings.ContainsAny(s.BrokerDir, ",=\n") {
 			return nil, fmt.Errorf("container: broker directory %q must be absolute and free of ',' and '='", s.BrokerDir)
 		}
-		// Not read-only, though nothing in the container needs to write
-		// here: the CLI's --mount takes type, source, target and external
-		// and nothing else (CLI 0.89.0 refuses the argument). So root in the
-		// container can write in this one directory, and the broker treats
-		// what it finds there as the container's (broker.Open, Remove).
-		args = append(args, "--mount", "type=bind,source="+s.BrokerDir+",target="+BrokerMountPoint)
 	}
-	if s.ClaudeVolume != "" {
-		if !config.ValidVolumeName(s.ClaudeVolume) {
-			return nil, fmt.Errorf("container: %q is not a volume name", s.ClaudeVolume)
-		}
-		args = append(args, "--mount", "type=volume,source="+s.ClaudeVolume+",target="+ClaudeConfigMountPoint)
+	if s.ClaudeVolume != "" && !config.ValidVolumeName(s.ClaudeVolume) {
+		return nil, fmt.Errorf("container: %q is not a volume name", s.ClaudeVolume)
+	}
+	args := []string{"up", "--workspace-folder", s.Folder}
+	if lock != "" {
+		args = append(args, lock)
+	}
+	for _, l := range m.idLabels(s) {
+		args = append(args, "--id-label", l)
+	}
+	for _, mt := range m.ownMounts(s) {
+		args = append(args, "--mount", mt)
 	}
 	if len(s.Features) > 0 {
 		b, err := json.Marshal(s.Features)
@@ -203,6 +207,35 @@ func (m Manager) Args(s UpSpec) ([]string, error) {
 		args = append(args, "--remove-existing-container")
 	}
 	return args, nil
+}
+
+// idLabels are up's id-labels, key=value: what finds the container again,
+// and what reconciliation rebuilds a row from.
+func (m Manager) idLabels(s UpSpec) []string {
+	return []string{
+		m.key(LabelWorkspace) + "=" + s.WorkspaceID,
+		m.key(LabelRepositoryID) + "=" + strconv.FormatInt(s.RepositoryID, 10),
+		m.key(LabelRepo) + "=" + s.FullName,
+		m.key(LabelBranch) + "=" + s.Branch,
+	}
+}
+
+// ownMounts are the --mount values Drydock gives up: the broker directory
+// and the shared credential volume. Args validates both.
+func (m Manager) ownMounts(s UpSpec) []string {
+	var out []string
+	if s.BrokerDir != "" {
+		// Not read-only, though nothing in the container needs to write
+		// here: the CLI's --mount takes type, source, target and external
+		// and nothing else (CLI 0.89.0 refuses the argument). So root in the
+		// container can write in this one directory, and the broker treats
+		// what it finds there as the container's (broker.Open, Remove).
+		out = append(out, "type=bind,source="+s.BrokerDir+",target="+BrokerMountPoint)
+	}
+	if s.ClaudeVolume != "" {
+		out = append(out, "type=volume,source="+s.ClaudeVolume+",target="+ClaudeConfigMountPoint)
+	}
+	return out
 }
 
 // Exec runs a command in a workspace's container as its remote user, found
@@ -250,7 +283,11 @@ func (m Manager) ExecIn(ctx context.Context, s ExecSpec) (subproc.Result, error)
 		return subproc.Result{}, err
 	}
 	args = append(append(append(args, env...), "--"), s.Argv...)
-	return m.Run.Run(ctx, subproc.Cmd{Name: "devcontainer", Args: args, Stdout: s.Stdout, Stderr: s.Stderr}), nil
+	dp, err := m.dockerPath(s.Folder)
+	if err != nil {
+		return subproc.Result{}, err
+	}
+	return m.Run.Run(ctx, subproc.Cmd{Name: "devcontainer", Args: withDockerPath(args, dp), Stdout: s.Stdout, Stderr: s.Stderr}), nil
 }
 
 // UpStderrTail is how much of `up`'s stderr Up returns: the last MiB.
@@ -269,24 +306,58 @@ func (m Manager) Up(ctx context.Context, s UpSpec) (classify.Container, []byte, 
 	if err != nil {
 		return classify.Container{}, nil, err
 	}
+	// Every up runs through the guard, with a policy written for this run
+	// alone and removed after it (guard.go). Without a guard, or without the
+	// workspace's own TMPDIR — where the CLI writes what it builds from, and
+	// the one place outside the clone the policy lets a build read — it
+	// does not run.
+	if m.Guard == nil {
+		return classify.Container{}, nil, ErrNoGuard
+	}
+	if s.TempDir != TempDirFor(s.Folder) {
+		return classify.Container{}, nil, fmt.Errorf("container: temp dir %q is not the workspace's own, %s", s.TempDir, TempDirFor(s.Folder))
+	}
+	dir := GuardDir(s.Folder)
+	dp, err := m.dockerPath(s.Folder)
+	if err != nil {
+		return classify.Container{}, nil, err
+	}
+	if err := dockerguard.ClearRefusal(dir); err != nil {
+		return classify.Container{}, nil, fmt.Errorf("container: docker guard: %w", err)
+	}
+	if err := dockerguard.WritePolicy(dir, m.guardPolicy(s)); err != nil {
+		return classify.Container{}, nil, fmt.Errorf("container: docker guard: %w", err)
+	}
+	defer dockerguard.RemovePolicy(dir)
 	var stdout bytes.Buffer
 	// The tail, not the head: the lines that say why an up failed come last
 	// (tail.go).
 	stderr := newTail(UpStderrTail)
-	cmd := subproc.Cmd{Name: "devcontainer", Args: args, Stdout: &stdout, Stderr: stderr}
-	if s.TempDir != "" {
-		if !strings.HasPrefix(s.TempDir, "/") {
-			return classify.Container{}, nil, fmt.Errorf("container: temp dir %q must be absolute", s.TempDir)
-		}
-		cmd.Env = withTempDir(os.Environ(), s.TempDir)
-	}
+	cmd := subproc.Cmd{Name: "devcontainer", Args: withDockerPath(args, dp), Stdout: &stdout, Stderr: stderr,
+		Env: withTempDir(os.Environ(), s.TempDir)}
 	res := m.Run.Run(ctx, cmd)
+	c, cerr := classify.ClassifyContainer(stdout.Bytes())
+	// A refusal is read first: the CLI reports it only as a failed docker
+	// command, in prose, and the guard's own record is the structured
+	// answer. The refused command never reached docker, but an earlier one
+	// may have made a container (a failed up can own one, §6), so an id the
+	// result carries is kept.
+	r, err := dockerguard.ReadRefusal(dir)
+	if err != nil {
+		return classify.Container{ContainerID: c.ContainerID}, stderr.Bytes(), fmt.Errorf("container: docker guard: reading its refusal: %w", err)
+	}
+	if r != nil {
+		refusal := &GuardRefusal{Settings: r.Settings}
+		if len(refusal.Settings) == 0 {
+			refusal.Settings = []string{dockerguard.SettingCommand}
+		}
+		return classify.Container{ContainerID: c.ContainerID}, stderr.Bytes(), refusal
+	}
 	if res.Err != nil {
 		return classify.Container{}, stderr.Bytes(), fmt.Errorf("devcontainer up: %w", res.Err)
 	}
-	c, err := classify.ClassifyContainer(stdout.Bytes())
-	if err != nil {
-		return classify.Container{}, stderr.Bytes(), err
+	if cerr != nil {
+		return classify.Container{}, stderr.Bytes(), cerr
 	}
 	return c, stderr.Bytes(), nil
 }

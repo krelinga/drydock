@@ -32,6 +32,7 @@ import (
 	"github.com/krelinga/drydock/internal/clone"
 	"github.com/krelinga/drydock/internal/config"
 	"github.com/krelinga/drydock/internal/container"
+	"github.com/krelinga/drydock/internal/dockerguard"
 	"github.com/krelinga/drydock/internal/events"
 	"github.com/krelinga/drydock/internal/github"
 	"github.com/krelinga/drydock/internal/identity"
@@ -146,8 +147,13 @@ func New(ctx context.Context, cfg config.Config, env sys.Env) (*Server, error) {
 	// Drydock's own uid owns the shared credential volume (§7.1): the dev
 	// container CLI, run as Drydock, gives every workspace's remote user
 	// this uid, and the login handshake writes the credential as it.
+	// The docker guard is this binary, run as "docker" from each
+	// workspace's guard directory (design §6, "The docker guard"). A path
+	// that cannot be found leaves Binary empty, and every devcontainer
+	// invocation then fails rather than run unguarded.
+	self, _ := os.Executable()
 	containers := container.Manager{Run: subproc.Exec{}, LabelPrefix: cfg.LabelPrefix, CleanupImage: cfg.CleanupImage,
-		ClaudeUID: os.Getuid(), ClaudeGID: os.Getgid()}
+		ClaudeUID: os.Getuid(), ClaudeGID: os.Getgid(), Guard: &dockerguard.Guard{Binary: self}}
 	// The Claude Code version is this binary's, not the Feature's default:
 	// the classifiers compiled in here were recorded against it, so a
 	// Feature release under the same major tag cannot move it (§11).
@@ -498,6 +504,10 @@ func (s *Server) Serve(ctx context.Context) error {
 		if ctx.Err() == nil {
 			if _, err := s.Provisioner.SweepHelpers(ctx); err != nil && ctx.Err() == nil {
 				fmt.Fprintf(os.Stderr, "drydock: sweeping cleanup helpers: %v\n", err)
+			}
+			// And any docker guard policy an up killed mid-run left.
+			if err := s.Provisioner.SweepGuardPolicies(ctx); err != nil && ctx.Err() == nil {
+				fmt.Fprintf(os.Stderr, "drydock: sweeping docker guard policies: %v\n", err)
 			}
 		}
 		// Every running workspace gets its broker socket back after a

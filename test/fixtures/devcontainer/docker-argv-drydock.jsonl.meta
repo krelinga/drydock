@@ -1,0 +1,7 @@
+devcontainer_version: 0.89.0
+docker_version:       29.8.2-1 (the devcontainer's inner DinD daemon)
+recorded_at:          2026-10-08T16:01:13Z
+command:              devcontainer up --docker-path <logger> --workspace-folder <ws>/repo --no-lockfile <Drydock's id-labels, mounts and remote env> --additional-features {"ghcr.io/krelinga/drydock/drydock:1":{}}   (TMPDIR=<ws>/.drydock/tmp; exit 1, outcome error); beside it docker-argv-drydock.read-configuration.json, the folder's merged read-configuration
+config:               {"image":"mcr.microsoft.com/devcontainers/base:debian"}
+provenance:           recorded; one docker argv per line, as JSON; <ws> rewritten to /srv/drydock/ws/FIXTURE
+must_yield:           every command passed: Drydock's own Feature built in, as every workspace has it (up then fails at the Feature's postStart probe: no broker answers in the recording)

@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -125,11 +126,20 @@ func TestWorkspaceContainerReachesOnlyItsOwnRepository(t *testing.T) {
 	if _, err := m.EnsureClaudeVolume(ctx, claudeVolume(p)); err != nil {
 		t.Fatal(err)
 	}
+	// Its own TMPDIR, as provision gives every up, and the runArgs above
+	// approved, as an operator would have: the docker guard holds up's
+	// docker run to it.
+	tmp := container.TempDirFor(folder)
+	os.MkdirAll(tmp, 0o700)
 	res, stderr, err := m.Up(upCtx, container.UpSpec{
 		WorkspaceID: ws, RepositoryID: 101, FullName: "krelinga/alpha", Branch: "main", Folder: folder,
 		BrokerDir:    b.SocketDir(ws),
 		ClaudeVolume: claudeVolume(p),
 		RemoteEnv:    remoteEnv,
+		TempDir:      tmp,
+		ConfigDir:    devc,
+		Approved: []container.HostSetting{{Field: "runArgs", Source: container.SourceRepository,
+			Value: json.RawMessage(`["--network=host"]`)}},
 	})
 	if err != nil || res.Outcome != classify.ContainerRunning {
 		t.Fatalf("devcontainer up: %+v %v\n%s", res, err, tail(stderr))

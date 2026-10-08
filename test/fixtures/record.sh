@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Record the fixture corpus from the real Claude Code binary.
 #
-# Usage: ./record.sh [login|discovery|refusals|hangs|devcontainer|readconfig|lockfile|identity|credentials|all]
+# Usage: ./record.sh [login|discovery|refusals|hangs|devcontainer|readconfig|dockerargv|lockfile|identity|credentials|all]
 #
 # This is the tool testing-plan §11.1 step 3 calls for. It exists because a
 # corpus nobody can regenerate is worth very little: the whole point of
@@ -826,6 +826,200 @@ record_lockfile() {
 }
 
 # ---------------------------------------------------------------------------
+# What the docker guard sees (design §6, "The docker guard"): every docker
+# command devcontainer CLI 0.89.0 runs, argv exactly, one JSON array per line,
+# through a --docker-path that logs and then runs the real docker. Each case
+# is laid out as Drydock lays out a workspace — the clone at <ws>/repo, the
+# CLI's TMPDIR at <ws>/.drydock/tmp, the broker directory at <ws>/sock — and
+# is given Drydock's own flags (the four id-labels, the broker and credential
+# mounts, the remote env), so the recorded argv is the argv the guard is
+# handed in production. <ws> is rewritten to /srv/drydock/ws/FIXTURE.
+#
+# Beside each up, the merged read-configuration of the same folder, from
+# which internal/container's test computes the approval the guard is held to:
+# so "every recorded up of an approved configuration passes" is tested
+# against both halves as the CLI produced them.
+record_dockerargv() {
+	say "== docker argv the devcontainer CLI issues (design §6, the docker guard) =="
+	need_cmd devcontainer
+	need_cmd docker
+	need_cmd jq
+	local dir="$HERE/devcontainer" base dcv dkv vol=drydock-record-claude
+	base=$(mktemp -d -t ddda-XXXXXX)
+	dcv=$(devcontainer --version 2>/dev/null)
+	dkv=$(docker version --format '{{.Server.Version}}' 2>/dev/null)
+	local ws=01JFIXTVRE0000000000000000
+	# The logging docker: argv as JSON, then the real one, unchanged.
+	printf '#!/bin/bash\njq -cn %s --args -- "$@" >> "${DOCKER_ARGV_LOG:?}"\nexec %s "$@"\n' \
+		"'\$ARGS.positional'" "$(command -v docker)" > "$base/docker"
+	chmod +x "$base/docker"
+
+	# up <name> [extra up args]: one up of case <name>'s folder, logged.
+	up() {
+		local w="$base/$1"
+		shift
+		: > "$w/argv"
+		DOCKER_ARGV_LOG="$w/argv" TMPDIR="$w/.drydock/tmp" timeout 900 devcontainer up --docker-path "$base/docker" \
+			--workspace-folder "$w/repo" --no-lockfile \
+			--id-label drydock.workspace=$ws --id-label drydock.repository-id=101 \
+			--id-label drydock.repo=krelinga/fixture --id-label drydock.branch=main \
+			--mount "type=bind,source=$w/sock,target=/run/drydock" \
+			--mount "type=volume,source=$vol,target=/home/vscode/.claude" \
+			--remote-env DRYDOCK_WORKSPACE=$ws --remote-env DRYDOCK_REPO=krelinga/fixture \
+			"$@" > "$w/up.json" 2>/dev/null
+	}
+	# meta <fixture> <command> <config> <must-yield>
+	dameta() {
+		cat > "$1.meta" <<-META
+			devcontainer_version: $dcv
+			docker_version:       $dkv (the devcontainer's inner DinD daemon)
+			recorded_at:          $(date -u +%Y-%m-%dT%H:%M:%SZ)
+			command:              $2
+			config:               $3
+			provenance:           recorded; one docker argv per line, as JSON; <ws> rewritten to /srv/drydock/ws/FIXTURE
+			must_yield:           $4
+		META
+	}
+	# dacase <name> <config-json> <must-yield> [extra up args]; $SETUP, when
+	# set, is run with the .devcontainer directory to add files beside it.
+	# DOCKERARGV_ONLY="<name> …" records those cases and leaves the rest. A
+	# config's @WS@ is the case's workspace directory.
+	dacase() {
+		local name="$1" cfg="$2" yield="$3"
+		shift 3
+		[ -n "${DOCKERARGV_ONLY:-}" ] && [[ " $DOCKERARGV_ONLY " != *" $name "* ]] && return 0
+		local w="$base/$name" out="$dir/docker-argv-$name.jsonl"
+		mkdir -p "$w/repo/.devcontainer" "$w/.drydock/tmp" "$w/sock"
+		printf '%s\n' "${cfg//@WS@/$w}" > "$w/repo/.devcontainer/devcontainer.json"
+		[ -n "${SETUP:-}" ] && "$SETUP" "$w/repo/.devcontainer"
+		devcontainer read-configuration --workspace-folder "$w/repo" --include-merged-configuration \
+			--id-label drydock.read-configuration=none 2>/dev/null |
+			sed "s#$w#/srv/drydock/ws/FIXTURE#g" > "$dir/docker-argv-$name.read-configuration.json"
+		up "$name" "$@"
+		local rc=$?
+		sed "s#$w#/srv/drydock/ws/FIXTURE#g" "$w/argv" > "$out"
+		dameta "$out" "devcontainer up --docker-path <logger> --workspace-folder <ws>/repo --no-lockfile <Drydock's id-labels, mounts and remote env> $*   (TMPDIR=<ws>/.drydock/tmp; exit $rc, outcome $(jq -r .outcome "$w/up.json" 2>/dev/null)); beside it docker-argv-$name.read-configuration.json, the folder's merged read-configuration" \
+			"$cfg" "$yield"
+		cat > "$dir/docker-argv-$name.read-configuration.json.meta" <<-META
+			devcontainer_version: $dcv
+			recorded_at:          $(date -u +%Y-%m-%dT%H:%M:%SZ)
+			command:              devcontainer read-configuration --workspace-folder <ws>/repo --include-merged-configuration --id-label drydock.read-configuration=none   (stdout only)
+			config:               $cfg
+			provenance:           recorded beside docker-argv-$name.jsonl, from the same folder; <ws> rewritten to /srv/drydock/ws/FIXTURE
+			must_yield:           the host-access subset whose approval lets every command of docker-argv-$name.jsonl pass the docker guard (internal/container TestRecordedUpsPassWithTheirApproval)
+		META
+		# What the container was created with, as docker inspect reads it
+		# back: what the guard holds a later `docker start` to (CheckStarted).
+		local cid
+		cid=$(docker ps -aq --no-trunc --filter "label=drydock.workspace=$ws")
+		if [ -n "$cid" ]; then
+			docker inspect --type container -- $cid | sed "s#$w#/srv/drydock/ws/FIXTURE#g" > "$dir/docker-inspect-$name.json"
+			cat > "$dir/docker-inspect-$name.json.meta" <<-META
+				devcontainer_version: $dcv
+				docker_version:       $dkv (the devcontainer's inner DinD daemon)
+				recorded_at:          $(date -u +%Y-%m-%dT%H:%M:%SZ)
+				command:              docker inspect --type container -- <the container docker-argv-$name.jsonl's up made>
+				config:               $cfg
+				provenance:           recorded; <ws> rewritten to /srv/drydock/ws/FIXTURE
+				must_yield:           a docker start of it passes the docker guard with docker-argv-$name.read-configuration.json's subset approved, and is refused, naming the same settings as the run, without (internal/container TestRecordedStartsPassWithTheirApproval)
+			META
+		fi
+		say "  docker-argv-$name.jsonl: up exit $rc, $(wc -l < "$out") docker commands"
+	}
+	# Each case takes the workspace's id-label, so each runs alone: the
+	# container a case leaves is removed before the next, with the volumes
+	# its configuration named and the images up built for its folder
+	# (named as container.BuiltImages names them) — and nothing else.
+	clean() {
+		local name="$1" id v h s x
+		id=$(docker ps -aq --filter "label=drydock.workspace=$ws")
+		if [ -n "$id" ]; then
+			v=$(docker inspect --format '{{range .Mounts}}{{if eq .Type "volume"}}{{.Name}} {{end}}{{end}}' $id)
+			docker rm -f $id >/dev/null
+			for x in $v; do [ "$x" = "$vol" ] || docker volume rm "$x" >/dev/null 2>&1; done
+		fi
+		h=$(printf '%s' "$base/$name/repo" | sha256sum | cut -c1-64)
+		for s in "" -uid -features -features-uid; do docker image rm "vsc-repo-$h$s" >/dev/null 2>&1; done
+	}
+	local img='"image":"mcr.microsoft.com/devcontainers/base:debian"'
+
+	if [ -z "${DOCKERARGV_ONLY:-}" ] || [[ " $DOCKERARGV_ONLY " == *" image "* ]]; then
+	dacase image "{$img}" "every command passed: Drydock's own mounts and labels, nothing approved"
+	local w="$base/image"
+	docker stop -t 1 "$(docker ps -aq --filter "label=drydock.workspace=$ws")" >/dev/null
+	up image
+	sed "s#$w#/srv/drydock/ws/FIXTURE#g" "$w/argv" > "$dir/docker-argv-image-start.jsonl"
+	dameta "$dir/docker-argv-image-start.jsonl" "devcontainer up as for docker-argv-image.jsonl, its container stopped" "{$img}" \
+		"start of the stopped container, and no run: every command passed"
+	up image --remove-existing-container
+	sed "s#$w#/srv/drydock/ws/FIXTURE#g" "$w/argv" > "$dir/docker-argv-image-rebuild.jsonl"
+	dameta "$dir/docker-argv-image-rebuild.jsonl" "devcontainer up as for docker-argv-image.jsonl, --remove-existing-container" "{$img}" \
+		"rm -f of the old container, then a run like the first: every command passed"
+	: > "$w/argv"
+	DOCKER_ARGV_LOG="$w/argv" devcontainer exec --docker-path "$base/docker" --workspace-folder "$w/repo" \
+		--id-label drydock.workspace=$ws --remote-env DRYDOCK_WORKSPACE=$ws -- true >/dev/null 2>&1
+	sed "s#$w#/srv/drydock/ws/FIXTURE#g" "$w/argv" > "$dir/docker-argv-exec.jsonl"
+	dameta "$dir/docker-argv-exec.jsonl" "devcontainer exec --docker-path <logger> --workspace-folder <ws>/repo --id-label drydock.workspace=<id> --remote-env … -- true, against docker-argv-image.jsonl's container" \
+		"{$img}" "every command passed, with or without a policy: exec creates nothing"
+	say "  docker-argv-image-start.jsonl, -rebuild.jsonl and docker-argv-exec.jsonl"
+	clean image
+	fi
+
+	dockerfile_files() {
+		printf 'FROM mcr.microsoft.com/devcontainers/base:debian\nRUN true\n' > "$1/Dockerfile"
+	}
+	SETUP=dockerfile_files dacase dockerfile '{"build":{"dockerfile":"Dockerfile","context":".."}}' \
+		"every command passed: buildx build with the clone as its context and the CLI's Dockerfile in its TMPDIR"
+	clean dockerfile
+
+	feature_files() {
+		mkdir -p "$1/hostish"
+		printf '%s\n' '{"id":"hostish","version":"1.0.0","name":"hostish","capAdd":["SYS_PTRACE","NET_ADMIN"],"securityOpt":["seccomp=unconfined"],"mounts":[{"source":"hostish-${devcontainerId}","target":"/cache","type":"volume"}],"init":true,"containerEnv":{"HOSTISH":"1"}}' \
+			> "$1/hostish/devcontainer-feature.json"
+		printf '#!/bin/sh\ntrue\n' > "$1/hostish/install.sh"
+		chmod +x "$1/hostish/install.sh"
+	}
+	SETUP=feature_files dacase feature "{$img,\"features\":{\"./hostish\":{}}}" \
+		"passed once its Feature's NET_ADMIN is approved, refused naming capAdd without; the Feature build context the CLI stages in its TMPDIR, SYS_PTRACE, seccomp=unconfined and the \${devcontainerId} volume pass alone"
+	clean feature
+
+	dacase dind "{$img,\"features\":{\"ghcr.io/devcontainers/features/docker-in-docker:2\":{\"moby\":false}}}" \
+		"passed once privileged is approved, refused naming privileged without; its dind-var-lib-docker-\${devcontainerId} volume passes alone"
+	clean dind
+
+	dacase drydock "{$img}" \
+		"every command passed: Drydock's own Feature built in, as every workspace has it (up then fails at the Feature's postStart probe: no broker answers in the recording)" \
+		--additional-features '{"ghcr.io/krelinga/drydock/drydock:1":{}}'
+	clean drydock
+
+	dacase hostile "{$img,\"runArgs\":[\"--network=host\",\"--pid\",\"host\",\"-v\",\"/etc/os-release:/host-os-release:ro\"],\"appPort\":[18080,\"19000:19001\"],\"privileged\":true,\"capAdd\":[\"SYS_ADMIN\",\"SYS_PTRACE\"],\"securityOpt\":[\"apparmor=unconfined\",\"seccomp=unconfined\"],\"mounts\":[\"source=/etc/hostname,target=/host-hostname,type=bind\",{\"source\":\"/etc/hosts\",\"target\":\"/host-hosts\",\"type\":\"bind\"},\"source=named-\${devcontainerId},target=/named,type=volume\",\"type=tmpfs,target=/scratch\"],\"workspaceMount\":\"source=\${localWorkspaceFolder},target=/workspaces/hostile,type=bind,consistency=cached\",\"workspaceFolder\":\"/workspaces/hostile\",\"hostRequirements\":{\"gpu\":\"optional\"},\"init\":true}" \
+		"passed once its whole subset is approved; refused, naming each, with any one of runArgs, appPort, privileged, capAdd, securityOpt, mounts or workspaceMount withheld"
+	clean hostile
+
+	compose_files() {
+		printf 'services:\n  app:\n    image: mcr.microsoft.com/devcontainers/base:debian\n    command: sleep infinity\n' > "$1/compose.yml"
+	}
+	# Every build field the subset names, recorded so the guard is held to
+	# what the CLI writes for each: build.args (in the image), build.cacheFrom
+	# — a registry cache, and a type=local one spelt as round 1 of the review
+	# of #78 spelt it, which buildx imports from a host directory — and
+	# build.options. hostRequirements.gpu: true on a host without a GPU adds
+	# no --gpus (the CLI warns), so --gpus stays unrecorded here.
+	SETUP=dockerfile_files dacase build '{"build":{"dockerfile":"Dockerfile","context":"..","args":{"A":"1"},"cacheFrom":["ghcr.io/krelinga/drydock-none:cache","TYPE=local,src=@WS@/hostcache"],"options":["--add-host","buildhost:127.0.0.1"]},"hostRequirements":{"gpu":true}}' \
+		"passed once build.cacheFrom's local cache and build.options are approved; refused naming each without; the registry cache and build.args pass alone"
+	clean build
+
+	SETUP=compose_files dacase compose '{"dockerComposeFile":"compose.yml","service":"app","workspaceFolder":"/workspaces/repo"}' \
+		"compose version and config pass; compose build and up are refused naming dockerComposeFile unless the Compose setup is approved"
+	# down --volumes: the CLI gives the credential mount to compose as a
+	# volume of the project (repo_devcontainer_<name>), which only it removes.
+	docker compose --project-name repo_devcontainer down --volumes >/dev/null 2>&1
+	clean compose
+	docker volume rm "$vol" >/dev/null 2>&1
+	rm -rf "$base"
+}
+
+# ---------------------------------------------------------------------------
 say "claude under test: $VERSION"
 say "corpus: $TDIR"
 say "work:   $WORK"
@@ -838,6 +1032,7 @@ refusals) record_refusals ;;
 hangs) record_hangs ;;
 devcontainer) record_devcontainer ;;
 readconfig) record_readconfig ;;
+dockerargv) record_dockerargv ;;
 lockfile) record_lockfile ;;
 identity) record_identity ;;
 credentials) record_credentials ;;
@@ -850,6 +1045,7 @@ all)
 	record_hangs
 	record_devcontainer
 	record_readconfig
+	record_dockerargv
 	record_lockfile
 	;;
 *)

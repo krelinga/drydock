@@ -1,0 +1,7 @@
+devcontainer_version: 0.89.0
+docker_version:       29.8.2-1 (the devcontainer's inner DinD daemon)
+recorded_at:          2026-10-08T21:22:56Z
+command:              devcontainer exec --docker-path <logger> --workspace-folder <ws>/repo --id-label drydock.workspace=<id> --remote-env … -- true, against docker-argv-image.jsonl's container
+config:               {"image":"mcr.microsoft.com/devcontainers/base:debian"}
+provenance:           recorded; one docker argv per line, as JSON; <ws> rewritten to /srv/drydock/ws/FIXTURE
+must_yield:           every command passed, with or without a policy: exec creates nothing
