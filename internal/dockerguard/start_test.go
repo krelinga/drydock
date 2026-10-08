@@ -97,6 +97,15 @@ func TestStartedContainersAreHeldToThePolicy(t *testing.T) {
 		{"a restart policy", map[string]any{"RestartPolicy": map[string]any{"Name": "always"}}, SettingRunArgs, nil},
 		{"a device", map[string]any{"Devices": []map[string]any{{"PathOnHost": "/dev/kmsg"}}}, SettingRunArgs, nil},
 		{"a field docker adds later", map[string]any{"FutureHostAccess": true}, SettingRunArgs, nil},
+		// Review of #78, round 3: a log driver runs on the host. gelf to
+		// the host's loopback received the container's output (measured);
+		// syslog reaches a host unix socket.
+		{"gelf", map[string]any{"LogConfig": map[string]any{"Type": "gelf", "Config": map[string]string{"gelf-address": "udp://127.0.0.1:12201"}}}, SettingRunArgs,
+			[]Setting{{"runArgs", json.RawMessage(`["--log-driver","gelf","--log-opt","gelf-address=udp://127.0.0.1:12201"]`)}}},
+		{"syslog to a unix socket", map[string]any{"LogConfig": map[string]any{"Type": "syslog", "Config": map[string]string{"syslog-address": "unixgram:///dev/log"}}}, SettingRunArgs,
+			[]Setting{{"runArgs", json.RawMessage(`["--log-driver","syslog","--log-opt","syslog-address=unixgram:///dev/log"]`)}}},
+		{"a driver, no options", map[string]any{"LogConfig": map[string]any{"Type": "fluentd", "Config": map[string]string{}}}, SettingRunArgs, nil},
+		{"json-file with options", map[string]any{"LogConfig": map[string]any{"Type": "json-file", "Config": map[string]string{"max-size": "1m"}}}, SettingRunArgs, nil},
 		{"GPUs", map[string]any{"DeviceRequests": []map[string]any{{"Count": -1}}}, SettingGPU,
 			[]Setting{{"hostRequirements.gpu", json.RawMessage(`true`)}}},
 		{"a published port", map[string]any{"PortBindings": map[string]any{"80/tcp": []map[string]string{{"HostIp": "", "HostPort": "8080"}}}}, SettingAppPort,
@@ -129,6 +138,8 @@ func TestStartedContainersAreHeldToThePolicy(t *testing.T) {
 		"SYS_PTRACE and seccomp=unconfined": {"CapAdd": []string{"CAP_SYS_PTRACE"}, "SecurityOpt": []string{"seccomp=unconfined"}},
 		"its own volume":                    {"Mounts": mountsPlus(c, map[string]any{"Type": "volume", "Source": "dind-var-lib-docker-" + DevcontainerID(FixtureLabels), "Target": "/var/lib/docker"})},
 		"limits":                            {"Memory": 1 << 30, "PidsLimit": 100, "CapDrop": []string{"ALL"}, "ReadonlyRootfs": true},
+		"json-file":                         {"LogConfig": map[string]any{"Type": "json-file", "Config": map[string]string{}}},
+		"local":                             {"LogConfig": map[string]any{"Type": "local", "Config": map[string]string{}}},
 		"masking more":                      {"MaskedPaths": append(append([]string(nil), defaultMaskedPaths...), "/proc/new")},
 		"an unknown zero":                   {"FutureHostAccess": false, "AnotherFuture": map[string]any{}},
 	} {
@@ -154,23 +165,24 @@ func TestStartedAnswersMustBeComplete(t *testing.T) {
 		ids []string
 		in  []byte
 	}{
-		"[{}]":                   {[]string{id}, []byte(`[{}]`)},
-		`[{"Id":"x"}]`:           {[]string{id}, []byte(`[{"Id":"x"}]`)},
-		`[{"HostConfig":null}]`:  {[]string{id}, []byte(`[{"HostConfig":null}]`)},
-		"no HostConfig":          {[]string{id}, noHC},
-		"a null HostConfig":      {[]string{id}, nullHC},
-		"another container":      {[]string{other}, good},
-		"one answer for two ids": {[]string{id, other}, good},
-		"two answers for one id": {[]string{id}, two},
-		"the same id twice":      {[]string{id, id}, two},
-		"a short id":             {[]string{id[:12]}, good},
-		"empty":                  {[]string{id}, []byte(`[]`)},
-		"null":                   {[]string{id}, []byte(`null`)},
-		"not JSON":               {[]string{id}, []byte(`{`)},
-		"Privileged not a bool":  {[]string{id}, with(t, c, map[string]any{"Privileged": "yes"})},
-		"CapAdd not a list":      {[]string{id}, with(t, c, map[string]any{"CapAdd": "CAP_SYS_ADMIN"})},
-		"Mounts not a list":      {[]string{id}, with(t, c, map[string]any{"Mounts": "x"})},
-		"MaskedPaths missing":    {[]string{id}, with(t, c, map[string]any{"MaskedPaths": nil})},
+		"[{}]":                    {[]string{id}, []byte(`[{}]`)},
+		`[{"Id":"x"}]`:            {[]string{id}, []byte(`[{"Id":"x"}]`)},
+		`[{"HostConfig":null}]`:   {[]string{id}, []byte(`[{"HostConfig":null}]`)},
+		"no HostConfig":           {[]string{id}, noHC},
+		"a null HostConfig":       {[]string{id}, nullHC},
+		"another container":       {[]string{other}, good},
+		"one answer for two ids":  {[]string{id, other}, good},
+		"two answers for one id":  {[]string{id}, two},
+		"the same id twice":       {[]string{id, id}, two},
+		"a short id":              {[]string{id[:12]}, good},
+		"empty":                   {[]string{id}, []byte(`[]`)},
+		"null":                    {[]string{id}, []byte(`null`)},
+		"not JSON":                {[]string{id}, []byte(`{`)},
+		"Privileged not a bool":   {[]string{id}, with(t, c, map[string]any{"Privileged": "yes"})},
+		"CapAdd not a list":       {[]string{id}, with(t, c, map[string]any{"CapAdd": "CAP_SYS_ADMIN"})},
+		"Mounts not a list":       {[]string{id}, with(t, c, map[string]any{"Mounts": "x"})},
+		"LogConfig not an object": {[]string{id}, with(t, c, map[string]any{"LogConfig": "gelf"})},
+		"MaskedPaths missing":     {[]string{id}, with(t, c, map[string]any{"MaskedPaths": nil})},
 	} {
 		d := CheckStarted(FixturePolicy(root, nil), tc.ids, tc.in)
 		if !d.Refused {

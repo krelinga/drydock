@@ -55,7 +55,7 @@ var hostConfigFields = map[string]hostConfigRule{
 	"DeviceRequests": hcChecked, "PortBindings": hcChecked, "PublishAllPorts": hcChecked,
 	"MaskedPaths": hcChecked, "ReadonlyPaths": hcChecked, "NetworkMode": hcChecked,
 	"PidMode": hcChecked, "IpcMode": hcChecked, "UTSMode": hcChecked, "UsernsMode": hcChecked,
-	"CgroupnsMode": hcChecked, "Runtime": hcChecked, "RestartPolicy": hcChecked,
+	"CgroupnsMode": hcChecked, "Runtime": hcChecked, "RestartPolicy": hcChecked, "LogConfig": hcChecked,
 	// What only runArgs (or the API) can set, each host access when set:
 	// -v binds, links, another container's volumes, devices and device
 	// cgroup rules (with the default CAP_MKNOD, `b *:* rwm` reads the
@@ -69,7 +69,7 @@ var hostConfigFields = map[string]hostConfigRule{
 	"Isolation": hcZero, "Annotations": hcZero, "StorageOpt": hcZero,
 	// The container's own: limits, which only take away, and settings that
 	// stay inside it.
-	"AutoRemove": hcAny, "Init": hcAny, "CapDrop": hcAny, "ConsoleSize": hcAny, "LogConfig": hcAny,
+	"AutoRemove": hcAny, "Init": hcAny, "CapDrop": hcAny, "ConsoleSize": hcAny,
 	"Dns": hcAny, "DnsOptions": hcAny, "DnsSearch": hcAny, "ExtraHosts": hcAny, "GroupAdd": hcAny,
 	"ReadonlyRootfs": hcAny, "ShmSize": hcAny, "Tmpfs": hcAny, "Ulimits": hcAny,
 	"BlkioWeight": hcAny, "BlkioWeightDevice": hcAny, "BlkioDeviceReadBps": hcAny,
@@ -293,6 +293,24 @@ func (c *checker) hostConfig(hc map[string]json.RawMessage) {
 	ns("UsernsMode", "")
 	ns("CgroupnsMode", "", "private")
 	ns("Runtime", "", "runc")
+	// A log driver is the daemon's, run on the host: gelf and syslog send
+	// the container's output to an address the host reaches (measured: gelf
+	// to a UDP listener on the daemon host's loopback, from the default
+	// bridge — review of #78, round 3), fluentd and syslog reach host unix
+	// sockets, splunk posts from the host, awslogs and gcplogs use the
+	// daemon's credentials. Only the file drivers, with no options, are the
+	// container's own; anything else only runArgs (--log-driver, --log-opt)
+	// can set.
+	var logCfg struct {
+		Type   string
+		Config map[string]json.RawMessage
+	}
+	if !zero(hc["LogConfig"]) && json.Unmarshal(hc["LogConfig"], &logCfg) != nil {
+		c.refuse(SettingStartUnread, "LogConfig is not a log configuration")
+	}
+	if (logCfg.Type != "" && logCfg.Type != "json-file" && logCfg.Type != "local") || len(logCfg.Config) > 0 {
+		needRunArgs("LogConfig", "a log driver "+logCfg.Type+" or log options")
+	}
 	var restart struct{ Name string }
 	json.Unmarshal(hc["RestartPolicy"], &restart)
 	if restart.Name != "" && restart.Name != "no" {

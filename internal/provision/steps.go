@@ -374,7 +374,7 @@ func (r *runState) up(ctx context.Context, w workspace.Workspace) error {
 	}
 	var refused *container.GuardRefusal
 	if errors.As(err, &refused) {
-		r.p.logTail(w.ID, "devcontainer up", stderr)
+		r.p.logTail(ctx, w.ID, "devcontainer up", stderr)
 		return workspace.Public(GuardRefusalSentence(refused.Settings), err)
 	}
 	if err != nil {

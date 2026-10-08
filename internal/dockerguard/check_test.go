@@ -223,6 +223,10 @@ func TestInjectedHostAccessIsRefused(t *testing.T) {
 			[]Setting{{"securityOpt", json.RawMessage(`["systempaths=unconfined"]`)}}},
 		{"a sysctl", []string{"--sysctl", "net.ipv4.ip_forward=1"}, SettingRunArgs, nil},
 		{"a cgroup parent", []string{"--cgroup-parent", "foo"}, SettingRunArgs, nil},
+		// Round 3: a log driver and its options, which run on the host.
+		{"a log driver", []string{"--log-driver", "gelf", "--log-opt", "gelf-address=udp://127.0.0.1:12201"}, SettingRunArgs,
+			[]Setting{{"runArgs", json.RawMessage(`["--log-driver","gelf","--log-opt","gelf-address=udp://127.0.0.1:12201"]`)}}},
+		{"a log option alone", []string{"--log-opt", "max-size=1m"}, SettingRunArgs, nil},
 		{"a bind shared back to the host", []string{"--mount", "type=bind,source=/etc,target=/e,bind-propagation=rshared"}, SettingMounts,
 			[]Setting{{"mounts", json.RawMessage(`["type=bind,source=/etc,target=/e,bind-propagation=rshared"]`)}}},
 	} {
