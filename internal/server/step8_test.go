@@ -3,6 +3,8 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -49,13 +51,26 @@ func runMarks(evs []runEvent) (moved, ended int64) {
 // started event shows running beside the *previous* run's step 8 done: the
 // step's status alone cannot say whose end it is, and the event ids can.
 //
+// The events are the detail view's, the newest 50 (internal/api's
+// detailEvents). A move and its event are one transaction, so a view that
+// says running always has its move among them unless more than the window
+// has been written since. Then the rule cannot see whose step 8 end it is
+// reading, and a false "never settled" would cost a whole timeout to find:
+// so it panics, saying so. (A boot adoption's workspace.state has no from,
+// and counts as a move: see TestSettledRule.)
+//
 // test/container's settled holds the same rule; change both together.
 func settled(state string, evs []runEvent) bool {
 	if state == "failed" {
 		return true
 	}
 	moved, ended := runMarks(evs)
-	return state == "running" && moved != 0 && ended > moved
+	if state == "running" && moved == 0 {
+		panic(fmt.Sprintf("settled: running, but no move into running among the view's %d events: "+
+			"more than the detail view's window were written since, so this run's step 8 cannot be told apart; "+
+			"read the workspace's events from /api/events instead", len(evs)))
+	}
+	return state == "running" && ended > moved
 }
 
 // TestSettledRule pins the rule's cases, the two no hold at the
@@ -91,11 +106,43 @@ func TestSettledRule(t *testing.T) {
 		{"that start's step 8 started", "running", append(restarted[:len(restarted):len(restarted)], s8(21, "started")), false},
 		{"that start's step 8 done", "running", append(restarted[:len(restarted):len(restarted)], s8(21, "started"), s8(22, "done")), true},
 		{"building", "building", first[:2], false},
-		{"no events", "running", nil, false},
+		{"no events, building", "building", nil, false},
+		// An orphan adopted at boot (reconcile's AdoptOrphan) writes
+		// workspace.state with adopted and no from, which counts as a move
+		// into running. No step 8 follows an adoption, so the workspace is
+		// never called settled: a test that adopted an orphan and then waited
+		// for running would wait out its deadline. None does today. (A row
+		// adopted at boot writes workspace.adopted, not a state event, so its
+		// last run's move and step 8 end still decide.)
+		{"an orphan adopted running", "running", []runEvent{ev(1, "workspace.state", `{"state":"running","adopted":true}`)}, false},
+		{"an adopted orphan's later stop and start", "running", []runEvent{
+			ev(1, "workspace.state", `{"state":"running","adopted":true}`), move(2, "running", "stopped"),
+			move(3, "stopped", "building"), move(4, "building", "running"), s8(5, "started"), s8(6, "done")}, true},
 	} {
 		if got := settled(c.state, c.evs); got != c.want {
 			t.Errorf("%s: settled = %v, want %v", c.name, got, c.want)
 		}
+	}
+	// Running with no move in sight: the move fell out of the detail view's
+	// window, which the rule says rather than answering. The full window
+	// below ends with this run's step 8, and still cannot be judged.
+	var lost []runEvent
+	for id := int64(100); id < 149; id++ {
+		lost = append(lost, ev(id, "workspace.step", `{"step":"verify","status":"done"}`))
+	}
+	lost = append(lost, s8(149, "done"))
+	for _, c := range []struct {
+		name string
+		evs  []runEvent
+	}{{"no events", nil}, {"a full window with no move", lost}} {
+		func() {
+			defer func() {
+				if r, _ := recover().(string); !strings.Contains(r, "no move into running among the view's") {
+					t.Errorf("%s: settled did not say the move is out of the window (recovered %q)", c.name, r)
+				}
+			}()
+			settled("running", c.evs)
+		}()
 	}
 }
 

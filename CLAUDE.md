@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **Mostly design, with the first code in.** The repository contains the overall design
 document (`docs/design/overall/drydock-design.md`, draft v39), supplemental ones on port forwarding
-(`docs/design/port-forwarding/`, draft v6), testing (`docs/design/testing/`, draft v20) and the Vue
+(`docs/design/port-forwarding/`, draft v6), testing (`docs/design/testing/`, draft v21) and the Vue
 frontend (`docs/design/frontend/`, draft v19), a settled brand mark (`docs/design/brand/`, v1.1,
 with the shipping icon assets), an adversarial security review
 (`docs/design/security-review.md`), their SVG diagrams, a devcontainer definition, and **five
@@ -187,8 +187,9 @@ the `browser` job: `test/browser/run.sh` **inside Playwright's own image**, pinn
 carries the three browsers and every library they need; on the bare runner, `npx playwright install
 --with-deps` spent anywhere from under a minute to 42 minutes in apt (181 packages from an Azure
 mirror that falls back package by package), while its browser downloads took 16 seconds. The job adds
-Go (`setup-go`), the pinned Caddy and `certutil` — a single `.deb` cached by the image's `libnss3`
-version, so a warm run reaches no apt mirror — and runs the tier as the image's `pwuser` (uid 1001,
+Go (`setup-go`), the pinned Caddy and `certutil` — a single `.deb` pinned by URL and SHA-256 in the
+workflow, fetched without apt, cached (restored and saved explicitly, before any non-root step) and
+checked against that hash on every run before `dpkg -i` — and runs the tier as the image's `pwuser` (uid 1001,
 the runner's own) through `setpriv`, never as root: Drydock refuses to run the login as root. **The Go suite's tools and
 commands live in one composite action, `.github/actions/go-suite`**, which CI's `go` job and the
 release's `test` job both run, so a release is held to exactly

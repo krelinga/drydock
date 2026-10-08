@@ -498,9 +498,11 @@ type runEvent struct {
 // 8 returns the run is in flight and a stop or rebuild is refused
 // in_progress; the view's steps are the newest per step across the
 // workspace's history, so on a start or a rebuild a read just after the move
-// shows the previous run's step 8 done. internal/server's settled
-// (step8_test.go) holds the same rule and pins its cases; change both
-// together.
+// shows the previous run's step 8 done. A view that says running with no
+// move among its events (the newest 50) had the move pushed out of that
+// window, and the rule panics saying so rather than report a false "never
+// settled" at the deadline. internal/server's settled (step8_test.go) holds
+// the same rule and pins its cases; change both together.
 func settled(state string, evs []runEvent) bool {
 	if state == "failed" {
 		return true
@@ -518,5 +520,10 @@ func settled(state string, evs []runEvent) bool {
 			ended = max(ended, e.ID)
 		}
 	}
-	return state == "running" && moved != 0 && ended > moved
+	if state == "running" && moved == 0 {
+		panic(fmt.Sprintf("settled: running, but no move into running among the view's %d events: "+
+			"more than the detail view's window were written since, so this run's step 8 cannot be told apart; "+
+			"read the workspace's events from /api/events instead", len(evs)))
+	}
+	return state == "running" && ended > moved
 }

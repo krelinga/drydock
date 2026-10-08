@@ -188,8 +188,12 @@ jobs:
         run: |
           gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern SHA256SUMS --dir want
           latest="https://github.com/$GITHUB_REPOSITORY/releases/latest/download"
+          # To a file, then grep: `curl | grep -q` has grep exit at its
+          # match, curl fail writing the rest (23), and under pipefail (a
+          # `shell: bash` here) every publish would withdraw itself.
           for _ in $(seq 1 12); do
-            if curl -fsSL "$latest/install.sh" | grep -qx "RELEASE_VERSION=\"$TAG\"" &&
+            if curl -fsSL "$latest/install.sh" -o latest-install.sh &&
+              grep -qx "RELEASE_VERSION=\"$TAG\"" latest-install.sh &&
               [ "$(curl -fsSL "$latest/SHA256SUMS")" = "$(cat want/SHA256SUMS)" ]; then
               echo "releases/latest serves $TAG"
               exit 0
