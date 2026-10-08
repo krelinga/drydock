@@ -148,6 +148,20 @@ export async function send(method: Exclude<Method, 'GET'>, path: string, body?: 
 }
 
 /**
+ * A mutation that answers `204` with nothing, or `200` with a notice for the
+ * screen that asked: the sign-in's failed-attempt count (design §12). Null
+ * for the 204.
+ */
+export async function sendForNotice<T>(method: Exclude<Method, 'GET'>, path: string, body?: unknown): Promise<T | null> {
+  const resp = await request(method, path, body)
+  if (resp.status === 204 || !(resp.headers.get('Content-Type') ?? '').startsWith('application/json')) {
+    await resp.body?.cancel()
+    return null
+  }
+  return (await resp.json()) as T
+}
+
+/**
  * A mutation whose 2xx body is an operation's *result*, not entity state.
  *
  * One route needs it: `PUT /api/secrets/:name`, whose 200 says which running

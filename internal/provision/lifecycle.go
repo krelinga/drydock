@@ -306,6 +306,7 @@ func (p *Provisioner) deleteJob(ctx context.Context, id string) error {
 	if err := p.Workspaces.Remove(book, id); err != nil {
 		return err
 	}
+	p.dropBuildLog(id)
 	if p.ForgetSupervisor != nil {
 		p.ForgetSupervisor(id)
 	}

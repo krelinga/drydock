@@ -279,6 +279,14 @@ export interface LogTail {
   held: boolean
 }
 
+/** `GET /api/workspaces/:id/build-log`: the latest failed `up`'s last lines (design §12). */
+export interface BuildLogBody {
+  lines: string[]
+  at: string | null
+  /** False when Drydock holds none — not an empty log. */
+  held: boolean
+}
+
 /** One `workspace.action` event as the view reports it (internal/workspace ActionOutcome). */
 export interface ActionView {
   action: string

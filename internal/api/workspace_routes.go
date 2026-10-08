@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"time"
 
 	"github.com/krelinga/drydock/internal/events"
 	"github.com/krelinga/drydock/internal/provision"
@@ -61,20 +62,56 @@ type WorkspaceRoutes struct {
 	// Resources, when set, fills each view's resources and the list's
 	// disk. Nil serves both as null: nothing measured.
 	Resources Resources
+	// BuildLogs holds each workspace's latest failed `up` (provision.BuildLog).
+	// Nil answers every build log as not held.
+	BuildLogs BuildLogs
+}
+
+// BuildLogs is what the build-log route needs from internal/provision.
+type BuildLogs interface {
+	BuildLog(id string) (provision.BuildLog, bool)
+}
+
+// BuildLogBody is GET /api/workspaces/{id}/build-log. held is false when
+// Drydock holds none — no failed build since it started, or a later build
+// got past it — which is not an empty log.
+type BuildLogBody struct {
+	Lines []string   `json:"lines"`
+	At    *time.Time `json:"at"`
+	Held  bool       `json:"held"`
+}
+
+func (wr WorkspaceRoutes) buildLog(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if _, err := wr.Workspaces.View(r.Context(), id); errors.Is(err, workspace.ErrNotFound) {
+		WriteError(w, http.StatusNotFound, CodeNotFound, "There is no such workspace.", "")
+		return
+	} else if err != nil {
+		WriteError(w, http.StatusInternalServerError, CodeInternal, "Could not read the workspace.", "")
+		return
+	}
+	body := BuildLogBody{Lines: []string{}}
+	if wr.BuildLogs != nil {
+		if b, ok := wr.BuildLogs.BuildLog(id); ok {
+			body = BuildLogBody{Lines: append([]string{}, b.Lines...), At: &b.At, Held: true}
+		}
+	}
+	writeJSON(w, http.StatusOK, body)
 }
 
 // Handlers returns the map Build consumes, keyed by route Name.
 func (wr WorkspaceRoutes) Handlers() map[string]http.HandlerFunc {
 	return map[string]http.HandlerFunc{
-		"workspaces.list":    wr.list,
-		"workspaces.read":    wr.read,
-		"workspaces.create":  wr.create,
-		"workspaces.start":   wr.start,
-		"workspaces.stop":    wr.stop,
-		"workspaces.rebuild": wr.rebuild,
-		"workspaces.delete":  wr.remove,
-		"workspaces.approve": wr.approve,
-		"workspaces.decline": wr.decline,
+		"workspaces.list":      wr.list,
+		"workspaces.read":      wr.read,
+		"workspaces.create":    wr.create,
+		"workspaces.start":     wr.start,
+		"workspaces.stop":      wr.stop,
+		"workspaces.rebuild":   wr.rebuild,
+		"workspaces.delete":    wr.remove,
+		"workspaces.approve":   wr.approve,
+		"workspaces.decline":   wr.decline,
+		"workspaces.build_log": wr.buildLog,
 	}
 }
 

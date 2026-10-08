@@ -17,6 +17,11 @@ export const useSessionStore = defineStore('session', {
     devices: [] as Device[],
     /** Set when the boot probe failed for a reason other than a 401. */
     probeError: null as api.ApiError | null,
+    /**
+     * The failed sign-ins this sign-in's answer reported (design §12), shown
+     * once and dismissed; in memory only, so a reload does not repeat it.
+     */
+    failedNotice: null as { attempts: number; sources: string[] } | null,
   }),
   actions: {
     /** The boot probe, and the device list's refresh. A 401 is handled by the client. */
@@ -27,12 +32,18 @@ export const useSessionStore = defineStore('session', {
       this.status = 'signed-in'
     },
     async signIn(password: string): Promise<void> {
-      await api.send('POST', '/api/auth/session', { password })
+      const notice = await api.sendForNotice<{ failed_attempts?: unknown; failed_sources?: unknown }>(
+        'POST', '/api/auth/session', { password })
+      const n = typeof notice?.failed_attempts === 'number' ? notice.failed_attempts : 0
+      this.failedNotice = n > 0
+        ? { attempts: n, sources: Array.isArray(notice?.failed_sources) ? notice.failed_sources.filter((s): s is string => typeof s === 'string') : [] }
+        : null
       await this.load()
     },
     /** Ends this session, or every session. The caller routes to /signin. */
     async signOut(everywhere: boolean): Promise<void> {
       await api.send('DELETE', everywhere ? '/api/auth/session?all=true' : '/api/auth/session')
+      this.failedNotice = null
     },
   },
 })

@@ -552,7 +552,7 @@ func TestAMissingAppPermissionIsNotARevocation(t *testing.T) {
 	}
 	var revokedMsg string
 	e.db.QueryRowContext(ctx, `SELECT message FROM event WHERE kind = 'token.refused' AND data LIKE '%"revoked"%'`).Scan(&revokedMsg)
-	if revokedMsg != "GitHub refused a gh token for this workspace (revoked)." {
+	if revokedMsg != RefusedSentence(ScopeGH, ReasonRevoked) || strings.Contains(revokedMsg, "permission") {
 		t.Errorf("the revoked event says %q", revokedMsg)
 	}
 }

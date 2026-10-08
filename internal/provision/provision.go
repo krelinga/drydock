@@ -202,6 +202,11 @@ type Provisioner struct {
 	// route with ErrNoSupervisor.
 	SupervisorRestart func(ctx context.Context, id string) error
 
+	// Redact returns the values a workspace's held build log must not show:
+	// the secrets granted to its repository (the server's secretValues,
+	// as the session server's log uses). Nil masks only GitHub tokens.
+	Redact func(ctx context.Context, id string) []string
+
 	// afterStep, in a test, runs after each stop or delete sub-step
 	// finishes; an error it returns ends the job there, as a crash between
 	// sub-steps would.
@@ -209,11 +214,13 @@ type Provisioner struct {
 
 	mu     sync.Mutex
 	active map[string]*job // jobs in flight: a run, a stop or a delete
-	owned  map[string]bool // every workspace a job was started for
-	base   context.Context
-	stop   context.CancelFunc
-	closed bool
-	wg     sync.WaitGroup
+	// buildLogs holds each workspace's latest failed `up` (messages.go).
+	buildLogs map[string]BuildLog
+	owned     map[string]bool // every workspace a job was started for
+	base      context.Context
+	stop      context.CancelFunc
+	closed    bool
+	wg        sync.WaitGroup
 }
 
 func (p *Provisioner) logf(format string, args ...any) {
@@ -588,6 +595,13 @@ func (p *Provisioner) run(parent context.Context, id string, first workspace.Ste
 		p.closeIfFailed(book, id)
 	}
 	return err
+}
+
+func (p *Provisioner) redactions(ctx context.Context, id string) []string {
+	if p.Redact == nil {
+		return nil
+	}
+	return p.Redact(ctx, id)
 }
 
 // closeIfFailed closes a failed workspace's broker socket. GitHub access

@@ -575,7 +575,7 @@ func TestEachRealStepNamesItsFailure(t *testing.T) {
 			break_: func(e *env) { os.WriteFile(filepath.Join(e.cli.dir, "docker-fail-ps"), nil, 0o600) }},
 		{name: "broker_socket", repo: alpha, step: workspace.StepBrokerSocket, detail: "GitHub access socket",
 			break_: func(e *env) { e.broker.err = errors.New("listen: address in use") }},
-		{name: "up failed", repo: alpha, step: workspace.StepUp, detail: "did not bring the container up",
+		{name: "up failed", repo: alpha, step: workspace.StepUp, detail: "The clone is kept: fix the dev container configuration and Rebuild",
 			break_: func(e *env) {
 				e.cli.up = "cat <<'EOF'\n" + fixtureBytes("up-error-postcreate.json") + "\nEOF\nexit 1"
 			}},
@@ -587,7 +587,7 @@ func TestEachRealStepNamesItsFailure(t *testing.T) {
 		{name: "resolve_config lockfile unreadable", repo: alpha, step: workspace.StepResolveConfig,
 			detail: "not a lockfile the dev container CLI could use",
 			setup:  withLockfile(`{"features":`)},
-		{name: "verify probe", repo: alpha, step: workspace.StepVerify, detail: "socket did not answer",
+		{name: "verify probe", repo: alpha, step: workspace.StepVerify, detail: "GitHub access unavailable for this workspace",
 			break_: func(e *env) { e.cli.exec = "case \" $* \" in *\" drydock-probe \"*) exit 1 ;; esac" }},
 		{name: "verify origin", repo: alpha, step: workspace.StepVerify, detail: "origin is not the repository",
 			break_: func(e *env) {

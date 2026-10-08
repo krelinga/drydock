@@ -61,7 +61,22 @@ func (s SessionRoutes) signIn(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	setSessionCookie(w, res.Cookie, auth.AbsoluteLifetime)
+	// Design §12, *Repeated failed sign-ins*: surfaced on the next sign-in,
+	// once. With none, the answer is the bare 204 it always was; with some,
+	// a 200 saying how many and from where — the one sign-in that learns it,
+	// since the count is of failures since the last success.
+	if res.FailedSinceLastSignIn > 0 {
+		writeJSON(w, http.StatusOK, SignInNotice{FailedAttempts: res.FailedSinceLastSignIn, FailedSources: res.FailedSources})
+		return
+	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// SignInNotice is a sign-in's 200 body: the bad-password attempts since the
+// previous successful sign-in from anywhere, and the addresses they came from.
+type SignInNotice struct {
+	FailedAttempts int      `json:"failed_attempts"`
+	FailedSources  []string `json:"failed_sources"`
 }
 
 type deviceJSON struct {

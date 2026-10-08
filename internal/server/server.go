@@ -196,6 +196,8 @@ func New(ctx context.Context, cfg config.Config, env sys.Env) (*Server, error) {
 		// A granted secret's value a session server prints is masked in its
 		// log as it is written (§13.5: redact by default).
 		s.Supervisor.Redact = s.secretValues
+		// …and so is one a failed build printed, in the build log it holds.
+		s.Provisioner.Redact = s.secretValues
 		// A removed repository's grants are deleted when nothing holds it
 		// any more (§4), by a workspace's removal or by a refresh; the
 		// broker's snapshot must not outlive them.
@@ -269,7 +271,8 @@ func New(ctx context.Context, cfg config.Config, env sys.Env) (*Server, error) {
 	for name, h := range (api.ClaudeRoutes{Watch: s.Identity, Login: s.Login}).Handlers() {
 		handlers[name] = h
 	}
-	routes := api.WorkspaceRoutes{Provisioner: s.Provisioner, Workspaces: s.Workspaces, Events: s.Events}
+	routes := api.WorkspaceRoutes{Provisioner: s.Provisioner, Workspaces: s.Workspaces, Events: s.Events,
+		BuildLogs: s.Provisioner}
 	if env.Disk != nil {
 		s.Usage = &usage.Sampler{Workspaces: s.Workspaces, Containers: containers, Disk: env.Disk, Clock: env.Clock, Random: env.Random,
 			Root: cfg.WorkspaceRoot, LimitPercent: cfg.DiskLimitPercent,

@@ -334,6 +334,7 @@ func (r *runState) up(ctx context.Context, w workspace.Workspace) error {
 		return workspace.Public("Drydock could not create the workspace's temporary directory.", err)
 	}
 	defer os.RemoveAll(tmp)
+	r.p.dropBuildLog(w.ID) // this run's build replaces the last one's
 	res, stderr, err := r.p.Containers.Up(ctx, container.UpSpec{
 		WorkspaceID: w.ID, RepositoryID: w.RepositoryID, FullName: fullName, Branch: w.Branch,
 		Folder:         w.HostPath,
@@ -357,9 +358,12 @@ func (r *runState) up(ctx context.Context, w workspace.Workspace) error {
 	}
 	if res.Outcome != classify.ContainerRunning {
 		r.p.logTail(w.ID, "devcontainer up", stderr)
+		r.p.keepBuildLog(w.ID, stderr, r.p.redactions(ctx, w.ID))
 		// The CLI's message can quote the repository's own commands, so it
-		// goes to the service log with the rest, not into the detail.
-		return workspace.Public("devcontainer up did not bring the container up; the service log has its output.",
+		// goes to the service log and the held build log, not into the
+		// detail; the detail is §12's sentence for what the Feature's own
+		// lines say happened (messages.go).
+		return workspace.Public(upFailure(stderr),
 			fmt.Errorf("devcontainer up: %s %s", res.Message, res.Description))
 	}
 	return lockfileChange(before, w.HostPath)
@@ -421,7 +425,7 @@ func (r *runState) verify(ctx context.Context, w workspace.Workspace) error {
 	}
 	if out, err := exec("drydock-probe"); err != nil {
 		r.p.logTail(w.ID, "probe", []byte(out))
-		return workspace.Public("The probe inside the container failed: the GitHub access socket did not answer.", err)
+		return workspace.Public(NoBrokerSentence, err)
 	}
 	out, err := exec("git", "-C", r.folder, "remote", "-v")
 	if err != nil {

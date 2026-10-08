@@ -412,12 +412,7 @@ func (b *Broker) token(ctx context.Context, wsID string, scope Scope) string {
 		// A fixed sentence keyed by reason, and never GitHub's own message:
 		// the event is what the operator reads, so it says what to check.
 		// The permission set is the scope's constant, not a secret.
-		msg := fmt.Sprintf("GitHub refused a %s token for this workspace (%s).", scope, reason)
-		if reason == ReasonPermissionMissing {
-			msg = fmt.Sprintf("GitHub refused a %s token for this workspace: the GitHub App lacks a permission this scope needs. "+
-				"Check the App's permissions, and accept any pending permission request on its installation.", scope)
-		}
-		b.Events.Emit(ctx, wsID, events.Warn, "token.refused", msg,
+		b.Events.Emit(ctx, wsID, events.Warn, "token.refused", RefusedSentence(scope, reason),
 			map[string]any{"scope": scope, "reason": reason, "permissions": scope.Permissions()})
 		return errLine(reason)
 	}
@@ -504,6 +499,30 @@ func reasonFor(err error) string {
 		return ReasonRevoked
 	}
 	return ReasonUnavailable
+}
+
+// RefusedSentence is token.refused's message: design §12's sentence for the
+// reason, naming the cause and what fixes it — and never GitHub's own words,
+// nor a retry that will fail the same way. The UI renders the same reasons
+// from the event's data (frontend §9); this is the feed's text.
+func RefusedSentence(scope Scope, reason string) string {
+	switch reason {
+	case ReasonRateLimited:
+		// §12, *GitHub rate limit or App suspended*: a token already issued
+		// serves until it expires; then this. Nothing broader is tried.
+		return fmt.Sprintf("GitHub is refusing requests: it would not issue a %s token because the App's rate limit is spent "+
+			"or the App is suspended. Tokens already issued work until they expire. Check the App on GitHub; "+
+			"nothing in Drydock can retry it sooner.", scope)
+	case ReasonPermissionMissing:
+		return fmt.Sprintf("GitHub refused a %s token for this workspace: the GitHub App lacks a permission this scope needs. "+
+			"Check the App's permissions, and accept any pending permission request on its installation.", scope)
+	case ReasonRevoked:
+		// §12, *Repo removed from the installation*.
+		return fmt.Sprintf("GitHub refused a %s token: this repository is no longer in the GitHub App's installation, "+
+			"so the workspace is read-only. Unpushed work in the working tree survives; add the repository back to "+
+			"the installation to restore access.", scope)
+	}
+	return fmt.Sprintf("GitHub did not issue a %s token for this workspace (%s). The next git or gh command asks again.", scope, reason)
 }
 
 // limited reads at most n bytes, so an endless line cannot grow a buffer.

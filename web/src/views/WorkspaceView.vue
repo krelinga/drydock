@@ -27,16 +27,22 @@ import { useStreamRefetch } from '../lib/refetch'
 import { relativeTime } from '../lib/time'
 import MakeRoom from '../components/MakeRoom.vue'
 import ResourceLine from '../components/ResourceLine.vue'
+import ReadOnlyNote from '../components/ReadOnlyNote.vue'
+import { githubAccess } from '../lib/githubAccess'
+import * as api from '../api/client'
+import type { BuildLogBody } from '../api/types'
 import { diskBreakdown } from '../lib/resources'
 import { capacity } from '../lib/capacity'
 import { actionStepTitle, cardStatus, stepTitle, withRoom } from '../lib/workspaceCard'
 import { ACTION_STEPS, failedStep, liveAction, runSteps, stopFailed } from '../stores/reducer'
 import { useStreamStore } from '../stores/stream'
+import { useCatalogStore } from '../stores/catalog'
 import { deleteKey, rebuildKey, stopKey, useWorkspacesStore } from '../stores/workspaces'
 
 const route = useRoute()
 const stream = useStreamStore()
 const workspaces = useWorkspacesStore()
+const catalog = useCatalogStore()
 
 const id = computed(() => String(route.params.id ?? ''))
 const ws = computed(() => stream.entities.workspaces[id.value] ?? null)
@@ -51,7 +57,12 @@ const name = computed(() => {
   return w.fullName ?? repo?.fullName ?? w.id
 })
 
-onMounted(() => void workspaces.loadOne(id.value))
+onMounted(() => {
+  void workspaces.loadOne(id.value)
+  // The read-only note (design §12) joins the catalog; a page opened cold
+  // has not read it yet.
+  if (!stream.entities.catalogLoaded) void catalog.load()
+})
 watch(id, (now) => void workspaces.loadOne(now))
 // The backstop only: a reopened stream or a `resync`. Nothing else here needs
 // a refetch — the move to running and `workspace.adopted` both carry the
@@ -93,6 +104,28 @@ watch(() => feed.value.length, async () => {
 })
 
 const shortId = (c: string) => c.slice(0, 12)
+
+// Design §12, *Image build fails*: the last lines of the failed `up`, held by
+// the server in memory (GET …/build-log), shown under the step that failed.
+// Fetched when the workspace is failed at `up`, and again whenever that
+// changes; a read for this screen, never entity state.
+const buildLog = ref<BuildLogBody | null>(null)
+const failedAtUp = computed(() => failed.value === 'up')
+async function loadBuildLog(): Promise<void> {
+  if (!failedAtUp.value) {
+    buildLog.value = null
+    return
+  }
+  try {
+    buildLog.value = await api.get<BuildLogBody>(`/api/workspaces/${encodeURIComponent(id.value)}/build-log`)
+  } catch {
+    buildLog.value = null
+  }
+}
+watch([id, failedAtUp, () => ws.value?.steps.up?.at], () => void loadBuildLog(), { immediate: true })
+
+// §12's GitHub rows, from the newest token event (lib/githubAccess.ts).
+const github = computed(() => githubAccess(stream.entities.feeds[id.value]))
 
 // What the disk figure counts (design §6 *Resources*): what a delete frees.
 const breakdown = computed(() => diskBreakdown(stream.entities.resources[id.value]))
@@ -184,6 +217,7 @@ watch(id, () => {
         </div>
         <p v-if="status.note" class="note" data-test="ws-note">{{ status.note }}</p>
         <ResourceLine :workspace="ws" />
+        <ReadOnlyNote :workspace="ws" />
         <WorkspaceIdentityNote :state="ws.state" part="waiting" />
         <p v-if="status.since" class="note" data-test="waiting-since">Waiting since {{ relativeTime(status.since) }}.</p>
         <WorkspaceAction :workspace="ws" :action="status.action" :link="status.link" primary />
@@ -239,6 +273,19 @@ watch(id, () => {
             <p v-if="s.rec?.detail" class="step-detail" data-test="step-detail">{{ s.rec.detail }}</p>
           </li>
         </ol>
+      </div>
+
+      <div v-if="buildLog?.held" class="block" data-test="build-log">
+        <div class="sec-label"><span>Build output</span><span>last {{ buildLog.lines.length }} lines</span></div>
+        <p class="sub">The clone is kept. Fix the dev container configuration, then Rebuild.</p>
+        <pre class="build-log">{{ buildLog.lines.join('\n') }}</pre>
+      </div>
+
+      <div v-if="github" class="block" data-test="github-access">
+        <div class="sec-label"><span>GitHub access</span></div>
+        <p class="gh" :class="github.ok ? 'ok' : 'bad'" data-test="github-access-line">
+          {{ github.sentence }}<template v-if="github.ok"> {{ relativeTime(github.at) }}</template>.
+        </p>
       </div>
 
       <div class="block" data-test="events">
@@ -337,6 +384,10 @@ watch(id, () => {
 <style scoped>
 .view { display: flex; flex-direction: column; gap: 16px; }
 .block { display: flex; flex-direction: column; gap: 8px; }
+.build-log { font-family: var(--mono); font-size: 11px; line-height: 1.45; max-height: 320px; overflow: auto; margin: 0; padding: 8px 10px; background: var(--surface-2); border-radius: var(--r); white-space: pre-wrap; overflow-wrap: anywhere; }
+.gh { font-size: 13px; }
+.gh.ok { color: var(--ok); }
+.gh.bad { color: var(--bad); }
 .back { font-size: 13px; }
 .back a { color: var(--ink-2); text-decoration: none; }
 .title { font-family: var(--mono); font-size: 17px; overflow-wrap: anywhere; }
