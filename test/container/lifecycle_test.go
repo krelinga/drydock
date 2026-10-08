@@ -111,6 +111,7 @@ func TestStopStartRebuildDelete(t *testing.T) {
 		State       string
 		StateDetail *string `json:"state_detail"`
 		ContainerID *string `json:"container_id"`
+		Events      []runEvent
 	}
 	read := func(id string) (view, bool) {
 		status, body, _ := c.do("GET", "/api/workspaces/"+id, "")
@@ -132,7 +133,9 @@ func TestStopStartRebuildDelete(t *testing.T) {
 				return v
 			}
 			for _, w := range want {
-				if ok && v.State == w {
+				// Running counts once the run has ended (settled): until
+				// step 8 returns, a stop or rebuild is refused.
+				if ok && v.State == w && (w != "running" || settled(v.State, v.Events)) {
 					return v
 				}
 			}

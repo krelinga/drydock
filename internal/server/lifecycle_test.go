@@ -71,29 +71,58 @@ func appServer(t *testing.T, dir string) (*Server, func() *running) {
 // refusal is beside the request that succeeds.
 func TestWorkspaceLifecycleThroughTheServer(t *testing.T) {
 	srv, serve := appServer(t, t.TempDir())
+	hold := holdStep8(t, srv)
 	r := serve()
+	// A hang fails with a message rather than at go test's timeout.
+	r.client.Timeout = 30 * time.Second
 	cookie := r.signIn(t)
 	call := func(method, path string) *httpResp {
 		resp := r.do(t, req{method: method, path: path, origin: uiOrigin, cookie: cookie})
 		return &httpResp{resp.StatusCode, readBody(t, resp)}
 	}
-	state := func(id string) string {
+	view := func(id string) wsView {
 		resp := r.do(t, req{method: "GET", path: "/api/workspaces/" + id, cookie: cookie})
 		if resp.StatusCode == 404 {
-			return "gone"
+			return wsView{State: "gone"}
 		}
 		var v wsView
 		body(t, resp.Body, &v)
-		return v.State
+		return v
 	}
+	state := func(id string) string { return view(id).State }
+	// reached is the state, and for running also the run's end: until step
+	// 8 returns the run is in flight and a stop or rebuild is refused.
+	reached := func(v wsView, want string) bool {
+		if want == "running" {
+			return settled(v.State, v.Events)
+		}
+		return v.State == want
+	}
+	// await waits for want. Every step 8 is held (holdStep8), and await lets
+	// one through only once it has seen it held — running, step 8 started —
+	// so each wait for running is proved past that window: an await that
+	// returned on the state alone would leave the run held, and the stop or
+	// rebuild after it would be refused.
+	reruns := 0 // runs whose held view had an earlier run's step 8 end in it
 	await := func(id, want string) {
 		t.Helper()
 		deadline := time.Now().Add(15 * time.Second)
-		for s := state(id); s != want; s = state(id) {
+		released := false
+		for v := view(id); !reached(v, want); v = view(id) {
+			if !released && v.State == "running" && v.Steps["session_server"].Status == "started" {
+				if staleControl(t, v.Events) {
+					reruns++
+				}
+				hold.release()
+				released = true
+			}
 			if time.Now().After(deadline) {
-				t.Fatalf("workspace never reached %s; it is %s", want, s)
+				t.Fatalf("workspace never reached %s; it is %+v", want, v)
 			}
 			time.Sleep(20 * time.Millisecond)
+		}
+		if s := state(id); s != want {
+			t.Fatalf("workspace settled %s, want %s", s, want)
 		}
 	}
 
@@ -109,9 +138,29 @@ func TestWorkspaceLifecycleThroughTheServer(t *testing.T) {
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
+	// Boot's work (reconciliation, then resuming session servers through
+	// the held seam) is over before the first create, so no StartSupervisor
+	// call but the runs' own reaches the hold.
+	select {
+	case <-srv.reconciled:
+	case <-time.After(15 * time.Second):
+		t.Fatal("boot reconciliation never finished")
+	}
 	resp := r.do(t, req{method: "POST", path: "/api/workspaces", origin: uiOrigin, cookie: cookie, body: `{"repository_id":1}`})
 	var id struct{ ID string }
 	body(t, resp.Body, &id)
+	// Control: the window between running and step 8's end is real, and a
+	// stop inside it is refused, which is why await waits past it.
+	deadline = time.Now().Add(15 * time.Second)
+	for v := view(id.ID); !(v.State == "running" && v.Steps["session_server"].Status == "started"); v = view(id.ID) {
+		if v.State == "failed" || time.Now().After(deadline) {
+			t.Fatalf("never running with step 8 started: %+v", v)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if got := call("POST", "/api/workspaces/"+id.ID+"/stop"); got.status != 409 || !strings.Contains(got.body, `"in_progress"`) {
+		t.Errorf("stop while step 8 runs: %+v", got)
+	}
 	await(id.ID, "running")
 	// The cap and the occupied count (frontend §4.5 #17), from the list
 	// itself: a running workspace counts, a stopped one does not, and a
@@ -186,6 +235,10 @@ func TestWorkspaceLifecycleThroughTheServer(t *testing.T) {
 		t.Fatalf("delete: %+v", got)
 	}
 	await(id.ID, "gone")
+	// The start and the rebuild each ran the stale-step-8 control.
+	if reruns != 2 {
+		t.Errorf("%d runs found an earlier run's step 8 end, want 2 (the start and the rebuild)", reruns)
+	}
 	if _, err := os.Lstat(filepath.Join(r.cfg.WorkspaceRoot, id.ID)); !errors.Is(err, os.ErrNotExist) {
 		t.Errorf("the workspace directory survived: %v", err)
 	}
