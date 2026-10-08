@@ -31,6 +31,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/krelinga/drydock/internal/preview"
 )
 
 const (
@@ -333,7 +335,7 @@ func TestPreviewHostReachesOnlyThePreviewSocket(t *testing.T) {
 // Drydock). X-Forwarded-For is still replaced, as on the UI host.
 func TestPreviewHeadersPassThrough(t *testing.T) {
 	need(t)
-	const cookie = "drydock-preview=c4n4ry; app-own=kept"
+	cookie := preview.CookieName + "=c4n4ry; app-own=kept"
 	if _, err := get(t, "https://"+previewHost+"/.drydock/session?t=tok-123", "",
 		"Cookie", cookie, "X-Forwarded-For", "6.6.6.6", "X-Custom", "through"); err != nil {
 		t.Fatal(err)
@@ -475,15 +477,21 @@ func TestSSEIsNotBuffered(t *testing.T) {
 }
 
 // TestPreviewTokenIsNotLogged sweeps everything Caddy wrote — its output, its
-// data and config directories — for the one-time token in the query string.
+// data and config directories — for the one-time token in the query string,
+// and for the preview cookie the request carried (PF §7: access logging
+// stays off on the preview site).
 func TestPreviewTokenIsNotLogged(t *testing.T) {
 	need(t)
 	canary := "tok-" + randHex(16)
-	if _, err := get(t, "https://"+previewHost+"/.drydock/session?t="+canary, ""); err != nil {
+	cookie := "ck-" + randHex(16)
+	if _, err := get(t, "https://"+previewHost+"/.drydock/session?t="+canary, "", "Cookie", preview.CookieName+"="+cookie); err != nil {
 		t.Fatal(err)
 	}
 	if q := env.preview.last().URL.RawQuery; !strings.Contains(q, canary) {
 		t.Fatal("control: the request carrying the token never reached the backend")
+	}
+	if c := env.preview.last().Header.Get("Cookie"); !strings.Contains(c, cookie) {
+		t.Fatal("control: the request carrying the preview cookie never reached the backend")
 	}
 	time.Sleep(200 * time.Millisecond) // let any log writes land
 	swept, found := 0, ""
@@ -493,7 +501,7 @@ func TestPreviewTokenIsNotLogged(t *testing.T) {
 		}
 		b, _ := os.ReadFile(p)
 		swept += len(b)
-		if strings.Contains(string(b), canary) {
+		if strings.Contains(string(b), canary) || strings.Contains(string(b), cookie) {
 			found = p
 		}
 		return nil

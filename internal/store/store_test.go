@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"flag"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -175,12 +176,14 @@ func TestSchemaHasNothingToSteal(t *testing.T) {
 		t.Fatalf("only %d columns found: the assertions below would pass vacuously", len(cols))
 	}
 	banned := map[string]string{
-		"value":        "no plaintext secret value (§4); the secret is ciphertext+nonce",
-		"token":        "no stored session or GitHub token (§4)",
-		"github_token": "tokens live in a bounded in-memory cache, never the database (§4)",
-		"password":     "the operator password is stored only as an argon2id hash",
-		"cookie":       "auth_session.id is the SHA-256 of the cookie, never the cookie",
-		"secret_value": "no plaintext secret value (§4)",
+		"value":         "no plaintext secret value (§4); the secret is ciphertext+nonce",
+		"token":         "no stored session or GitHub token (§4)",
+		"github_token":  "tokens live in a bounded in-memory cache, never the database (§4)",
+		"password":      "the operator password is stored only as an argon2id hash",
+		"cookie":        "auth_session.id and preview_session.id are SHA-256s of their cookies, never the cookie",
+		"preview_token": "the one-time preview token lives in memory only (PF §7)",
+		"upstream_host": "the preview upstream is derived from the workspace, never stored (PF §5)",
+		"secret_value":  "no plaintext secret value (§4)",
 	}
 	for _, c := range cols {
 		if why, bad := banned[strings.ToLower(c.name)]; bad {
@@ -194,6 +197,7 @@ func TestSchemaHasNothingToSteal(t *testing.T) {
 		{"secret", "ciphertext"}, {"secret", "nonce"},
 		{"operator", "password_hash"}, {"auth_session", "id"},
 		{"token_grant", "permissions"},
+		{"preview_session", "id"}, {"forwarded_port", "slug"},
 	}
 	have := map[column]bool{}
 	for _, c := range cols {
@@ -406,5 +410,66 @@ func TestMigrationSevenRetiresTheOldExpiring(t *testing.T) {
 				t.Errorf("after migration: state %q, expires_at %q, login_expires_at %v; want %q, kept, NULL", state, expires, login, c.want)
 			}
 		})
+	}
+}
+
+// TestPreviewTablesHoldTheirPromises is PF §5's schema, asserted on the
+// database rather than on the code that writes it: a slug is a DNS label and
+// never the installer's probe name; a retired row keeps its slug spent while a
+// new live row for the same port is allowed and a second live one is not; and
+// a preview session dies with the auth session that minted it.
+func TestPreviewTablesHoldTheirPromises(t *testing.T) {
+	db, _ := openTemp(t)
+	port := func(id, ws string, n int, slug string) error {
+		_, err := db.Exec(`INSERT INTO forwarded_port (id, workspace_id, container_port, slug) VALUES (?, ?, ?, ?)`, id, ws, n, slug)
+		return err
+	}
+	if err := port("p1", "w", 5173, "myapp-5173-p2mq"); err != nil {
+		t.Fatalf("control: a well-formed slug was refused: %v", err)
+	}
+	var hostHeader string
+	if err := db.QueryRow(`SELECT host_header FROM forwarded_port WHERE id = 'p1'`).Scan(&hostHeader); err != nil || hostHeader != "localhost" {
+		t.Errorf("host_header defaults to %q (%v); want localhost (PF §8.3)", hostHeader, err)
+	}
+	for i, bad := range []string{"drydock-check", "Upper-1-abcd", "a.b", "-lead", "trail-", "", strings.Repeat("a", 64), "sp ace"} {
+		if err := port(fmt.Sprintf("bad%d", i), "w2", 3000+i, bad); err == nil {
+			t.Errorf("slug %q was accepted", bad)
+		}
+	}
+	if err := port("p2", "w", 5173, "myapp-5173-zzzz"); err == nil {
+		t.Error("a second live row for (w, 5173) was accepted")
+	}
+	if _, err := db.Exec(`UPDATE forwarded_port SET retired_at = '2026-10-08T00:00:00Z' WHERE id = 'p1'`); err != nil {
+		t.Fatal(err)
+	}
+	if err := port("p3", "w", 5173, "myapp-5173-zzzz"); err != nil {
+		t.Errorf("retiring did not free (w, 5173) for a new live row: %v", err)
+	}
+	if err := port("p4", "w9", 8080, "myapp-5173-p2mq"); err == nil {
+		t.Error("a retired slug was reissued to another row")
+	}
+
+	if _, err := db.Exec(`INSERT INTO auth_session (id, created_at, last_seen_at, absolute_expires_at) VALUES ('a1', 'x', 'x', 'x'), ('a2', 'x', 'x', 'x')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO preview_session (id, auth_session_id, forwarded_port_id, preview_host, created_at, last_seen_at)
+		VALUES ('s1', 'a1', 'p3', 'h', 'x', 'x'), ('s2', 'a2', 'p3', 'h', 'x', 'x')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO preview_session (id, auth_session_id, forwarded_port_id, preview_host, created_at, last_seen_at)
+		VALUES ('s3', 'nobody', 'p3', 'h', 'x', 'x')`); err == nil {
+		t.Error("a preview session was accepted for an auth session that does not exist")
+	}
+	if _, err := db.Exec(`DELETE FROM auth_session WHERE id = 'a1'`); err != nil {
+		t.Fatal(err)
+	}
+	var n int
+	db.QueryRow(`SELECT count(*) FROM preview_session WHERE id = 's1'`).Scan(&n)
+	if n != 0 {
+		t.Error("revoking the auth session left its preview session behind")
+	}
+	db.QueryRow(`SELECT count(*) FROM preview_session WHERE id = 's2'`).Scan(&n)
+	if n != 1 {
+		t.Error("control: another session's preview session went too")
 	}
 }

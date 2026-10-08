@@ -231,22 +231,50 @@ check "and it names the flag" grep -q -- "--preview-cert is the full chain" <<<"
 install v0.0.2 --preview-domain "$PREVIEW" --preview-cert /etc/ssl/drydock/preview.pem --preview-key /etc/ssl/drydock/preview.key
 check "enabling previews succeeds" [ "$rc" = 0 ] || printf '%s\n' "$out"
 check "the preview site is installed" [ -f /etc/caddy/drydock.d/preview.caddy ]
-# The front door (port forwarding §13 step 1): every preview URL is 401, over
-# the wildcard verified against the test CA — never -k — whatever it asks for
-# and whatever it carries. The controls are the UI host, same jar, answering.
+# The handshake's front door (port forwarding §7, §13 step 2), over the
+# wildcard verified against the test CA — never -k. A preview URL with no
+# preview cookie is sent to /preview/authorize on the UI host, carrying itself,
+# whatever else it carries; a token that was never minted is the denied page;
+# and the installer's probe name is never a slug. The controls are the UI host,
+# same jar, answering.
 pv() { status --resolve "$1.$PREVIEW:443:127.0.0.1" "${@:3}" "https://$1.$PREVIEW$2"; }
-check "a preview host answers 401 over the verified wildcard" [ "$(pv a-b /)" = 401 ]
-check "so does another slug" [ "$(pv myapp-5173-p2mq /some/page)" = 401 ]
+# to SLUG PATH ARGS...: the status and the URL it redirects to.
+to() { "${CURL[@]}" --resolve "$1.$PREVIEW:443:127.0.0.1" -o /dev/null -w '%{http_code} %{redirect_url}' "${@:3}" "https://$1.$PREVIEW$2"; }
+# uri STRING: percent-encoded as Go's url.QueryEscape does for a URL (no
+# spaces in these): everything but the unreserved characters.
+uri() {
+	local s="$1" o="" c i
+	for ((i = 0; i < ${#s}; i++)); do
+		c=${s:i:1}
+		case "$c" in
+		[A-Za-z0-9._~-]) o+="$c" ;;
+		*) printf -v c '%%%02X' "'$c"; o+="$c" ;;
+		esac
+	done
+	printf '%s' "$o"
+}
+handshake() { printf '302 https://%s/preview/authorize?return=%s' "$UI" "$(uri "https://$1.$PREVIEW$2")"; }
+check "a preview host sends a device to sign in at the UI, over the verified wildcard" [ "$(to a-b /)" = "$(handshake a-b /)" ]
+check "so does another slug, carrying its own URL" [ "$(to myapp-5173-p2mq /some/page)" = "$(handshake myapp-5173-p2mq /some/page)" ]
 check "control: the session reads the API on the UI host" [ "$(status -b "$jar" "https://$UI/api/auth/session")" = 200 ]
-check "the same session on a preview host reads no API route" [ "$(pv a-b /api/auth/session -b "$jar")" = 401 ]
-check "a token in ?t= is 401 too" [ "$(pv a-b "/.drydock/session?t=forged" -b "$jar")" = 401 ]
-check "a forged preview cookie is 401 too" [ "$(pv a-b / -H "Cookie: drydock-preview=forged")" = 401 ]
-check "a sign-in POST on a preview host is 401" [ "$(pv a-b /api/auth/session -X POST -H "Origin: https://$UI" \
-	-H 'Content-Type: application/json' --data "{\"password\":\"$PW\"}")" = 401 ]
-serves_app() { "${CURL[@]}" --resolve "$1:443:127.0.0.1" "https://$1/" | grep -q '<div id="app">'; }
-serves_no_app() { ! serves_app "$1"; }
-check "control: the UI host serves the app" serves_app "$UI"
-check "the preview's 401 is not the UI's app" serves_no_app "a-b.$PREVIEW"
+check "the same session on a preview host reads no API route" [ "$(to a-b /api/auth/session -b "$jar")" = "$(handshake a-b /api/auth/session)" ]
+check "a forged preview cookie is the same as none" [ "$(to a-b / -H "Cookie: __Host-drydock-preview=forged")" = "$(handshake a-b /)" ]
+check "a sign-in POST on a preview host reaches no API route" [ "$(to a-b /api/auth/session -X POST -H "Origin: https://$UI" \
+	-H 'Content-Type: application/json' --data "{\"password\":\"$PW\"}")" = "$(handshake a-b /api/auth/session)" ]
+check "a token that was never minted is the denied page" [ "$(to a-b "/.drydock/session?t=forged" -b "$jar")" = "302 https://a-b.$PREVIEW/.drydock/denied" ]
+check "the installer's probe name is the denied page, never the handshake" [ "$(to drydock-check /)" = "302 https://drydock-check.$PREVIEW/.drydock/denied" ]
+check "the denied page is a 403" [ "$(pv a-b /.drydock/denied)" = 403 ]
+check "signed in, authorize sends a slug with no port behind it to its denied page" \
+	[ "$("${CURL[@]}" -b "$jar" -o /dev/null -w '%{http_code} %{redirect_url}' \
+		"https://$UI/preview/authorize?return=$(uri "https://a-b.$PREVIEW/")")" = "302 https://a-b.$PREVIEW/.drydock/denied" ]
+check "and refuses a return off the preview domain" \
+	[ "$(status -b "$jar" "https://$UI/preview/authorize?return=https%3A%2F%2Fevil.example%2F")" = 400 ]
+check "not signed in, authorize sends the device to sign in, carrying itself" \
+	[ "$("${CURL[@]}" -o /dev/null -w '%{http_code}' "https://$UI/preview/authorize?return=x")" = 302 ]
+serves_app() { "${CURL[@]}" --resolve "$1:443:127.0.0.1" "https://$1$2" | grep -q '<div id="app">'; }
+serves_no_app() { ! serves_app "$1" "$2"; }
+check "control: the UI host serves the app" serves_app "$UI" /
+check "the preview's denied page is not the UI's app" serves_no_app "a-b.$PREVIEW" /.drydock/denied
 # The certificate's half of "one label": curl refuses the wildcard for a name two
 # labels deep. Caddy's own matcher is test/component's TestForeignHostOnThePreviewCertificate.
 check "the wildcard certificate does not cover a name two labels deep" [ "$(pv x.a-b /)" = 000 ]

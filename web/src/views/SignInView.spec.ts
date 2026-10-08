@@ -3,6 +3,7 @@ import type { VueWrapper } from '@vue/test-utils'
 import { http, HttpResponse } from 'msw'
 import { freshBackend, mountApp, settle, server, useMockApi } from '../test/setup'
 import { MOCK_PASSWORD } from '../mocks/backend'
+import { navigation } from '../lib/returnPath'
 
 useMockApi()
 
@@ -42,6 +43,28 @@ describe('SignInView', () => {
     // slower than settle()'s ticks on a cold CI runner. Wait for the
     // navigation itself rather than for a fixed number of ticks.
     await vi.waitFor(() => expect(second.router.currentRoute.value.fullPath).toBe('/secrets'))
+  })
+
+  it('loads a return the server answers — the preview handshake — rather than routing to it', async () => {
+    freshBackend()
+    const assign = vi.spyOn(navigation, 'assign').mockImplementation(() => {})
+    try {
+      const authorize = '/preview/authorize?return=https%3A%2F%2Fmyapp-5173-p2mq.drydock-preview.test%2Fpage'
+      const { wrapper, router } = await mountApp(`/signin?return=${encodeURIComponent(authorize)}`)
+      await attempt(wrapper, MOCK_PASSWORD)
+      expect(assign).toHaveBeenCalledWith(authorize)
+      expect(router.currentRoute.value.name).toBe('signin')
+
+      // Control, same test: an app path is routed, not loaded.
+      assign.mockClear()
+      freshBackend()
+      const second = await mountApp('/signin?return=/settings')
+      await attempt(second.wrapper, MOCK_PASSWORD)
+      expect(second.router.currentRoute.value.fullPath).toBe('/settings')
+      expect(assign).not.toHaveBeenCalled()
+    } finally {
+      assign.mockRestore()
+    }
   })
 
   it('reports a lockout with its wait, from the code and Retry-After', async () => {

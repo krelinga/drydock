@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/krelinga/drydock/internal/events"
+	"github.com/krelinga/drydock/internal/preview"
 	"github.com/krelinga/drydock/internal/store"
 	"github.com/krelinga/drydock/internal/sys"
 )
@@ -285,6 +286,9 @@ func (s *Store) ClearDetail(ctx context.Context, id string, want State) (cleared
 // repository's row, with that repository's secret grants, when the
 // installation has dropped the repository: this workspace was the one thing
 // keeping them (§4, §12), and a repository re-added later is granted nothing.
+// Its forwarded ports are retired, not deleted, and their preview sessions
+// go: a deleted row would free its slug for reissue, and a stale bookmark
+// would then resolve to some later workspace's preview (PF §4).
 func (s *Store) Remove(ctx context.Context, id string) error {
 	var dropped int64
 	_, err := s.Events.Commit(ctx, func(tx *sql.Tx) ([]events.Event, error) {
@@ -304,6 +308,9 @@ func (s *Store) Remove(ctx context.Context, id string) error {
 				return nil, err
 			}
 			return nil, ErrIllegalMove{From: w.State, To: "removed"}
+		}
+		if err := preview.RetireWorkspacePorts(ctx, tx, id, s.Env.Clock.Now()); err != nil {
+			return nil, err
 		}
 		var repos []int64
 		if repos, dropped, err = store.DropReleasedRepositories(ctx, tx); err != nil {

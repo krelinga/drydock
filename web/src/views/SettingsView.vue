@@ -127,6 +127,11 @@ async function signOut(everywhere: boolean): Promise<void> {
           </div>
         </li>
       </ul>
+      <!-- Port forwarding §10.5: a preview is repository code, and can draw
+           a sign-in form. The real one is only ever here. -->
+      <p class="note" data-test="password-only-here">
+        Drydock asks for its password on this site only. A sign-in form on a preview is not Drydock's.
+      </p>
 
       <div class="actions">
         <div class="action">
@@ -136,7 +141,7 @@ async function signOut(everywhere: boolean): Promise<void> {
           >
             Sign out of this device
           </button>
-          <p class="note">Ends this device's session only.</p>
+          <p class="note">Ends this device's session only, and the previews it opened.</p>
         </div>
 
         <div class="action">
@@ -156,6 +161,7 @@ async function signOut(everywhere: boolean): Promise<void> {
               <span>
                 This includes <b>this device</b><template v-if="others > 0">
                   and {{ others }} other{{ others === 1 ? '' : 's' }}</template>.
+                Every preview open on them closes too.
                 You will need the password to sign back in.
               </span>
             </p>

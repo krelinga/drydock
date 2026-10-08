@@ -51,11 +51,23 @@ export const UI_HOST = 'drydock.test'
 export const PREVIEW_DOMAIN = 'drydock-preview.test'
 export const PREVIEW_HOST = `abc123.${PREVIEW_DOMAIN}`
 export const OTHER_PREVIEW_HOST = `xyz789.${PREVIEW_DOMAIN}`
+/** A slug preview.spec.ts makes previewable (an enabled port on a running workspace). */
+export const SLUG = 'myapp-5173-p2mq'
+export const SLUG_HOST = `${SLUG}.${PREVIEW_DOMAIN}`
+/** The preview session cookie (internal/preview.CookieName). */
+export const PREVIEW_COOKIE = '__Host-drydock-preview'
 // No port: the origin under test must be the default-port HTTPS origin, or the
 // `__Host-` rules and the site comparisons are not the real ones. The resolver
 // rules carry the port instead (Spike 04, result 4).
 export const UI = `https://${UI_HOST}`
 export const PREVIEW = `https://${PREVIEW_HOST}`
+/**
+ * A document on a preview origin with no handshake in front of it: the denied
+ * page, which every preview host serves as itself. A spec that only needs a
+ * page on a preview origin loads this; the origin's root now starts the
+ * handshake and ends on the UI's sign-in.
+ */
+export const PREVIEW_PAGE = `${PREVIEW}/.drydock/denied`
 export const COOKIE = '__Host-drydock'
 /** The session cookie's name between a browser and the loopback front. */
 const LOOPBACK_COOKIE = 'drydock-loopback'

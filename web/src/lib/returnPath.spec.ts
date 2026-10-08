@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { DEFAULT_RETURN, safeReturnPath } from './returnPath'
+import { DEFAULT_RETURN, isServerPath, safeReturnPath } from './returnPath'
 
 describe('safeReturnPath', () => {
   it('refuses every way out of the origin, and keeps every path on it', () => {
@@ -39,6 +39,16 @@ describe('safeReturnPath', () => {
     ]
     for (const [raw, want] of fine) {
       expect(safeReturnPath(raw), raw).toBe(want)
+    }
+  })
+
+  it('keeps the preview handshake as a path, and knows the server answers it', () => {
+    const authorize = '/preview/authorize?return=https%3A%2F%2Fmyapp-5173-p2mq.drydock-preview.test%2F'
+    expect(safeReturnPath(authorize)).toBe(authorize)
+    expect(isServerPath(authorize)).toBe(true)
+    // Controls: an app path is routed, and a lookalike is not the server's.
+    for (const p of ['/settings', '/preview', '/preview/authorize/x', '/ws/preview/authorize']) {
+      expect(isServerPath(p), p).toBe(false)
     }
   })
 })

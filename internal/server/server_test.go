@@ -15,6 +15,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -39,6 +40,8 @@ type running struct {
 	client *http.Client
 	// gh is the fake GitHub, for a test that changes the installation.
 	gh *githubtest.Fake
+	// stop ends Serve and waits for it (startIn only).
+	stop func()
 }
 
 func testConfig(t *testing.T, dir string) config.Config {
@@ -78,7 +81,13 @@ func testConfig(t *testing.T, dir string) config.Config {
 
 func start(t *testing.T) *running {
 	t.Helper()
-	cfg := testConfig(t, t.TempDir())
+	return startIn(t, t.TempDir())
+}
+
+// startIn is start with its state under dir, for a test that sweeps it.
+func startIn(t *testing.T, dir string) *running {
+	t.Helper()
+	cfg := testConfig(t, dir)
 	srv, err := New(context.Background(), cfg, sys.Production())
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -86,8 +95,10 @@ func start(t *testing.T) *running {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() { done <- srv.Serve(ctx) }()
-	t.Cleanup(func() { cancel(); <-done })
-	return &running{cfg: cfg, srv: srv, client: unixClient(cfg.APISocket)}
+	var once sync.Once
+	stop := func() { once.Do(func() { cancel(); <-done }) }
+	t.Cleanup(stop)
+	return &running{cfg: cfg, srv: srv, client: unixClient(cfg.APISocket), stop: stop}
 }
 
 func unixClient(sock string) *http.Client {
