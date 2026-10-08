@@ -15,7 +15,10 @@ import (
 // expect, or, worse, a §11.6 bump would be measured on the browsers it was
 // meant to replace. So the image's tag must be the lockfile's version, and
 // the image must be pinned by digest as well.
-var playwrightImageRE = regexp.MustCompile(`mcr\.microsoft\.com/playwright:v([0-9]+\.[0-9]+\.[0-9]+)-([a-z]+)(@sha256:[0-9a-f]{64})?`)
+//
+// The match is anchored on an `image:` key at the start of a line: a comment
+// quoting a correctly pinned reference must not stand in for the job's own.
+var playwrightImageRE = regexp.MustCompile(`(?m)^[ \t]*image:[ \t]*mcr\.microsoft\.com/playwright:v([0-9]+\.[0-9]+\.[0-9]+)-([a-z]+)(@sha256:[0-9a-f]{64})?`)
 
 func TestPlaywrightImageMatchesLockfile(t *testing.T) {
 	raw, err := os.ReadFile(filepath.Join(root, "web", "package-lock.json"))
@@ -36,6 +39,18 @@ func TestPlaywrightImageMatchesLockfile(t *testing.T) {
 	}
 	if core := lock.Packages["node_modules/playwright-core"].Version; core != want {
 		t.Errorf("web/package-lock.json: playwright-core %s beside @playwright/test %s", core, want)
+	}
+
+	// The anchor's own controls: the key matches, and the same reference in a
+	// comment, or under any other key, does not.
+	const ref = "mcr.microsoft.com/playwright:v1.2.3-noble@sha256:0000000000000000000000000000000000000000000000000000000000000000"
+	if !playwrightImageRE.MatchString("    container:\n      image: " + ref + "\n") {
+		t.Error("the image pattern does not match a job's image: key")
+	}
+	for _, s := range []string{"      # image: " + ref, "  # runs in " + ref, "      options: " + ref, "      foo_image: " + ref} {
+		if playwrightImageRE.MatchString(s) {
+			t.Errorf("the image pattern matches %q, which is not the job's image", s)
+		}
 	}
 
 	ci, err := os.ReadFile(filepath.Join(root, ".github", "workflows", "ci.yml"))

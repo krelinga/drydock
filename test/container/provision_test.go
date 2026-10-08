@@ -240,7 +240,7 @@ func TestCreateWorkspaceThroughTheServer(t *testing.T) {
 		for repo, id := range ids {
 			var v view
 			c.get("/api/workspaces/"+id, &v)
-			if settled(v.State, v.Events) {
+			if settled(t, v.State, v.Events) {
 				views[repo] = v
 			}
 		}
@@ -498,12 +498,15 @@ type runEvent struct {
 // 8 returns the run is in flight and a stop or rebuild is refused
 // in_progress; the view's steps are the newest per step across the
 // workspace's history, so on a start or a rebuild a read just after the move
-// shows the previous run's step 8 done. internal/server's settled
-// (step8_test.go) holds the same rule and pins its cases; change both
-// together.
-func settled(state string, evs []runEvent) bool {
+// shows the previous run's step 8 done. A view that says running with no
+// move among its events (the newest 50) had the move pushed out of that
+// window, and the rule fails the test saying so (Fatal: a panic would take
+// the rest of the container tier with it) rather than report a false "never
+// settled" at the deadline. internal/server's settled (step8_test.go) holds
+// the same rule and pins its cases; change both together.
+func settledRule(state string, evs []runEvent) (bool, error) {
 	if state == "failed" {
-		return true
+		return true, nil
 	}
 	var moved, ended int64
 	for _, e := range evs {
@@ -518,5 +521,22 @@ func settled(state string, evs []runEvent) bool {
 			ended = max(ended, e.ID)
 		}
 	}
-	return state == "running" && moved != 0 && ended > moved
+	if state == "running" && moved == 0 {
+		return false, fmt.Errorf("settled: running, but no move into running among the view's %d events: "+
+			"more than the detail view's window were written since, so this run's step 8 cannot be told apart; "+
+			"read the workspace's events from /api/events instead", len(evs))
+	}
+	return state == "running" && ended > moved, nil
+}
+
+// settled is settledRule for a test: a view it cannot judge ends the test
+// (Fatal, not a panic, which would take every later test in the package
+// with it).
+func settled(t testing.TB, state string, evs []runEvent) bool {
+	t.Helper()
+	ok, err := settledRule(state, evs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return ok
 }

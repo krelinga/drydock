@@ -27,21 +27,21 @@ else
 fi
 oneliner() { out=$(curl -fsSL "$url" | bash -s -- "$@" 2>&1); rc=$?; printf '%s\n' "$out" | sed 's/^/    /'; }
 
-# installer URL: that installer's bytes, in a file, or a failure. Read a file,
-# never `curl | grep -q`: grep -q exits at its match, curl then fails writing
-# the rest (exit 23), and pipefail turns a flag that is there into one that is
-# not — which is how v0.4.3's verify installed v0.4.2 without --ca-cert.
-installer() {
-	local f
-	f=$(mktemp) && curl -fsSL "$1" -o "$f" && [ -s "$f" ] && echo "$f"
-}
+# installer URL NAME: that installer's bytes, in $tmp/NAME, or a failure.
+# Read a file, never `curl | grep -q`: grep -q exits at its match, curl then
+# fails writing the rest (exit 23), and pipefail turns a flag that is there
+# into one that is not — which is how v0.4.3's verify installed v0.4.2
+# without --ca-cert.
+tmp=$(mktemp -d)
+trap 'rm -rf "$tmp"' EXIT
+installer() { curl -fsSL "$1" -o "$tmp/$2" && [ -s "$tmp/$2" ]; }
 # takes_ca_cert FILE: that installer has --ca-cert.
 takes_ca_cert() { grep -q -- '--ca-cert)' "$1"; }
 
 # Releases before --ca-cert existed read the CA from a variable instead.
-this=$(installer "$url") || { echo "FAIL could not download $url"; exit 1; }
+installer "$url" this.sh || { echo "FAIL could not download $url"; exit 1; }
 ca_args=(--ca-cert "$CA")
-if ! takes_ca_cert "$this"; then
+if ! takes_ca_cert "$tmp/this.sh"; then
 	ca_args=()
 	export DRYDOCK_VERIFY_CACERT="$CA"
 fi
@@ -75,12 +75,21 @@ check "the embedded UI is served" [ "$("${CURL[@]}" -o /dev/null -w '%{http_code
 # release is a draft, releases/latest is still the previous one.)
 if [ -n "${ASSETS:-}" ]; then
 	prev_url="https://github.com/$REPO/releases/latest/download/install.sh"
-	prev_sh=$(installer "$prev_url") || prev_sh=/dev/null
-	prev=$(sed -n 's/^RELEASE_VERSION="\(.*\)"$/\1/p' "$prev_sh")
-	check "the release to upgrade from is published ($prev)" grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$' <<<"$prev"
-	if [ "$prev" = "$RELEASE" ]; then
+	prev_sh="$tmp/prev.sh"
+	# A failed download is a failure here, and the upgrade is not run: with
+	# no installer to run, every check below would be about nothing.
+	prev=
+	if installer "$prev_url" prev.sh; then
+		prev=$(sed -n 's/^RELEASE_VERSION="\(.*\)"$/\1/p' "$prev_sh")
+		check "the release to upgrade from is published ($prev)" grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$' <<<"$prev"
+	else
+		fail "could not download the release to upgrade from ($prev_url): the upgrade is not tested"
+	fi
+	if [ -z "$prev" ]; then
+		:
+	elif [ "$prev" = "$RELEASE" ]; then
 		echo "    $RELEASE is already Latest: no previous release to upgrade from"
-	elif [ -n "$prev" ]; then
+	else
 		# Back to a host that never had Drydock (Caddy and its Caddyfile stay:
 		# the installer's own, which the previous release takes as an upgrade).
 		systemctl disable --now --quiet drydock
@@ -101,10 +110,10 @@ if [ -n "${ASSETS:-}" ]; then
 		check "control: it is $prev that runs" [ "$(drydock version)" = "$prev" ]
 		if takes_ca_cert "$prev_sh"; then
 			check "control: $prev was given --ca-cert, and kept it" \
-				grep -qx "DRYDOCK_CA_CERT=$CA" /etc/drydock/drydock.env
+				grep -qxF "DRYDOCK_CA_CERT=$CA" /etc/drydock/drydock.env
 		fi
 		printf '%s\n' "$PW" | runuser -u drydock -- drydock passwd --db /var/lib/drydock/drydock.db >/dev/null
-		jar=$(mktemp)
+		jar="$tmp/jar"
 		code=$("${CURL[@]}" -o /dev/null -w '%{http_code}' -c "$jar" -H "Origin: https://$UI" \
 			-H 'Content-Type: application/json' -d "{\"password\":\"$PW\"}" "https://$UI/api/auth/session")
 		check "sign-in on $prev works (204)" [ "$code" = 204 ]
@@ -117,7 +126,7 @@ if [ -n "${ASSETS:-}" ]; then
 		oneliner
 		check "the one-liner with no flags upgrades $prev to $RELEASE" [ "$rc" = 0 ]
 		check "and says so" grep -q "upgraded Drydock $prev -> $RELEASE" <<<"$out"
-		check "and still keeps --ca-cert" grep -qx "DRYDOCK_CA_CERT=$CA" /etc/drydock/drydock.env
+		check "and still keeps --ca-cert" grep -qxF "DRYDOCK_CA_CERT=$CA" /etc/drydock/drydock.env
 		check "it is $RELEASE that runs" [ "$(drydock version)" = "$RELEASE" ]
 		pid=$(systemctl show -p MainPID --value drydock)
 		check "from the installed file" [ "/proc/$pid/exe" -ef /usr/local/bin/drydock ]
