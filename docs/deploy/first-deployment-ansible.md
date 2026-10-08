@@ -204,6 +204,15 @@ drydock_secrets_key_backup: "{{ lookup('ansible.builtin.env', 'HOME') }}/drydock
 
 # Optional: allow 443 from this network with ufw (§3.4). Empty: leave the firewall alone.
 drydock_firewall_lan_cidr: ""
+
+# Optional: previews, front door only (runbook §8.7). A second registrable
+# domain, lowercase, with a LAN wildcard record pointing at this server, and
+# controller paths of its wildcard certificate (full chain) and key. All three
+# or none. Empty: no preview site, and the installer is told --no-preview.
+drydock_preview_domain: ""
+# drydock_preview_domain: drydock-preview.example
+# drydock_preview_cert_src: "{{ playbook_dir }}/files/preview.crt"
+# drydock_preview_key_src: "{{ playbook_dir }}/files/preview.key"
 ```
 
 **The operator password and the private keys go in ansible-vault.** The password is a
@@ -213,6 +222,7 @@ way, so they never sit on the controller in plain text:
 ```sh
 ansible-vault create group_vars/drydock/vault.yml          # holds the variable below
 ansible-vault encrypt files/drydock-app.pem files/drydock.key
+ansible-vault encrypt files/preview.key                     # only with previews (§4.2)
 ```
 
 The secrets master key, if you supply it ([§4.3](#43-optional-your-own-secrets-master-key)), is
@@ -261,6 +271,12 @@ drydock_app_key_stage: /root/drydock-app.pem
 # Your own secrets master key, if any, and where it waits for the installer (§4.3).
 drydock_secrets_key_src: ""
 drydock_secrets_key_stage: /root/drydock-secrets.key
+# Previews, off unless drydock_preview_domain is set (runbook §8.7).
+drydock_preview_domain: ""
+drydock_preview_cert_src: ""
+drydock_preview_key_src: ""
+drydock_preview_cert_path: /etc/caddy/certs/preview.crt
+drydock_preview_key_path: /etc/caddy/certs/preview.key
 ```
 
 ---
@@ -530,6 +546,67 @@ cannot traverse. A changed certificate (a renewal you copy in) reloads Caddy thr
       name {{ drydock_ui_host }}. See runbook §1.3.
 ```
 
+**With previews** (`drydock_preview_domain` set; [runbook §8.7](first-deployment.md#87-optional-enable-previews-front-door-only)),
+the wildcard pair goes beside the UI's with the same owners and modes, and gets the same two
+checks, with the SAN required to carry the wildcard itself. Without previews these tasks are
+skipped.
+
+```yaml
+# file: roles/drydock/tasks/tls.yml
+- name: Install the preview wildcard certificate, full chain, leaf first (runbook §8.7)
+  ansible.builtin.copy:
+    src: "{{ drydock_preview_cert_src }}"
+    dest: "{{ drydock_preview_cert_path }}"
+    owner: root
+    group: caddy
+    mode: "0644"
+  when: drydock_preview_domain | length > 0
+  notify: Reload caddy
+
+- name: Install the preview wildcard private key
+  ansible.builtin.copy:
+    src: "{{ drydock_preview_key_src }}"
+    dest: "{{ drydock_preview_key_path }}"
+    owner: root
+    group: caddy
+    mode: "0640"
+  diff: false
+  no_log: true
+  when: drydock_preview_domain | length > 0
+  notify: Reload caddy
+
+- name: Check the caddy user can read the preview certificate and key
+  ansible.builtin.command:
+    argv: [runuser, -u, caddy, --, test, -r, "{{ item }}"]
+  loop: ["{{ drydock_preview_cert_path }}", "{{ drydock_preview_key_path }}"]
+  changed_when: false
+  when: drydock_preview_domain | length > 0
+
+- name: Read the preview certificate's public key and names
+  ansible.builtin.command:
+    argv: [openssl, x509, -noout, -pubkey, -ext, subjectAltName, -in, "{{ drydock_preview_cert_path }}"]
+  register: drydock_preview_cert_info
+  changed_when: false
+  when: drydock_preview_domain | length > 0
+
+- name: Read the preview private key's public half
+  ansible.builtin.command:
+    argv: [openssl, pkey, -pubout, -in, "{{ drydock_preview_key_path }}"]
+  register: drydock_preview_key_pub
+  changed_when: false
+  when: drydock_preview_domain | length > 0
+
+- name: Check the preview certificate matches its key and is the wildcard (runbook §8.7)
+  ansible.builtin.assert:
+    that:
+      - drydock_preview_key_pub.stdout in drydock_preview_cert_info.stdout
+      - ('DNS:*.' ~ drydock_preview_domain) in drydock_preview_cert_info.stdout
+    fail_msg: >-
+      The preview certificate does not match its key, or its subjectAltName does
+      not carry DNS:*.{{ drydock_preview_domain }}. See runbook §8.7.
+  when: drydock_preview_domain | length > 0
+```
+
 ### 4.3 Optional: your own secrets master key
 
 [Runbook §4.3](first-deployment.md#43-optional-your-own-secrets-master-key) and
@@ -575,8 +652,11 @@ download, not a compromised release.
 `--github-app-key` when a new key is staged ([§4.1](#41-the-github-app-private-key)),
 `--secrets-key` when a new master key is staged ([§4.3](#43-optional-your-own-secrets-master-key)),
 and `--ca-cert` for option A. Without a CA certificate the task passes `--no-ca-cert`, so the variables
-stay the whole truth: the installer otherwise keeps a `--ca-cert` from an earlier run. No
-`--preview-*` flags: previews are not built yet ([runbook §9](first-deployment.md#9-what-does-not-work-yet)).
+stay the whole truth: the installer otherwise keeps a `--ca-cert` from an earlier run. Likewise
+`--preview-domain`, `--preview-cert` and `--preview-key` when `drydock_preview_domain` is set, and
+`--no-preview` when it is not, which removes a preview site an earlier run installed. Previews are
+front door only: every preview URL answers `401`
+([runbook §8.7](first-deployment.md#87-optional-enable-previews-front-door-only), [§9](first-deployment.md#9-what-does-not-work-yet)).
 
 **The password.** The installer asks for it on `/dev/tty`, and Ansible has no terminal to answer
 on. Worse, with `ssh -tt` it may *have* one, and then the installer waits on a prompt nobody sees.
@@ -598,7 +678,8 @@ be wrong: a new certificate path restarts services and still reports "installed 
 **Failure.** The installer stops at the first failure, changes nothing below it, and exits
 non-zero, and so does the task. A refusal of a setting or of a new master key comes before it
 replaces anything, the binary included, so the release that was running still is. That includes its final check: an unauthenticated
-`https://<ui-host>/api/auth/session` through Caddy must answer `401` over a verified certificate.
+`https://<ui-host>/api/auth/session` through Caddy must answer `401` over a verified certificate —
+and with previews on, `https://drydock-check.<preview-domain>/` too.
 When only the certificate could not be verified, the message starts `Drydock is installed and
 running, and answers through Caddy, but this host could not verify the certificate …`; it is still
 a failure (usually a missing `drydock_ca_cert_src` for option A). The installer's output names no
@@ -626,6 +707,20 @@ installed binary is the upgrade, so it gets an upgrade's backup first; the backu
     fail_msg: >-
       drydock_version must be a release tag (vMAJOR.MINOR.PATCH), drydock_ui_host must be a lowercase
       fully qualified name, and drydock_app_id the numeric App ID (not the Iv… Client ID).
+
+# The installer refuses a preview domain on the UI host's registrable domain
+# itself (runbook §8.7), before it changes anything; this checks the shape.
+- name: Check the preview settings, when previews are on
+  ansible.builtin.assert:
+    that:
+      - drydock_preview_domain == drydock_preview_domain | lower
+      - "'.' in drydock_preview_domain"
+      - drydock_preview_cert_src | length > 0
+      - drydock_preview_key_src | length > 0
+    fail_msg: >-
+      drydock_preview_domain must be a lowercase domain with a dot, and needs
+      drydock_preview_cert_src and drydock_preview_key_src beside it (runbook §8.7).
+  when: drydock_preview_domain | length > 0
 
 # Checked without printing it: neither the condition nor the message carries the value.
 - name: Check the operator password is long enough (drydock passwd refuses under 12)
@@ -777,6 +872,10 @@ installed binary is the upgrade, so it gets an upgrade's backup first; the backu
             + (['--ca-cert', drydock_ca_cert_path] if drydock_ca_cert_src | length > 0 else ['--no-ca-cert'])
             + (['--github-app-key', drydock_app_key_stage] if drydock_app_key_staged is not skipped else [])
             + (['--secrets-key', drydock_secrets_key_stage] if drydock_secrets_key_staged is not skipped else [])
+            + (['--preview-domain', drydock_preview_domain,
+                '--preview-cert', drydock_preview_cert_path,
+                '--preview-key', drydock_preview_key_path]
+               if drydock_preview_domain | length > 0 else ['--no-preview'])
             + (['--take-over-caddy'] if drydock_take_over_caddy | bool else [])
           }}
       register: drydock_installer

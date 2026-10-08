@@ -275,14 +275,25 @@ func get(t *testing.T, url, host string, header ...string) (*http.Response, erro
 
 // ---- testing §3.2, row by row ------------------------------------------------
 
+// previewPaths are the paths that could tempt a path-based route between the
+// two sockets: the preview mux's own reserved prefix, a token URL, the API, the
+// handshake's main-origin half, and the root.
+var previewPaths = []string{"/", "/api/repos", "/api/auth/session", "/preview/authorize?return=%2F",
+	"/.drydock/session?t=tok", "/.drydock/denied", "/assets/app.js"}
+
+// TestUIHostReachesOnlyTheAPISocket: whatever the path — the preview mux's
+// own /.drydock/ prefix included — the UI host goes to the API socket and never
+// the preview socket (PF §3).
 func TestUIHostReachesOnlyTheAPISocket(t *testing.T) {
 	need(t)
-	resp, err := get(t, "https://"+uiHost+"/api/repos", "")
-	if err != nil || resp.StatusCode != 200 {
-		t.Fatalf("UI host: %v %v", resp, err)
+	for _, p := range previewPaths {
+		resp, err := get(t, "https://"+uiHost+p, "")
+		if err != nil || resp.StatusCode != 200 {
+			t.Fatalf("UI host %s: %v %v", p, resp, err)
+		}
 	}
-	if env.api.count() != 1 || env.preview.count() != 0 {
-		t.Errorf("api saw %d, preview saw %d; want 1 and 0", env.api.count(), env.preview.count())
+	if env.api.count() != len(previewPaths) || env.preview.count() != 0 {
+		t.Errorf("api saw %d, preview saw %d; want %d and 0", env.api.count(), env.preview.count(), len(previewPaths))
 	}
 }
 
@@ -299,6 +310,106 @@ func TestPreviewHostReachesOnlyThePreviewSocket(t *testing.T) {
 	}
 	if h := env.preview.last().Host; h != previewHost {
 		t.Errorf("the preview socket saw Host %q; want %q intact", h, previewHost)
+	}
+	// And whatever the path — the API's, the handshake's main-origin half —
+	// a preview host never reaches the API socket (PF §13 step 1: "no preview
+	// URL can reach an API route"). Any other preview slug does the same.
+	env.preview.reset()
+	for _, h := range []string{previewHost, "other-8080-zz9z." + previewDomain} {
+		for _, p := range previewPaths {
+			if resp, err := get(t, "https://"+h+p, ""); err != nil || resp.StatusCode != 200 {
+				t.Fatalf("preview host %s%s: %v %v", h, p, resp, err)
+			}
+		}
+	}
+	if env.preview.count() != 2*len(previewPaths) || env.api.count() != 0 {
+		t.Errorf("preview saw %d, api saw %d; want %d and 0", env.preview.count(), env.api.count(), 2*len(previewPaths))
+	}
+}
+
+// TestPreviewHeadersPassThrough: Caddy's hop to preview.sock hands the preview
+// mux what it authenticates on — the cookie, the token in the query — intact
+// (PF §7's table: the cookie passes this hop and is stripped at the next, by
+// Drydock). X-Forwarded-For is still replaced, as on the UI host.
+func TestPreviewHeadersPassThrough(t *testing.T) {
+	need(t)
+	const cookie = "drydock-preview=c4n4ry; app-own=kept"
+	if _, err := get(t, "https://"+previewHost+"/.drydock/session?t=tok-123", "",
+		"Cookie", cookie, "X-Forwarded-For", "6.6.6.6", "X-Custom", "through"); err != nil {
+		t.Fatal(err)
+	}
+	r := env.preview.last()
+	if r == nil {
+		t.Fatal("the preview socket saw nothing")
+	}
+	if got := r.Header.Get("Cookie"); got != cookie {
+		t.Errorf("the preview socket saw Cookie %q; want %q intact", got, cookie)
+	}
+	if r.URL.RawQuery != "t=tok-123" {
+		t.Errorf("the preview socket saw query %q; want t=tok-123", r.URL.RawQuery)
+	}
+	if got := r.Header.Get("X-Custom"); got != "through" {
+		t.Errorf("an ordinary header arrived as %q", got)
+	}
+	if got := r.Header.Values("X-Forwarded-For"); len(got) != 1 || got[0] != "127.0.0.1" {
+		t.Errorf("the preview socket saw X-Forwarded-For %q; want exactly [127.0.0.1]", got)
+	}
+}
+
+// TestRoutingIsByHostAcrossSNI pins a decision rather than a defense: the
+// shipped Caddyfile does NOT set `strict_sni_host`, so Caddy routes by the
+// Host header whatever name the TLS handshake used. On, it would answer 421
+// to a request whose Host differs from its SNI — and browsers coalesce HTTP/2
+// connections across every name one certificate covers, so two tabs on two
+// preview slugs (one wildcard) would share a connection and the second would
+// get 421s, which HMR and SSE handle badly. Leaving it off costs nothing a
+// browser can use: neither certificate covers the other site's names, so no
+// browser sends one site's Host on the other's connection; a raw client can
+// pick any SNI anyway; and the API still checks Host itself (§13.3). PF §9.
+//
+// So both directions land on the socket the Host names. A change that turns
+// strict_sni_host on, or routes by SNI, fails here and has to argue with the
+// paragraph above.
+func TestRoutingIsByHostAcrossSNI(t *testing.T) {
+	need(t)
+	// SNI for a preview host, Host the UI's: the API socket.
+	if resp, err := get(t, "https://"+previewHost+"/api/repos", uiHost); err != nil || resp.StatusCode != 200 {
+		t.Fatalf("preview SNI, UI Host: %v %v", resp, err)
+	}
+	if env.api.count() != 1 || env.preview.count() != 0 {
+		t.Errorf("preview SNI, UI Host: api saw %d, preview saw %d; want 1 and 0", env.api.count(), env.preview.count())
+	}
+	env.api.reset()
+	env.preview.reset()
+	// SNI for the UI host, Host a preview's: the preview socket only.
+	if resp, err := get(t, "https://"+uiHost+"/", previewHost); err != nil || resp.StatusCode != 200 {
+		t.Fatalf("UI SNI, preview Host: %v %v", resp, err)
+	}
+	if env.preview.count() != 1 || env.api.count() != 0 {
+		t.Errorf("UI SNI, preview Host: preview saw %d, api saw %d; want 1 and 0", env.preview.count(), env.api.count())
+	}
+}
+
+// TestForeignHostOnThePreviewCertificate is DNS rebinding's defense on the
+// second site: the TLS name is a real preview host, so the wildcard
+// certificate is served, but the Host header is not one label under the
+// preview domain. Two labels deep, the bare domain, a suffix trick and an
+// attacker's name all match no site block and reach neither socket.
+func TestForeignHostOnThePreviewCertificate(t *testing.T) {
+	need(t)
+	for _, h := range []string{"a.b." + previewDomain, previewDomain, previewHost + ".evil.example",
+		"evil.example", "x" + previewDomain, "127.0.0.1"} {
+		get(t, "https://"+previewHost+"/", h)
+		if n := env.api.count() + env.preview.count(); n != 0 {
+			t.Errorf("Host %q on the preview certificate reached a backend (%d request(s))", h, n)
+			env.api.reset()
+			env.preview.reset()
+		}
+	}
+	// Control: the same connection's name as the Host does get through.
+	get(t, "https://"+previewHost+"/", "")
+	if env.preview.count() != 1 {
+		t.Fatal("control: the legitimate preview request was not recorded either")
 	}
 }
 

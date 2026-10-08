@@ -221,10 +221,35 @@ install v0.0.2 --ui-host "ui.$UI" --preview-domain "previews.$UI" --preview-cert
 check "a preview domain beside the UI host (a sibling) is refused" refused_saying "both are on \"$UI\""
 check "neither refusal changed the settings" cmp -s /etc/drydock/drydock.env /root/env.before-preview
 check "neither installed a preview site" [ ! -e /etc/caddy/drydock.d/preview.caddy ]
+# The wildcard is checked as the UI certificate is: a preview site served with
+# a certificate that does not carry the preview names fails the install's
+# final check, naming the preview host, before the right one passes it.
+install v0.0.2 --preview-domain "$PREVIEW" --preview-cert /etc/ssl/drydock/ui.pem --preview-key /etc/ssl/drydock/ui.key
+check "a preview certificate without the wildcard fails the final check" \
+	refused_saying "could not verify the certificate Caddy serves for drydock-check.$PREVIEW"
+check "and it names the flag" grep -q -- "--preview-cert is the full chain" <<<"$out"
 install v0.0.2 --preview-domain "$PREVIEW" --preview-cert /etc/ssl/drydock/preview.pem --preview-key /etc/ssl/drydock/preview.key
 check "enabling previews succeeds" [ "$rc" = 0 ] || printf '%s\n' "$out"
 check "the preview site is installed" [ -f /etc/caddy/drydock.d/preview.caddy ]
-check "a preview host now answers over TLS" [ "$(status --resolve "a-b.$PREVIEW:443:127.0.0.1" "https://a-b.$PREVIEW/")" != 000 ]
+# The front door (port forwarding §13 step 1): every preview URL is 401, over
+# the wildcard verified against the test CA — never -k — whatever it asks for
+# and whatever it carries. The controls are the UI host, same jar, answering.
+pv() { status --resolve "$1.$PREVIEW:443:127.0.0.1" "${@:3}" "https://$1.$PREVIEW$2"; }
+check "a preview host answers 401 over the verified wildcard" [ "$(pv a-b /)" = 401 ]
+check "so does another slug" [ "$(pv myapp-5173-p2mq /some/page)" = 401 ]
+check "control: the session reads the API on the UI host" [ "$(status -b "$jar" "https://$UI/api/auth/session")" = 200 ]
+check "the same session on a preview host reads no API route" [ "$(pv a-b /api/auth/session -b "$jar")" = 401 ]
+check "a token in ?t= is 401 too" [ "$(pv a-b "/.drydock/session?t=forged" -b "$jar")" = 401 ]
+check "a forged preview cookie is 401 too" [ "$(pv a-b / -H "Cookie: drydock-preview=forged")" = 401 ]
+check "a sign-in POST on a preview host is 401" [ "$(pv a-b /api/auth/session -X POST -H "Origin: https://$UI" \
+	-H 'Content-Type: application/json' --data "{\"password\":\"$PW\"}")" = 401 ]
+serves_app() { "${CURL[@]}" --resolve "$1:443:127.0.0.1" "https://$1/" | grep -q '<div id="app">'; }
+serves_no_app() { ! serves_app "$1"; }
+check "control: the UI host serves the app" serves_app "$UI"
+check "the preview's 401 is not the UI's app" serves_no_app "a-b.$PREVIEW"
+# The certificate's half of "one label": curl refuses the wildcard for a name two
+# labels deep. Caddy's own matcher is test/component's TestForeignHostOnThePreviewCertificate.
+check "the wildcard certificate does not cover a name two labels deep" [ "$(pv x.a-b /)" = 000 ]
 check "drydock was given the preview domain" grep -q -- "--preview-domain=$PREVIEW" "/proc/$(mainpid drydock)/cmdline" 2>/dev/null ||
 	tr '\0' ' ' <"/proc/$(mainpid drydock)/cmdline" | grep -q -- "--preview-domain=$PREVIEW"
 install v0.0.2

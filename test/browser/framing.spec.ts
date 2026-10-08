@@ -35,7 +35,7 @@ test('the UI cannot be framed from a preview origin', async ({ page, stack }) =>
 
   // Control: frames work on this page — a frameable cross-origin document
   // (another preview host) renders inside it.
-  await expect(page.frameLocator('iframe[name=other]').locator('body')).toContainText('404 page not found')
+  await expect(page.frameLocator('iframe[name=other]').locator('body')).toContainText('unauthenticated')
 
   // The UI was really requested as a frame and really served: so what keeps
   // it out is the browser enforcing a header, not a request that never
@@ -55,7 +55,7 @@ test('the UI cannot be framed from a preview origin', async ({ page, stack }) =>
 test('the UI cannot frame a preview', async ({ page, stack }) => {
   // Control: the preview origin answers when navigated to directly.
   const direct = await page.goto(`${PREVIEW}/?direct=1`)
-  expect(direct?.status()).toBe(404) // the real preview socket's answer: a document, served
+  expect(direct?.status()).toBe(401) // the real preview socket's answer: a document, served
   await seenBy(stack.previewTap.seen, (s) => s.path === '/?direct=1', 'the direct preview request')
 
   await page.goto(`${UI}/signin`)
