@@ -496,9 +496,12 @@ func (m *Manager) answer(ctx context.Context, workspaceID string, st State, r Re
 	if s == nil {
 		ring := m.ringLocked(workspaceID)
 		var row string
-		m.DB.QueryRowContext(ctx, `SELECT id FROM supervisor WHERE workspace_id = ?
-			ORDER BY started_at DESC LIMIT 1`, workspaceID).Scan(&row)
-		s = &sup{m: m, ws: workspaceID, row: row, log: ring, done: make(chan struct{})}
+		var restarts int
+		// The row's restart count too: a write sets restart_count from
+		// memory, and a fresh sup's zero would reset the cumulative count.
+		m.DB.QueryRowContext(ctx, `SELECT id, restart_count FROM supervisor WHERE workspace_id = ?
+			ORDER BY started_at DESC LIMIT 1`, workspaceID).Scan(&row, &restarts)
+		s = &sup{m: m, ws: workspaceID, row: row, restarts: restarts, log: ring, done: make(chan struct{})}
 		s.state, _, _ = m.storedState(ctx, row)
 		close(s.done)
 	}

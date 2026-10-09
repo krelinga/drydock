@@ -180,3 +180,86 @@ func TestAFailedStateWriteLeavesMemoryAtTheRow(t *testing.T) {
 		t.Errorf("memory %s, want starting", st)
 	}
 }
+
+// answer, for a workspace with no supervisor in memory, keeps the row's
+// cumulative restart count: its sup is made fresh, and a write sets
+// restart_count from memory, so a zero there reset it.
+func TestAnAnswerKeepsTheRestartCount(t *testing.T) {
+	r := newRig(t)
+	detached(t, r) // the row
+	if _, err := r.db.Exec(`UPDATE supervisor SET restart_count = 3 WHERE workspace_id = ?`, wsID); err != nil {
+		t.Fatal(err)
+	}
+	r.m.answer(context.Background(), wsID, Degraded, ReasonStartFailed, startFailedSentence)
+	if _, n := r.row(); n != 3 {
+		t.Errorf("restart_count %d after an answer, want 3", n)
+	}
+	if l := r.last(); l.State != string(Degraded) || l.RestartCount != 3 {
+		t.Errorf("event %+v, want degraded with restart_count 3", l)
+	}
+}
+
+// A discovery write that does not commit is tried again on the next window:
+// the environment id, the session and the capacity are marked recorded only
+// once their commit lands. Marked before, one failed first write — the
+// window carrying the environment id and the first session together — left
+// workspace.environment_id unwritten and its session.status unsent for the
+// server's whole life. The serving decision is the announcement's, and does
+// not wait on the write.
+func TestAFailedDiscoveryWriteIsRetried(t *testing.T) {
+	r := newRig(t)
+	s := detached(t, r)
+	ctx := context.Background()
+	const env, sess = "env_01RETRIED00000000000000000", "session_01RETRIED0000000000000000"
+	window := []byte("Environment ID: " + env + "\r\n    Capacity: 0/4 · x\r\n" +
+		"\x1b]8;;https://claude.ai/code/" + sess + "\x07x\x1b]8;;\x07\r\n")
+	sessionEvents := func() []events.Event {
+		evs, err := r.log.ForWorkspace(ctx, wsID, 1000)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var out []events.Event
+		for _, e := range evs {
+			if e.Kind == workspace.KindSession {
+				out = append(out, e)
+			}
+		}
+		return out
+	}
+	if _, err := r.db.Exec(`CREATE TRIGGER refuse_env BEFORE UPDATE OF environment_id ON workspace
+		BEGIN SELECT RAISE(ABORT, 'refused by the test'); END`); err != nil {
+		t.Fatal(err)
+	}
+	d := &discovered{sessions: map[string]bool{}}
+	if !s.discover(ctx, d, window) {
+		t.Error("not serving: the announcement decides serving, not the write")
+	}
+	if got := r.environment(); got != "" || len(r.sessions()) != 0 || len(sessionEvents()) != 0 {
+		t.Fatalf("a write that did not commit left env %q, sessions %v, %d events", got, r.sessions(), len(sessionEvents()))
+	}
+	if _, err := r.db.Exec(`DROP TRIGGER refuse_env`); err != nil {
+		t.Fatal(err)
+	}
+	// The next window, the same bytes still in it: everything is recorded.
+	s.discover(ctx, d, window)
+	if got := r.environment(); got != env {
+		t.Errorf("environment %q, want %q", got, env)
+	}
+	if got := r.sessions(); len(got) != 1 || got[0] != sess {
+		t.Errorf("sessions %v, want [%s]", got, sess)
+	}
+	evs := sessionEvents()
+	if len(evs) != 1 {
+		t.Fatalf("%d session events, want 1", len(evs))
+	}
+	var data workspace.SessionData
+	json.Unmarshal(evs[0].Data, &data)
+	if data.EnvironmentID != env || data.Sessions != 1 || data.CapacityTotal == nil || *data.CapacityTotal != 4 {
+		t.Errorf("event data %+v", data)
+	}
+	// Once recorded, a window saying nothing new writes nothing.
+	s.discover(ctx, d, window)
+	if n := len(sessionEvents()); n != 1 {
+		t.Errorf("%d session events after a repeat window, want 1", n)
+	}
+}

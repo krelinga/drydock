@@ -31,7 +31,7 @@ func TestConcurrentWritesPublishInCommitOrder(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	const writers, each = 2, 40
+	const writers, each = 8, 50
 	sub := e.log.Subscribe()
 	defer e.log.Cancel(sub)
 	got := make(chan []events.Event, 1)

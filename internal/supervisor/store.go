@@ -249,8 +249,9 @@ func EnvironmentURL(env string) string {
 // as an rc_session row — a cache of what the server announced; the Claude
 // app is right when they disagree (§8). The first session a supervisor ever
 // sees is the primary: the pre-created one in the workspace folder. The
-// event carries how many sessions the supervisor has seen.
-func (s *sup) recordDiscovery(ctx context.Context, d *discovered, env string, sessionIDs []string, capChanged bool) {
+// event carries how many sessions the supervisor has seen. It reports
+// whether it committed: what it did not is recorded by a later window.
+func (s *sup) recordDiscovery(ctx context.Context, d *discovered, env string, sessionIDs []string, capChanged bool) bool {
 	m := s.m
 	now := m.clock().Now().UTC().Format(time.RFC3339Nano)
 	err := m.commit(ctx, func(tx *sql.Tx) ([]events.Event, error) {
@@ -295,5 +296,7 @@ func (s *sup) recordDiscovery(ctx context.Context, d *discovered, env string, se
 	})
 	if err != nil {
 		m.logf("drydock: workspace %s: recording what the session server announced: %v", s.ws, err)
+		return false
 	}
+	return true
 }
