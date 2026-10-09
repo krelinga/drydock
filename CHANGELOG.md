@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.3](https://github.com/krelinga/drydock/compare/v0.7.2...v0.7.3) (2026-10-09)
+
+
+### Bug Fixes
+
+* resume session servers after a sign-in as provision jobs, and never lose one beside a park ([#112](https://github.com/krelinga/drydock/issues/112)) ([48f2863](https://github.com/krelinga/drydock/commit/48f28635fdb9e10b83762a395a3b8317336bad2a))
+
 ## [0.7.2](https://github.com/krelinga/drydock/compare/v0.7.1...v0.7.2) (2026-10-09)
 
 
