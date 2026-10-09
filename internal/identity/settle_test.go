@@ -317,3 +317,71 @@ func TestAnAnswerThatCannotBeStoredIsAFailure(t *testing.T) {
 		}
 	}
 }
+
+// TestAPressSharingARunWithALoginIsAnswered: a Check-now press and a
+// handshake's LoggedIn, both made during a running check, share the one
+// check after it, whose asks are both of them, in either order. Over an
+// absent volume that stays absent the handshake's moment dates nothing and
+// the verdict does not change, so nothing is announced and the press is owed
+// auth.identity_checked: the run must see that any of its asks is owed an
+// answer, not only the last one. The control is the login alone, which
+// writes nothing.
+func TestAPressSharingARunWithALoginIsAnswered(t *testing.T) {
+	for _, c := range []struct {
+		name  string
+		order []string
+	}{
+		{"press then login", []string{"press", "login"}},
+		{"login then press", []string{"login", "press"}},
+		{"login alone", []string{"login"}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			h := newHarness(t)
+			h.src.set(nil, nil, nil, nil) // absent, and staying so
+			if _, err := h.w.Check(waitCtx(t)); err != nil {
+				t.Fatal(err)
+			}
+			n := len(h.kinds(t))
+			src := &gatedSource{fakeSource: h.src, in: make(chan struct{}), gate: make(chan struct{})}
+			h.w.Source = src
+
+			held := make(chan struct{})
+			go func() { h.w.Check(waitCtx(t)); close(held) }() // an unrequested check
+			receive(t, src.in, "the held check did not start its read")
+			base := h.w.c.Asked()
+			login := make(chan error, 1)
+			pressed := false
+			for i, ask := range c.order {
+				switch ask {
+				case "press":
+					pressed = true
+					if err := h.w.Trigger(); err != nil {
+						t.Fatal(err)
+					}
+				case "login":
+					go func() { login <- h.w.LoggedIn(waitCtx(t), h.clock.Now()) }()
+				}
+				want := base + life.Ticket(i+1)
+				waitFor(t, func() bool { return h.w.c.Asked() == want })
+			}
+			close(src.gate)
+			receive(t, held, "the held check did not end")
+			if err := <-login; err != nil {
+				t.Fatal(err)
+			}
+			h.settled(t, "the shared check did not end")
+
+			if reads := h.calls(); reads != 3 {
+				t.Errorf("%d reads; want the first, the held one and one shared check", reads)
+			}
+			got := strings.Join(h.since(t, n), ",")
+			want := ""
+			if pressed {
+				want = KindChecked
+			}
+			if got != want {
+				t.Errorf("events [%s]; want [%s]", got, want)
+			}
+		})
+	}
+}

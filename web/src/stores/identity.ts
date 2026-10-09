@@ -99,8 +99,8 @@ export const useIdentityStore = defineStore('identity', {
     /**
      * POST /api/auth/claude/check. In flight until one of the check's events
      * lands newer than the request (`settlesCheck`), or the request is
-     * refused. The server answers every request — a joined one with the
-     * check it joined — and an unchanged verdict with auth.identity_checked
+     * refused. The server answers every request — one made during a check
+     * with the check after it — and an unchanged verdict with auth.identity_checked
      * (design §7.3), which a check nobody asked for never writes.
      */
     async check(): Promise<void> {

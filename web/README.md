@@ -156,7 +156,7 @@ with the `all_repos` confirm, the two-kinds rotate result, delete.
   `listening` is what a probe finds answering, and `previewDomain: null` is previews off.
 - It checks identity as the watch does (`startIdentityCheck`/`finishIdentityCheck`/
   `intervalIdentityCheck`, `identityCheckMode: 'manual'`): silent for an unchanged interval check,
-  `auth.identity_checked` for an unchanged requested one, a press during a check joining it, and
+  `auth.identity_checked` for an unchanged requested one, a press during a check answered by the check queued after it, and
   `identityWatchStopped` refusing a check `503` as the route does after shutdown. **A mock that
   announces every check passes specs a real server fails** — keep the mock as strict as the
   server.
