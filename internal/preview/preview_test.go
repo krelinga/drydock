@@ -283,7 +283,7 @@ func TestDisableAndRetireEndSessions(t *testing.T) {
 	if !f.valid(cookie) {
 		t.Fatal("control: the session works before the disable")
 	}
-	if err := f.svc.SetEnabled(ctx, "p1", false); err != nil {
+	if _, err := f.svc.SetEnabled(ctx, "w1", "p1", false); err != nil {
 		t.Fatal(err)
 	}
 	var n int
@@ -291,7 +291,7 @@ func TestDisableAndRetireEndSessions(t *testing.T) {
 	if n != 0 {
 		t.Errorf("%d preview sessions survived the disable", n)
 	}
-	if err := f.svc.SetEnabled(ctx, "p1", true); err != nil {
+	if _, err := f.svc.SetEnabled(ctx, "w1", "p1", true); err != nil {
 		t.Fatal(err)
 	}
 	if f.valid(cookie) {
@@ -301,7 +301,7 @@ func TestDisableAndRetireEndSessions(t *testing.T) {
 	if !f.valid(again) {
 		t.Fatal("control: a new handshake after re-enable failed")
 	}
-	if err := f.svc.Retire(ctx, "p1"); err != nil {
+	if err := f.svc.Retire(ctx, "w1", "p1"); err != nil {
 		t.Fatal(err)
 	}
 	if f.valid(again) {
@@ -310,7 +310,7 @@ func TestDisableAndRetireEndSessions(t *testing.T) {
 	if _, err := f.svc.Resolve(ctx, slug); !errors.Is(err, preview.ErrNotPreviewable) {
 		t.Errorf("a retired slug resolves: %v", err)
 	}
-	if err := f.svc.SetEnabled(ctx, "p1", true); err == nil {
+	if _, err := f.svc.SetEnabled(ctx, "w1", "p1", true); err == nil {
 		t.Error("a retired port was re-enabled")
 	}
 }

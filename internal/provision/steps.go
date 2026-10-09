@@ -172,6 +172,13 @@ func (r *runState) resolveConfig(ctx context.Context, w workspace.Workspace) err
 		approvedNote = "It runs with host access the operator approved for this repository: " +
 			strings.Join(container.FieldNames(ha.Settings), ", ") + "."
 	}
+	// The ports the configuration declares, now that it is cleared to run
+	// (PF §13 step 4): listed, disabled, for the operator to enable.
+	if r.p.DeclarePorts != nil {
+		if err := r.p.DeclarePorts(ctx, w.ID, container.DeclaredPorts(c)); err != nil {
+			r.p.logf("drydock: workspace %s: writing its declared ports: %v", w.ID, err)
+		}
+	}
 	r.folder = c.WorkspaceFolder
 	r.lockfile, r.lockPath = container.LockfileIgnore, ""
 	if r.override != "" {

@@ -39,7 +39,7 @@ printf "%s\n" "$PW" | ./drydock passwd --db x.db  # set the operator password (n
 | `internal/classify` | The five classifiers over the recorded corpus. They refuse rather than guess. |
 | `internal/claudetest`, `internal/pty` | `fakeclaude`, replaying the corpus on a real PTY, its replays pinned by SHA-256; and the PTY itself. |
 | `internal/auth` | argon2id, sessions stored only as SHA-256, a lockout that survives restart. |
-| `internal/preview` | Preview tokens (memory only, single-use), preview sessions (stored as hashes) and the preview proxy. `forwarded_port` has no foreign key to `workspace`: a slug is never reissued. |
+| `internal/preview` | Preview tokens (memory only, single-use), preview sessions (stored as hashes), the preview proxy and the port registry. `forwarded_port` has no foreign key to `workspace`: a slug is never reissued. A port is off until enabled and nothing a container declares enables it; a disable or retire closes its websockets at once; the probe is the proxy's own dial. |
 | `internal/events` | The append-only event log and its fan-out. `Commit` makes a row change and its event one fact; `message` is prose nothing may parse. |
 | `internal/workspace` | The state machine and §6's eight steps. A step's raw error never reaches an event; the cap's rule is `Occupying` and nothing else; the host-access approval state. |
 | `internal/clone` | §6 step 2. The token reaches git only through its environment — never argv, a URL or `.git/config`. |

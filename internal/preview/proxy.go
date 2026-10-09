@@ -476,30 +476,104 @@ func (p *Proxy) fail(w *proxyWriter, r *http.Request, t Target, err error) {
 	if w.hijacked.Load() {
 		return // the connection is the upgrade's now; nothing can be written
 	}
-	var ue *unreachableError
-	var le *lookupError
-	switch {
-	case r.Context().Err() != nil:
+	if r.Context().Err() != nil {
 		// The device went away; there is no one to answer.
 		return
-	case errors.Is(err, ErrNotRunning):
+	}
+	outcome := p.outcomeOf(err, t.WorkspaceID)
+	switch outcome {
+	case ProbeNotRunning:
 		// Treated as stopped (PF §8.1): the one dead end, as the front door
 		// sends a stopped workspace's request.
 		noStore(w)
 		http.Redirect(w, r, DeniedPath, http.StatusFound)
+	case ProbeLookupFailed:
+		previewPage(w, http.StatusServiceUnavailable, "Preview unavailable", OutcomeSentence(outcome, t.ContainerPort))
+	case ProbeTimedOut:
+		previewPage(w, http.StatusGatewayTimeout, "Preview not answering", OutcomeSentence(outcome, t.ContainerPort))
+	default:
+		previewPage(w, http.StatusBadGateway, "Preview not answering", OutcomeSentence(outcome, t.ContainerPort))
+	}
+}
+
+// What one dial came to — the proxy's failure pages and the probe endpoint
+// tell these apart, and nothing else (PF §11, §13 step 4).
+const (
+	// ProbeAnswering: the container accepted a TCP connection on the port.
+	ProbeAnswering = "answering"
+	// ProbeNotRunning: no running container holds the workspace's label
+	// now, or the one dialled moved — the proxy's denied page.
+	ProbeNotRunning = "not_running"
+	// ProbeRefused: the container is up and nothing accepted the
+	// connection (refused, reset, unroutable) — the proxy's 502.
+	ProbeRefused = "refused"
+	// ProbeTimedOut: the connect did not finish in DialTimeout — 504.
+	ProbeTimedOut = "timed_out"
+	// ProbeLookupFailed: Drydock could not ask Docker — 503, and the
+	// reason in the journal.
+	ProbeLookupFailed = "lookup_failed"
+)
+
+// ProbeResult is GET …/ports/:port/probe: what a dial made now came to, and
+// the sentence the proxy's own page would say for it.
+type ProbeResult struct {
+	Outcome string `json:"outcome"`
+	Message string `json:"message"`
+}
+
+// Probe dials a workspace's container port now and reports what happened —
+// through dial, the proxy's own and only dial: the container resolved by
+// label (Resolver.Resolve), the connect, Resolver.Confirm, and the one retry
+// a moved container gets. The connection is closed unused; nothing is sent
+// on it. Its answers are the failure pages' (OutcomeSentence), so the panel
+// and a preview tab never disagree about a port.
+func (p *Proxy) Probe(ctx context.Context, workspaceID string, port int) ProbeResult {
+	p.init()
+	if port < 1 || port > 65535 {
+		return ProbeResult{Outcome: ProbeRefused, Message: OutcomeSentence(ProbeRefused, port)}
+	}
+	conn, err := p.dial(ctx, "tcp", dialKey(workspaceID, port))
+	if err == nil {
+		conn.Close()
+		return ProbeResult{Outcome: ProbeAnswering, Message: OutcomeSentence(ProbeAnswering, port)}
+	}
+	o := p.outcomeOf(err, workspaceID)
+	return ProbeResult{Outcome: o, Message: OutcomeSentence(o, port)}
+}
+
+// outcomeOf is a failed dial's outcome; a lookup failure goes to the journal
+// with its reason, which no page or probe answer carries.
+func (p *Proxy) outcomeOf(err error, workspaceID string) string {
+	var ue *unreachableError
+	var le *lookupError
+	switch {
+	case errors.Is(err, ErrNotRunning):
+		return ProbeNotRunning
 	case errors.As(err, &le):
 		if p.Logf != nil {
-			p.Logf("drydock: preview: looking up workspace %s's container: %v", t.WorkspaceID, le.err)
+			p.Logf("drydock: preview: looking up workspace %s's container: %v", workspaceID, le.err)
 		}
-		previewPage(w, http.StatusServiceUnavailable, "Preview unavailable",
-			"Drydock could not look up this workspace's container. The service log says why.")
+		return ProbeLookupFailed
 	case errors.As(err, &ue) && ue.timeout:
-		previewPage(w, http.StatusGatewayTimeout, "Preview not answering",
-			fmt.Sprintf("Nothing answered on port %d in this workspace's container in time. Is the dev server running, and listening on 0.0.0.0 rather than 127.0.0.1?", t.ContainerPort))
-	default:
-		previewPage(w, http.StatusBadGateway, "Preview not answering",
-			fmt.Sprintf("Nothing is answering on port %d in this workspace's container. Is the dev server running, and listening on 0.0.0.0 rather than 127.0.0.1?", t.ContainerPort))
+		return ProbeTimedOut
 	}
+	return ProbeRefused
+}
+
+// OutcomeSentence is the one sentence for each outcome, naming the port and
+// nothing internal — no address, container id or error text.
+func OutcomeSentence(outcome string, port int) string {
+	switch outcome {
+	case ProbeAnswering:
+		return fmt.Sprintf("Something is answering on port %d in this workspace's container.", port)
+	case ProbeNotRunning:
+		return "This workspace has no running container to reach."
+	case ProbeLookupFailed:
+		return "Drydock could not look up this workspace's container. The service log says why."
+	case ProbeTimedOut:
+		return fmt.Sprintf("Nothing answered on port %d in this workspace's container in time. Is the dev server running, and listening on 0.0.0.0 rather than 127.0.0.1?", port)
+	}
+	return fmt.Sprintf("Nothing is answering on port %d in this workspace's container. Is the dev server running, and listening on 0.0.0.0 rather than 127.0.0.1?", port)
 }
 
 func noStore(w http.ResponseWriter) {

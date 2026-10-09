@@ -66,6 +66,20 @@
 //
 // Migration 8's forwarded_port has **no foreign key to workspace**: a cascade
 // would delete a row and free its slug for reissue.
+//
+// The port registry (PF §13 step 4, registry.go) is this Service too: Ports,
+// Port, Add, Update/SetEnabled, Retire and DeclarePorts, each one transaction
+// with its one port.* event (events.Log.Commit), the whole row as data.port
+// (port.retired: port_id). A row is born disabled and only Update writes the
+// switch — DeclarePorts, fed by step 3's container.DeclaredPorts, never does.
+// A disable or a retire deletes the port's preview sessions in its transaction
+// and then tells Revoked, which the server wires to
+// Proxy.CloseWhere(PortID == id): open websockets close at once. MintSlug is
+// <repo>-<port>-<4>, drawn again under a savepoint when the UNIQUE on slug —
+// retired rows included — refuses it, never reused. Spent names a switched-off
+// or retired slug, for authorize's Clear grant: that host's /.drydock/session
+// answers it with Clear-Site-Data (PF §10.3). Proxy.Probe is the proxy's own
+// dial, its outcomes and sentences (OutcomeSentence) the failure pages'.
 package preview
 
 import (
@@ -83,6 +97,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/krelinga/drydock/internal/events"
 	"github.com/krelinga/drydock/internal/sys"
 )
 
@@ -194,6 +209,12 @@ type Grant struct {
 	// consume, so nothing in the token URL can change where the browser
 	// lands.
 	Path string
+	// Clear marks a grant that is never a session: authorize mints one for
+	// a slug whose port was disabled or retired, so the preview host's own
+	// /.drydock/session can answer it with Clear-Site-Data (PF §10.3) — the
+	// one response on that origin Drydock can make for a signed-in device
+	// that is not an oracle to anyone else.
+	Clear bool
 }
 
 // ErrNotPreviewable is a slug that resolves to no enabled port on a running
@@ -218,6 +239,16 @@ type Service struct {
 	// auth.IdleLifetime in production (a parameter so this package does not
 	// import auth).
 	AuthIdle time.Duration
+	// Events is where the port registry's changes are written, each in the
+	// same transaction as the row it describes (events.Log.Commit). Nil
+	// writes the rows alone, for a test of the handshake.
+	Events *events.Log
+	// Revoked is told, after the commit, of every port a disable or a
+	// retire has just ended the preview sessions of — the server closes
+	// that port's open websockets with it (Proxy.CloseWhere), so a disable
+	// ends a live HMR socket at once rather than at its next recheck (PF
+	// §13.4). Nil tells no one.
+	Revoked func(portID string)
 
 	mu      sync.Mutex
 	pending map[string]pendingToken // keyed by the token's SHA-256
@@ -333,7 +364,7 @@ var ErrSessionGone = errors.New("the session that minted this grant is gone")
 // returns the cookie value to set. The value is never stored.
 func (s *Service) StartSession(ctx context.Context, g Grant) (string, Target, error) {
 	slug, ok := s.Slug(g.Host)
-	if !ok {
+	if !ok || g.Clear {
 		return "", Target{}, ErrNotPreviewable
 	}
 	t, err := s.Resolve(ctx, slug)
@@ -431,55 +462,6 @@ func (s *Service) authAlive(ctx context.Context, id string) (bool, error) {
 	}
 	now := s.Clock.Now().UTC()
 	return now.Before(e) && (s.AuthIdle <= 0 || now.Before(a.Add(s.AuthIdle))), nil
-}
-
-// SetEnabled enables or disables a port. Disabling deletes every preview
-// session for it in the same transaction, so a later re-enable revives none
-// of them (PF §5): each device runs the handshake again. The registry's
-// routes are step 4's; this is the half step 2's sessions depend on.
-func (s *Service) SetEnabled(ctx context.Context, portID string, enabled bool) error {
-	return s.tx(ctx, func(tx *sql.Tx) error {
-		v := 0
-		if enabled {
-			v = 1
-		}
-		res, err := tx.ExecContext(ctx, `UPDATE forwarded_port SET enabled = ? WHERE id = ? AND retired_at IS NULL`, v, portID)
-		if err != nil {
-			return err
-		}
-		if n, _ := res.RowsAffected(); n == 0 {
-			return ErrNotPreviewable
-		}
-		if !enabled {
-			_, err = tx.ExecContext(ctx, `DELETE FROM preview_session WHERE forwarded_port_id = ?`, portID)
-		}
-		return err
-	})
-}
-
-// Retire soft-deletes a port: disabled, retired_at set, its preview sessions
-// gone. The row stays so its slug stays spent (PF §4).
-func (s *Service) Retire(ctx context.Context, portID string) error {
-	return s.tx(ctx, func(tx *sql.Tx) error {
-		if _, err := tx.ExecContext(ctx, `DELETE FROM preview_session WHERE forwarded_port_id = ?`, portID); err != nil {
-			return err
-		}
-		_, err := tx.ExecContext(ctx, `UPDATE forwarded_port SET enabled = 0, retired_at = ? WHERE id = ? AND retired_at IS NULL`,
-			ts(s.Clock.Now()), portID)
-		return err
-	})
-}
-
-func (s *Service) tx(ctx context.Context, f func(*sql.Tx) error) error {
-	tx, err := s.DB.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	if err := f(tx); err != nil {
-		_ = tx.Rollback()
-		return err
-	}
-	return tx.Commit()
 }
 
 // RetireWorkspacePorts is what removing a workspace does to its ports, inside

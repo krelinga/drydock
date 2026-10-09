@@ -339,7 +339,7 @@ func TestEveryRouteIsGatedEndToEnd(t *testing.T) {
 	r := start(t)
 	cookie := r.signIn(t)
 	path := func(rt api.Route) string {
-		p := strings.NewReplacer("{id}", "01JABCDEFGHJKMNPQRSTVWXYZ", "{name}", "TEST_X", "{lid}", "01JL").Replace(rt.Pattern)
+		p := strings.NewReplacer("{id}", "01JABCDEFGHJKMNPQRSTVWXYZ", "{name}", "TEST_X", "{lid}", "01JL", "{port}", "01JP").Replace(rt.Pattern)
 		return p
 	}
 	for _, rt := range api.APIRoutes() {

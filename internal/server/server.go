@@ -194,6 +194,13 @@ func New(ctx context.Context, cfg config.Config, env sys.Env) (*Server, error) {
 		IdleTimeout: cfg.PreviewIdleTimeout,
 		Logf:        func(f string, a ...any) { fmt.Fprintf(os.Stderr, f+"\n", a...) }}
 	s.PreviewUpstream = s.Proxy
+	// The port registry writes its events with its rows, and a disable or a
+	// retire closes that port's open websockets at once — not at their next
+	// recheck (PF §13.4, "What step 4 should know").
+	previews.Events = s.Events
+	previews.Revoked = func(portID string) {
+		s.Proxy.CloseWhere(func(t preview.Target) bool { return t.PortID == portID })
+	}
 	// The Claude Code version is this binary's, not the Feature's default:
 	// the classifiers compiled in here were recorded against it, so a
 	// Feature release under the same major tag cannot move it (§11).
@@ -227,6 +234,15 @@ func New(ctx context.Context, cfg config.Config, env sys.Env) (*Server, error) {
 		return s.Supervisor.Park(ctx, w.ID, supervisor.ReasonStaleBrokerMount, detail)
 	}
 	s.Provisioner.SupervisorRestart = s.Supervisor.Restart
+	// Step 3's declared ports become the registry's declared rows: listed,
+	// never enabled by it (PF §13 step 4).
+	s.Provisioner.DeclarePorts = func(ctx context.Context, id string, ports []container.DeclaredPort) error {
+		ds := make([]preview.Declared, len(ports))
+		for i, p := range ports {
+			ds[i] = preview.Declared{Port: p.Port, Label: p.Label}
+		}
+		return previews.DeclarePorts(ctx, id, ds)
+	}
 	// A deleting row found at boot is finished by the same delete the route
 	// runs (§6: resume the delete), so a delete is resumable from any
 	// sub-step it was interrupted after.
@@ -350,6 +366,11 @@ func New(ctx context.Context, cfg config.Config, env sys.Env) (*Server, error) {
 	for name, h := range previewHandlers(previews) {
 		handlers[name] = h
 	}
+	// The probe dials through the proxy itself — Address, the connect,
+	// Confirm — read per request, so it is the proxy a test configured.
+	for name, h := range (api.PortRoutes{Registry: previews, Prober: proxyProber{s}}).Handlers() {
+		handlers[name] = h
+	}
 	for name, h := range routes.Handlers() {
 		handlers[name] = h
 	}
@@ -405,6 +426,14 @@ func New(ctx context.Context, cfg config.Config, env sys.Env) (*Server, error) {
 // itself, and api.PreviewFrontDoor sets it again on every answer of Drydock's.
 func previewHandlers(p *preview.Service) map[string]http.HandlerFunc {
 	return api.PreviewHandshake{Previews: p}.Handlers()
+}
+
+// proxyProber is the probe route's dial: the server's own preview proxy, so
+// the probe and a preview never resolve a container two ways.
+type proxyProber struct{ s *Server }
+
+func (p proxyProber) Probe(ctx context.Context, workspaceID string, port int) preview.ProbeResult {
+	return p.s.Proxy.Probe(ctx, workspaceID, port)
 }
 
 // containerResolver is the preview proxy's view of the container manager.

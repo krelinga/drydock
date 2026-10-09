@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -977,5 +978,31 @@ func TestNoTokenSurvivesAProvision(t *testing.T) {
 	if cfg := gitOut(t, filepath.Join(e.root, v.ID, "repo"), "config", "--local", "--list"); strings.Contains(cfg, "helper") ||
 		!strings.Contains(cfg, "remote.origin.url="+e.fake.URL+"/krelinga/alpha.git") {
 		t.Errorf(".git/config:\n%s", cfg)
+	}
+}
+
+// TestStep3DeclaresTheConfigurationsPorts: the resolved and merged
+// configuration's forwardPorts reach the port registry at step 3, once the
+// configuration is cleared to run (PF §13 step 4) — and a registry that
+// cannot write them fails nothing: the workspace still reaches running.
+func TestStep3DeclaresTheConfigurationsPorts(t *testing.T) {
+	e := newEnv(t)
+	e.cli.readConfig = "sed -e \"s#/srv/drydock/ws/FIXTURE/repo#$3#g\" -e 's#\"image\":#\"forwardPorts\":[5173,\"localhost:3000\"],\"image\":#g' <<'EOF'\n" +
+		fixture(t, "read-configuration-merged-ok.json") + "\nEOF\n"
+	e.wire(t)
+	var got [][]container.DeclaredPort
+	var ids []string
+	e.p.DeclarePorts = func(_ context.Context, id string, ps []container.DeclaredPort) error {
+		ids = append(ids, id)
+		got = append(got, ps)
+		return errors.New("the registry is down")
+	}
+	v := e.create(t, alpha, "")
+	if v.State != workspace.Running {
+		t.Fatalf("a failing registry failed the run: %s (%v)", v.State, deref(v.StateDetail))
+	}
+	want := []container.DeclaredPort{{Port: 5173}, {Port: 3000}}
+	if len(got) != 1 || ids[0] != v.ID || !reflect.DeepEqual(got[0], want) {
+		t.Errorf("declared %v for %v; want %v once for %s", got, ids, want, v.ID)
 	}
 }

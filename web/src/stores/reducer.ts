@@ -120,6 +120,7 @@ import {
   type IdentityCheckError, type IdentityState, type InstallationView, type LoginPhase, type RepoView, type SecretList,
   type SecretMeta, type StepStatus, type StreamEvent, type ApprovalView, type WorkspaceDetail, type WorkspaceList, type WorkspaceState,
   type WorkspaceView, SUPERVISOR_STATES, type SupervisorState, type HostDiskView, type ResourcesView,
+  type HostHeader, type PortList, type PortView,
 } from '../api/types'
 import { frameParts, mergeHostDisk, mergeResources, type HostDisk, type Resources } from './resources'
 
@@ -356,6 +357,29 @@ export interface SecretFault {
   secrets: Array<{ name: string; reason: string }>
 }
 
+/**
+ * One live forwarded port (port forwarding §5): a permission to reach a
+ * container port, off until enabled. From GET /api/workspaces/:id/ports and
+ * the port.* events, which carry the whole row; nothing else writes it.
+ */
+export interface Port {
+  id: string
+  workspaceId: string
+  containerPort: number
+  slug: string
+  host: string | null
+  url: string | null
+  label: string | null
+  hostHeader: HostHeader
+  enabled: boolean
+  hidden: boolean
+  declared: boolean
+  observed: boolean
+  manual: boolean
+  /** The id of the event (or snapshot position) that last wrote it. */
+  at: number
+}
+
 export interface Entities {
   /** The highest event id applied. What the next snapshot is "as of". */
   lastEventId: number
@@ -423,6 +447,18 @@ export interface Entities {
   resources: Record<string, Resources>
   /** The workspace filesystem against the disk limit; null until measured. */
   hostDisk: HostDisk | null
+  /** Live forwarded ports, by row id. Only the port list and port.* events write it. */
+  ports: Record<string, Port>
+  /**
+   * Retired ports, by the id of their `port.retired`. Row ids are ULIDs and
+   * never reused — a port listed again is a new row with a new slug — so a
+   * late event or an older list naming one is ignored rather than reviving it.
+   */
+  portsRetired: Record<string, number>
+  /** Per workspace: the position its port list was last applied at. Absent: not loaded. */
+  portsLoaded: Record<string, number>
+  /** Whether a preview domain is configured, from the last port list; null until one. */
+  previews: boolean | null
 }
 
 export type Action =
@@ -434,6 +470,7 @@ export type Action =
   | { type: 'secrets'; at: number; view: SecretList }
   | { type: 'identity'; at: number; view: ClaudeIdentityBody }
   | { type: 'resources'; frame: unknown }
+  | { type: 'ports'; at: number; workspaceId: string; view: PortList }
 
 export function emptyEntities(): Entities {
   return {
@@ -461,6 +498,10 @@ export function emptyEntities(): Entities {
     loginAt: 0,
     resources: {},
     hostDisk: null,
+    ports: {},
+    portsRetired: {},
+    portsLoaded: {},
+    previews: null,
   }
 }
 
@@ -495,6 +536,8 @@ export function reduce(prev: Entities, action: Action): Entities {
     }
     case 'secrets':
       return applySecretList(prev, action.at, action.view)
+    case 'ports':
+      return applyPortList(prev, action.at, action.workspaceId, action.view)
     case 'identity': {
       // The body stands unless an identity event newer than it was applied.
       const lastEventId = Math.max(prev.lastEventId, action.at)
@@ -713,12 +756,19 @@ function applyEvent(prev: Entities, ev: StreamEvent): Entities {
     delete feeds[wsId]
     const resources = { ...base.resources }
     delete resources[wsId]
-    return { ...base, workspaces, feeds, resources, gone: { ...base.gone, [wsId]: ev.id } }
+    // Its ports went with it (retired in the same commit, internal/workspace
+    // Remove), and the gone tombstone keeps any late port.* event out.
+    const ports = Object.fromEntries(Object.entries(base.ports).filter(([, p]) => p.workspaceId !== wsId))
+    const portsLoaded = { ...base.portsLoaded }
+    delete portsLoaded[wsId]
+    return { ...base, workspaces, feeds, resources, ports, portsLoaded, gone: { ...base.gone, [wsId]: ev.id } }
   }
 
   // Every event naming a workspace joins its feed, whatever its kind.
   const feed = mergeFeed(base.feeds[wsId], [ev])
   const fed = feed === base.feeds[wsId] ? base : { ...base, feeds: { ...base.feeds, [wsId]: feed } }
+
+  if (ev.kind.startsWith('port.')) return applyPortEvent(fed, wsId, ev)
 
   if (ev.kind === 'supervisor.state' || ev.kind === 'session.status') {
     const known = fed.workspaces[wsId]
@@ -1234,6 +1284,96 @@ function applySecretList(prev: Entities, at: number, view: SecretList): Entities
     secretsLoaded: true,
     ...fault,
   }
+}
+
+const PORT_WRITES = new Set(['port.added', 'port.enabled', 'port.disabled', 'port.updated'])
+
+/**
+ * A port row, field by named field, or null for one that is not a port. A
+ * `host_header` outside the two is read as the default, `localhost`; the URL
+ * is taken only from an https URL, so nothing on the wire can make the link
+ * the panel renders point at another scheme.
+ */
+function toPort(m: unknown, at: number): Port | null {
+  if (m === null || typeof m !== 'object') return null
+  const v = m as Partial<Record<keyof PortView, unknown>>
+  const id = str(v.id)
+  const workspaceId = str(v.workspace_id)
+  const containerPort = num(v.container_port)
+  const slug = str(v.slug)
+  if (id === null || workspaceId === null || containerPort === null || slug === null) return null
+  const url = str(v.url)
+  return {
+    id, workspaceId, containerPort, slug,
+    host: str(v.host),
+    url: url !== null && url.startsWith('https://') ? url : null,
+    label: str(v.label),
+    hostHeader: v.host_header === 'passthrough' ? 'passthrough' : 'localhost',
+    enabled: v.enabled === true,
+    hidden: v.hidden === true,
+    declared: v.declared === true,
+    observed: v.observed === true,
+    manual: v.manual === true,
+    at,
+  }
+}
+
+/**
+ * The port.* events (internal/preview): every kind but port.retired carries
+ * the whole row as `data.port`, so it is an upsert versioned by event id;
+ * port.retired drops the row for good. A kind from a later phase changes
+ * nothing.
+ */
+function applyPortEvent(base: Entities, wsId: string, ev: StreamEvent): Entities {
+  const data = ev.data ?? {}
+  if (ev.kind === 'port.retired') {
+    const id = str(data.port_id)
+    if (id === null) return base
+    const ports = { ...base.ports }
+    delete ports[id]
+    return { ...base, ports, portsRetired: { ...base.portsRetired, [id]: Math.max(ev.id, base.portsRetired[id] ?? 0) } }
+  }
+  if (!PORT_WRITES.has(ev.kind)) return base
+  const p = toPort(data.port, ev.id)
+  if (p === null || p.workspaceId !== wsId) return base
+  if (base.portsRetired[p.id] !== undefined) return base
+  const cur = base.ports[p.id]
+  if (cur !== undefined && cur.at >= ev.id) return base
+  return { ...base, ports: { ...base.ports, [p.id]: p } }
+}
+
+/**
+ * Merges a GET /api/workspaces/:id/ports?hidden=true body taken when the
+ * stream stood at `at`. It names every live port of that workspace, so it is
+ * the authority on which exist there — a port it omits is dropped unless an
+ * event newer than `at` wrote it — and it never revives a retired one.
+ */
+function applyPortList(prev: Entities, at: number, wsId: string, view: PortList): Entities {
+  if (prev.gone[wsId] !== undefined || view === null || typeof view !== 'object') {
+    return at > prev.lastEventId ? { ...prev, lastEventId: at } : prev
+  }
+  const ports: Record<string, Port> = {}
+  for (const [id, p] of Object.entries(prev.ports)) {
+    if (p.workspaceId !== wsId || p.at > at) ports[id] = p
+  }
+  for (const m of Array.isArray(view.ports) ? view.ports : []) {
+    const p = toPort(m, at)
+    if (p === null || p.workspaceId !== wsId || prev.portsRetired[p.id] !== undefined) continue
+    const cur = prev.ports[p.id]
+    ports[p.id] = cur !== undefined && cur.at > at ? cur : p
+  }
+  return {
+    ...prev,
+    lastEventId: Math.max(prev.lastEventId, at),
+    ports,
+    portsLoaded: { ...prev.portsLoaded, [wsId]: at },
+    previews: typeof view.previews === 'boolean' ? view.previews : prev.previews,
+  }
+}
+
+/** A workspace's live ports, by port number. */
+export function portsOf(e: Entities, wsId: string): Port[] {
+  return Object.values(e.ports).filter((p) => p.workspaceId === wsId).sort((a, b) => a.containerPort - b.containerPort)
 }
 
 /** Secrets by name, for the list. */

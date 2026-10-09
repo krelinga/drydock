@@ -43,7 +43,15 @@
 // __Host-drydock-preview, host-only, Lax, and lands on the clean URL),
 // preview.denied (403, one constant page). TestPreviewFallbackOrder is the
 // fallback's meta-test; the rest drive the real gate and service on a fake
-// clock; mutation-checked.
+// clock; mutation-checked. Authorize sends a signed-in device whose slug names
+// a switched-off or retired port to that host's /.drydock/session with a
+// Clear grant, answered with the denied page and Clear-Site-Data (PF §10.3).
+//
+// PortRoutes is the port registry (PF §6, §13 step 4): list, add, PATCH
+// (enabled, hidden, label, host_header — a null or an unknown key is
+// bad_request), retire and probe, `{port}` being the row's id. Every mutation
+// 202, settled by its port.* event; ports.rescan is step 5's 501. The probe
+// goes through a PortProber, which the server makes the preview proxy itself.
 package api
 
 import "net/http"
@@ -275,6 +283,56 @@ var Table = []Route{
 		// persisted — the detail view's, beside the step's sentence.
 		Auth: AuthRequired,
 		Name: "workspaces.build_log", Doc: "GET /api/workspaces/:id/build-log",
+	},
+
+	// ---- the port registry (PF §6; §13 step 4) --------------------------
+	//
+	// `{port}` is the forwarded_port row's id, not the port number: a port
+	// retired and listed again is a new row with a new slug, and a press
+	// still in flight for the old row must not land on the new one.
+	{
+		Method: "GET", Pattern: "/api/workspaces/{id}/ports", Mux: MuxAPI,
+		// Every live row, with its provenance flags and its URL while
+		// enabled. Hidden rows only with ?hidden=true.
+		Auth: AuthRequired,
+		Name: "ports.list", Doc: "GET /api/workspaces/:id/ports",
+	},
+	{
+		Method: "POST", Pattern: "/api/workspaces/{id}/ports", Mux: MuxAPI,
+		// Add a port by hand: a new row, disabled, with a freshly minted
+		// slug. Settled by port.added.
+		Auth: AuthRequired, Mutating: true,
+		Name: "ports.add", Doc: "POST /api/workspaces/:id/ports",
+	},
+	{
+		Method: "POST", Pattern: "/api/workspaces/{id}/ports/rescan", Mux: MuxAPI,
+		// Discovery's (PF §8.2), which is §13 step 5: declared here so the
+		// table stays the whole contract, a 501 behind the gate until then.
+		Auth: AuthRequired, Mutating: true,
+		Name: "ports.rescan", Doc: "POST /api/workspaces/:id/ports/rescan",
+	},
+	{
+		Method: "PATCH", Pattern: "/api/workspaces/{id}/ports/{port}", Mux: MuxAPI,
+		// Enable, disable, hide, unhide, relabel, or switch host_header.
+		// Enabling is the click that makes a URL live; disabling ends the
+		// port's preview sessions and closes its open websockets at once.
+		// Settled by port.enabled, port.disabled or port.updated.
+		Auth: AuthRequired, Mutating: true,
+		Name: "ports.update", Doc: "PATCH /api/workspaces/:id/ports/:port",
+	},
+	{
+		Method: "DELETE", Pattern: "/api/workspaces/{id}/ports/{port}", Mux: MuxAPI,
+		// Retire: a soft delete that keeps the slug spent for good (PF §4).
+		// Settled by port.retired.
+		Auth: AuthRequired, Mutating: true,
+		Name: "ports.retire", Doc: "DELETE /api/workspaces/:id/ports/:port",
+	},
+	{
+		Method: "GET", Pattern: "/api/workspaces/{id}/ports/{port}/probe", Mux: MuxAPI,
+		// Dial it now through the proxy's own dial and say what happened.
+		// A read: it connects and closes, and changes nothing.
+		Auth: AuthRequired,
+		Name: "ports.probe", Doc: "GET /api/workspaces/:id/ports/:port/probe",
 	},
 
 	// ---- secrets ---------------------------------------------------------

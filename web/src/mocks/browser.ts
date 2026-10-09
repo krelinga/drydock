@@ -53,6 +53,7 @@
 //                                 fleet banner and every running card follow
 //   drydockMock.identity('expiring', 36 * 3600e3)   the login (refresh token) ends
 //                                 36 hours out; the access token is always ~8 h
+//   drydockMock.backend.previewDomain = null  previews off: ports listed, none enabled
 //   drydockMock.identityCheckFails()  a check could not read the volume; the
 //                                 stored state stands and Settings says why
 
@@ -60,7 +61,7 @@ import { setupWorker } from 'msw/browser'
 import type { IdentityState } from '../api/types'
 import {
   cloneScript, completeRefresh, emit, failIdentityCheck, handlersFor, identityView, MOCK_PASSWORD, newBackend,
-  nextWorkspaceId, recordSecretFetch, scheduleDelete, scheduleStop, secretMeta, secretUndeliverable, setIdentity,
+  nextWorkspaceId, recordSecretFetch, scheduleDelete, scheduleStop, secretMeta, secretUndeliverable, seedPorts, setIdentity,
 } from './backend'
 
 /** The server's detail for each refusal dev:mock can force: what internal/secrets would say. */
@@ -83,6 +84,7 @@ const REFUSALS: Record<string, { status: number; message: string; detail?: strin
 
 export async function startMockWorker(): Promise<void> {
   const backend = newBackend({ supervisor: true })
+  seedPorts(backend)
   const worker = setupWorker(...handlersFor(backend))
   await worker.start({ onUnhandledFrame: 'bypass', quiet: true })
 

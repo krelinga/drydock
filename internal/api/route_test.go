@@ -58,6 +58,7 @@ func requestFor(rt Route) *http.Request {
 	p = strings.ReplaceAll(p, "{id}", "01JABCDEFGHJKMNPQRSTVWXYZ")
 	p = strings.ReplaceAll(p, "{name}", "TEST_DATABASE_URL")
 	p = strings.ReplaceAll(p, "{lid}", "01JLOGINLOGINLOGINLOGIN")
+	p = strings.ReplaceAll(p, "{port}", "01JPORTPORTPORTPORTPORTPO")
 	req := httptest.NewRequest(rt.Method, "https://drydock.example.com"+p, nil)
 	req.Host = "drydock.example.com"
 	return req

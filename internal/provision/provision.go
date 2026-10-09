@@ -115,6 +115,11 @@
 // request. A failed up's sentence is chosen from the Feature's own lines
 // (upFailure); its last 50 lines are held by BuildLog, masked when kept and
 // again when served, and served by GET …/build-log.
+//
+// Step 3 hands container.DeclaredPorts to DeclarePorts (the port registry's
+// declared rows, PF §13 step 4) once the configuration is cleared to run —
+// never for one stopped for an approval — and logs, never fails on, a registry
+// that cannot write them.
 package provision
 
 import (
@@ -299,6 +304,14 @@ type Provisioner struct {
 	// session server: the job RestartSupervisor runs. Nil refuses the
 	// route with ErrNoSupervisor.
 	SupervisorRestart func(ctx context.Context, id string) error
+	// DeclarePorts receives, at step 3, the ports the resolved and merged
+	// configuration names (container.DeclaredPorts: forwardPorts, appPort,
+	// portsAttributes' labels) once the configuration is cleared to run —
+	// the port registry's declared rows (PF §13 step 4), which are listed
+	// and never enabled by it. Its error is logged, never the step's: a
+	// ports list that could not be written is not a container that cannot
+	// start. Nil declares nothing.
+	DeclarePorts func(ctx context.Context, workspaceID string, ports []container.DeclaredPort) error
 
 	// Redact returns the values a workspace's held build log must not show:
 	// the secrets granted to its repository. An error withholds the log

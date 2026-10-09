@@ -24,7 +24,9 @@ What it covers:
 - **The walking skeleton** (Phase 2): `POST /api/workspaces` through the real server, signed in,
   for a repository with a config and one without, both reaching `running` with the published
   Feature, the clones untouched and no token anywhere in the tree or the database; a secret
-  granted to one reaches its `CLAUDE_ENV_FILE` prelude and not the other's.
+  granted to one reaches its `CLAUDE_ENV_FILE` prelude and not the other's. The configured one's
+  `forwardPorts`, read by the real CLI, become the port registry's declared rows — labelled, off —
+  and the minimal configuration declares none.
 - **Claude** (Phase 5): five workspaces share one credential volume and each runs the pinned
   `claude`; the volume owner helper; fakeclaude's login in a real container, where the PTY
   semantics Spike 01 relied on are measured through `docker run -t`.

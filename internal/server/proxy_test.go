@@ -276,7 +276,7 @@ func TestPreviewProxyOverTheSockets(t *testing.T) {
 
 	// Disabled: the next request is the handshake again, and the app sees
 	// nothing.
-	if err := r.srv.Previews.SetEnabled(context.Background(), "pprev", false); err != nil {
+	if _, err := r.srv.Previews.SetEnabled(context.Background(), "wprev", "pprev", false); err != nil {
 		t.Fatal(err)
 	}
 	before := app.lastRequest()
