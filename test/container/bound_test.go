@@ -80,7 +80,13 @@ type boundedRunner struct {
 	Inner subproc.Runner
 	// Limit overrides upLimit (to prove the dump path).
 	Limit time.Duration
+	// Out is where a dump goes; nil is stderr.
+	Out io.Writer
 }
+
+// Unwrap lets subproc.Underlying see the inner runner, so the Manager's
+// docker guard still takes an Exec's Resolver through this wrapper.
+func (b boundedRunner) Unwrap() subproc.Runner { return b.Inner }
 
 func (b boundedRunner) Start(ctx context.Context, c subproc.Cmd) (subproc.Process, error) {
 	return b.Inner.Start(ctx, c)
@@ -101,15 +107,28 @@ func (b boundedRunner) Run(ctx context.Context, c subproc.Cmd) subproc.Result {
 	defer cancel()
 	// The dump comes first and the child is stopped after it, so the process
 	// list shows what it was in.
+	// finished is set under mu when the command has exited, and the timer
+	// checks it under mu: an up that ends as the timer fires prints no dump.
+	var mu sync.Mutex
+	finished := false
 	timer := time.AfterFunc(limit, func() {
-		dumpHang(limit, c, &out, &errb)
+		mu.Lock()
+		defer mu.Unlock()
+		if finished {
+			return
+		}
+		dumpHang(b.Out, limit, c, &out, &errb)
 		cancel()
 	})
 	defer timer.Stop()
-	return b.Inner.Run(rctx, c)
+	res := b.Inner.Run(rctx, c)
+	mu.Lock()
+	finished = true
+	mu.Unlock()
+	return res
 }
 
-func dumpHang(limit time.Duration, c subproc.Cmd, stdout, stderr *ring) {
+func dumpHang(dst io.Writer, limit time.Duration, c subproc.Cmd, stdout, stderr *ring) {
 	var w strings.Builder
 	fmt.Fprintf(&w, "\nBOUND: `devcontainer up` still running after %s; stopping it. Workspace folder: %s\n", limit, flagValue(c.Args, "--workspace-folder"))
 	fmt.Fprintf(&w, "--- devcontainer stdout (tail) ---\n%s\n--- devcontainer stderr (tail) ---\n%s\n", stdout.String(), stderr.String())
@@ -118,7 +137,10 @@ func dumpHang(limit time.Duration, c subproc.Cmd, stdout, stderr *ring) {
 	w.WriteString("\n--- docker ps -a ---\n")
 	w.WriteString(shell("docker", "ps", "-a", "--format", "{{.ID}} {{.Image}} {{.Status}} {{.Names}}"))
 	w.WriteString("\n")
-	fmt.Fprint(os.Stderr, w.String())
+	if dst == nil {
+		dst = os.Stderr
+	}
+	fmt.Fprint(dst, w.String())
 }
 
 func flagValue(args []string, flag string) string {

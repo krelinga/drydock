@@ -1,6 +1,7 @@
 package container_test
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -72,9 +73,11 @@ func TestSessionServerInARealContainer(t *testing.T) {
 		"remoteEnv": map[string]string{"PATH": bin + ":/usr/local/bin:/usr/bin:/bin"},
 	})
 	os.WriteFile(filepath.Join(folder, ".devcontainer", "devcontainer.json"), cfg, 0o644)
-	if out, err := exec.Command("devcontainer", "up", "--workspace-folder", folder,
-		"--id-label", p+".workspace="+ws).CombinedOutput(); err != nil {
-		t.Fatalf("devcontainer up: %v\n%s", err, tail(out))
+	var upOut bytes.Buffer
+	if res := (boundedRunner{Inner: subproc.Exec{}}).Run(ctx, subproc.Cmd{Name: "devcontainer",
+		Args:   []string{"up", "--workspace-folder", folder, "--id-label", p + ".workspace=" + ws},
+		Stdout: &upOut, Stderr: &upOut}); res.Err != nil || res.ExitCode != 0 {
+		t.Fatalf("devcontainer up: %v (exit %d)\n%s", res.Err, res.ExitCode, tail(upOut.Bytes()))
 	}
 
 	db, err := store.Open(ctx, filepath.Join(root, "drydock.db"))

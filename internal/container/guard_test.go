@@ -355,3 +355,34 @@ func (r *recorder) StartPTY(_ context.Context, c subproc.Cmd, _, _ int) (subproc
 	r.calls = append(r.calls, c.Args)
 	return nil, nil, nil
 }
+
+// wrapRun stands in for a bounding or tracing runner around another.
+type wrapRun struct{ subproc.Runner }
+
+func (w wrapRun) Unwrap() subproc.Runner { return w.Runner }
+
+// The docker the guard passes commands to is the Exec's own, also when the
+// Exec is wrapped: a wrapper must not make the guard run the real docker.
+func TestDockerPathSeesThroughAWrappedRunner(t *testing.T) {
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	folder := filepath.Join(t.TempDir(), wsID, "repo")
+	if err := os.MkdirAll(GuardDir(folder), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	real := subproc.Exec{Resolver: subproc.FixedResolver{"docker": "/bin/true"}}
+	for name, run := range map[string]subproc.Runner{"bare": real, "wrapped": wrapRun{wrapRun{real}}} {
+		m := Manager{Run: run, Guard: &dockerguard.Guard{Binary: self}}
+		if _, err := m.dockerPath(folder); err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		link := filepath.Join(GuardDir(folder), dockerguard.RealName)
+		got, err := os.Readlink(link)
+		if err != nil || got != "/bin/true" {
+			t.Errorf("%s: the guard's real docker is %q (%v), want /bin/true", name, got, err)
+		}
+		os.Remove(link)
+	}
+}

@@ -68,7 +68,7 @@ func (m Manager) dockerPath(folder string) ([]string, error) {
 	// The docker the guard passes commands to is the docker this Manager
 	// runs itself, unless the guard names its own resolver.
 	g := *m.Guard
-	if e, ok := m.Run.(subproc.Exec); ok && g.Resolver == nil {
+	if e, ok := subproc.Underlying(m.Run).(subproc.Exec); ok && g.Resolver == nil {
 		g.Resolver = e.Resolver
 	}
 	p, err := g.Prepare(GuardDir(folder))

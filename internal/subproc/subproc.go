@@ -89,6 +89,28 @@ type Result struct {
 	Err error
 }
 
+// Unwrapper is implemented by a Runner that wraps another (to bound, trace or
+// record it) and says which. Underlying follows the chain, so a caller that
+// needs the real runner's configuration, an Exec's Resolver, still finds it.
+type Unwrapper interface {
+	Unwrap() Runner
+}
+
+// Underlying returns r with every wrapper removed.
+func Underlying(r Runner) Runner {
+	for {
+		u, ok := r.(Unwrapper)
+		if !ok {
+			return r
+		}
+		inner := u.Unwrap()
+		if inner == nil {
+			return r
+		}
+		r = inner
+	}
+}
+
 // Runner starts programs. One method, two shapes: Run waits, Start does not.
 type Runner interface {
 	// Run executes to completion.
