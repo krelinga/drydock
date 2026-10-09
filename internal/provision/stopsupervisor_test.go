@@ -96,42 +96,57 @@ func TestASessionServerThatWillNotStopSettlesEachAction(t *testing.T) {
 // delete (docker rm --force). So both carry on, the session_server sub-step
 // done with a note saying why, and both finish against the fault that never
 // clears: a stop that failed there would offer Stop for good, and a delete
-// stuck there has no way out at all. The control is the same fault without
+// stuck there has no way out at all. A paused container
+// (container.ErrSessionContainerPaused) is the same: its server cannot be
+// signalled until someone unpauses it, and docker stop and docker rm --force
+// end a paused container (measured). The control is the same fault without
 // the sentinel — the Docker failure above — which still stops each at that
 // sub-step.
 func TestASessionServerThatSurvivedKillGoesWithItsContainer(t *testing.T) {
-	ctx := context.Background()
-	e := lifecycleEnv(t)
-	survivor := fmt.Errorf("stop: %w", container.ErrSessionSurvivedKill)
-	e.p.StopSupervisor = func(context.Context, workspace.Workspace) error { return survivor }
-	v := e.running(t, alpha)
-	const note = "The session server was still running after SIGKILL, so it ends with the container, in the next step."
+	for _, c := range []struct {
+		name     string
+		sentinel error
+		note     string
+	}{
+		{"survived SIGKILL", container.ErrSessionSurvivedKill,
+			"The session server was still running after SIGKILL, so it ends with the container, in the next step."},
+		{"container paused", container.ErrSessionContainerPaused,
+			"The workspace's container is paused, so the session server could not be signalled; it ends with the container, in the next step."},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			ctx := context.Background()
+			e := lifecycleEnv(t)
+			fault := fmt.Errorf("stop: %w", c.sentinel)
+			e.p.StopSupervisor = func(context.Context, workspace.Workspace) error { return fault }
+			v := e.running(t, alpha)
 
-	if err := e.p.Stop(ctx, v.ID); err != nil {
-		t.Fatal(err)
-	}
-	e.p.wg.Wait()
-	if s := e.view(t, v.ID); s.State != workspace.Stopped || s.StateDetail != nil {
-		t.Fatalf("after a stop with a server that outlived SIGKILL: %s (%q); actions %v",
-			s.State, deref(s.StateDetail), e.actions(t, v.ID))
-	}
-	if got := e.actionDetail(t, v.ID, ActStop, SubSessionServer); got != note {
-		t.Errorf("the session_server sub-step said %q, want %q", got, note)
-	}
-	for id, status := range e.containers(t, v.ID) {
-		if status != "exited" {
-			t.Errorf("container %s is %s: the stop did not reach docker stop", id, status)
-		}
-	}
+			if err := e.p.Stop(ctx, v.ID); err != nil {
+				t.Fatal(err)
+			}
+			e.p.wg.Wait()
+			if s := e.view(t, v.ID); s.State != workspace.Stopped || s.StateDetail != nil {
+				t.Fatalf("after a stop with %s: %s (%q); actions %v",
+					c.name, s.State, deref(s.StateDetail), e.actions(t, v.ID))
+			}
+			if got := e.actionDetail(t, v.ID, ActStop, SubSessionServer); got != c.note {
+				t.Errorf("the session_server sub-step said %q, want %q", got, c.note)
+			}
+			for id, status := range e.containers(t, v.ID) {
+				if status != "exited" {
+					t.Errorf("container %s is %s: the stop did not reach docker stop", id, status)
+				}
+			}
 
-	if err := e.p.Delete(ctx, v.ID, "krelinga/alpha"); err != nil {
-		t.Fatal(err)
-	}
-	e.p.wg.Wait()
-	if _, err := e.p.Workspaces.Get(ctx, v.ID); !errors.Is(err, workspace.ErrNotFound) {
-		t.Errorf("the delete did not finish: %v; actions %v", err, e.actions(t, v.ID))
-	}
-	if n := len(e.containers(t, v.ID)); n != 0 {
-		t.Errorf("%d containers left after the delete", n)
+			if err := e.p.Delete(ctx, v.ID, "krelinga/alpha"); err != nil {
+				t.Fatal(err)
+			}
+			e.p.wg.Wait()
+			if _, err := e.p.Workspaces.Get(ctx, v.ID); !errors.Is(err, workspace.ErrNotFound) {
+				t.Errorf("the delete did not finish: %v; actions %v", err, e.actions(t, v.ID))
+			}
+			if n := len(e.containers(t, v.ID)); n != 0 {
+				t.Errorf("%d containers left after the delete", n)
+			}
+		})
 	}
 }

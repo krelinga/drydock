@@ -425,6 +425,15 @@ func (p *Provisioner) stopSupervisor(ctx context.Context, w workspace.Workspace)
 			p.logf("drydock: workspace %s: the session server outlived SIGKILL; the container step ends it: %v", w.ID, err)
 			return workspace.Note("The session server was still running after SIGKILL, so it ends with the container, in the next step.")
 		}
+		if errors.Is(err, container.ErrSessionContainerPaused) {
+			// Frozen, not gone, and Docker will not exec into it to signal
+			// the server; but docker stop and docker rm --force do end a
+			// paused container (measured), so the next sub-step ends it, as
+			// for a server that outlived SIGKILL. Stopping here would leave
+			// a delete stuck until someone unpaused the container by hand.
+			p.logf("drydock: workspace %s: the container is paused, so the session server could not be signalled; the container step ends it: %v", w.ID, err)
+			return workspace.Note("The workspace's container is paused, so the session server could not be signalled; it ends with the container, in the next step.")
+		}
 		return workspace.Public("Drydock could not stop the session server.", err)
 	}
 	return workspace.Note("Stopped the session server, SIGTERM first, so its environment is kept for the next start.")

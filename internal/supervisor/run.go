@@ -102,6 +102,13 @@ func (s *sup) loop(ctx context.Context) {
 				s.set(ctx, Degraded, ReasonSurvivedKill, stopFailedSentence(ReasonSurvivedKill), 0)
 				return
 			}
+			if errors.Is(err, container.ErrSessionContainerPaused) {
+				// Frozen, not gone, and a `devcontainer exec` into a paused
+				// container fails: a launch would only spend the restart
+				// budget. Asking again once it is unpaused is the fix.
+				s.set(ctx, Degraded, ReasonStopFailed, pausedSentence, 0)
+				return
+			}
 		}
 		out := s.runOnce(ctx)
 		switch out.kind {
@@ -409,8 +416,12 @@ func (s *sup) stop(ctx context.Context) error {
 		s.cancel()
 	}
 	// After a failed stop the loop may be reading a terminal whose server
-	// did not end; it ends when the server does (stopping is set, so it
-	// writes nothing), and the stop does not wait on it for good.
+	// did not end — in a paused container, say, where Drydock's end is kept. It
+	// ends when the terminal closes, and the stop does not wait on it for
+	// good. It writes nothing meanwhile, even once a Start has replaced it:
+	// stopping is set, so it sets no state, and the context just cancelled
+	// is the one every write it would make (the heartbeat, rc_session, the
+	// session events) runs under, so none lands.
 	var bound <-chan time.Time
 	if err != nil {
 		bound = s.m.clock().After(s.m.policy().KillWait)
@@ -434,6 +445,14 @@ func (m *Manager) terminate(ctx context.Context, ws string, proc subproc.Process
 	found, err := m.Runtime.Signal(ctx, ws, container.SessionTerm, m.PidFile)
 	if err != nil {
 		m.logf("drydock: workspace %s: SIGTERM to the session server: %v", ws, err)
+	}
+	if errors.Is(err, container.ErrSessionContainerPaused) {
+		// A paused container's processes are frozen, not gone, and Docker
+		// will not exec into it to ask: nothing more can be sent or asked
+		// until it is unpaused, and its silence is never "no server". Not
+		// even Drydock's own end is killed — the server it reaches may be
+		// the one that is there.
+		return true, err
 	}
 	if done == nil && !found {
 		return false, err

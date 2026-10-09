@@ -100,7 +100,10 @@ exec "$@"
 	// fails that call as an unreachable daemon does, and "kill-ignored" makes
 	// a KILL report success and deliver nothing — a server that survives
 	// SIGKILL — and "kill-refused" answers a KILL as the signal script does
-	// when the kernel refuses it (exit 4).
+	// when the kernel refuses it (exit 4). "container-paused" is a paused
+	// container, as Docker 29.8.2 shows one: listed by status=paused and not
+	// by status=running, and an exec into it refused with exit 1.
+	paused := filepath.Join(dir, "container-paused")
 	writeExec(t, filepath.Join(fakes, "docker"), fmt.Sprintf(`#!/bin/sh
 printf '%%s\n' "$*" >> %q
 for last; do :; done
@@ -109,14 +112,21 @@ if [ -e %q ] && { [ "$(cat %q)" = "$1" ] || [ "$(cat %q)" = "$last" ]; }; then
 	exit 1
 fi
 case "$1" in
-ps) [ -e %q ] && echo %s; exit 0;;
-exec) while [ "$1" != "--" ]; do shift; done; shift; shift
-	if [ "$last" = KILL ] && [ -e %q ]; then exit 0; fi
-	if [ "$last" = KILL ] && [ -e %q ]; then exit 4; fi
+ps) case "$*" in
+	*status=paused*) [ -e %[6]q ] && echo %[7]s;;
+	*) [ -e %[5]q ] && [ ! -e %[6]q ] && echo %[7]s;;
+	esac; exit 0;;
+exec) if [ -e %[6]q ]; then
+		echo "Error response from daemon: Container %[7]s is paused, unpause the container before exec" >&2
+		exit 1
+	fi
+	while [ "$1" != "--" ]; do shift; done; shift; shift
+	if [ "$last" = KILL ] && [ -e %[8]q ]; then exit 0; fi
+	if [ "$last" = KILL ] && [ -e %[9]q ]; then exit 4; fi
 	exec "$@";;
 esac
 exit 99
-`, r.docker, filepath.Join(dir, "docker-fails"), filepath.Join(dir, "docker-fails"), filepath.Join(dir, "docker-fails"), running, fakeCID,
+`, r.docker, filepath.Join(dir, "docker-fails"), filepath.Join(dir, "docker-fails"), filepath.Join(dir, "docker-fails"), running, paused, fakeCID,
 		filepath.Join(dir, "kill-ignored"), filepath.Join(dir, "kill-refused")))
 	res := subproc.FixedResolver{"devcontainer": filepath.Join(fakes, "devcontainer"), "docker": filepath.Join(fakes, "docker")}
 	run := subproc.Exec{Resolver: res}

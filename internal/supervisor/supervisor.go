@@ -83,18 +83,26 @@
 // stop_failed (Docker could not be asked — docker ps/exec failed, or whether
 // SIGKILL worked could not be asked; the card offers *Restart session server*
 // again) or survived_kill (SIGKILL sent, or refused by the kernel — the signal
-// script's exit 4, container.ErrSessionSignalRefused — and the server still
+// script's exit 4, container.ErrSessionSignalRefused, which it says only if
+// the pid is still a remote-control after the refusal — and the server still
 // there; the card offers Rebuild), each a constant sentence naming no one
 // caller, never the error — and written even when it repeats the last
 // (announce, not set), because every *Restart session server* press waits for
 // a supervisor.state. **Drydock's terminal closing is not the server ending**:
 // killing a docker exec client leaves its process running (measured), so a
 // held-terminal stop that reaches SIGKILL asks the container through the pid
-// file before calling it done. Every start's own stop of a leftover server
-// records survived_kill and starts nothing, rather than a second server over
-// the pid file. A workspace stop or delete whose server outlived SIGKILL
-// (container.ErrSessionSurvivedKill through the StopSupervisor seam) carries
-// on to its container step, which ends it. The supervisor stays registered
+// file before calling it done. **A paused container is not a stopped
+// server**: its processes are frozen and Docker will not exec into it, so
+// the signal is container.ErrSessionContainerPaused — stop_failed with its
+// own sentence (unpause and ask again), nothing sent, Drydock's terminal
+// kept. Every start's own stop of a leftover server records survived_kill,
+// or that paused stop_failed, and starts nothing, rather than a second server
+// over the pid file or a launch into a paused container. A workspace stop or
+// delete whose server outlived SIGKILL, or whose container is paused (both
+// sentinels through the StopSupervisor seam), carries on to its container
+// step, which ends it. A run whose stop failed with its terminal still open
+// writes nothing more, even once a Start replaces it: the stop cancelled the
+// context every write of the run's is made under. The supervisor stays registered
 // after a failed stop, so a retry reaches the same server; Start replaces one
 // still stopping. A stop or restart its caller cancelled records and starts
 // nothing; a start that fails after a good stop writes start_failed.
@@ -155,8 +163,9 @@ const (
 	// exits 69. Not started; only a rebuild fixes it (Park).
 	ReasonStaleBrokerMount Reason = "stale_broker_mount"
 	// ReasonStopFailed: a stop (a restart's first half) could not reach the
-	// server — docker ps or docker exec failed — so it may still be
-	// running. Asking again is the fix once Docker answers.
+	// server — docker ps or docker exec failed, or its container is
+	// paused — so it may still be running. Asking again is the fix once
+	// Docker answers (or the container is unpaused).
 	ReasonStopFailed Reason = "stop_failed"
 	// ReasonSurvivedKill: the server was still there after SIGTERM and then
 	// SIGKILL were delivered. Asking again cannot help; replacing the
@@ -570,7 +579,7 @@ func (m *Manager) Stop(ctx context.Context, workspaceID string) error {
 		if errors.Is(err, container.ErrSessionSurvivedKill) {
 			r = ReasonSurvivedKill
 		}
-		s.announce(book, Degraded, r, stopFailedSentence(r))
+		s.announce(book, Degraded, r, stopFailedDetail(r, err))
 	}
 	return err
 }
@@ -584,6 +593,20 @@ func stopFailedSentence(r Reason) string {
 		return "The session server was still running after SIGKILL, so Drydock could not stop it, and it may still hold the workspace's environment. Only its container going ends it: Rebuild the workspace to replace the container; the clone is kept."
 	}
 	return "Drydock could not stop the session server: Docker did not answer when asked to signal it or whether it had exited, so it may still be running. Ask again once Docker answers."
+}
+
+// pausedSentence is stop_failed's sentence when the reason Docker could not
+// be asked is that the workspace's container is paused: its processes are
+// frozen, not gone, so the server may still be there, and asking again works
+// once the container is unpaused.
+const pausedSentence = "Drydock could not stop the session server: the workspace's container is paused, so its processes are frozen rather than gone and Docker will not signal them. Unpause the container and ask again, or stop the workspace."
+
+// stopFailedDetail is the sentence for a stop that failed with err.
+func stopFailedDetail(r Reason, err error) string {
+	if r == ReasonStopFailed && errors.Is(err, container.ErrSessionContainerPaused) {
+		return pausedSentence
+	}
+	return stopFailedSentence(r)
 }
 
 // startFailedSentence: a restart stopped the old server and could not start
