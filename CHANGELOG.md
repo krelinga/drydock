@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.6.0](https://github.com/krelinga/drydock/compare/v0.5.0...v0.6.0) (2026-10-09)
+
+
+### Features
+
+* name the cause and the fix for every §12 failure the UI can show ([#79](https://github.com/krelinga/drydock/issues/79)) ([011cc6b](https://github.com/krelinga/drydock/commit/011cc6ba4bde258213054994d46d42150b1067bc))
+* proxy a preview to the container's dev server, websockets included ([#87](https://github.com/krelinga/drydock/issues/87)) ([1bef223](https://github.com/krelinga/drydock/commit/1bef2237937a76674132946456aceebc5168c754))
+* show memory and disk on each workspace, and refuse new work on a full disk ([#75](https://github.com/krelinga/drydock/issues/75)) ([5b8575c](https://github.com/krelinga/drydock/commit/5b8575c74c77b2e3f6c91e3029f28016420ee76a))
+* sign a device into a preview with a one-time token and a host-only cookie ([#82](https://github.com/krelinga/drydock/issues/82)) ([d5bcb80](https://github.com/krelinga/drydock/commit/d5bcb8081eaa5be7574216e7530ef13f0b67a3f6))
+
+
+### Bug Fixes
+
+* cancel and wait for a triggered catalog refresh at shutdown ([#83](https://github.com/krelinga/drydock/issues/83)) ([ae90c88](https://github.com/krelinga/drydock/commit/ae90c889f9ad5520056494aafdbf786c11fd0143))
+* check the docker arguments devcontainer actually runs against the approval ([#78](https://github.com/krelinga/drydock/issues/78)) ([8bb408d](https://github.com/krelinga/drydock/commit/8bb408d1b9bc7491e9075ed9ad31a213919b8f09))
+* settle "Check now" even when the Claude login hasn't changed ([#85](https://github.com/krelinga/drydock/issues/85)) ([f417657](https://github.com/krelinga/drydock/commit/f4176579258c3455d709f4278fe16d902883cbaa))
+* settle "Restart session server" when the old server won't stop ([#86](https://github.com/krelinga/drydock/issues/86)) ([d24e350](https://github.com/krelinga/drydock/commit/d24e350fa65929fb6fe6d7cdcf94bac2327afa8f))
+
 ## [0.5.0](https://github.com/krelinga/drydock/compare/v0.4.5...v0.5.0) (2026-10-08)
 
 
