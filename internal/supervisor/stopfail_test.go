@@ -486,7 +486,7 @@ func TestAReplacedSupervisorWritesNoSessions(t *testing.T) {
 while :; do
 	if [ -r %[1]q ]; then
 		id=$(cat %[1]q); rm -f %[1]q
-		printf '\033]8;;https://claude.ai/code/%%s\007x\033]8;;\007\r\n' "$id"
+		printf '\033]8;;https://claude.ai/code/%%s\007said %%s\033]8;;\007\r\n' "$id" "$id"
 	fi
 	sleep 0.05
 done
@@ -505,15 +505,18 @@ done
 		return n
 	}
 	has := func(id string) bool { return slices.Contains(r.sessions(), id) }
-	// say has the server announce a session, and waits until it has.
+	// say has the server announce a session, and waits until a loop has
+	// read it off the terminal: its visible label, "said <id>", is in the
+	// log, which the loop writes before it looks for sessions in the same
+	// bytes. Waiting only for the server to take the file and then a fixed
+	// 300 ms failed the control whenever the server's printf or the loop's
+	// read came late — on a loaded machine, not a wrong one.
 	say := func(id string) {
 		t.Helper()
 		r.touch("announce", id)
-		r.waitFor(5*time.Second, "the server's announcement", func() bool {
-			_, err := os.Stat(announce)
-			return os.IsNotExist(err)
+		r.waitFor(5*time.Second, "a loop to read the server's announcement", func() bool {
+			return strings.Contains(r.logText(), "said "+id)
 		})
-		time.Sleep(300 * time.Millisecond) // for the loop to read it
 	}
 
 	r.start()
@@ -525,6 +528,9 @@ done
 	// The control: serving, the run records what the server announces.
 	const serving = "session_01WHILESERVING0000000000"
 	say(serving)
+	r.waitFor(5*time.Second, "the serving run to record its session", func() bool {
+		return has(serving) && sessionEvents(serving) >= 1
+	})
 	if !has(serving) || sessionEvents(serving) != 1 {
 		t.Fatalf("control: sessions %v, %d events for %s", r.sessions(), sessionEvents(serving), serving)
 	}
@@ -554,6 +560,11 @@ done
 	}
 	const replaced = "session_01AFTERREPLACED000000000"
 	say(replaced)
+	// The old loop has read both announcements; what is left is its look at
+	// the same bytes, which must record nothing. A machine that overran this
+	// margin would let a stopped run's write go unseen — never fail a
+	// correct run — and the control above waits on the record itself.
+	time.Sleep(300 * time.Millisecond)
 
 	for _, id := range []string{stopped, replaced} {
 		if has(id) {
