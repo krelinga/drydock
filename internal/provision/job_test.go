@@ -337,10 +337,14 @@ func TestAJobCutOffByADeleteEndsCancelled(t *testing.T) {
 			ends[1].Kind != JobDelete || ends[1].Outcome != workspace.JobOK {
 			t.Fatalf("job ends %+v, want create:cancelled then delete:ok", ends)
 		}
-		// The run's end follows its last event (up failed, saying why) and
-		// precedes the delete's first sub-step.
-		var upFailed, firstAction int64
+		// The run's end follows the delete's move to deleting (persisted
+		// before the run is cancelled) and the run's last event (up failed,
+		// saying why), and precedes the delete's first sub-step.
+		var deleting, upFailed, firstAction int64
 		for _, ev := range e.allEvents(t, w.ID) {
+			if ev.Kind == workspace.KindState && strings.Contains(string(ev.Data), `"state":"deleting"`) && deleting == 0 {
+				deleting = ev.ID
+			}
 			if ev.Kind == workspace.KindStep && strings.Contains(string(ev.Data), `"status":"failed"`) {
 				upFailed = ev.ID
 			}
@@ -348,8 +352,9 @@ func TestAJobCutOffByADeleteEndsCancelled(t *testing.T) {
 				firstAction = ev.ID
 			}
 		}
-		if !(upFailed < ends[0].ID && ends[0].ID < firstAction) {
-			t.Errorf("order: step failed %d, run's end %d, delete's first action %d", upFailed, ends[0].ID, firstAction)
+		if !(deleting > 0 && deleting < upFailed && upFailed < ends[0].ID && ends[0].ID < firstAction) {
+			t.Errorf("order: deleting %d, step failed %d, run's end %d, delete's first action %d",
+				deleting, upFailed, ends[0].ID, firstAction)
 		}
 	})
 
@@ -408,5 +413,22 @@ func TestAJobCutOffByShutdownEndsCancelled(t *testing.T) {
 	}
 	if got := rec.all(); len(got) != 1 || got[0] != "create:carried" {
 		t.Errorf("job ends %v, want the move to have carried it", got)
+	}
+}
+
+// A job that panics ends failed, not ok: recovered turns the panic into an
+// error for the end, and hands the panic back for launch to re-raise. The
+// control is a job that returns.
+func TestAPanickingJobEndsFailed(t *testing.T) {
+	r, err := recovered(JobStop, func() error { panic("boom") })
+	if err == nil || r != "boom" || !strings.Contains(err.Error(), "panicked") {
+		t.Errorf("a panic: err %v, panic %v", err, r)
+	}
+	want := errors.New("x")
+	if r, err := recovered(JobStop, func() error { return want }); err != want || r != nil {
+		t.Errorf("control: err %v, panic %v", err, r)
+	}
+	if r, err := recovered(JobStop, func() error { return nil }); err != nil || r != nil {
+		t.Errorf("control: err %v, panic %v", err, r)
 	}
 }

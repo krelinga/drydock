@@ -121,8 +121,8 @@
 // §4.2). When the job's last act is a move, an annotation or the row's
 // removal, that commit carries it (workspace.Ending); otherwise launch writes
 // it after the job returns and before it releases the workspace. A job cut
-// off by shutdown or a delete ends cancelled, before the delete's first
-// event.
+// off by shutdown or a delete ends cancelled; a delete's end comes after its
+// move to deleting and before the delete's first sub-step.
 //
 // Crash-tested by cutting a delete off after every sub-step and resuming in a
 // fresh process, and a create off *inside* step 8 and inside up
@@ -725,10 +725,26 @@ func (p *Provisioner) launch(id, kind string, f func(ctx context.Context) error)
 			p.mu.Unlock()
 		}()
 		end := workspace.NewJobEnd(ctx, id, kind)
-		defer func() { p.endJob(ctx, end, j.err) }()
-		j.err = f(workspace.WithJob(ctx, end))
+		var panicked any
+		panicked, j.err = recovered(kind, func() error { return f(workspace.WithJob(ctx, end)) })
+		p.endJob(ctx, end, j.err)
+		if panicked != nil {
+			panic(panicked) // ended failed, and still a crash, as before
+		}
 	}()
 	return j
+}
+
+// recovered runs f, turning a panic into an error naming it — so the job's
+// end says failed rather than ok — and handing the panic back to re-raise
+// once the end is written.
+func recovered(kind string, f func() error) (panicked any, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			panicked, err = r, fmt.Errorf("provision: the %s job panicked: %v", kind, r)
+		}
+	}()
+	return nil, f()
 }
 
 // endJob writes the job's workspace.job event unless its last commit carried

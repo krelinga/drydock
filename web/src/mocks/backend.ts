@@ -1001,9 +1001,15 @@ export function stopScript(b: MockBackend, id: string, failAt?: string): Script 
  * `failAt` sticks it: the sub-step fails, and Annotate writes a deleting →
  * deleting state event whose detail names it. Asking again resumes.
  */
-export function deleteScript(b: MockBackend, id: string, from: WorkspaceState | null, failAt?: string): Script {
+export function deleteScript(
+  b: MockBackend, id: string, from: WorkspaceState | null, failAt?: string, cancelled?: JobKind,
+): Script {
   const steps = new ScriptSteps(b, id)
   const out: Array<(at?: string) => void> = from === null ? [] : [steps.state('deleting', { from }, 'Deleting.')]
+  // The job the delete cut off ends after the move to deleting — the server
+  // persists that first, then cancels it and waits — and before the
+  // delete's first sub-step.
+  if (cancelled !== undefined) out.push((at?: string) => emitJob(b, id, cancelled, 'cancelled', at))
   for (const sub of DELETE_SUBSTEPS) {
     out.push(steps.action('delete', sub, 'started'))
     if (sub === failAt) {
@@ -1218,17 +1224,18 @@ function schedule(
 
 /**
  * Ends a workspace's job where it stands: what a delete's cancel does to a
- * run. The job still ends with its `workspace.job`, cancelled, before the
- * delete's first event, as the server's does.
+ * run. Returns the job's kind, whose `workspace.job` — cancelled — the
+ * delete's script writes after its move to deleting and before its first
+ * sub-step, as the server's does.
  */
-function cancelJob(b: MockBackend, id: string): void {
+function cancelJob(b: MockBackend, id: string): JobKind | undefined {
   for (const t of b.timers[id] ?? []) clearTimeout(t)
   delete b.timers[id]
   delete b.scripts[id]
   const job = b.jobs[id] !== undefined ? b.jobKinds[id] : undefined
   delete b.jobs[id]
   delete b.jobKinds[id]
-  if (job !== undefined) emitJob(b, id, job, 'cancelled')
+  return job
 }
 
 /**
@@ -1255,11 +1262,11 @@ export function scheduleStop(b: MockBackend, id: string): void {
 export function scheduleDelete(b: MockBackend, id: string): void {
   const w = b.workspaces[id]
   if (w === undefined || b.jobs[id] === 'delete') return
-  cancelJob(b, id)
+  const cancelled = cancelJob(b, id)
   clearDetail(b, id, 'deleting')
   const failAt = b.failAction ?? undefined
   b.failAction = null
-  schedule(b, id, deleteScript(b, id, w.state === 'deleting' ? null : w.state, failAt), 'delete', 'delete')
+  schedule(b, id, deleteScript(b, id, w.state === 'deleting' ? null : w.state, failAt, cancelled), 'delete', 'delete')
 }
 
 /** Plays a held script (manual mode) to the end, or its first `n` events. */

@@ -148,7 +148,8 @@ with the `all_repos` confirm, the two-kinds rotate result, delete.
 - It serves the workspace routes with the cap and the duplicate check; `scriptMode: 'manual'`
   holds a create's events for a spec to play with `playScript`. `schedule` ends every job's script
   with its `workspace.job`, as the server's `launch` does (a script's `outcome` and `endAt` say
-  how and where), and a delete ends the job it cancels `cancelled` first.
+  how and where), and the job a delete cuts off ends `cancelled` after the move to `deleting`,
+  before the delete's first sub-step.
 - `loginMode: 'manual'` holds each login phase for `loginReady`/`loginVerdict`.
 - It serves the port routes with the server's refusals and one `port.*` event per mutation;
   `seedPorts` (dev:mock's) declares a listening Vite port and a silent one on the running sample,

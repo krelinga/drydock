@@ -117,19 +117,28 @@ describe('the mock ends every job with one workspace.job, as the server does', (
     expect(sessionKey(WS_RUNNING) in stream.inFlight).toBe(false)
   })
 
-  it('a rebuild cut off by a delete ends cancelled, before the delete\'s events; the delete ends ok', async () => {
+  it('a rebuild cut off by a delete ends cancelled, after the move to deleting and before the delete\'s first sub-step', async () => {
     const b = freshBackend({ signedIn: true, scriptMode: 'manual' })
     const { stream, ws } = await live(b)
     const mark = b.events[b.events.length - 1]!.id
     await ws.rebuild(WS_RUNNING)
     playScript(b, WS_RUNNING, 2)
     await ws.remove(WS_RUNNING, 'krelinga/drydock')
+    playScript(b, WS_RUNNING, 1) // the move to deleting
     await settle()
-    expect(rebuildKey(WS_RUNNING) in stream.inFlight).toBe(false) // its job ended, cancelled
+    expect(ends(b, WS_RUNNING, mark)).toEqual([])
+    playScript(b, WS_RUNNING, 1) // the cut rebuild's end
+    await settle()
+    expect(ends(b, WS_RUNNING, mark)).toEqual([{ kind: 'rebuild', outcome: 'cancelled' }])
+    expect(rebuildKey(WS_RUNNING) in stream.inFlight).toBe(false)
     playScript(b, WS_RUNNING)
     await settle()
     expect(ends(b, WS_RUNNING, mark)).toEqual([{ kind: 'rebuild', outcome: 'cancelled' }, { kind: 'delete', outcome: 'ok' }])
-    const kinds = b.events.filter((e) => e.workspace_id === WS_RUNNING && e.id > mark).map((e) => e.kind)
+    const evs = b.events.filter((e) => e.workspace_id === WS_RUNNING && e.id > mark)
+    const kinds = evs.map((e) => e.kind)
+    const deleting = evs.findIndex((e) => e.kind === 'workspace.state' && e.data?.state === 'deleting')
+    expect(deleting).toBeGreaterThanOrEqual(0)
+    expect(deleting).toBeLessThan(kinds.indexOf('workspace.job'))
     expect(kinds.indexOf('workspace.job')).toBeLessThan(kinds.indexOf('workspace.action'))
     expect(kinds[kinds.length - 1]).toBe('workspace.job')
     expect(deleteKey(WS_RUNNING) in stream.inFlight).toBe(false)
