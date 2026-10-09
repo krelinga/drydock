@@ -34,7 +34,7 @@ func (p *Provisioner) RestartSupervisor(ctx context.Context, id string) error {
 	if p.active[id] != nil || w.State != workspace.Running {
 		return workspace.ErrInProgress
 	}
-	p.launch(id, "supervisor", func(ctx context.Context) error {
+	p.launch(id, JobSupervisor, func(ctx context.Context) error {
 		if err := p.SupervisorRestart(ctx, id); err != nil {
 			p.logf("drydock: workspace %s: restarting the session server: %v", id, err)
 			return err

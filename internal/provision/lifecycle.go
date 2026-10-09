@@ -81,7 +81,7 @@ func (p *Provisioner) Stop(ctx context.Context, id string) error {
 	if _, err := p.Workspaces.ClearDetail(ctx, id, workspace.Running); err != nil {
 		return err
 	}
-	p.launch(id, "stop", func(ctx context.Context) error {
+	p.launch(id, JobStop, func(ctx context.Context) error {
 		err := p.stopJob(ctx, w)
 		if err != nil {
 			p.logf("drydock: workspace %s: stop: %v", id, err)
@@ -136,12 +136,14 @@ func (p *Provisioner) stopJob(ctx context.Context, w workspace.Workspace) error 
 			detail += " " + said
 		}
 		var ill workspace.ErrIllegalMove
-		if aerr := p.Workspaces.Annotate(book, w.ID, workspace.Running, detail); aerr != nil && !errors.As(aerr, &ill) {
+		// The job's last act, so it carries the job's end (failed, or
+		// cancelled); refused, it carries nothing and launch writes it.
+		if aerr := p.Workspaces.Annotate(workspace.Ending(book, true), w.ID, workspace.Running, detail); aerr != nil && !errors.As(aerr, &ill) {
 			err = errors.Join(err, aerr)
 		}
 		return err
 	}
-	_, err := p.Workspaces.Move(book, w.ID, workspace.Stopped, "")
+	_, err := p.Workspaces.Move(workspace.Ending(book, false), w.ID, workspace.Stopped, "")
 	return err
 }
 
@@ -204,7 +206,7 @@ func (p *Provisioner) startDelete(ctx context.Context, id string) (*job, error) 
 		return nil, ErrShuttingDown
 	}
 	prev := p.active[id]
-	if prev != nil && prev.kind == "delete" {
+	if prev != nil && prev.kind == JobDelete {
 		return prev, nil
 	}
 	if _, err := p.Workspaces.Move(ctx, id, workspace.Deleting, ""); err != nil {
@@ -226,7 +228,7 @@ func (p *Provisioner) startDelete(ctx context.Context, id string) (*job, error) 
 	if prev != nil {
 		prev.cancel(errDeleting)
 	}
-	return p.launch(id, "delete", func(ctx context.Context) error {
+	return p.launch(id, JobDelete, func(ctx context.Context) error {
 		if prev != nil {
 			<-prev.done
 		}
@@ -311,12 +313,13 @@ func (p *Provisioner) deleteJob(ctx context.Context, id string) error {
 		if said := p.repause(w, un, false); said != "" {
 			detail += " " + said
 		}
-		if aerr := p.Workspaces.Annotate(book, id, workspace.Deleting, detail); aerr != nil {
+		if aerr := p.Workspaces.Annotate(workspace.Ending(book, true), id, workspace.Deleting, detail); aerr != nil {
 			err = errors.Join(err, aerr)
 		}
 		return err
 	}
-	if err := p.Workspaces.Remove(book, id); err != nil {
+	// The row's removal is the delete's last event, and carries its end.
+	if err := p.Workspaces.Remove(workspace.Ending(book, false), id); err != nil {
 		return err
 	}
 	p.dropBuildLog(id)

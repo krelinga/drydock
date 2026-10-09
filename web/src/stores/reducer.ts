@@ -786,6 +786,11 @@ function applyEvent(prev: Entities, ev: StreamEvent): Entities {
   }
 
   if (!ev.kind.startsWith('workspace.')) return fed
+  // A job's end (internal/workspace KindJob) says a request is over, which
+  // is the in-flight marks' business (stores/workspaces.ts settlesJob), and
+  // nothing about the workspace: it joins the feed and changes no entity —
+  // not even a stub, since every job's other events name the workspace.
+  if (ev.kind === 'workspace.job') return fed
 
   // Every other workspace.* kind names a workspace that exists. One this
   // client has never heard of becomes a stub, so the event is not lost and

@@ -64,6 +64,10 @@ func (s *sup) announce(ctx context.Context, st State, r Reason, detail string) {
 }
 
 func (s *sup) write(ctx context.Context, st State, r Reason, detail string, pid int, always bool) {
+	if s.said != nil {
+		// After the event below, or now when there is none to write.
+		defer s.saidOnce.Do(func() { close(s.said) })
+	}
 	s.mu.Lock()
 	if !always && s.state == st && s.reason == r && s.detail == detail {
 		s.mu.Unlock()

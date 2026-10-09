@@ -50,6 +50,14 @@ annotation. Settings' *Check now* settles on `settlesCheck` (`stores/identity.ts
 `auth.identity`, `auth.identity_check_failed` or `auth.identity_checked` — the last is the healthy
 press's only answer.
 
+**A workspace job's end settles its press, whatever path it took.** The server ends every
+workspace job — create, start, rebuild, approve, stop, delete, supervisor — with one
+`workspace.job` `{kind, outcome}` after its other events, and `mutate` adds one clause to each job
+action's predicate: `settlesJob(id, kind, since)`, a `workspace.job` of that kind for that
+workspace newer than the mark. It changes no entity (the reducer only feeds it), so the `OVER`
+predicates still decide the card and still back the snapshot path. Clone (no workspace id) and
+decline (no job) keep their own rule; *Check now* and the catalog refresh are not workspace jobs.
+
 ### Resources
 
 `stores/resources.ts` and `lib/resources.ts` drive the card's *"mem 1.2 GB · disk 3.4 GB"*
@@ -138,7 +146,10 @@ with the `all_repos` confirm, the two-kinds rotate result, delete.
 
 - `supervisor: true` plays the session server (`dev:mock` sets it; specs default to false).
 - It serves the workspace routes with the cap and the duplicate check; `scriptMode: 'manual'`
-  holds a create's events for a spec to play with `playScript`.
+  holds a create's events for a spec to play with `playScript`. `schedule` ends every job's script
+  with its `workspace.job`, as the server's `launch` does (a script's `outcome` and `endAt` say
+  how and where), and the job a delete cuts off ends `cancelled` after the move to `deleting`,
+  before the delete's first sub-step.
 - `loginMode: 'manual'` holds each login phase for `loginReady`/`loginVerdict`.
 - It serves the port routes with the server's refusals and one `port.*` event per mutation;
   `seedPorts` (dev:mock's) declares a listening Vite port and a silent one on the running sample,

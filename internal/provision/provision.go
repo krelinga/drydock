@@ -114,6 +114,16 @@
 // docker guard log probes by this instance's labels, skipping any
 // workspace with a job in flight, under the lock.
 //
+// Every job — a create's, start's, rebuild's or approval's run, a stop, a
+// delete, a session server restart — ends with exactly one workspace.job
+// event ({kind, outcome}: ok, failed, cancelled), written by launch rather
+// than by each path through the job, so a press always settles (frontend
+// §4.2). When the job's last act is a move, an annotation or the row's
+// removal, that commit carries it (workspace.Ending); otherwise launch writes
+// it after the job returns and before it releases the workspace. A job cut
+// off by shutdown or a delete ends cancelled; a delete's end comes after its
+// move to deleting and before the delete's first sub-step.
+//
 // Crash-tested by cutting a delete off after every sub-step and resuming in a
 // fresh process, and a create off *inside* step 8 and inside up
 // (crash_test.go): the fresh process's boot closes the dangling step, keeps
@@ -137,6 +147,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"runtime/debug"
 	"sync"
 	"time"
 
@@ -333,6 +344,9 @@ type Provisioner struct {
 	// finishes; an error it returns ends the job there, as a crash between
 	// sub-steps would.
 	afterStep func(action, step string) error
+	// jobEnded, in a test, is told as each job ends whether its last commit
+	// carried its workspace.job event (carried) or endJob writes it now.
+	jobEnded func(kind string, carried bool)
 
 	mu     sync.Mutex
 	active map[string]*job // jobs in flight: a run, a stop or a delete
@@ -352,10 +366,11 @@ func (p *Provisioner) logf(format string, args ...any) {
 }
 
 // job is one background operation on a workspace. There is at most one per
-// workspace: a run, a stop, or a delete. A delete is the only one that may
-// replace another — it cancels the job in flight and waits for it to end.
+// workspace: a run, a stop, a delete or a session server restart. A delete
+// is the only one that may replace another — it cancels the job in flight and
+// waits for it to end.
 type job struct {
-	kind   string // "run", "stop", "delete"
+	kind   string // one of the Job* kinds
 	cancel context.CancelCauseFunc
 	done   chan struct{}
 	err    error // set before done closes
@@ -452,7 +467,7 @@ func (p *Provisioner) Create(ctx context.Context, repositoryID int64, branch str
 	if err != nil {
 		return workspace.Workspace{}, err
 	}
-	p.launch(w.ID, "run", func(ctx context.Context) error {
+	p.launch(w.ID, JobCreate, func(ctx context.Context) error {
 		return p.run(ctx, w.ID, workspace.StepAllocate, false)
 	})
 	return w, nil
@@ -606,7 +621,14 @@ func (p *Provisioner) restartWith(ctx context.Context, id string, rebuild bool, 
 	if _, err := p.Workspaces.Move(ctx, id, to, ""); err != nil {
 		return err
 	}
-	p.launch(id, "run", func(ctx context.Context) error {
+	kind := JobStart
+	switch {
+	case ap != nil:
+		kind = JobApprove
+	case rebuild:
+		kind = JobRebuild
+	}
+	p.launch(id, kind, func(ctx context.Context) error {
 		un := &unpaused{}
 		if wasRunning && p.StopSupervisor != nil {
 			// Phase 5: the server goes before its container does — unpaused
@@ -618,7 +640,14 @@ func (p *Provisioner) restartWith(ctx context.Context, id string, rebuild bool, 
 				p.logf("drydock: workspace %s: stopping the session server before a rebuild: %v", id, err)
 			}
 		}
-		err := p.run(ctx, id, first, removeExisting)
+		runCtx := ctx
+		if len(un.ids) > 0 {
+			// The re-pause below may write an event after the run's last
+			// move, so that move must not carry the job's end: launch
+			// writes it after the re-pause instead.
+			runCtx = workspace.WithJob(ctx, nil)
+		}
+		err := p.run(runCtx, id, first, removeExisting)
 		// A run that failed or was cancelled before step 3 stopped the old
 		// container leaves it running: what was unpaused is paused again.
 		// After a run that got that far there is nothing running to pause.
@@ -645,8 +674,35 @@ func (p *Provisioner) cloned(ctx context.Context, w workspace.Workspace) (bool, 
 	return exists(w.HostPath)
 }
 
+// Job kinds: what a workspace.job event's kind names, one per button that
+// starts a job (frontend §4.2). Create, start, rebuild and approve are each a
+// run through the steps; the rest are lifecycle.go's and supervisor.go's.
+const (
+	JobCreate     = "create"
+	JobStart      = "start"
+	JobRebuild    = "rebuild"
+	JobApprove    = "approve"
+	JobStop       = "stop"
+	JobDelete     = "delete"
+	JobSupervisor = "supervisor"
+)
+
+// jobEndTimeout bounds writing a job's end once the job has returned: a
+// local database write, owed whether or not the job was cancelled.
+const jobEndTimeout = 30 * time.Second
+
 // launch starts a job for the workspace in the background (p.mu held). Its
 // context ends at Drydock's shutdown, or when a delete cancels it.
+//
+// Every job ends with exactly one workspace.job event (workspace.KindJob,
+// {kind, outcome}), which is what ends the press that started it (frontend
+// §4.2) whichever path the job took — so no error path has to remember to
+// write an event that merely implies the end. Where the job's last act is a
+// move, an annotation or the row's removal, that commit carries it
+// (workspace.Ending); otherwise the deferred endJob writes it after the job
+// returns, so after every event the job wrote, and before the job releases
+// the workspace — so no job that follows can write an event ahead of it, and
+// a delete waiting on this job writes its first after it.
 func (p *Provisioner) launch(id, kind string, f func(ctx context.Context) error) *job {
 	if p.active == nil {
 		p.active, p.owned = map[string]*job{}, map[string]bool{}
@@ -662,14 +718,66 @@ func (p *Provisioner) launch(id, kind string, f func(ctx context.Context) error)
 		defer p.wg.Done()
 		defer close(j.done)
 		defer cancel(nil)
-		j.err = f(ctx)
-		p.mu.Lock()
-		if p.active[id] == j { // a delete may have replaced it
-			delete(p.active, id)
+		defer func() {
+			p.mu.Lock()
+			if p.active[id] == j { // a delete may have replaced it
+				delete(p.active, id)
+			}
+			p.mu.Unlock()
+		}()
+		end := workspace.NewJobEnd(ctx, id, kind)
+		var panicked any
+		panicked, j.err = recovered(kind, func() error { return f(workspace.WithJob(ctx, end)) })
+		p.endJob(ctx, end, j.err)
+		if panicked != nil {
+			panic(panicked) // ended failed, and still a crash, as before
 		}
-		p.mu.Unlock()
 	}()
 	return j
+}
+
+// recovered runs f, turning a panic into an error naming it — so the job's
+// end says failed rather than ok — and handing the panic back to re-raise
+// once the end is written, as a jobPanic carrying the stack it was recovered
+// on, so the crash still shows where it happened.
+func recovered(kind string, f func() error) (panicked any, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			panicked = jobPanic{value: r, stack: debug.Stack()}
+			err = fmt.Errorf("provision: the %s job panicked: %v", kind, r)
+		}
+	}()
+	return nil, f()
+}
+
+// jobPanic is a job's panic re-raised after its end was written: the value,
+// and the stack of the goroutine that panicked, which the re-raise would
+// otherwise replace with launch's.
+type jobPanic struct {
+	value any
+	stack []byte
+}
+
+func (p jobPanic) Error() string {
+	return fmt.Sprintf("%v\n\nrecovered at:\n%s", p.value, p.stack)
+}
+
+// endJob writes the job's workspace.job event unless its last commit carried
+// it. Under a context of its own, bounded: the job's may be cancelled, and
+// the end is owed all the same.
+func (p *Provisioner) endJob(ctx context.Context, end *workspace.JobEnd, err error) {
+	if p.jobEnded != nil {
+		p.jobEnded(end.Kind(), end.Written())
+	}
+	clock := p.Workspaces.Env.Clock
+	if clock == nil {
+		clock = sys.RealClock{}
+	}
+	book, cancel := sys.Cleanup(ctx, clock, jobEndTimeout)
+	defer cancel()
+	if werr := p.Workspaces.EndJob(book, end, err); werr != nil {
+		p.logf("drydock: workspace %s: recording the end of its %s job: %v", end.ID(), end.Kind(), werr)
+	}
 }
 
 // Shutdown stops starting runs, cancels the ones in flight — each fails the

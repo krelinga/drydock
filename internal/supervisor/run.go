@@ -30,6 +30,11 @@ type sup struct {
 	// its terminal even when its context was already cancelled by a stop.
 	// Nil for one with no loop.
 	detached chan struct{}
+	// said is closed once the loop has said its first state — written, or
+	// found already standing — so a restart can return when the new server
+	// has said what it became (Restart). Nil for a sup with no loop.
+	said     chan struct{}
+	saidOnce sync.Once
 
 	mu       sync.Mutex
 	state    State

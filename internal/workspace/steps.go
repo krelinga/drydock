@@ -144,7 +144,8 @@ func (s *Store) Provision(ctx context.Context, id string, first Step, run map[St
 			if err := s.stepEvent(ctx, id, st, "needs_approval", events.Warn, na.sentence); err != nil {
 				return err
 			}
-			if err := s.awaitApproval(ctx, id, na.sentence, na.p); err != nil {
+			// The run's last act: it carries the job's end (job.go).
+			if err := s.awaitApproval(Ending(ctx, false), id, na.sentence, na.p); err != nil {
 				return err
 			}
 			return &StepError{Step: st, Err: ErrNeedsApproval}
@@ -166,7 +167,10 @@ func (s *Store) Provision(ctx context.Context, id string, first Step, run map[St
 			return err
 		}
 		if st != StepSessionServer {
-			if _, err := s.Move(ctx, id, Failed, detail); err != nil {
+			// The run's last act, which carries the job's end; a move
+			// refused (a delete overtook the run) carries nothing, and the
+			// provisioner writes the end after it.
+			if _, err := s.Move(Ending(ctx, true), id, Failed, detail); err != nil {
 				return err
 			}
 		}
