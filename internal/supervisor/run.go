@@ -190,7 +190,7 @@ func (s *sup) loop(ctx context.Context) {
 		case outStopped, outDetached:
 			return
 		case outWait:
-			s.set(ctx, WaitingRegistration, ReasonWaitRegistration, fmt.Sprintf(
+			s.ownSet(ctx, WaitingRegistration, ReasonWaitRegistration, fmt.Sprintf(
 				"Waiting for the previous session server to release the folder; asking again every %s. This is a wait, not a failure.",
 				durationText(p.RegistrationRetry)), 0)
 			if !s.sleep(ctx, p.RegistrationRetry) {
@@ -203,7 +203,7 @@ func (s *sup) loop(ctx context.Context) {
 		case outSignedOut:
 			continue // the top of the loop says so
 		case outFatal:
-			s.set(ctx, Degraded, out.reason, out.detail, 0)
+			s.ownSet(ctx, Degraded, out.reason, out.detail, 0)
 			return
 		case outCrash:
 			now := m.clock().Now()
@@ -218,14 +218,14 @@ func (s *sup) loop(ctx context.Context) {
 			n := len(s.crashes)
 			s.mu.Unlock()
 			if n > p.Budget {
-				s.set(ctx, Degraded, ReasonBudgetSpent, fmt.Sprintf(
+				s.ownSet(ctx, Degraded, ReasonBudgetSpent, fmt.Sprintf(
 					"The session server stopped %d times in %s, so Drydock stopped restarting it. The last time it %s. Restart it from the workspace once the cause is fixed.",
 					n, durationText(p.BudgetWindow), out.detail), 0)
 				return
 			}
 			s.countRestart(ctx)
 			d := p.BackoffFor(n)
-			s.set(ctx, Starting, ReasonBackoff, fmt.Sprintf(
+			s.ownSet(ctx, Starting, ReasonBackoff, fmt.Sprintf(
 				"The session server %s. Restarting it in %s (restart %d of %d allowed in %s).",
 				out.detail, durationText(d), n, p.Budget, durationText(p.BudgetWindow)), 0)
 			if !s.sleep(ctx, d) {
@@ -250,6 +250,14 @@ func (s *sup) park(ctx context.Context, r Reason, detail string) bool {
 	if s.loginSeen {
 		s.loginSeen = false
 		return false
+	}
+	// Replaced meanwhile (a Stop, then a Start, since this pass began): the
+	// successor's starting is the card's, and this loop only returns.
+	s.mu.Lock()
+	retired := s.retired
+	s.mu.Unlock()
+	if retired {
+		return true
 	}
 	s.set(ctx, AwaitingLogin, r, detail, 0)
 	s.parked = true
@@ -595,7 +603,7 @@ func (s *sup) read(ctx context.Context, master *os.File) *reading {
 			}
 			if s.discover(ctx, d, window) && !rd.serving() {
 				close(rd.served)
-				s.set(ctx, Serving, ReasonServing, "", 0)
+				s.ownSet(ctx, Serving, ReasonServing, "", 0)
 			}
 		}
 		tick := m.clock().After(p.HeartbeatEvery)

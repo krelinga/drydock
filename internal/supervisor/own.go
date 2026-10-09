@@ -242,7 +242,13 @@ func (s *sup) isQuiet() bool {
 
 // ownSet is the loop's own state write — not a stop's — gated as record is:
 // a loop replaced while it was stopping a leftover server or launching
-// writes nothing over its successor's starting.
+// writes nothing over its successor's starting. Every state the loop and its
+// run write goes through it — the launch's starting, serving, the backoff's
+// starting, waiting_registration, a fatal or budget_spent degraded, and the
+// two stop failures before a launch — save park's awaiting_login, which is
+// written under m.mu already and checks retired itself. So a Stop and then a
+// Start landing between a run's end and the loop's record of it (a crash's
+// backoff, say) leave the successor's starting standing.
 func (s *sup) ownSet(ctx context.Context, st State, r Reason, detail string, pid int) {
 	s.record(func() { s.set(ctx, st, r, detail, pid) })
 }
