@@ -177,16 +177,39 @@ func TestSlowSubscriberIsCutOff(t *testing.T) {
 		}
 	}
 
-	// It is unsubscribed, so its channel is closed: this range ends.
-	n := 0
-	for e := range stalled.C {
-		if e.ID != ids[n] {
-			t.Fatalf("the stalled subscriber's event %d has id %d, want %d", n+1, e.ID, ids[n])
+	// The cut-off closed its channel under the lock, before Emit returned, so
+	// every read here is non-blocking: the first subBuffer appends buffered,
+	// then closed. A channel still open, or one short, fails at once rather
+	// than hanging the test.
+	for n := 0; n < subBuffer; n++ {
+		select {
+		case e, ok := <-stalled.C:
+			if !ok {
+				t.Fatalf("the stalled subscriber had %d buffered before being cut off, want %d", n, subBuffer)
+			}
+			if e.ID != ids[n] {
+				t.Fatalf("the stalled subscriber's event %d has id %d, want %d", n+1, e.ID, ids[n])
+			}
+		default:
+			t.Fatalf("the stalled subscriber's channel is open and empty after %d events, want %d buffered then closed", n, subBuffer)
 		}
-		n++
 	}
-	if n != subBuffer {
-		t.Errorf("the stalled subscriber had %d buffered before being cut off, want %d", n, subBuffer)
+	select {
+	case e, ok := <-stalled.C:
+		if ok {
+			t.Fatalf("the stalled subscriber had more than %d buffered: event %d", subBuffer, e.ID)
+		}
+	default:
+		t.Fatal("the stalled subscriber's channel is still open after it was cut off")
+	}
+}
+
+// The documented threshold (CLAUDE.md, the package doc) is 256. The tests
+// above count against subBuffer, so a changed constant would move them with
+// it; this pins the number itself.
+func TestTheLagThresholdIs256(t *testing.T) {
+	if subBuffer != 256 {
+		t.Errorf("subBuffer = %d, want the documented 256", subBuffer)
 	}
 }
 
