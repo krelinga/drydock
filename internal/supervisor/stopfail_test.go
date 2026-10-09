@@ -4,16 +4,19 @@ package supervisor
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/krelinga/drydock/internal/claudetest"
 	"github.com/krelinga/drydock/internal/container"
+	"github.com/krelinga/drydock/internal/workspace"
 )
 
 // stubborn serves and ignores SIGTERM: only SIGKILL ends it.
@@ -379,5 +382,181 @@ func TestARestartWhoseStartFailsSaysSo(t *testing.T) {
 	}
 	if l := r.last(); l.State != string(Degraded) || l.Reason != string(ReasonStartFailed) || l.Detail != startFailedSentence {
 		t.Errorf("event %+v, want degraded/start_failed", l)
+	}
+}
+
+// A paused container's processes are frozen, not gone, and Docker refuses to
+// exec into it (container.ErrSessionContainerPaused). So a restart of a
+// server in one is a stop that failed — stop_failed, with the sentence that
+// says paused and what fixes it — never "The session server was stopped."
+// followed by a launch that fails against the paused container and spends
+// the restart budget; and a start beside one launches nothing. Before, a
+// paused container was listed as no container at all, so the stop reported
+// success over a frozen server. The control, in each case, is the same press
+// once the container is unpaused: the server it reaches is stopped and a new
+// one serves.
+func TestAPausedContainerIsNotAStoppedServer(t *testing.T) {
+	for _, how := range []string{"restart", "start"} {
+		t.Run(how, func(t *testing.T) {
+			r := newRig(t, func(_ *rig, p *Policy) {
+				p.StopTimeout, p.KillWait = 300*time.Millisecond, 300*time.Millisecond
+			})
+			t.Cleanup(func() { r.untouch("container-paused") }) // before the rig's own Stop
+			// A server an earlier Drydock left, in the container.
+			r.script("claude", serves)
+			cmd := exec.Command("sh", "-c", container.RemoteControlLaunch, "sh", filepath.Join(r.dir, "rc.pid"), "4")
+			cmd.Env = []string{"PATH=" + r.bin + ":/usr/bin:/bin"}
+			st := claudetest.StartTerm(t, cmd, 200, 50)
+			if _, err := st.WaitFor(10*time.Second, []byte("Capacity: 0/4")); err != nil {
+				t.Fatalf("the stray did not serve: %v", err)
+			}
+			stray := r.pid()
+			r.touch("container-paused", "")
+			before := len(r.sups())
+			switch how {
+			case "restart":
+				if err := r.m.Restart(context.Background(), wsID); !errors.Is(err, container.ErrSessionContainerPaused) {
+					t.Fatalf("a restart in a paused container: %v, want ErrSessionContainerPaused", err)
+				}
+			case "start":
+				r.start()
+				r.waitState(Degraded, ReasonStopFailed)
+			}
+			l := r.last()
+			if l.State != string(Degraded) || l.Reason != string(ReasonStopFailed) || l.Detail != pausedSentence {
+				t.Errorf("event %+v, want degraded/stop_failed with the paused sentence", l)
+			}
+			for _, d := range r.sups()[before:] {
+				if d.Reason == string(ReasonStopped) {
+					t.Errorf("a frozen server was said to be stopped: %+v", d)
+				}
+			}
+			time.Sleep(300 * time.Millisecond)
+			if n := r.launches(); n != 0 {
+				t.Errorf("%d launches into a paused container", n)
+			}
+			if !alive(stray) || r.pid() != stray {
+				t.Errorf("the server: alive %v, pid file %d (was %d)", alive(stray), r.pid(), stray)
+			}
+
+			// The control: unpaused, the same press stops it and serves.
+			r.untouch("container-paused")
+			if how == "restart" {
+				if err := r.m.Restart(context.Background(), wsID); err != nil {
+					t.Fatalf("control: %v", err)
+				}
+			} else {
+				r.start()
+			}
+			r.waitState(Serving, ReasonServing)
+			if alive(stray) {
+				t.Error("control: the old server is still running")
+			}
+		})
+	}
+}
+
+// A stop that cannot reach the server and keeps Drydock's terminal — the
+// container is paused, so nothing can be sent and the server is frozen, not
+// gone — leaves the supervisor's loop still reading that terminal, and a
+// Start then replaces the supervisor while it does. The old run writes
+// nothing for the workspace from the moment its stop began: not after the
+// failed stop, and not once replaced, so a session the old server announces
+// reaches no rc_session row and no session event, and cannot be mixed with
+// the new supervisor's on the one supervisor row. What makes it so is the
+// stop cancelling the run's context, under which every write it would make
+// runs. The control is the same announcement while the run is serving, which
+// is recorded. (A stop that reaches SIGKILL kills Drydock's end, and under
+// the real CLI that closes the terminal at once — measured — so its loop
+// ends with it.)
+func TestAReplacedSupervisorWritesNoSessions(t *testing.T) {
+	r := newRig(t, func(_ *rig, p *Policy) {
+		p.StopTimeout, p.KillWait = 300*time.Millisecond, 300*time.Millisecond
+	})
+	t.Cleanup(func() { r.untouch("container-paused") }) // before the rig's own Stop
+	announce := filepath.Join(r.dir, "announce")
+	r.script("claude", fmt.Sprintf(`printf 'Environment ID: env_01STUBBORN0000000000000000\r\n    Capacity: 0/4 · x\r\n'
+while :; do
+	if [ -r %[1]q ]; then
+		id=$(cat %[1]q); rm -f %[1]q
+		printf '\033]8;;https://claude.ai/code/%%s\007x\033]8;;\007\r\n' "$id"
+	fi
+	sleep 0.05
+done
+`, announce))
+	sessionEvents := func(id string) int {
+		evs, err := r.log.ForWorkspace(context.Background(), wsID, 1000)
+		if err != nil {
+			t.Fatal(err)
+		}
+		n := 0
+		for _, e := range evs {
+			if e.Kind == workspace.KindSession && strings.Contains(e.Message, id) {
+				n++
+			}
+		}
+		return n
+	}
+	has := func(id string) bool { return slices.Contains(r.sessions(), id) }
+	// say has the server announce a session, and waits until it has.
+	say := func(id string) {
+		t.Helper()
+		r.touch("announce", id)
+		r.waitFor(5*time.Second, "the server's announcement", func() bool {
+			_, err := os.Stat(announce)
+			return os.IsNotExist(err)
+		})
+		time.Sleep(300 * time.Millisecond) // for the loop to read it
+	}
+
+	r.start()
+	r.waitState(Serving, ReasonServing)
+	r.m.mu.Lock()
+	old := r.m.sups[wsID]
+	r.m.mu.Unlock()
+
+	// The control: serving, the run records what the server announces.
+	const serving = "session_01WHILESERVING0000000000"
+	say(serving)
+	if !has(serving) || sessionEvents(serving) != 1 {
+		t.Fatalf("control: sessions %v, %d events for %s", r.sessions(), sessionEvents(serving), serving)
+	}
+
+	r.touch("container-paused", "")
+	if err := r.m.Restart(context.Background(), wsID); !errors.Is(err, container.ErrSessionContainerPaused) {
+		t.Fatalf("restart: %v, want ErrSessionContainerPaused", err)
+	}
+	if !old.running() {
+		t.Fatal("the old loop ended: nothing is left reading the server's terminal")
+	}
+	const stopped = "session_01AFTERTHEFAILEDSTOP00000"
+	say(stopped)
+
+	// Replaced: Start runs a new supervisor, which finds the container
+	// still paused and starts nothing — while the old loop still reads.
+	r.start()
+	r.m.mu.Lock()
+	cur := r.m.sups[wsID]
+	r.m.mu.Unlock()
+	if cur == old {
+		t.Fatal("Start did not replace a supervisor that is stopping")
+	}
+	r.waitFor(5*time.Second, "the new supervisor's loop to end", func() bool { return !cur.running() })
+	if !old.running() {
+		t.Fatal("the old loop ended before the old server announced anything")
+	}
+	const replaced = "session_01AFTERREPLACED000000000"
+	say(replaced)
+
+	for _, id := range []string{stopped, replaced} {
+		if has(id) {
+			t.Errorf("a stopped run recorded %s: sessions %v", id, r.sessions())
+		}
+		if n := sessionEvents(id); n != 0 {
+			t.Errorf("a stopped run wrote %d session events for %s", n, id)
+		}
+	}
+	if n := r.launches(); n != 1 {
+		t.Errorf("%d launches, want only the first", n)
 	}
 }

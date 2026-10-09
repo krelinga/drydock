@@ -73,13 +73,22 @@ const RemoteControlLaunch = `printf '%s\n' "$$" > "$1" && ` +
 // remote-control process any more, or it exited before the signal reached
 // it. Exit 4: the server is there and the kernel refused the signal (EPERM)
 // — the container answered, so it is not Docker failing.
+//
+// Exit 4 is decided by the same test as the signal: after a refused kill the
+// pid must still be a remote-control process. The pid existing is not
+// enough — one that exited (ESRCH) and was handed straight to another
+// process in that instant would otherwise read as a server refusing a
+// signal, which a stop reports as one that survived SIGKILL. (The window
+// between the first test and the kill is the pid file's own, and sh has no
+// way to close it.)
 const remoteControlSignal = `f=$1; s=$2
 [ -r "$f" ] || exit 3
 p=$(cat "$f")
 case $p in ''|*[!0-9]*) exit 3;; esac
-tr '\000' '\n' < "/proc/$p/cmdline" 2>/dev/null | grep -qx remote-control || exit 3
+rc() { tr '\000' '\n' < "/proc/$p/cmdline" 2>/dev/null | grep -qx remote-control; }
+rc || exit 3
 kill -"$s" "$p" 2>/dev/null && exit 0
-[ -d "/proc/$p" ] || exit 3
+rc || exit 3
 exit 4`
 
 // ErrSessionSignalRefused: the session server is there, and the kernel in
@@ -92,6 +101,16 @@ var ErrSessionSignalRefused = errors.New("container: the session server refused 
 // stopping its container does. internal/supervisor returns it from a stop,
 // and a workspace stop or delete then carries on to its container step.
 var ErrSessionSurvivedKill = errors.New("the session server did not exit after SIGKILL")
+
+// ErrSessionContainerPaused: a container carrying the workspace's label is
+// paused. Its processes are frozen, not gone, and Docker refuses to exec
+// into it, so whether a session server is there — and whether a signal
+// reached it — cannot be asked until it is unpaused. Never "no server": a
+// stop that took a paused container's silence for the server's absence
+// would call a frozen server stopped. `docker stop` and `docker rm --force`
+// do end a paused container (measured, Docker 29.8.2), so a workspace stop
+// or delete carries on to its container step.
+var ErrSessionContainerPaused = errors.New("container: the workspace's container is paused, so its session server cannot be signalled")
 
 // SessionSpec is one workspace's session server.
 type SessionSpec struct {
@@ -178,7 +197,9 @@ const (
 // SignalSession delivers sig to the workspace's session server inside every
 // running container carrying its label — found by label, never a cached id —
 // and reports whether a server was there to receive it. No running container
-// is no server: a stopped container's processes are gone with it.
+// is no server: a stopped container's processes are gone with it. A paused
+// one is not stopped: its processes are frozen and Docker will not exec into
+// it, so it is ErrSessionContainerPaused, never "no server".
 func (m Manager) SignalSession(ctx context.Context, workspaceID string, sig SessionSignal, pidFile string) (bool, error) {
 	switch sig {
 	case SessionTerm, SessionKill, SessionAlive:
@@ -192,8 +213,15 @@ func (m Manager) SignalSession(ctx context.Context, workspaceID string, sig Sess
 	if err != nil {
 		return false, err
 	}
+	paused, err := m.findByStatus(ctx, workspaceID, "paused")
+	if err != nil {
+		return false, err
+	}
 	found := false
 	var errs []error
+	if len(paused) > 0 {
+		errs = append(errs, ErrSessionContainerPaused)
+	}
 	for _, id := range ids {
 		var stderr bytes.Buffer
 		res := m.Run.Run(ctx, subproc.Cmd{Name: "docker",
@@ -216,14 +244,21 @@ func (m Manager) SignalSession(ctx context.Context, workspaceID string, sig Sess
 	return found, errors.Join(errs...)
 }
 
-// findRunning is Find restricted to running containers.
+// findRunning is Find restricted to running containers. Docker's
+// status=running excludes a paused container (whose State.Running is still
+// true): see findByStatus.
 func (m Manager) findRunning(ctx context.Context, workspaceID string) ([]string, error) {
+	return m.findByStatus(ctx, workspaceID, "running")
+}
+
+// findByStatus is Find restricted to containers in one Docker status.
+func (m Manager) findByStatus(ctx context.Context, workspaceID, status string) ([]string, error) {
 	if !workspaceIDPattern.MatchString(workspaceID) {
 		return nil, fmt.Errorf("container: %q is not a workspace id", workspaceID)
 	}
 	var out, stderr bytes.Buffer
 	res := m.Run.Run(ctx, subproc.Cmd{Name: "docker",
-		Args: []string{"ps", "--quiet", "--no-trunc", "--filter", "status=running",
+		Args: []string{"ps", "--quiet", "--no-trunc", "--filter", "status=" + status,
 			"--filter", "label=" + m.key(LabelWorkspace) + "=" + workspaceID},
 		Stdout: limit(&out, 64<<10), Stderr: limit(&stderr, 64<<10)})
 	if err := failed("docker ps", res, &stderr); err != nil {
