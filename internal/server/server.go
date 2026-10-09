@@ -6,6 +6,33 @@
 // LAN-facing port, and Drydock is reachable only through a group-owned socket
 // whose one other member is Caddy. A loopback port would be reachable by every
 // local process and user; the socket is reachable by its group.
+//
+// # Rules and details
+//
+// No TCP listener is asserted on the running process. Serve cancels its own
+// context as serving ends, so a failed listener stops the loops it started
+// (and returns) as a cancelled context does.
+//
+// The preview server is preview.Limit(--preview-max-connections,
+// api.PreviewFrontDoor(…)) with no SecurityHeaders; Server.PreviewUpstream
+// (default Server.Proxy, resolving through the container manager) is read per
+// request, and startWith sets Proxy.Resolver and friends between New and
+// Serve. A browser-tier build (-tags browsertier, localaddrs_browsertier.go)
+// lists no local addresses and logs a startup line saying so; releases pass no
+// tags.
+//
+// TestPreviewProxyOverTheSockets runs a real dev server behind the real proxy
+// on the real socket — HTTP, a websocket, SSE, passthrough, a disable — and
+// sweeps what the app received, the proxy's log, the temp root and /proc for
+// the cookie and token. TestPreviewHandshakeOverTheSockets runs the handshake
+// across both real sockets — not signed in to sign-in and back, the cookie
+// stripped and the upstream's Set-Cookie for it dropped, revoke-all closing it
+// — then sweeps the temp root, the database's bytes, every /proc/*/cmdline and
+// the response bodies for the token and the cookie, with a planted control.
+// TestPreviewSessionSendsNoReferrer calls the preview.session handler
+// directly, refusal and success, for Referrer-Policy: no-referrer (security
+// review F4). In tests, seed preview rows only after <-srv.reconciled, or boot
+// reconciliation marks the running workspace stopped.
 package server
 
 import (

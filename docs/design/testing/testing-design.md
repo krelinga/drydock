@@ -4,7 +4,7 @@
 
 **Status** living design document — its history is the git log (`git log -p -- docs/design/testing/testing-design.md`).
 
-**Supplements** [`../overall/drydock-design.md`](../overall/drydock-design.md) draft v7 · [`../port-forwarding/port-forwarding-design.md`](../port-forwarding/port-forwarding-design.md) draft v4 · [`../frontend/frontend-design.md`](../frontend/frontend-design.md) draft v4 · reads [`../security-review.md`](../security-review.md) draft v1 and Spikes [00](../spikes/00-shared-credential-volume.md), [01](../spikes/01-login-handshake.md), [02](../spikes/02-rc-restart.md), [03](../spikes/03-claude-env-file.md)
+**Supplements** [`../overall/drydock-design.md`](../overall/drydock-design.md) · [`../port-forwarding/port-forwarding-design.md`](../port-forwarding/port-forwarding-design.md) · [`../frontend/frontend-design.md`](../frontend/frontend-design.md) · reads [`../security-review.md`](../security-review.md) and Spikes [00](../spikes/00-shared-credential-volume.md), [01](../spikes/01-login-handshake.md), [02](../spikes/02-rc-restart.md), [03](../spikes/03-claude-env-file.md)
 
 **Out of scope** CI vendor specifics beyond topology · packaging and release mechanics · testing Caddy's or Docker's own correctness
 
@@ -879,4 +879,4 @@ The tiering itself I expect to survive unchanged, because it is derived from whe
 
 ---
 
-*Supplements `docs/design/overall/drydock-design.md` draft v7, `docs/design/port-forwarding/port-forwarding-design.md` draft v4, and `docs/design/frontend/frontend-design.md` draft v4. §15 contains five findings that were changes to those documents rather than to this one; **all five are applied** as of overall v7 and port-forwarding v4, so that section is a dated record of the reasoning rather than an open list.*
+*Supplements `docs/design/overall/drydock-design.md`, `docs/design/port-forwarding/port-forwarding-design.md`, and `docs/design/frontend/frontend-design.md`. §15 contains five findings that were changes to those documents rather than to this one; **all five are applied** (they landed in overall draft v7 and port-forwarding draft v4), so that section is a dated record of the reasoning rather than an open list.*

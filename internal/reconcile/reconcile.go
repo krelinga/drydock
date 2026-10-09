@@ -16,6 +16,40 @@
 // Before the plan, Run closes the step an earlier process died inside: the
 // workspace's newest step event is started, and nothing will ever end it. It
 // is failed with InterruptedStep, so no timeline shows a step running forever.
+//
+// # Rules and details
+//
+// Wired into Serve beside serving, so each action is decided and applied
+// inside Exclusive (provision.Unowned), one call under the job lock; a resumed
+// delete, which takes that lock itself, is only checked there. A failed docker
+// listing changes nothing. Without Docker access it writes one warning and
+// carries on.
+//
+// The dangling step is closed for every row, deleting included (a stuck
+// resumed delete leaves its timeline on screen): the workspace's newest
+// workspace.step event overall (by id), if started, has its step failed with
+// InterruptedStep ("Drydock stopped while this step was running.") through
+// workspace.Store.FailDangling — one events.Log.Commit, inside Exclusive, so a
+// workspace with a job in flight is never touched. Only a kill, OOM or
+// unrecovered panic leaves one (every step that returns writes its end).
+// **Never per step**: steps run one at a time, so a started a later run's
+// events follow is over, and closing it would append the newest step event —
+// the timeline (runSteps) would drop the later run behind it and a failed card
+// would blame it.
+//
+// A running row stays running (a step-8 failure never fails a workspace) and
+// ResumeSupervisors, after Run, restarts its server with newer events; a row
+// mid-provision is marked failed by the plan, its step failed just before the
+// move. A deleting row is finished by provision.ResumeDelete — the route's own
+// delete — and broker sockets are reopened after it, for running workspaces
+// only. Then SweepHelpers removes any cleanup helper an interrupted delete
+// left (tested in test/container beside a workspace container, one carrying
+// both labels, and another prefix's helper, none of which it touches).
+//
+// Run's error wraps ErrNothingChanged only when it could not read Docker or
+// the rows; a run in which some actions failed is a *Partial, and the boot
+// warning then says how many workspaces could not be reconciled rather than
+// that nothing changed.
 package reconcile
 
 import (

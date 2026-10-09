@@ -8,6 +8,58 @@
 // for from which socket it arrived on, and the workspace's repository was fixed
 // when the workspace was created. A compromised container can ask only for
 // what it already has.
+//
+// # Rules and details
+//
+// Each workspace gets a socket, <dir>/<id>/broker.sock (0666, in a 0755
+// directory of its own inside the 0700 <dir>). **The workspace's directory,
+// not the socket, is what its container mounts** (SocketDir, at /run/drydock):
+// a bind mount pins an inode, and a mounted socket *file* died with the
+// process that bound it, so a Drydock restart left every running container
+// with a dead broker — git, gh and every command's prelude exiting 69. So the
+// directory must outlive the process: Open never recreates one that exists,
+// Close (and CloseAll at shutdown) removes only the socket, only Remove (a
+// delete's) takes the directory, and the unit sets
+// RuntimeDirectoryPreserve=yes. The CLI cannot mount it read-only, so root in
+// the container can write there: Open binds and chmods at a staging name in
+// <dir> and renames into place, replacing whatever is at the name without
+// following it (a directory there is refused); Remove is RemoveAll, and what
+// it cannot remove is ErrLeftover, which the delete notes rather than sticks
+// on. Close also removes a stale socket file an earlier process left — and one
+// at the pre-directory path <dir>/<id>.sock — so a delete resumed at boot
+// leaves no socket.
+//
+// Open refuses a socket path over sun_path's 107 bytes, which binding the
+// shorter staging name would not catch — so a test's broker dir comes from
+// os.MkdirTemp("", …), never t.TempDir().
+//
+// The line protocol is `GET-TOKEN scope=git` or `scope=gh`, plus PING, parsed
+// strictly: an extra field is bad_request. Each scope asks for exactly §9.3's
+// permissions (golden files in testdata/), for exactly the workspace's one
+// repository. The repository's state is read per request, a GitHub refusal
+// never falls back to anything broader, and token_grant and token.issued are
+// written per mint, not per cache hit — the row **before** the token is first
+// served: one whose row cannot be written is unavailable and is not marked
+// recorded, so the next request retries the write on the same cached token (as
+// GET-SECRETS will not answer unrecorded); either failure goes to the journal
+// through Logf, never with the token or a value.
+//
+// A mint's refusal is a reason from a closed set, and **a 422 is two refusals
+// only GitHub's message tells apart**: *permissions requested are not granted*
+// (the App lacks one, or the installation has not accepted it) is
+// app_permission_missing, *not accessible to the parent installation* is
+// revoked, and any other 422 is unavailable, never a guess. The matchers are
+// github.IsPermissionNotGranted and IsRepositoryNotIncluded, pinned against
+// the real dev App by TestContractTokenRequestsBeyondTheAppAreRefused (which
+// asks for administration: write), and through the broker against the fake by
+// TestAMissingAppPermissionIsNotARevocation. TestContractGHScopeMints mints
+// the gh scope live from each testbed's socket and checks the token lists that
+// repository alone. token.refused carries the scope and its permission set and
+// a fixed sentence per reason — never GitHub's text.
+//
+// GET-SECRETS (no arguments, ever) answers `OK count=N`, N `NAME value` lines,
+// END from the secrets store's snapshot — no GitHub request, no decryption —
+// and writes secret_access before answering, or does not answer.
 package broker
 
 import (

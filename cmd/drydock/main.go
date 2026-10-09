@@ -16,6 +16,28 @@
 // TCP port (design §13.5), and no way to set the password except from a shell
 // on the host (§13.2) — which removes the "unauthenticated bootstrap endpoint
 // left enabled" class of bug by not having the endpoint.
+//
+// # Rules and details
+//
+// count-secrets --db prints how many secrets are stored, for the installer's
+// key-replacement guard: through store.OpenReadOnly (SQLite mode=ro), so no
+// lock, no migration — the server it asks about may be an older binary — and
+// no database created; a missing file or a schema without the secret table is
+// 0, anything unreadable an error, never 0 — and so is an **empty file**,
+// which Drydock never leaves (it migrates on open): a botched restore's 0-byte
+// database is not "no secrets", since the real one may come back. It writes
+// nothing to the database, but reading a cleanly closed WAL database makes
+// SQLite create its -shm and an empty -wal, which is why the installer asks as
+// drydock, never as root.
+//
+// passwd deliberately skips the instance lock so it works while the server
+// runs; --if-unset makes it a no-op that never reads stdin once a password
+// exists, which is what keeps an installer re-run from signing everyone out.
+//
+// check-preview-domain --ui-host H --preview-domain D exits 0 only when
+// config.CrossSite passes, 1 naming why, 2 on a malformed call. version is
+// stamped by -ldflags -X main.version=. serve --secrets-key takes the master
+// key's *path*.
 package main
 
 import (

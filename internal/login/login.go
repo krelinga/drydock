@@ -30,6 +30,52 @@
 //
 // The process itself is a Launcher's: in production a short-lived container
 // (DockerLauncher), in the component tier fakeclaude on a PTY directly.
+//
+// # Rules and details
+//
+// Manager runs one login at a time (a second is ErrInProgress): Begin
+// announces starting before the route's 202, then a Launcher starts `claude
+// auth login --claudeai` on a PTY Drydock owns, started through
+// subproc.PTYRunner.StartPTY — the supervisor's one PTY start, so there is no
+// second mechanism — and every phase change is auth.login carrying the whole
+// View (login_id, phase, url, deadline, attempts, problem, message — no field
+// for a code).
+//
+// After a code, the verdict for *that* code is read from the stream up to the
+// prompt plus what arrived since, so an earlier `Invalid code` (the prompt is
+// never re-printed) cannot answer a later one — tests catch that only with
+// fakeclaude's replay paced. Submit checks classify.ValidateCodeShape first —
+// on the bytes, which it never copies into a string no one could zero (a test
+// measures zero allocations) — types the trimmed code and one \r, and zeroes
+// its copy. Five minutes from the URL on the injected clock is timed_out; a
+// ten-minute start timeout covers the image's first build. A success is
+// announced at once, then IdentityRecorder.LoggedIn(at) (the watch), under the
+// manager's own context, which Shutdown ends.
+//
+// DockerLauncher is production: EnsureClaudeVolume first — §6 step 4's own
+// call, which makes the volume labelled (a docker run would create it
+// unlabelled), gives an empty one to Drydock's uid and refuses one another uid
+// has written to (ProblemVolumeOwner, both uids named) — then docker run --rm
+// -it of the Claude image as **Drydock's own uid** (the uid every workspace's
+// remote user gets; the credential is 0600), the volume read-write at
+// /home/vscode/.claude, --cap-drop ALL, read-only root, label
+// <prefix>.login=<id> — never .workspace or .identity. A killed docker CLI
+// leaves its container running (measured), hence removal by label and Sweep at
+// boot, which a launch waits for. One killed during its create leaves a
+// container the daemon finishes creating after the CLI is gone, so Remove is
+// told whether Drydock killed the CLI (killed, false once the PTY has ended by
+// itself) and then keeps listing for up to RemoveSettle (3 s), and every
+// launch first sweeps all other login containers.
+//
+// logintest.Launcher runs fakeclaude on a PTY directly (through the same
+// StartPTY) for the component tier. A success reaches the supervisors only
+// through the watch's auth.identity, which they resume on:
+// internal/supervisor/login_test.go drives both halves with fakeclaude, a
+// wrong code as the control. Tested there (with the canary sweep, and again
+// through the real server's socket, HTTP responses and SSE transcript
+// included), in test/container with fakeclaude in a real container — where the
+// PTY semantics Spike 01 relied on are measured through docker run -t — and in
+// the browser tier.
 package login
 
 import (

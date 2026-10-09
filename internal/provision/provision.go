@@ -17,6 +17,103 @@
 //     the step and marks a mid-provision row failed (§6) — but reconciliation is also told
 //     which workspaces are being provisioned right now (Busy), so a create in
 //     the first seconds after boot is not mistaken for an interrupted one.
+//
+// # Rules and details
+//
+// An honoured lockfile is never repaired: after up its bytes are compared with
+// what was there before (bytes, not git status — git on the host would run
+// whatever the container-writable .git/config names), and a stale one up
+// rewrote stays in the clone with the up step's detail naming the file, since
+// it is exactly what VS Code would write and the right thing to commit. A
+// repository with no devcontainer.json — decided by looking for the file,
+// since read-configuration fails silently — gets
+// mcr.microsoft.com/devcontainers/base:debian written *beside* the clone.
+//
+// Step 3 stops the workspace's containers, then computes the host-access
+// subset and, unless it is within the repository's current approved set
+// (container.Covered), returns workspace.NeedsApproval before any up — on
+// create, start and rebuild alike; the stop is what makes the file checked the
+// file up reads. Step 3 reads the repository's approval on every run, asked
+// for or not, and step 6 hands it to up (UpSpec.Approved) for the docker
+// guard; ErrPathEscapes fails step 3 with its own sentence; boot's
+// SweepGuardPolicies removes leftover policies for workspaces with no job in
+// flight; a guard refusal fails step 6 with GuardRefusalSentence — naming the
+// settings, saying no container was created and that starting again checks
+// again — distinct from an up that failed. ApproveConfig (the hash shown, else
+// ErrApprovalStale) records it and continues the stopped run with its own
+// --remove-existing-container under the cap; DeclineConfig drops the request.
+// Drydock's own override config is checked without the clone path checks.
+//
+// Step 4 makes the shared credential volume (config.ClaudeVolume) if an
+// exact-name listing lacks it — local driver, <prefix>.claude-config label —
+// and refuses one without that label or with a non-local driver or driver
+// options (NFS/CIFS through the local driver); up mounts it at
+// container.ClaudeConfigMountPoint, the Feature's CLAUDE_CONFIG_DIR. Step 7
+// also runs `claude --version` and requires classify.ClaudeCodeVersion. Step 8
+// hands the running workspace to the supervisor (StartSupervisor) and does not
+// wait for serving; SessionSpec is how the supervisor execs in (the override
+// decided as step 3 decides it, the remote env passed again, the session-name
+// prefix the repository's short name). RestartSupervisor (POST …/supervisor)
+// is a job under the same ownership, and ResumeSupervisors is boot adoption's
+// half.
+//
+// **A container an earlier Drydock made, with the broker socket mounted as a
+// file** (container.LegacyBrokerMount), is named, never left to exit 69:
+// ResumeSupervisors calls ParkSupervisor instead of starting it (the server
+// wires supervisor.Park with stale_broker_mount, which the card reads as
+// *Container misconfigured* + Rebuild), and a start — not a rebuild — fails at
+// up with LegacyMountSentence before running it. Up mounts Broker.SocketDir; a
+// stop Closes the socket and keeps the directory; a delete's broker_socket
+// sub-step is Broker.Remove, and its ErrLeftover is a note, not a stuck
+// delete.
+//
+// Unowned(id, act) is reconciliation's Exclusive: it runs act under the lock
+// every job starts under, only if this process has started no job for the
+// workspace, so a create in the first seconds after boot is not marked
+// "interrupted" and a stop or start asked during boot is never acted against
+// by a plan made before it (a check and then the act left that window).
+// ReopenSockets and ResumeSupervisors, boot's follow-ups, likewise decide from
+// the row read again under the lock.
+//
+// One workspace per repository in any state; a start honours the cap. Tested
+// with a fake CLI for argv and every step's failure sentence, and in
+// test/container for real.
+//
+// Stop, Rebuild and Delete (lifecycle.go) are jobs under the same
+// one-per-workspace ownership, each sub-step writing workspace.action: a stop
+// is refused unless running and closes the broker socket; a rebuild (and a
+// start from failed) passes --remove-existing-container; a delete is persisted
+// as deleting first, cancels and waits for a run in flight, and removes only
+// <WorkspaceRoot>/<ULID> (clone, .drydock/ and its per-up tmp/) proved to be a
+// real directory matching the row (never following a symlink). What the host
+// cannot remove — root-owned files a process in the container left in the
+// clone — goes through the container package's cleanup helper, after the
+// directory is proved a second time, and the files sub-step's detail says the
+// helper ran. A delete's containers sub-step also removes the workspace's
+// BuiltImages, as a note rather than a stuck delete when Docker refuses.
+//
+// A run that ends failed closes its broker socket (§9.1: access follows
+// Drydock's state; a failed postCreateCommand's container is still up, but not
+// handed over), and start or rebuild reopens it at step 5. StopSupervisor is
+// the supervisor's Stop, run *before* the container in a stop, a rebuild and a
+// delete. ResumeDelete is reconciliation's. A failed stop annotates the
+// still-running row (StopFailedDetail), so a list snapshot says it as the live
+// events did; a stop asked again, and a resumed delete, clear their annotation
+// under the lock before the job's first event. SweepHelpers is the boot sweep:
+// after reconciliation, cleanup helpers by this instance's label, skipping any
+// workspace with a job in flight, under the lock.
+//
+// Crash-tested by cutting a delete off after every sub-step and resuming in a
+// fresh process, and a create off *inside* step 8 and inside up
+// (crash_test.go): the fresh process's boot closes the dangling step, keeps
+// the first running and fails the second, and the next run's step 8 is newer
+// than the close.
+//
+// The pre-flight (preflight) refuses a create, start, rebuild or approval with
+// 507 disk_full at or above --disk-limit-percent, reading the disk at the
+// request. A failed up's sentence is chosen from the Feature's own lines
+// (upFailure); its last 50 lines are held by BuildLog, masked when kept and
+// again when served, and served by GET …/build-log.
 package provision
 
 import (

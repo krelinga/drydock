@@ -10,6 +10,16 @@
 //
 // The real implementations are the zero-value defaults, so nothing
 // production-facing changes shape to get this.
+//
+// # Rules and details
+//
+// Never call time.Now() directly; take a Clock.
+//
+// DiskUsage answers two questions — how full a filesystem is (Usage, statfs of
+// the nearest existing ancestor) and how much one directory holds (Size:
+// allocated blocks as du counts them, hard links once, no symlink followed, no
+// other filesystem entered, partial when some of it could not be read) — and
+// HostDisk is the real one, FakeDisk a test's.
 package sys
 
 import (

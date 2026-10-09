@@ -7,6 +7,52 @@
 // the container manager and reconciliation ask this package to move a
 // workspace rather than writing the column themselves. So an illegal move — a
 // deleted workspace coming back as running, say — is refused in one place.
+//
+// # Rules and details
+//
+// deleting is a sink, and nothing reaches running except from a build. Each of
+// the eight steps writes workspace.step started/done/failed so a failure names
+// its step. A step's raw error never reaches an event (a subprocess's stderr
+// can carry anything, git's quoting the URL); only a workspace.Public sentence
+// does. Creates check the duplicate and the cap inside one transaction, which
+// is why the store opens every transaction IMMEDIATE.
+//
+// Remove (only from deleting) takes the supervisor row with it — and its
+// repository's row and secret grants, when the installation had dropped the
+// repository and this workspace was what held it — and keeps the event log,
+// token_grant and secret_access: the "which workspaces ever held this secret?"
+// history outlives the workspace. It also retires the workspace's forwarded
+// ports (never deletes them: a slug is spent for good) and deletes their
+// preview sessions. A repository row it releases is announced in the same
+// commit as repo.removed (store.KindRepositoriesRemoved, {repository_ids}),
+// after workspace.gone: a repo.* event is what makes an open catalog refetch.
+//
+// Annotate sets state_detail without a move (a stuck delete, a failed stop)
+// and ClearDetail removes it as the retry starts, each a workspace.state event
+// with from equal to state.
+//
+// The cap's rule is Occupying and nothing else: the SQL lists in Create and
+// Occupied are built from it, and CapacityOf counts the very rows GET
+// /api/workspaces lists by it. The view's last_action is the newest
+// workspace.action event, so the UI reads which sub-step a failed stop stopped
+// at as structure, never from the sentence.
+//
+// Create, Move, Annotate, ClearDetail, Remove and Adopt write their row and
+// their event through one events.Commit, so two movers cannot publish out of
+// commit order (a delete overtaking a run's move to running once left the
+// stream on running while the row said deleting; a stress test runs that
+// race). The views read only live workspaces' step, action, supervisor and
+// session events, the newest per step and per kind, in SQL; an event whose
+// data cannot be read is skipped and logged (Logf), never a 500 for the whole
+// list.
+//
+// approval.go is the host-access gate's state (design §6): a step returning
+// NeedsApproval ends needs_approval (never failed) and the workspace moves
+// building → stopped with the request in pending_approval and on that one
+// workspace.state event (data.approval, and the view's approval); any Move
+// clears it. Approve supersedes the repository's current config_approval row
+// and inserts the new one in one events.Commit with config.approved; Decline
+// clears the request with a same-state event.
 package workspace
 
 import (

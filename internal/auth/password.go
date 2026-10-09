@@ -6,6 +6,12 @@
 // places that design §13.2 says matter: a password hash that is expensive for a
 // guesser, a session store with nothing in it worth stealing, and a lockout that
 // one noisy device cannot use to lock the operator out on its own.
+//
+// # Rules and details
+//
+// argon2id with a floor and rehash-on-sign-in; sessions stored only as
+// SHA-256; a lockout that is per-IP backoff plus a global cap, kept in
+// auth_attempt so a restart does not reset it.
 package auth
 
 import (

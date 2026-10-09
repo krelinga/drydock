@@ -11,6 +11,39 @@
 // covered by the auth, Origin, CORS and mux-separation meta-tests without
 // anyone editing a test. That is the testing form of design §13.5's "protected
 // by forgetting to think about it, not by remembering".
+//
+// # Rules and details
+//
+// Ten meta-tests walk the table. They were mutation-checked, not just observed
+// passing: moving the 501 ahead of the auth gate fails 20 subtests, marking a
+// route unauthenticated fails the count assertion by name, and deleting the
+// Origin check fails 14. Keep that property.
+//
+// PUT /api/secrets/:name is one route with two meanings: create-or-replace, or
+// with `If-None-Match: *` a create that refuses a stored name `412
+// secret_exists` (any other If-None-Match is bad_request). A route refused
+// because Drydock is shutting down answers `503 unavailable`, never internal.
+//
+// PreviewFrontDoor is the whole preview socket (PF §13 steps 1–2): the preview
+// routes with a written handler, each behind its gate, and a fallback, outside
+// the table, in a fixed order — a Host that is not one well-formed label under
+// the preview domain (or is drydock-check) or an unmounted /.drydock/ path →
+// 302 /.drydock/denied; no valid preview cookie → 302 to
+// /preview/authorize?return=<the URL> on the UI origin; otherwise the
+// preview.Upstream, handed the request with the preview cookie stripped and a
+// writer that drops any Set-Cookie naming it. **Every answer Drydock makes on
+// a preview host says no-referrer and no-store**, ServeMux's path-cleaning 307
+// included (it keeps ?t= in its Location), and refusals are uniform: every
+// cookie failure is the no-cookie redirect, every token failure the no-token
+// denial, and neither sets a cookie.
+//
+// PreviewHandshake is the three handlers: preview.authorize (validates return
+// to one preview host or 400s — never an open redirect — sends an
+// unpreviewable slug to its own denied page, mints), preview.session (sets
+// __Host-drydock-preview, host-only, Lax, and lands on the clean URL),
+// preview.denied (403, one constant page). TestPreviewFallbackOrder is the
+// fallback's meta-test; the rest drive the real gate and service on a fake
+// clock; mutation-checked.
 package api
 
 import "net/http"

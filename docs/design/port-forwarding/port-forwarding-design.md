@@ -585,4 +585,4 @@ What step 2 inherits: the fallback is the one place to turn into §7's redirect;
 
 ---
 
-*Supplements `docs/design/overall/drydock-design.md` draft v5. Previews are served from a separate registrable domain, which keeps them cross-site with the UI; the one change that pushes into the parent document is the session cookie moving from `SameSite=Strict` to `Lax` (overall §13.2) so the cross-site authorize redirect still carries the session, with the `Origin` allowlist kept as belt-and-braces (§13.3, §13.5).*
+*Supplements `docs/design/overall/drydock-design.md` (written against its draft v5). Previews are served from a separate registrable domain, which keeps them cross-site with the UI; the one change that pushes into the parent document is the session cookie moving from `SameSite=Strict` to `Lax` (overall §13.2) so the cross-site authorize redirect still carries the session, with the `Origin` allowlist kept as belt-and-braces (§13.3, §13.5).*

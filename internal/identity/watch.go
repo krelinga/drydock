@@ -29,6 +29,64 @@
 // from them; the row and the events carry the verdict, the account email
 // `auth status` reports, and the expiry, and the failure sentences are
 // Drydock's own.
+//
+// # Rules and details
+//
+// The watch runs at boot, every six hours and on POST /api/auth/claude/check,
+// announcing changes as auth.identity.
+//
+// **Every requested check is answered**: a Trigger (the POST) that its check's
+// own auth.identity or auth.identity_check_failed did not answer — the verdict
+// unchanged, or the Trigger joined after the announcement — gets
+// auth.identity_checked (the view, last_checked_at moved) as the check ends;
+// the flag is cleared with "running" under one lock, so a Trigger is answered
+// by the check it joined or starts its own. A check cut off by its *caller's*
+// context (the handshake's five-minute LoggedIn) answers nothing but starts a
+// fresh check under the watch's own for a pending Trigger; only the watch's
+// own end (shutdown) leaves one unanswered, and after it Trigger returns
+// ErrShutdown, which the route answers 503 unavailable. A verdict the database
+// will not take, or an answer whose view cannot be read, is
+// auth.identity_check_failed. The seam's "announced" point follows each
+// answering event. An unrequested check that changed nothing stays silent, and
+// the supervisors, which wake on auth.identity, never see the new kind.
+//
+// The volume is read through short-lived containers — read-only mount,
+// --network none, only DAC_READ_SEARCH — the file with the pinned busybox (so
+// blanked and absent never wait on anything else) and `claude auth status
+// --json` in the Claude image; a missing volume is absent without a container,
+// which would create it, and a volume without <prefix>.claude-config
+// (LabelVolume, which is container.LabelClaudeConfig, the label §6 step 4
+// gives the one it makes) is a failed check, foreign_volume, and never read. A
+// canary sweep covers the DB, events, the log, the HTTP body and every error.
+//
+// LoggedIn(at) is the login handshake's: it waits out a running check, checks
+// afresh, and the first live verdict records at as logged_in_at; the moment is
+// consumed by the next stored verdict whatever it is, so a handshake over a
+// volume still showing no login dates nothing later.
+//
+// **Every check ends** (a workspace can put a FIFO at the credential path, and
+// the read once hung the watch for good): the reader's constant line refuses a
+// symlink or anything not a regular file before opening it and reads with head
+// -c one byte past the 64 KiB cap; each read is bounded by Timeout
+// (--identity-check-timeout, two minutes) and the image's first build by
+// BuildTimeout, both through sys.WithTimeout on the injected clock; a read cut
+// off is a failed check, problem timeout, keeping the stored state; after any
+// failed read, and in the first check after boot, helpers carrying
+// <prefix>.identity are removed by label (Sweep) — a killed docker run client
+// leaves its container running, measured. Checks run one at a time and sweep
+// inside the one running. Trigger runs under the watch's own context, which
+// Shutdown ends and waits for before the database closes.
+//
+// **expired is a live login** (§2.4): its event is info and the UI shows no
+// fault for it. **expiring counts down to the login, never the access token**:
+// a window on expiresAt called every login expiring. It is
+// refreshTokenExpiresAt — which Claude Code 2.1.289 writes at every login, the
+// server's figure or thirty days — within --identity-expiring-window and not
+// yet past, by Claude Code's own oauth-expiry rule, stored as
+// claude_identity.login_expires_at (migration 7 turned rows stored under the
+// old meaning into ok). A file without that field has no countdown.
+// fresh-login.json (access token 8 h, login 30 d) is the fixture that must
+// stay ok.
 package identity
 
 import (

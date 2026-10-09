@@ -7,6 +7,132 @@
 // name or a remembered id: Docker is the truth, the database is the cache, so
 // every fact reconciliation needs to rebuild a workspace row is on the
 // container as a label.
+//
+// # Rules and details
+//
+// `devcontainer up`'s argv is built and validated from workspace data and its
+// result read by classify.ClassifyContainer. Containers are found with `docker
+// ps -q --filter label=…` for ids and `docker inspect` for structured labels
+// and state — never a table parse. The id-labels carry workspace id,
+// repository id, repo and branch, so a row can be rebuilt from them.
+//
+// read-configuration is parsed too (one JSON object; an unparseable
+// devcontainer.json exits 0, so "names no image" is checked here), run with
+// --include-merged-configuration and an id-label no container carries, so the
+// merged configuration is computed from what up will read, never from an old
+// container's labels.
+//
+// HostAccessOf (policy.go) is the **host-access subset**: every field outside
+// an allowlist, from the configuration and the merged one (a Feature's
+// privileged is its own entry, source feature_or_image), as {field, source,
+// value} with canonical JSON values and the clone's path written
+// ${localWorkspaceFolder}, hashed by HashSettings (sha256: over the sorted
+// entries) — initializeCommand, runArgs, appPort, workspaceMount, Compose,
+// build.options, a bind mount or any volume not named with ${devcontainerId},
+// privileged, hostRequirements.gpu, capAdd/securityOpt beyond the
+// SYS_PTRACE/seccomp=unconfined debugger pair, a Dockerfile or build context
+// outside the clone, a non-registry build.cacheFrom (by the guard's parser, so
+// it can be approved), and **any field it does not name**. A config file that
+// is a symlink or outside the clone is ErrConfigFileOutside, not a setting; a
+// Dockerfile, context or bind source written inside the clone that is a link
+// out of it is ErrPathEscapes — not approvable, since the guard refuses it
+// even approved. DiffSettings is what the operator is shown, and Covered
+// decides: every current entry within the approved set — the same canonical
+// value, or for capAdd/securityOpt/mounts a list of approved elements; runArgs
+// must equal, since its elements are argv and recombine. The hash is only the
+// approval request's staleness check.
+//
+// **Every devcontainer invocation runs docker through the docker guard**
+// (guard.go, Manager.Guard): --docker-path and --docker-compose-path name
+// GuardDir(folder)/docker (<root>/<id>/.drydock/guard/, beside the clone), a
+// link dockerguard.Guard.Prepare remakes before every call to the drydock
+// binary, with real-docker beside it linking the docker the Manager itself
+// runs; the pair goes among the CLI's options, before exec's --. Up refuses to
+// run with no guard (ErrNoGuard) or a TMPDIR other than TempDirFor(folder)
+// (<id>/.drydock/tmp), writes the guard's policy.json — the four id-labels,
+// Drydock's two --mount values (ownMounts, the same strings Args passes), the
+// clone, the TMPDIR, UpSpec.ConfigDir and UpSpec.Approved — removes it after,
+// and reads the guard's refused.json before the CLI's result: a refusal is
+// *GuardRefusal naming settings from the guard's closed set, never the CLI's
+// prose. read-configuration and exec (and the session server's) get the guard
+// with no policy, which passes everything they run. SweepPolicy removes a
+// policy a killed up left.
+//
+// A repository's committed devcontainer-lock.json is **honoured**
+// (LockfileHonour: no lockfile flag) and one without gets --no-lockfile, so
+// none is created — never --frozen-lockfile, which refuses a lockfile a commit
+// stale that VS Code would quietly rewrite. With no flag up leaves an in-sync
+// lockfile byte for byte and rewrites a stale one to VS Code's bytes, **but
+// only because Drydock's Feature has no dependsOn**: the CLI writes an
+// injected Feature's dependencies into the lockfile (design §6, "The
+// repository's lockfile"; the measured matrix is
+// test/fixtures/devcontainer/lockfile-behaviour.txt). A lockfile with an entry
+// for Drydock's own Feature, or one that is not a regular file inside the
+// clone or does not parse, is refused.
+//
+// Each up gets its own TMPDIR: the CLI stages Features in a folder named by
+// the millisecond, and concurrent creates shared one. --override-config goes
+// to exec as well as up — exec reads the config too.
+//
+// The broker is mounted as the workspace's **directory**, UpSpec.BrokerDir at
+// BrokerMountPoint (/run/drydock), so the socket is at
+// BrokerSocketInContainer, /run/drydock/broker.sock — the path the Feature
+// always used. Not read-only: the CLI's --mount regex takes type, source,
+// target and external and nothing else (CLI 0.89.0 refuses ,readonly).
+// LegacyBrokerMount (and Found.LegacyBrokerMount in List) reads docker
+// inspect's Mounts for a bind at LegacyBrokerMountPoint — the socket file an
+// earlier Drydock mounted, which only a rebuild replaces.
+//
+// Find/Stop/Remove act on the containers carrying one workspace's label (never
+// a cached id); every id handed to docker stop/rm must be a full 64-hex id,
+// after --; rm is --force --volumes, which takes anonymous volumes and never
+// named ones.
+//
+// RemoveContents is the delete's **cleanup helper** (cleanup.go): docker run
+// --rm of CleanupImage (configuration, busybox **pinned by digest** — Validate
+// refuses a tag) as root with --network none, --read-only, every capability
+// dropped but DAC_OVERRIDE and FOWNER, and one bind mount — <root>/<id> at /w,
+// never a parent — running `find /w -mindepth 1 -delete`. It carries
+// <prefix>.cleanup=<id>, never <prefix>.workspace, so reconciliation's listing
+// never sees one; a stray left by an earlier attempt is removed by label
+// before the next runs. Everything before the helper's own docker run that
+// fails is ErrCleanupNotRun (an unpinned image also ErrCleanupImage), so the
+// delete never says a helper was tried when none ran. ListHelpers is the boot
+// sweep's listing: the bare cleanup label, and nothing that also carries the
+// workspace label.
+//
+// BuiltImages(folder) are the names up gives the images it builds, measured on
+// CLI 0.89.0: vsc-<basename>-<sha256 of --workspace-folder> and that with
+// -features, -uid, -features-uid (nothing labels them, so the exact name is
+// the handle); RemoveBuiltImages lists those by exact reference and docker
+// image rms them — never --force, never a prune, so Docker itself refuses an
+// image a container still uses.
+//
+// EnsureClaudeVolume (§6 step 4, and the login's first act, so the two never
+// disagree) makes the shared credential volume local and labelled, refuses a
+// foreign or non-local one, and then runs the **owner helper**
+// (volumeowner.go: the pinned busybox as root with only CHOWN, FOWNER and
+// DAC_OVERRIDE, --network none, the volume alone, label
+// <prefix>.volume-owner): an *empty* volume, whoever owns it, is given to
+// ClaudeUID (Drydock's own) 0700 with a marker directory .drydock-volume left
+// in it, because Docker copies an image directory's owner into a volume
+// whenever it is mounted while empty — and the Feature's /home/vscode/.claude
+// carries a non-vscode remote user's *build-time* uid, which gave a fresh
+// volume to the wrong uid (measured in test/container). A written volume
+// another uid owns is ErrVolumeOwner naming it. The CLI's --mount cannot say
+// volume-nocopy. feature/prepare-test-volumes.sh carries the same line for the
+// Feature's tests, compared by a Go test.
+//
+// Address (address.go) is the preview proxy's resolution, per dial: docker ps
+// for exactly one *running* container with the workspace's label (none is
+// ErrNotRunning, two ErrAmbiguous), then docker inspect of it for an address
+// on a Docker network — IPv4 first, networks by name, and never loopback,
+// unspecified, link-local or multicast, never the network's gateway, never an
+// address this host holds (LocalAddrs, nil = the kernel), and only on a
+// network whose driver is bridge (one docker network inspect): macvlan/ipvlan
+// with an approved --ip can name the host or the LAN (ErrNoAddress, as is
+// --network=host); Confirm inspects the same container again after the connect
+// (ErrMoved).
 package container
 
 import (

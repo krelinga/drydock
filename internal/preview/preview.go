@@ -21,6 +21,51 @@
 //   - **A preview session dies with what made it.** Its auth session (a
 //     cascade, so revoke-all reaches every preview), its port's enable (a
 //     disable or a retire deletes the rows), and its own idle window.
+//
+// # Rules and details
+//
+// Tokens are keyed by SHA-256, each bound to an auth session, one preview
+// host, one port and the landing path, 60 s, at most 64 pending per auth
+// session and 4,096 in all; Consume is one lookup-and-delete under one lock
+// that spends the token whatever the outcome. preview_session rows are keyed
+// by the cookie's SHA-256, validated per request against the Host, a 12-hour
+// idle window, the auth session's own expiry, an enabled unretired port and a
+// running workspace; SetEnabled(false), Retire and RetireWorkspacePorts (from
+// workspace.Remove) delete a port's sessions in the same transaction. Slug
+// (one label, never drydock-check) and ParseReturn (an https URL on exactly
+// one preview host, or nothing) are the host rules.
+//
+// StripCookie removes the preview cookie and the UI's __Host-drydock too.
+// CookieGuard filters Set-Cookie before every header block, 1xx included (a
+// 103 through httputil.ReverseProxy is tested), and latches only at the final
+// one.
+//
+// The Upstream seam's implementation is Proxy (PF §13 step 3): an
+// httputil.ReverseProxy per request over one transport whose only dial
+// resolves the container through a Resolver (internal/container's Address,
+// then Confirm after the connect) — the URL host is a dial key of workspace
+// and port, never an address; nothing remembers one, though a kept-alive
+// connection is reused (it is bound to its container). Host is
+// localhost:<port> unless the port is passthrough; every incoming
+// Forwarded/X-Forwarded-*/X-Real-Ip is dropped and the proxy sets
+// X-Forwarded-Proto: https, X-Forwarded-Host (the preview host) and
+// X-Forwarded-For (Caddy's last entry, only if it is an address); the path and
+// raw query go upstream as sent (decided: nothing past /.drydock/ is Drydock's
+// to clean). A 101's Set-Cookie is filtered in ModifyResponse — ReverseProxy
+// writes it past the CookieGuard.
+//
+// Upgrades are tracked and closed: after IdleTimeout with no byte either way
+// (on the injected clock); when the gate's WithRecheck says their preview
+// session no longer holds (every RecheckEvery, 30 s — Vite pings, so idleness
+// never ends a revoked tab); at once by CloseWhere on a sign-out
+// (api.SessionRoutes.Revoked); and by Close at shutdown. The fallback's
+// /.drydock/ check reads the path cleaned (reservedPath). Not running →
+// /.drydock/denied; refused 502, timed out 504, Docker unreachable 503, each
+// Drydock's page naming the port only. Limit is §10.7's cap, outside the front
+// door so the handshake's redirects count, and an open websocket for its life.
+//
+// Migration 8's forwarded_port has **no foreign key to workspace**: a cascade
+// would delete a row and free its slug for reissue.
 package preview
 
 import (

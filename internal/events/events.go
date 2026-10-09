@@ -13,6 +13,22 @@
 // Callers compose them from Drydock's own facts — a state name, a step, an id —
 // and never from a credential, a login code, a secret value, or raw subprocess
 // output. The canary sweep reads this table's raw bytes to hold that line.
+//
+// # Rules and details
+//
+// A subscriber that lags 256 events is cut off rather than allowed to block
+// writers, and recovers by replay. A subscription's channel is closed in
+// exactly one place, behind one sync.Once, so Cancel, Close and a lag cut-off
+// are safe in any order and any number of times — and Subscribe after Close
+// returns one already closed, since a goroutine Serve started can subscribe
+// after shutdown closed the log (a second close was a release-run panic).
+//
+// data is a JSON object for the reducer; message is prose nothing may parse.
+//
+// Commit(ctx, fn) runs fn's transaction and appends the events it returns in
+// that same transaction, under the same lock, publishing only after the
+// commit: a row change and its event are one fact, so commit order is id order
+// is publish order for every writer.
 package events
 
 import (

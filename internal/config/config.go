@@ -1,6 +1,21 @@
 // Package config holds the settings that must not be constants.
 //
 // Most of this is ordinary. One field is a safety property: LabelPrefix.
+//
+// # Rules and details
+//
+// Validate refuses configurations which silently undo a design property —
+// among them a UI origin, host or preview domain that is not lowercase, since
+// a browser sends the Origin host lowercased and that check is exact, and a
+// preview domain on the UI host's registrable domain (CrossSite: eTLD+1 by
+// golang.org/x/net/publicsuffix, the list browsers decide SameSite by, so a
+// parent or sibling is refused as a subdomain is; a name that is itself a
+// public suffix is refused rather than guessed at). The installer asks the
+// same function through `drydock check-preview-domain`.
+//
+// The shared Claude volume's name (ClaudeVolume, default
+// drydock-claude-config), the Claude image's digest-pinned base, and the
+// identity watch's interval and expiring window live here too.
 package config
 
 import (
