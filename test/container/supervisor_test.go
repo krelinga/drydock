@@ -15,6 +15,7 @@ import (
 	"github.com/krelinga/drydock/internal/claudetest"
 	"github.com/krelinga/drydock/internal/container"
 	"github.com/krelinga/drydock/internal/events"
+	"github.com/krelinga/drydock/internal/life"
 	"github.com/krelinga/drydock/internal/store"
 	"github.com/krelinga/drydock/internal/subproc"
 	"github.com/krelinga/drydock/internal/supervisor"
@@ -30,8 +31,8 @@ import (
 //
 //   - the server gets a terminal in the container, and the environment and
 //     session it announces are discovered;
-//   - Drydock going away (Detach: its terminal closed, its `devcontainer
-//     exec` signalled) leaves the server running in the container —
+//   - Drydock going away (its supervisor group stopped: its terminal
+//     closed, its `devcontainer exec` signalled) leaves the server running in the container —
 //     signalling the local CLI does not reach it;
 //   - the next Drydock's start stops that server first, with SIGTERM (its
 //     clean exit is fakeclaude's recorded shutdown, exit 0), and serves again
@@ -85,8 +86,10 @@ func TestSessionServerInARealContainer(t *testing.T) {
 	db.ExecContext(ctx, `INSERT INTO workspace (id, repository_id, host_path, branch, state) VALUES (?, 7, ?, 'main', 'running')`, ws, folder)
 	log := events.New(db.DB, sys.RealClock{})
 	containers := manager(p)
-	manager := func() *supervisor.Manager {
-		return &supervisor.Manager{DB: db.DB, Events: log, Env: sys.Env{Clock: sys.RealClock{}, Random: sys.CryptoRandom{}},
+	// manager is one Drydock's supervisor, in a group of its own: stopping
+	// and waiting for it (detach) is that Drydock going away.
+	manager := func() (*supervisor.Manager, func(time.Duration)) {
+		m := &supervisor.Manager{DB: db.DB, Events: log, Env: sys.Env{Clock: sys.RealClock{}, Random: sys.CryptoRandom{}},
 			Runtime: supervisor.ContainerRuntime{Containers: containers, PTY: subproc.Exec{}},
 			Spec: func(context.Context, string) (container.SessionSpec, error) {
 				return container.SessionSpec{WorkspaceID: ws, Folder: folder,
@@ -94,6 +97,15 @@ func TestSessionServerInARealContainer(t *testing.T) {
 			},
 			Policy: supervisor.Policy{StopTimeout: 10 * time.Second, RegistrationRetry: time.Second, GateTimeout: 60 * time.Second},
 			Logf:   t.Logf}
+		g := life.NewGroup(context.Background())
+		if err := m.RunIn(g); err != nil {
+			t.Fatal(err)
+		}
+		return m, func(bound time.Duration) {
+			if late := g.Wait(time.After(bound)); late != nil {
+				t.Errorf("still running after shutdown: %v", late)
+			}
+		}
 	}
 	// last is the newest supervisor.state event and its id.
 	last := func() (workspace.SupervisorData, int64) {
@@ -144,12 +156,12 @@ func TestSessionServerInARealContainer(t *testing.T) {
 		return f.Events(t)
 	}
 
-	first := manager()
-	second := manager()
+	first, detachFirst := manager()
+	second, detachSecond := manager()
 	defer func() {
-		first.Detach(10 * time.Second)
+		detachFirst(10 * time.Second)
 		second.Stop(context.Background(), ws)
-		second.Detach(10 * time.Second)
+		detachSecond(10 * time.Second)
 	}()
 	m0 := mark()
 	if err := first.Start(ctx, ws); err != nil {
@@ -167,7 +179,7 @@ func TestSessionServerInARealContainer(t *testing.T) {
 	}
 
 	// Drydock goes away. The server does not.
-	first.Detach(30 * time.Second)
+	detachFirst(30 * time.Second)
 	time.Sleep(2 * time.Second)
 	if !alive() {
 		t.Fatal("the server died with Drydock's terminal; the design says it keeps serving")

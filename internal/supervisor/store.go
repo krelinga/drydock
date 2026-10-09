@@ -64,13 +64,15 @@ func (s *sup) announce(ctx context.Context, st State, r Reason, detail string) {
 }
 
 func (s *sup) write(ctx context.Context, st State, r Reason, detail string, pid int, always bool) {
-	if s.said != nil {
-		// After the event below, or now when there is none to write.
-		defer s.saidOnce.Do(func() { close(s.said) })
-	}
 	s.mu.Lock()
 	if !always && s.state == st && s.reason == r && s.detail == detail {
 		s.mu.Unlock()
+		if r == ReasonLaunching && pid > 0 {
+			// The launch's own starting, which the start recorded before
+			// the loop ran (launchLocked): no new state to announce, but
+			// the process it now has.
+			s.recordLaunch(ctx, pid)
+		}
 		return
 	}
 	from := s.state
@@ -119,6 +121,14 @@ func (s *sup) write(ctx context.Context, st State, r Reason, detail string, pid 
 		}
 	}
 	s.log.Mark(m.clock().Now(), msg)
+}
+
+// recordLaunch records a launched server's pid and start on the row.
+func (s *sup) recordLaunch(ctx context.Context, pid int) {
+	now := s.m.clock().Now().UTC().Format(time.RFC3339Nano)
+	if _, err := s.m.DB.ExecContext(ctx, `UPDATE supervisor SET pid = ?, started_at = ? WHERE id = ?`, pid, now, s.row); err != nil {
+		s.m.logf("drydock: workspace %s: recording the session server's process: %v", s.ws, err)
+	}
 }
 
 func (s *sup) countRestart(ctx context.Context) {

@@ -91,17 +91,12 @@ type allowance struct {
 }
 
 const (
-	whyRoot  = "component root; R1 replaces with Group"
 	whyGuard = "the docker guard's log probe, reached only from dockerguard.Main: a separate short-lived process with no Drydock lifecycle"
 )
 
 // allowed is every use the rule tolerates today. Remove an entry when its use
 // goes; add one only with a reason a reviewer can check against the rule.
 var allowed = []allowance{
-	// Component roots: the context every background job of the component
-	// runs under, ended by its Shutdown.
-	{use{"internal/supervisor/supervisor.go", "Manager.launchLocked", "context.Background"}, 0, whyRoot},
-
 	// Shutdown: bounds that start once the component's context has ended.
 	{use{"internal/server/server.go", "Server.Serve", "context.Background"}, 0,
 		"R1 debt: the HTTP servers' graceful-shutdown bound starts after the serving context has ended"},
@@ -112,7 +107,7 @@ var allowed = []allowance{
 	{use{"internal/login/login.go", "StartProc", "context.Background"}, 0,
 		"a login process is ended by its session (kill, then the container's removal), never by a context SIGTERMing it; the session runs in the login's life.Group, so shutdown still ends it"},
 	{use{"internal/supervisor/run.go", "sup.runOnce", "context.Background"}, 0,
-		"the session server's process: Drydock's shutdown must leave it running, and a stop signals it in the container"},
+		"the session server's `devcontainer exec`: ended by the run that started it (its deferred cancel, after the process has exited or been let go), never by a context — shutdown must leave the server running, and a stop signals it in the container"},
 
 	// Bookkeeping and cleanup owed after a cancellation: rule 3's cases from
 	// before sys.Cleanup. The unbounded ones write to the local database; the
@@ -137,12 +132,6 @@ var allowed = []allowance{
 		"the degraded answer to a restart whose start failed, owed after the caller's context ended"},
 	{use{"internal/supervisor/supervisor.go", "Manager.Stop", "context.WithoutCancel"}, 0,
 		"book: the stop's state record, owed after cancellation"},
-	{use{"internal/supervisor/run.go", "sup.runOnce", "context.WithoutCancel"}, 0,
-		"stopping a hung server, which must finish after the run that found it has ended"},
-	{use{"internal/supervisor/supervisor.go", "Manager.redactValues", "context.Background"}, 0,
-		"the ring outlives a run, so a flush after a cancelled run must still be masked"},
-	{use{"internal/supervisor/supervisor.go", "Manager.redactValues", "context.WithTimeout"}, 0,
-		"R1 debt: that read's 5 s bound, on the wall clock"},
 
 	// Per-connection bounds where no request context exists.
 	{use{"internal/broker/broker.go", "Broker.handle", "context.Background"}, 0,
