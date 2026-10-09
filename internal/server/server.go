@@ -245,8 +245,8 @@ func New(ctx context.Context, cfg config.Config, env sys.Env) (*Server, error) {
 		return s.Supervisor.Stop(ctx, w.ID)
 	}
 	s.Provisioner.ForgetSupervisor = s.Supervisor.Forget
-	s.Provisioner.ParkSupervisor = func(ctx context.Context, w workspace.Workspace, detail string) error {
-		return s.Supervisor.Park(ctx, w.ID, supervisor.ReasonStaleBrokerMount, detail)
+	s.Provisioner.ParkSupervisor = func(ctx context.Context, w workspace.Workspace, reason, detail string) error {
+		return s.Supervisor.Park(ctx, w.ID, supervisor.Reason(reason), detail)
 	}
 	s.Provisioner.SupervisorRestart = s.Supervisor.Restart
 	// Step 3's declared ports become the registry's declared rows: listed,
@@ -676,9 +676,15 @@ func (s *Server) Serve(ctx context.Context) error {
 		// restart — after reconciliation, so the set is the one Docker
 		// confirmed: a row it marked stopped gets no socket, as a stop
 		// closes it. A container whose socket is missing has no GitHub
-		// access, which is safe but not what anyone wants.
+		// access, which is safe but not what anyone wants. A container
+		// found paused gets neither its socket nor its session server: one
+		// listing, shared by both.
+		var paused provision.Paused
+		if ctx.Err() == nil {
+			paused = s.Provisioner.PausedAtBoot(ctx)
+		}
 		if s.Broker != nil && ctx.Err() == nil {
-			if err := s.Provisioner.ReopenSockets(ctx); err != nil {
+			if err := s.Provisioner.ReopenSockets(ctx, paused); err != nil {
 				fmt.Fprintf(os.Stderr, "drydock: broker: %v\n", err)
 			}
 		}
@@ -686,7 +692,7 @@ func (s *Server) Serve(ctx context.Context) error {
 		// restart the supervisor) — after the sockets, since the launch
 		// fetches the workspace's secrets through its socket.
 		if ctx.Err() == nil {
-			if err := s.Provisioner.ResumeSupervisors(ctx); err != nil && ctx.Err() == nil {
+			if err := s.Provisioner.ResumeSupervisors(ctx, paused); err != nil && ctx.Err() == nil {
 				fmt.Fprintf(os.Stderr, "drydock: session servers: %v\n", err)
 			}
 		}

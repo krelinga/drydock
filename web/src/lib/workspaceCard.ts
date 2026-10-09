@@ -134,6 +134,15 @@ const SURVIVED_KILL = 'survived_kill'
 const STOP_FAILED = 'stop_failed'
 
 /**
+ * Boot found the container paused (design §8, internal/provision
+ * PausedAtBoot) and left its GitHub access and its session server off. Not
+ * the login's fault, so the fleet override leaves it; restarting the session
+ * server would not reopen access, so the card offers Stop, whose Start then
+ * restores both (as a rebuild would).
+ */
+const CONTAINER_PAUSED = 'container_paused'
+
+/**
  * §6.1's rows for `running` × `supervisor.state`, read from the supervisor
  * entity — `supervisor.state` events and the views' `supervisor`, never
  * `workspace.state` — with §6.6's fleet override over them. Its action takes
@@ -145,7 +154,7 @@ function supervisorHalf(w: Workspace, fleet: FleetLogin): CardStatus | null {
   if (!w.supervisorKnown) return null
   const s = w.supervisor
   const configFault = s !== null && s.state === 'degraded' &&
-    (CONFIG_FAULTS.has(s.reason ?? '') || s.reason === SURVIVED_KILL)
+    (CONFIG_FAULTS.has(s.reason ?? '') || s.reason === SURVIVED_KILL || s.reason === CONTAINER_PAUSED)
   // §6.6: a signed-out fleet replaces the session half of every running
   // card — no session line, no session button; the banner holds the one Sign
   // in to Claude — except where the card's own fault is not the login's. The
@@ -183,6 +192,9 @@ function supervisorHalf(w: Workspace, fleet: FleetLogin): CardStatus | null {
     case 'degraded':
       if (s.reason === SURVIVED_KILL) {
         return { line: 'Session server would not stop', tone: 'bad', note: s.detail, action: 'rebuild' }
+      }
+      if (s.reason === CONTAINER_PAUSED) {
+        return { line: 'Container paused', tone: 'idle', note: s.detail, action: 'stop' }
       }
       if (s.reason === STOP_FAILED) {
         return { line: 'Session server did not stop', tone: 'bad', note: s.detail, action: 'restart_session' }

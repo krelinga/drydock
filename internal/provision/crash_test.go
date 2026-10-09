@@ -105,10 +105,10 @@ func TestACreateCutOffInsideAStepIsClosedAtBoot(t *testing.T) {
 			if _, err := reconciler(p2).Run(ctx); err != nil {
 				t.Fatal(err)
 			}
-			if err := p2.ReopenSockets(ctx); err != nil {
+			if err := p2.ReopenSockets(ctx, p2.PausedAtBoot(ctx)); err != nil {
 				t.Fatal(err)
 			}
-			if err := p2.ResumeSupervisors(ctx); err != nil {
+			if err := p2.ResumeSupervisors(ctx, p2.PausedAtBoot(ctx)); err != nil {
 				t.Fatal(err)
 			}
 

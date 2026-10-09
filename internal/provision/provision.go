@@ -67,6 +67,13 @@
 // sub-step is Broker.Remove, and its ErrLeftover is a note, not a stuck
 // delete.
 //
+// **A running workspace whose container boot finds paused** (PausedAtBoot,
+// one listing shared by both follow-ups) gets no broker socket from
+// ReopenSockets, and ResumeSupervisors parks its session server as
+// container_paused with ContainerPausedSentence rather than starting it, so
+// the card says the access and the session are off and why; a stop and a
+// start, or a rebuild, restores both.
+//
 // Unowned(id, act) is reconciliation's Exclusive: it runs act under the lock
 // every job starts under, only if this process has started no job for the
 // workspace, so a create in the first seconds after boot is not marked
@@ -336,11 +343,13 @@ type Provisioner struct {
 	StartSupervisor  func(ctx context.Context, w workspace.Workspace) error
 	ForgetSupervisor func(id string)
 	// ParkSupervisor records, in place of StartSupervisor at boot, that a
-	// running workspace's session server cannot work until its container is
-	// rebuilt, with Drydock's sentence saying so: the container has the
-	// broker socket mounted as a file, as an earlier Drydock made it
-	// (container.Manager.LegacyBrokerMount). Nil starts it as usual.
-	ParkSupervisor func(ctx context.Context, w workspace.Workspace, detail string) error
+	// running workspace's session server is not started, for reason (one of
+	// the Park* codes), with Drydock's sentence saying why and what fixes
+	// it: the container has the broker socket mounted as a file, as an
+	// earlier Drydock made it (container.Manager.LegacyBrokerMount), or the
+	// container is paused (PausedAtBoot). Nil starts a legacy container's
+	// server as usual and leaves a paused one's alone.
+	ParkSupervisor func(ctx context.Context, w workspace.Workspace, reason, detail string) error
 	// SupervisorRestart stops (SIGTERM first) and starts a workspace's
 	// session server: the job RestartSupervisor runs. Nil refuses the
 	// route with ErrNoSupervisor.

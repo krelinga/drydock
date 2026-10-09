@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -101,18 +102,24 @@ func TestBootLeavesAPausedContainerAlone(t *testing.T) {
 		}
 		e.setStatus(t, v.ID, status)
 		b := &stubBroker{}
-		var started []string
+		var started, parked []string
 		p := &Provisioner{Workspaces: e.p.Workspaces, Events: e.log, Broker: b,
 			Cloner: e.p.Cloner, Containers: e.p.Containers, Logf: t.Logf,
 			StartSupervisor: func(_ context.Context, w workspace.Workspace) error {
 				started = append(started, w.ID)
 				return nil
+			},
+			ParkSupervisor: func(_ context.Context, w workspace.Workspace, reason, detail string) error {
+				parked = append(parked, w.ID+" "+reason+" "+detail)
+				return nil
 			}}
 		runIn(t, p)
-		if err := p.ReopenSockets(ctx); err != nil {
+		before := len(e.cli.callsTo(t, "docker"))
+		set := p.PausedAtBoot(ctx)
+		if err := p.ReopenSockets(ctx, set); err != nil {
 			t.Fatal(err)
 		}
-		if err := p.ResumeSupervisors(ctx); err != nil {
+		if err := p.ResumeSupervisors(ctx, set); err != nil {
 			t.Fatal(err)
 		}
 		if got := b.isOpen(v.ID); got == paused {
@@ -120,6 +127,32 @@ func TestBootLeavesAPausedContainerAlone(t *testing.T) {
 		}
 		if got := len(started) == 1; got == paused {
 			t.Errorf("paused=%v: session servers started %v", paused, started)
+		}
+		// Parked, saying why and what fixes it, so the card does not show
+		// the state the last process left — never left as it was.
+		want := []string(nil)
+		if paused {
+			want = []string{v.ID + " " + ParkContainerPaused + " " + ContainerPausedSentence}
+		}
+		if !slices.Equal(parked, want) {
+			t.Errorf("paused=%v: parked %q, want %q", paused, parked, want)
+		}
+		// One listing for both follow-ups, never a look per workspace per
+		// follow-up for the pause.
+		lists, looks := 0, 0
+		for _, a := range e.cli.callsTo(t, "docker")[before:] {
+			line := strings.Join(a, " ")
+			// The listing filters by the label alone; the legacy mount's
+			// own look (Find) names the workspace.
+			if strings.Contains(line, " ps --all ") && strings.HasSuffix(line, "label="+testPrefix+".workspace") {
+				lists++
+			}
+			if strings.Contains(line, "status=paused") {
+				looks++
+			}
+		}
+		if lists != 1 || looks != 0 {
+			t.Errorf("paused=%v: %d listings and %d per-workspace looks; want one listing", paused, lists, looks)
 		}
 	}
 }

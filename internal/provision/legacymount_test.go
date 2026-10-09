@@ -104,14 +104,17 @@ func TestResumeSupervisorsParksALegacyContainer(t *testing.T) {
 		started = append(started, w.ID)
 		return nil
 	}
-	e.p.ParkSupervisor = func(_ context.Context, w workspace.Workspace, d string) error {
+	e.p.ParkSupervisor = func(_ context.Context, w workspace.Workspace, reason, d string) error {
+		if reason != ParkStaleBrokerMount {
+			t.Errorf("parked for %q, want %q", reason, ParkStaleBrokerMount)
+		}
 		parked, detail = append(parked, w.ID), d
 		return nil
 	}
 	resume := func() {
 		t.Helper()
 		started, parked, detail = nil, nil, ""
-		if err := e.p.ResumeSupervisors(ctx); err != nil {
+		if err := e.p.ResumeSupervisors(ctx, e.p.PausedAtBoot(ctx)); err != nil {
 			t.Fatal(err)
 		}
 	}

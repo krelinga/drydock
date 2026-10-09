@@ -1491,16 +1491,16 @@ func TestBootFollowUpsReadTheRowUnderTheLock(t *testing.T) {
 
 	// Control: running, and nothing in the way.
 	p, b, started := fresh()
-	if err := p.ReopenSockets(ctx); err != nil || !b.isOpen(v.ID) {
+	if err := p.ReopenSockets(ctx, p.PausedAtBoot(ctx)); err != nil || !b.isOpen(v.ID) {
 		t.Errorf("control: ReopenSockets = %v, open %v", err, b.isOpen(v.ID))
 	}
-	if err := p.ResumeSupervisors(ctx); err != nil || len(*started) != 1 {
+	if err := p.ResumeSupervisors(ctx, p.PausedAtBoot(ctx)); err != nil || len(*started) != 1 {
 		t.Errorf("control: ResumeSupervisors = %v, started %v", err, *started)
 	}
 
 	for name, call := range map[string]func(p *Provisioner) error{
-		"sockets":     func(p *Provisioner) error { return p.ReopenSockets(ctx) },
-		"supervisors": func(p *Provisioner) error { return p.ResumeSupervisors(ctx) },
+		"sockets":     func(p *Provisioner) error { return p.ReopenSockets(ctx, p.PausedAtBoot(ctx)) },
+		"supervisors": func(p *Provisioner) error { return p.ResumeSupervisors(ctx, p.PausedAtBoot(ctx)) },
 	} {
 		if _, err := e.p.Workspaces.Move(ctx, v.ID, workspace.Running, ""); err != nil {
 			var ill workspace.ErrIllegalMove
