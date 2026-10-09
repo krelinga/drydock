@@ -302,7 +302,8 @@ These come from §2 (Claude Code constraints) and §13.5 (non-negotiables). Most
   create is "a request is in flight". Entity state is written by exactly one thing — the reducer over
   the SSE stream — and the `202` body is discarded. Patching an entity from a mutation response looks
   like it works and diverges the moment a second device acts. Nothing is ever framed: the UI sends
-  `frame-ancestors 'none'` and `frame-src 'none'`. See frontend §2.1 and §8.
+  `frame-ancestors 'none'` and `frame-src 'none'`, so a preview can neither embed the control plane
+  nor be embedded in it. See frontend §2.1 and §8.
 - **Redact by default.** Passwords, login codes, session cookies, GitHub tokens, secret values, and
   PTY buffers never reach the event log, a file, or Caddy's access log. The login prompt does not echo
   (Spike 01), but Drydock holds the code in memory where a request log or crash dump can leak it, and
@@ -314,17 +315,20 @@ These come from §2 (Claude Code constraints) and §13.5 (non-negotiables). Most
   of running tests with the secret silently missing. Diagnostics go to Drydock's event log over the
   socket. **Its exit status alone does nothing**: `eval "$(…)"` evaluates the empty string a failed
   substitution leaves and succeeds, so the helper also prints `exit 69` for the `eval` to run. A test
-  of this asserts the command *after* the prelude did not run.
+  of this asserts the command *after* the prelude did not run — a test of the helper's status passes
+  while the bug stands.
 - **The `CLAUDE_ENV_FILE` script is one constant line:**
   `eval "$(drydock-secrets export || echo exit 69)"`. Its *text* is cached per session and passed to
   every command shell as `argv` (Spike 03), so a text change needs a supervisor restart and resolved
   values must never be inlined — invoking the helper is the only reason values stay out of `ps`. The
-  `|| echo exit 69` covers a helper that cannot run at all, which prints nothing.
+  `|| echo exit 69` is not decoration: a helper that cannot run at all prints nothing, and without it
+  `eval ""` succeeds and the command runs without its secrets.
 - **Stop a `remote-control` server with `SIGTERM`, escalating to `SIGKILL` only on timeout.** A clean
   stop deregisters the folder; a `SIGKILL` of a server with no live session blocks the next start for
   one to three minutes (Spike 02) — a wait, not a crash, which must not consume the restart budget.
   **Match it on `already served by a terminal`, never on `409`** (`2.1.246` prefixed the status code
-  and `2.1.289` dropped it).
+  and `2.1.289` dropped it), so a classifier keyed on the number silently reclassifies the one
+  retryable refusal.
 - **Two of the three config gates *hang* rather than fail.** A missing `remoteDialogSeen` waits on
   `Enable Remote Control? (y/n)`, and a missing trust record waits on `Trust <dir>? [y/N]` — the latter
   only on a PTY, which is what the supervisor gives it; redirected, it exits `1`. A hang has no error
@@ -362,8 +366,8 @@ These come from §2 (Claude Code constraints) and §13.5 (non-negotiables). Most
   `--verbose` output and upserts `rc_session` rows. If the cache drifts, the Claude app is right. The UI
   links out with a count; it does not reimplement a session browser. The handle is the **environment
   id** (`env_…`, one per workspace, survives restart), linked as `claude.ai/code?environment=<id>`;
-  `Capacity: N/4` gives the count. Scrape **ids**, not URLs, **only from OSC 8 hyperlink targets** — a
-  bare `session_…` match would accept an id the model printed in its own prose. The terminator is BEL
+  `Capacity: N/4` gives the count. Scrape **ids**, not URLs, **only from OSC 8 hyperlink targets** — the
+  URL and its label run together in the byte stream (Spike 02), and a bare `session_…` match would accept an id the model printed in its own prose. The terminator is BEL
   on `2.1.289`, ST on `2.1.246`.
 - **Agent branches go under a `drydock/` prefix**, configured in the Feature. Commits use the App's
   bot identity.
