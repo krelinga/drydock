@@ -7,19 +7,20 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
 	"github.com/krelinga/drydock/internal/events"
 	"github.com/krelinga/drydock/internal/github"
 	"github.com/krelinga/drydock/internal/github/githubtest"
+	"github.com/krelinga/drydock/internal/life"
 	"github.com/krelinga/drydock/internal/store"
 	"github.com/krelinga/drydock/internal/sys"
 )
 
 type env struct {
 	cat    *Catalog
+	group  *life.Group
 	fake   *githubtest.Fake
 	clock  *sys.FakeClock
 	log    *events.Log
@@ -28,7 +29,15 @@ type env struct {
 
 var t0 = time.Date(2026, 10, 4, 12, 0, 0, 0, time.UTC)
 
-func newEnv(t *testing.T) *env {
+// newEnv is a catalog started without the refresh at once, so each test's
+// refreshes are its own.
+func newEnv(t *testing.T) *env { t.Helper(); return newEnvStarted(t, false) }
+
+// newEnvBooting is a catalog started as Serve starts it: Start, with the
+// refresh at once.
+func newEnvBooting(t *testing.T) *env { t.Helper(); return newEnvStarted(t, true) }
+
+func newEnvStarted(t *testing.T, boot bool) *env {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "drydock.db")
 	db, err := store.Open(context.Background(), path)
@@ -51,11 +60,19 @@ func newEnv(t *testing.T) *env {
 	}}}
 	key, _ := github.ParseKey(githubtest.KeyPEM(t))
 	log := events.New(db.DB, clock)
-	return &env{
-		cat: &Catalog{DB: db.DB, Events: log, Clock: clock,
+	e := &env{
+		cat: &Catalog{DB: db.DB, Events: log, Clock: clock, Logf: t.Logf,
 			GitHub: &github.Client{AppID: 5189455, Key: key, BaseURL: f.URL, Clock: clock}},
-		fake: f, clock: clock, log: log, dbPath: path,
+		group: life.NewGroup(context.Background()),
+		fake:  f, clock: clock, log: log, dbPath: path,
 	}
+	// Stopped and waited for before the database closes, as Serve does
+	// (cleanups run last-registered first).
+	t.Cleanup(func() { e.group.Wait(nil) })
+	if err := e.cat.start(e.group, boot); err != nil {
+		t.Fatal(err)
+	}
+	return e
 }
 
 func (e *env) list(t *testing.T) map[string]RepoView {
@@ -423,40 +440,62 @@ func TestPartlyFailedProbeIsUnknown(t *testing.T) {
 	}
 }
 
-// A manual refresh during the periodic one joins it instead of racing it.
-func TestConcurrentRefreshesShareOne(t *testing.T) {
+// Refreshes asked for at once never overlap: a manual refresh during
+// another is answered by one more that begins after it ends, never by the
+// one running (which may have listed before it was asked), and every caller
+// asking meanwhile shares that one. (Before life.Coalescer the second joined
+// the first and returned an empty Result: answered by a refresh begun before
+// it was asked, the join #83 and the study's R3 removed.)
+func TestConcurrentRefreshesNeverOverlap(t *testing.T) {
 	e := newEnv(t)
+	h := holding(e)
 	release := make(chan struct{})
-	var once sync.Once
-	entered := make(chan struct{})
-	e.fake.Fail = func(r *http.Request) (int, string) {
-		if r.URL.Path == "/app/installations" {
-			once.Do(func() { close(entered) })
-			e.fake.Mu.Unlock() // let other requests through while this one waits
-			<-release
-			e.fake.Mu.Lock()
-		}
-		return 0, ""
-	}
-	var wg sync.WaitGroup
-	wg.Add(1)
-	go func() { defer wg.Done(); e.cat.Refresh(context.Background()) }()
+	entered := h.arm("/app/installations", func(*http.Request) { <-release })
+	first := make(chan error, 1)
+	go func() { _, err := e.cat.Refresh(context.Background()); first <- err }()
 	<-entered
-	wg.Add(1)
-	go func() { defer wg.Done(); e.cat.Refresh(context.Background()) }()
-	time.Sleep(50 * time.Millisecond) // give the second a chance to (wrongly) start its own
+	later := make(chan Result, 2)
+	for i := 0; i < 2; i++ {
+		go func() {
+			res, err := e.cat.Refresh(context.Background())
+			if err != nil {
+				t.Error(err)
+			}
+			later <- res
+		}()
+	}
+	waitAsked(t, e, 3) // both later callers have asked
+	if n := e.fake.Count("GET /app/installations"); n != 0 {
+		t.Errorf("control: %d listings reached GitHub while the first was held", n)
+	}
 	close(release)
-	wg.Wait()
-	if n := e.fake.Count("GET /app/installations"); n != 1 {
-		t.Errorf("%d refreshes ran; want the second to join the first", n)
+	if err := <-first; err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 2; i++ {
+		if res := <-later; res.Count != 5 {
+			t.Errorf("a caller during the first refresh got %+v; want the next refresh's result", res)
+		}
+	}
+	if n := e.fake.Count("GET /app/installations"); n != 2 {
+		t.Errorf("%d refreshes ran; want the first and one more for both later callers", n)
+	}
+}
+
+// waitAsked waits until n refreshes have been asked for in all.
+func waitAsked(t *testing.T, e *env, n life.Ticket) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for e.cat.w.Asked() < n {
+		if time.Now().After(deadline) {
+			t.Fatalf("only %d of %d refreshes were asked for", e.cat.w.Asked(), n)
+		}
+		time.Sleep(time.Millisecond)
 	}
 }
 
 func TestRunRefreshesPeriodically(t *testing.T) {
-	e := newEnv(t)
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan struct{})
-	go func() { e.cat.Run(ctx, nil); close(done) }()
+	e := newEnvBooting(t)
 	waitFor := func(n int) {
 		t.Helper()
 		deadline := time.Now().Add(5 * time.Second)
@@ -475,8 +514,9 @@ func TestRunRefreshesPeriodically(t *testing.T) {
 	}
 	e.clock.Advance(time.Minute)
 	waitFor(2)
-	cancel()
-	<-done
+	if late := e.group.Wait(nil); late != nil {
+		t.Errorf("stragglers %v", late)
+	}
 }
 
 // The canary sweep (testing §4.2): every token the fake issued is absent

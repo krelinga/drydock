@@ -13,7 +13,12 @@
 //
 // # Rules and details
 //
-// Never call time.Now() directly; take a Clock.
+// Never call time.Now() directly; take a Clock. NewTimer is the Clock's After
+// with a stop, for a bound or a period that may not be needed — a
+// life.Group's Wait deadline, a life.Coalescer's interval — so it neither
+// runs on nor is counted by a FakeClock's Waiting once it is not. Goroutine
+// lifecycles are internal/life's, which, unlike this package, the context
+// rule scans.
 //
 // DiskUsage answers two questions — how full a filesystem is (Usage, statfs of
 // the nearest existing ancestor) and how much one directory holds (Size:

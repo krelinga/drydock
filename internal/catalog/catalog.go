@@ -10,19 +10,16 @@
 //
 // # Rules and details
 //
-// Refreshed at boot, every 15 minutes and on demand, with concurrent refreshes
-// joined. Boot's and the timer's refreshes are Run's, under Serve's context
-// and waited for; an on-demand one (Trigger, behind POST /api/repos/refresh)
-// runs under the catalog's own context, tracked by a WaitGroup added to under
-// the same mutex Shutdown cancels under, so Serve cancels and waits for it
-// before the database closes (logging a line if its bound runs out) and a
-// Trigger after that starts nothing. A Trigger while a refresh is running
-// queues **one more** to start when it ends, under the same context and with
-// its own event — the running one may have listed before the click, or already
-// emitted the event the button settles on — and any number of them queue that
-// same one; none starts after Shutdown. (Two Triggers before the first's
-// refresh has begun can each start one; the second joins the first inside
-// Refresh.)
+// Refreshed at boot, every 15 minutes and on demand, one at a time, by one
+// worker (life.Coalescer) that Start runs under a life.Group Serve owns:
+// Serve's shutdown stops the group, which ends a refresh running and starts no
+// other, and waits for it before the database closes. A request (Trigger,
+// behind POST /api/repos/refresh, or Refresh) is answered only by a refresh
+// that begins after it — never by one already running, which may have listed
+// before the click or already emitted the event the button settles on — so
+// one made during a refresh gets one more after it, with its own event, and
+// any number of them share that one. The period restarts after every
+// refresh.
 //
 // A listing token asks for metadata only and a probe token for contents read.
 // A repo is probed for devcontainer.json only when it was pushed to, and a
@@ -51,6 +48,7 @@ import (
 
 	"github.com/krelinga/drydock/internal/events"
 	"github.com/krelinga/drydock/internal/github"
+	"github.com/krelinga/drydock/internal/life"
 	"github.com/krelinga/drydock/internal/store"
 	"github.com/krelinga/drydock/internal/sys"
 )
@@ -79,35 +77,19 @@ type Catalog struct {
 	// Logf is the service log; nil is standard error.
 	Logf func(string, ...any)
 
-	// one refresh at a time: a manual refresh during the periodic one joins
-	// it rather than racing it.
-	mu      sync.Mutex
-	running bool
-	done    chan struct{}
-	// again is a Trigger that arrived while a refresh was running. That
-	// refresh may have listed before the click, or emitted its event already,
-	// so one more runs after it, with an event of its own.
-	again bool
-	// ending, if set, runs as a refresh ends: after its event, before it lets
-	// go of running. A test seam for the window between the two.
+	// w runs every refresh, one at a time, on the goroutine Start gives it:
+	// the periodic ones and every one asked for (life.Coalescer).
+	w life.Coalescer[Result]
+
+	mu sync.Mutex
+	// ending, if set, runs as a refresh ends: after its event, before the
+	// worker records which requests it answered. A test seam for the window
+	// between the two.
 	ending func()
 	// failure is the last refresh's failure, nil once one succeeds. In
 	// memory only: it is what a reloaded page reads instead of the event it
 	// missed, and a restarted server refreshes at once anyway.
 	failure *RefreshError
-
-	// base is what Trigger's refreshes run under. Shutdown cancels it and
-	// waits for them, so none outlives the database it writes to. triggers
-	// is added to under mu, and Shutdown cancels under mu, so no refresh is
-	// added once Shutdown has started waiting.
-	once     sync.Once
-	base     context.Context
-	stop     context.CancelFunc
-	triggers sync.WaitGroup
-}
-
-func (c *Catalog) init() {
-	c.once.Do(func() { c.base, c.stop = context.WithCancel(context.Background()) })
 }
 
 // Result summarises one refresh.
@@ -115,40 +97,63 @@ type Result struct {
 	Count, Added, Removed int
 }
 
-// Refresh re-reads every installation's repositories and rewrites the cache.
-// Concurrent callers share one refresh.
-func (c *Catalog) Refresh(ctx context.Context) (Result, error) {
-	c.mu.Lock()
-	if c.running {
-		done := c.done
-		c.mu.Unlock()
-		select {
-		case <-done:
-			return Result{}, nil
-		case <-ctx.Done():
-			return Result{}, ctx.Err()
-		}
+// Start runs the catalog's refreshes under g until g stops: one now, then
+// every Interval, and one for each Trigger or Refresh. g's Stop ends a
+// refresh running and starts no other; g's Wait waits for it, which is what
+// keeps a refresh from outliving the database it writes to.
+func (c *Catalog) Start(g *life.Group) error { return c.start(g, true) }
+
+// start is Start; boot false leaves out the refresh at once, for a test that
+// counts what each of its own refreshes does.
+func (c *Catalog) start(g *life.Group, boot bool) error {
+	c.w.Work = c.run
+	c.w.Clock = c.Clock
+	c.w.Interval = c.Interval
+	if c.w.Interval <= 0 {
+		c.w.Interval = DefaultInterval
 	}
-	c.running, c.done = true, make(chan struct{})
-	c.mu.Unlock()
+	if err := c.w.Start(g, "refresh"); err != nil {
+		return err
+	}
+	if boot {
+		c.w.Trigger()
+	}
+	return nil
+}
+
+// Refresh asks for a refresh that begins after this call and waits for it:
+// never one already running, which may have listed before the call. Callers
+// at the same moment can share one. It is life.ErrNotStarted before Start
+// and life.ErrStopping once the catalog's group is stopping; a caller whose
+// ctx ends stops waiting but does not cancel the refresh, which is shared.
+func (c *Catalog) Refresh(ctx context.Context) (Result, error) {
+	return c.w.TriggerAndWait(ctx)
+}
+
+// Trigger asks for a refresh in the background and returns at once: POST
+// /api/repos/refresh answers 202 and the client follows the event stream,
+// where the refresh it asked for — one that begins after the call, with an
+// event of its own — settles it. A Trigger during a refresh gets one more
+// after it, and any number of them share that one. Once the catalog's group
+// is stopping it starts nothing.
+func (c *Catalog) Trigger() { c.w.Trigger() }
+
+// run is one refresh, on the worker: it writes the cache, records the
+// outcome for List and says so on the stream.
+func (c *Catalog) run(ctx context.Context) (Result, error) {
 	defer func() {
 		c.mu.Lock()
-		defer c.mu.Unlock()
-		c.running = false
-		close(c.done)
-		if c.again {
-			c.again = false
-			c.startLocked()
+		ending := c.ending
+		c.mu.Unlock()
+		if ending != nil {
+			ending()
 		}
 	}()
-	defer func() {
-		if c.ending != nil {
-			c.ending()
-		}
-	}()
-
 	res, err := c.refresh(ctx)
 	if err != nil {
+		if ctx.Err() == nil {
+			c.logf("drydock: catalog refresh: %v", err)
+		}
 		// GitHub's message names the problem ("Bad credentials", "Not
 		// Found") and carries no credential; the token is a header and
 		// github.Token prints as [redacted] besides.
@@ -168,106 +173,12 @@ func (c *Catalog) Refresh(ctx context.Context) (Result, error) {
 	return res, err
 }
 
-// Trigger asks for a refresh in the background and returns at once: POST
-// /api/repos/refresh answers 202 and the client follows the event stream.
-// Every refresh it starts runs under the catalog's own context, which
-// Shutdown ends, and after Shutdown it starts nothing.
-//
-// With no refresh running it starts one. With one running — triggered, or
-// Run's — it queues one more to start when that one ends, since the running
-// one may have listed before the click or already emitted its event; any
-// number of Triggers meanwhile queue that same one. Two Triggers close
-// enough together that the first's refresh has not yet begun can each start
-// one; the second then joins the first inside Refresh.
-func (c *Catalog) Trigger() { c.trigger() }
-
-// triggered is what a Trigger did.
-type triggered int
-
-const (
-	refused triggered = iota // shut down: nothing
-	started                  // a refresh, now
-	queued                   // one more, after the one running
-)
-
-func (c *Catalog) trigger() triggered {
-	c.init()
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.running {
-		// After Shutdown this queues nothing that will start: the refresh
-		// running ends under a cancelled context, and startLocked refuses.
-		c.again = true
-		return queued
-	}
-	if c.startLocked() {
-		return started
-	}
-	return refused
-}
-
-// startLocked starts a refresh under base, counted in triggers, unless
-// Shutdown has begun. c.mu held: Shutdown cancels base under it before it
-// waits, so nothing is added to triggers once the wait has begun.
-func (c *Catalog) startLocked() bool {
-	if c.base.Err() != nil {
-		return false
-	}
-	c.triggers.Add(1)
-	go func() {
-		defer c.triggers.Done()
-		c.Refresh(c.base)
-	}()
-	return true
-}
-
-// Shutdown ends the refreshes Trigger started and waits up to wait for them,
-// so none calls GitHub or writes to the database after Serve closes it. A
-// queued refresh does not start. Run's refreshes end with Run's context; a
-// caller's Refresh with its. A wait that runs out is written to Logf.
-func (c *Catalog) Shutdown(wait time.Duration) {
-	c.init()
-	c.mu.Lock()
-	c.stop()
-	c.mu.Unlock()
-	done := make(chan struct{})
-	go func() {
-		c.triggers.Wait()
-		close(done)
-	}()
-	select {
-	case <-done:
-	case <-time.After(wait):
-		// Said, because what follows is the database closing under it.
-		c.logf("drydock: catalog: a triggered refresh did not stop within %s of shutdown", wait)
-	}
-}
-
 func (c *Catalog) logf(f string, a ...any) {
 	if c.Logf != nil {
 		c.Logf(f, a...)
 		return
 	}
 	fmt.Fprintf(os.Stderr, f+"\n", a...)
-}
-
-// Run refreshes now and then every Interval until ctx ends. Failures are
-// reported through the event log and tried again at the next interval.
-func (c *Catalog) Run(ctx context.Context, logf func(string, ...any)) {
-	every := c.Interval
-	if every <= 0 {
-		every = DefaultInterval
-	}
-	for {
-		if _, err := c.Refresh(ctx); err != nil && ctx.Err() == nil && logf != nil {
-			logf("drydock: catalog refresh: %v", err)
-		}
-		select {
-		case <-ctx.Done():
-			return
-		case <-c.Clock.After(every):
-		}
-	}
 }
 
 type known struct {

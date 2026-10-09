@@ -33,6 +33,7 @@ printf "%s\n" "$PW" | ./drydock passwd --db x.db  # set the operator password (n
 |---|---|
 | `internal/api` | The route table as **data**, both muxes, the gate, the error envelope, the preview front door; meta-tests walk the table. |
 | `internal/sys` | `Clock`, `DiskUsage`, `Random`, and `Cleanup` (the context rule's rule 3). Never call `time.Now()` directly; `TestContextRule` enforces it. |
+| `internal/life` | `Group` (goroutines stopped and waited for as one: nothing starts after `Stop`, `Wait` names stragglers on an injected-clock deadline) and `Coalescer` (periodic + on demand on one worker; a ticket is answered only by a run begun after it). Not exempt from the context rule. |
 | `internal/subproc` | Invocations as data, resolved by `PATH` or a `Resolver`. No shell anywhere; `Env` replaces rather than inherits; `StartPTY` is the one PTY start. |
 | `internal/config` | Settings that must not be constants (`LabelPrefix` first); `Validate` refuses configs that silently undo a design property (`CrossSite`, lowercase origins). |
 | `internal/store` | SQLite in WAL mode, the single-instance lock, §4's schema with enums as `CHECK`s. Every transaction opens `IMMEDIATE`; a golden snapshot pins the schema. |
@@ -51,7 +52,7 @@ printf "%s\n" "$PW" | ./drydock passwd --db x.db  # set the operator password (n
 | `internal/usage` | Memory and disk for the card. A measurement is never an event; unknown is never zero. |
 | `internal/reconcile` | Boot reconciliation: a pure `Plan` plus `Run`. Adopt, never kill; never auto-start; a failed listing changes nothing. |
 | `internal/github` | The App client, and `githubtest`, the fake GitHub the contract tests also run against. A `Token` formats as `[redacted]` and refuses to marshal. |
-| `internal/catalog` | The repository list. Grants deleted outside `internal/secrets` must call `secrets.Store.Invalidate`. |
+| `internal/catalog` | The repository list, refreshed by a `life.Coalescer` under `Serve`'s `life.Group`, stopped and waited for before the database closes. Grants deleted outside `internal/secrets` must call `secrets.Store.Invalidate`. |
 | `internal/identity` | The expiry watch (§7.3). The credential's bytes reach nothing but the classifier; every check ends, and every requested check is answered. |
 | `internal/claudeimage` | The one image Drydock runs Claude Code in itself, at exactly `classify.ClaudeCodeVersion`. |
 | `internal/login` | The login handshake (§7.2) on a PTY Drydock owns. The code is never stored or copied into a string; every end removes the container by label first. |
@@ -385,7 +386,7 @@ These come from §2 (Claude Code constraints) and §13.5 (non-negotiables). Most
   `loggedIn:false` for both and only the credential file separates them (§7.3).
 - **The context rule.** #83, #85 and #94's probe cleanup each ran under a context from the wrong
   parent. (1) A request's context is for the synchronous part of a handler only. (2) Background work
-  runs under its component's context (today each component's `base`). (3) Bookkeeping or cleanup
+  runs under its component's context (a `life.Group`'s, or, until R1 reaches it, the component's `base`). (3) Bookkeeping or cleanup
   owed after a cancellation uses `sys.Cleanup(parent, clock, d)`: `WithoutCancel` plus a bound on the
   injected clock. (4) Shared, joinable work never runs under a caller's context. `TestContextRule`
   (`internal/sys/contextrule_test.go`) parses every non-test file and fails, by file and function, on

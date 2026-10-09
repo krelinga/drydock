@@ -46,6 +46,7 @@ import (
 	"os/user"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -63,6 +64,7 @@ import (
 	"github.com/krelinga/drydock/internal/events"
 	"github.com/krelinga/drydock/internal/github"
 	"github.com/krelinga/drydock/internal/identity"
+	"github.com/krelinga/drydock/internal/life"
 	"github.com/krelinga/drydock/internal/login"
 	"github.com/krelinga/drydock/internal/preview"
 	"github.com/krelinga/drydock/internal/provision"
@@ -128,6 +130,8 @@ type Server struct {
 	// reconciled closes when boot reconciliation has finished, so a test
 	// can set up workspace rows reconciliation would otherwise move.
 	reconciled chan struct{}
+	// clock is env's, for the bounds shutdown waits under.
+	clock sys.Clock
 	// repoOf caches each workspace's repository id for secretValues: it is
 	// fixed for the workspace's life, so the log's per-read path asks the
 	// database once per workspace, not once per terminal read.
@@ -172,7 +176,7 @@ func New(ctx context.Context, cfg config.Config, env sys.Env) (*Server, error) {
 	}
 
 	s := &Server{DB: db, Auth: svc, Events: events.New(db.DB, env.Clock), reconciled: make(chan struct{}),
-		Previews: previews}
+		Previews: previews, clock: env.Clock}
 	s.Workspaces = &workspace.Store{DB: db.DB, Events: s.Events, Env: env, Root: cfg.WorkspaceRoot, Cap: cfg.ContainerCap}
 	// Drydock's own uid owns the shared credential volume (§7.1): the dev
 	// container CLI, run as Drydock, gives every workspace's remote user
@@ -498,10 +502,11 @@ const provisionShutdownWait = 20 * time.Second
 // identity check to end and remove its helper container.
 const identityShutdownWait = 35 * time.Second
 
-// catalogShutdownWait bounds how long shutdown waits for a triggered
-// repository refresh to end. Its GitHub calls and its transaction all end
-// with its context, so it is short; it runs beside the waits above and below.
-const catalogShutdownWait = 10 * time.Second
+// workShutdownWait bounds how long shutdown waits for the goroutines of
+// Serve's life.Group — today the catalog's refresh, whose GitHub calls and
+// transaction all end with its context, so it is short. It runs beside the
+// waits above and below.
+const workShutdownWait = 10 * time.Second
 
 // supervisorDetachWait bounds how long shutdown waits for the supervisors to
 // let go of their terminals.
@@ -590,6 +595,12 @@ func (s *Server) Serve(ctx context.Context) error {
 	// context is live, so Serve cancels its own as serving ends, either way.
 	ctx, stop := context.WithCancel(ctx)
 	defer stop()
+	// work owns the goroutines of the components that have moved onto
+	// life.Group: shutdown stops it and waits for it before the database
+	// closes. Today that is the catalog alone; the rest still end on ctx
+	// and their own Shutdown.
+	work := life.NewGroup(ctx)
+	defer work.Stop()
 	// Reconcile once at boot, beside serving rather than before it: a slow
 	// daemon must not keep the sign-in page down. A failure changes nothing
 	// (reconcile refuses to act on a list it could not read), is written to
@@ -673,13 +684,11 @@ func (s *Server) Serve(ctx context.Context) error {
 			s.Usage.Run(ctx)
 		}
 	}()
-	refreshing := make(chan struct{})
-	go func() {
-		defer close(refreshing)
-		if s.Catalog != nil {
-			s.Catalog.Run(ctx, func(f string, a ...any) { fmt.Fprintf(os.Stderr, f+"\n", a...) })
-		}
-	}()
+	// The repository list, at once and every 15 minutes, and whatever POST
+	// /api/repos/refresh asks for: one worker, in work.
+	if s.Catalog != nil {
+		s.Catalog.Start(work.Child("catalog"))
+	}
 	errc := make(chan error, 2)
 	go func() { errc <- s.api.Serve(s.apiLn) }()
 	go func() { errc <- s.preview.Serve(s.prevLn) }()
@@ -690,14 +699,20 @@ func (s *Server) Serve(ctx context.Context) error {
 	case serveErr = <-errc:
 	}
 	stop()
-	// The refreshes POST /api/repos/refresh started end now, beside the
-	// waits below rather than after them, and are waited for before the
-	// database closes. A refresh asked for from here on starts nothing.
-	catalogStopped := make(chan struct{})
+	// work's goroutines — the catalog's refreshes, periodic or asked for —
+	// end now, beside the waits below rather than after them, and are
+	// waited for before the database closes. Nothing asked of them from
+	// here on starts.
+	work.Stop()
+	workStopped := make(chan struct{})
 	go func() {
-		defer close(catalogStopped)
-		if s.Catalog != nil {
-			s.Catalog.Shutdown(catalogShutdownWait)
+		defer close(workStopped)
+		deadline, cancel := sys.NewTimer(s.clock, workShutdownWait)
+		defer cancel()
+		if late := work.Wait(deadline); len(late) > 0 {
+			// Said, because what follows is the database closing under it.
+			fmt.Fprintf(os.Stderr, "drydock: shutdown: still running %s after it: %s\n",
+				workShutdownWait, strings.Join(late, ", "))
 		}
 	}()
 	// Runs first, while the broker, the log and the database are all still
@@ -728,12 +743,11 @@ func (s *Server) Serve(ctx context.Context) error {
 	// is closed here, or it would outlive the server that proxied it.
 	s.Proxy.Close()
 	<-reconciled // they may still be writing; the database closes after them
-	<-refreshing
 	<-watching
 	<-supervising
 	<-sweeping
 	<-sampling
-	<-catalogStopped
+	<-workStopped
 	s.DB.Close()
 	if errors.Is(serveErr, http.ErrServerClosed) {
 		serveErr = nil
