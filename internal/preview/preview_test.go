@@ -452,11 +452,17 @@ func TestPendingTokensAreBounded(t *testing.T) {
 func TestStripCookie(t *testing.T) {
 	r := httptest.NewRequest("GET", "https://"+host+"/", nil)
 	r.Header.Add("Cookie", "app-a=1; "+preview.CookieName+"=c4n4ry; app-b=2")
-	r.Header.Add("Cookie", strings.ToLower(preview.CookieName)+"=again; app-c=3")
+	r.Header.Add("Cookie", strings.ToLower(preview.CookieName)+"=again; app-c=3; "+auth.CookieName+"=uisess")
 	out := preview.StripCookie(r)
 	got := out.Header.Get("Cookie")
 	if strings.Contains(got, "c4n4ry") || strings.Contains(got, "again") || strings.Contains(strings.ToLower(got), "drydock-preview") {
 		t.Errorf("Cookie after the strip = %q; the preview cookie survived", got)
+	}
+	if strings.Contains(got, "uisess") {
+		t.Errorf("Cookie after the strip = %q; the UI's session cookie survived", got)
+	}
+	if preview.UICookieName != auth.CookieName {
+		t.Errorf("preview.UICookieName %q is not auth.CookieName %q", preview.UICookieName, auth.CookieName)
 	}
 	if got != "app-a=1; app-b=2; app-c=3" {
 		t.Errorf("Cookie after the strip = %q; want the app's three, in order", got)
@@ -495,22 +501,6 @@ func TestCookieGuard(t *testing.T) {
 	}
 }
 
-// TestPlaceholderNamesNoValue: step 2's stand-in upstream shows cookie names
-// so the strip can be seen in a browser, and never a value.
-func TestPlaceholderNamesNoValue(t *testing.T) {
-	r := httptest.NewRequest("GET", "https://"+host+"/", nil)
-	r.Header.Set("Cookie", "app-own=s3cr3t; <b>=x")
-	rec := httptest.NewRecorder()
-	preview.Placeholder.ServePreview(rec, r, preview.Target{ContainerPort: 5173})
-	body := rec.Body.String()
-	if !strings.Contains(body, "app-own") || strings.Contains(body, "s3cr3t") {
-		t.Errorf("placeholder body = %q; want the name app-own and no value", body)
-	}
-	if strings.Contains(body, "<b>") {
-		t.Error("a cookie name reached the page unescaped")
-	}
-}
-
 // hostileEarlyHints is a dev server that sends a 103 Early Hints carrying the
 // preview cookie, then plants another after the 103 for the final response.
 // Beside each, an app cookie that must pass: the control.
@@ -529,14 +519,21 @@ func hostileEarlyHints(w http.ResponseWriter, _ *http.Request) {
 // TestCookieGuardFiltersInformationalResponses is the guard against a 1xx: a
 // guard that stopped filtering at the first WriteHeader would send the 103's
 // preview cookie and let the one added after it ride the final 200. Through
-// httputil.ReverseProxy — which forwards an upstream's 1xx by default, and is
-// step 3's likely proxy — and with the upstream writing to the guard directly.
+// httputil.ReverseProxy — which forwards an upstream's 1xx by default — through
+// the preview Proxy itself, which is one, and with the upstream writing to the
+// guard directly.
 func TestCookieGuardFiltersInformationalResponses(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(hostileEarlyHints))
 	defer upstream.Close()
 	target, _ := url.Parse(upstream.URL)
+	pt := proxyTarget(t, upstream.URL)
+	p := &preview.Proxy{Resolver: &fakeResolver{ips: []string{"127.0.0.1"}}}
+	defer p.Close()
 	for name, inner := range map[string]http.Handler{
 		"through httputil.ReverseProxy": httputil.NewSingleHostReverseProxy(target),
+		"through the preview Proxy": http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			p.ServePreview(w, r, pt)
+		}),
 		"written to the guard directly": http.HandlerFunc(hostileEarlyHints),
 	} {
 		front := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -132,6 +132,10 @@ type Target struct {
 	Host           string // <slug>.<domain>
 	UpstreamScheme string // http | https
 	HostHeader     string // localhost | passthrough (PF §8.3)
+	// AuthSessionID is the auth session the preview session was minted
+	// under, when the Target came from a preview cookie (Session): what the
+	// proxy closes an open websocket by when that session is revoked.
+	AuthSessionID string
 }
 
 // Grant is what a one-time token is good for: one auth session, one preview
@@ -331,17 +335,18 @@ func (s *Service) Session(ctx context.Context, cookie, host string) (Target, boo
 		return Target{}, false
 	}
 	id := hash(cookie)
-	var previewHost, seen, authSeen, authExpires string
-	row := s.DB.QueryRowContext(ctx, `SELECT `+targetCols+`, ps.preview_host, ps.last_seen_at, a.last_seen_at, a.absolute_expires_at
+	var previewHost, seen, authSeen, authExpires, authID string
+	row := s.DB.QueryRowContext(ctx, `SELECT `+targetCols+`, ps.preview_host, ps.last_seen_at, a.last_seen_at, a.absolute_expires_at, a.id
 		FROM preview_session ps
 		JOIN auth_session a ON a.id = ps.auth_session_id
 		JOIN forwarded_port fp ON fp.id = ps.forwarded_port_id
 		JOIN workspace w ON w.id = fp.workspace_id
 		WHERE ps.id = ? AND `+previewable, id)
-	t, err := s.scanTarget(row, &previewHost, &seen, &authSeen, &authExpires)
+	t, err := s.scanTarget(row, &previewHost, &seen, &authSeen, &authExpires, &authID)
 	if err != nil {
 		return Target{}, false
 	}
+	t.AuthSessionID = authID
 	if subtle.ConstantTimeCompare([]byte(strings.ToLower(hostOnly(host))), []byte(previewHost)) != 1 || previewHost != t.Host {
 		return Target{}, false
 	}

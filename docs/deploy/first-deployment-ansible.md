@@ -546,7 +546,7 @@ cannot traverse. A changed certificate (a renewal you copy in) reloads Caddy thr
       name {{ drydock_ui_host }}. See runbook §1.3.
 ```
 
-**With previews** (`drydock_preview_domain` set; [runbook §8.7](first-deployment.md#87-optional-enable-previews-sign-in-only-no-proxy-yet)),
+**With previews** (`drydock_preview_domain` set; [runbook §8.7](first-deployment.md#87-optional-enable-previews-no-ports-panel-yet)),
 the wildcard pair goes beside the UI's with the same owners and modes, and gets the same two
 checks, with the SAN required to carry the wildcard itself. Without previews these tasks are
 skipped.
@@ -654,9 +654,9 @@ download, not a compromised release.
 and `--ca-cert` for option A. Without a CA certificate the task passes `--no-ca-cert`, so the variables
 stay the whole truth: the installer otherwise keeps a `--ca-cert` from an earlier run. Likewise
 `--preview-domain`, `--preview-cert` and `--preview-key` when `drydock_preview_domain` is set, and
-`--no-preview` when it is not, which removes a preview site an earlier run installed. Previews are
-sign-in only: a preview URL runs the handshake and ends on the denied page, since no port can be
-enabled yet ([runbook §8.7](first-deployment.md#87-optional-enable-previews-sign-in-only-no-proxy-yet), [§9](first-deployment.md#9-what-does-not-work-yet)).
+`--no-preview` when it is not, which removes a preview site an earlier run installed. Previews have no
+ports panel yet: a preview URL runs the handshake and ends on the denied page, since no port can be
+enabled yet ([runbook §8.7](first-deployment.md#87-optional-enable-previews-no-ports-panel-yet), [§9](first-deployment.md#9-what-does-not-work-yet)).
 
 **The password.** The installer asks for it on `/dev/tty`, and Ansible has no terminal to answer
 on. Worse, with `ssh -tt` it may *have* one, and then the installer waits on a prompt nobody sees.

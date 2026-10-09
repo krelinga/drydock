@@ -42,7 +42,7 @@ import { createHash, randomBytes } from 'node:crypto'
 import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import http from 'node:http'
 import net from 'node:net'
-import { tmpdir, userInfo } from 'node:os'
+import { networkInterfaces, tmpdir, userInfo } from 'node:os'
 import path from 'node:path'
 import tls from 'node:tls'
 import { chromium, type Browser } from '@playwright/test'
@@ -93,6 +93,8 @@ export interface Seen {
   acceptEncoding: string | null
   status: number | null
   responseHeaders: http.IncomingHttpHeaders | null
+  /** The Upgrade header of a request relayed as an upgrade, else absent. */
+  upgrade?: string | null
 }
 
 class Tap {
@@ -150,6 +152,71 @@ class Tap {
       })
       res.on('close', () => up.destroy())
       req.pipe(up)
+    })
+    // An upgrade (a preview's HMR websocket) is relayed byte for byte, and
+    // recorded like any request: the 101's status and headers are read off
+    // the first bytes back.
+    this.server.on('upgrade', (req: http.IncomingMessage, socket: net.Socket, head: Buffer) => {
+      const cookies = parseCookies(req.headers.cookie)
+      const rec: Seen = {
+        seq: ++this.seq,
+        socket: this.socket,
+        method: req.method ?? '',
+        path: req.url ?? '',
+        host: req.headers.host ?? '',
+        origin: header(req, 'origin'),
+        referer: header(req, 'referer'),
+        session: cookies.get(COOKIE) ?? null,
+        cookieNames: [...cookies.keys()],
+        secFetchSite: header(req, 'sec-fetch-site'),
+        secFetchDest: header(req, 'sec-fetch-dest'),
+        secFetchMode: header(req, 'sec-fetch-mode'),
+        lastEventId: header(req, 'last-event-id'),
+        acceptEncoding: header(req, 'accept-encoding'),
+        status: null,
+        responseHeaders: null,
+        upgrade: header(req, 'upgrade'),
+      }
+      this.seen.push(rec)
+      const up = net.connect(upstream)
+      const close = () => {
+        up.destroy()
+        socket.destroy()
+      }
+      up.on('error', close)
+      socket.on('error', close)
+      up.on('connect', () => {
+        let lines = `${req.method} ${req.url} HTTP/${req.httpVersion}\r\n`
+        for (let i = 0; i + 1 < req.rawHeaders.length; i += 2) lines += `${req.rawHeaders[i]}: ${req.rawHeaders[i + 1]}\r\n`
+        up.write(lines + '\r\n')
+        if (head.length) up.write(head)
+        let first = true
+        up.on('data', (c: Buffer) => {
+          if (first) {
+            first = false
+            const text = c.toString('latin1')
+            const end = text.indexOf('\r\n\r\n')
+            const [status, ...hs] = text.slice(0, end < 0 ? undefined : end).split('\r\n')
+            rec.status = Number((status ?? '').split(' ')[1]) || null
+            const h: http.IncomingHttpHeaders = {}
+            for (const l of hs) {
+              const i = l.indexOf(':')
+              if (i < 0) continue
+              const k = l.slice(0, i).trim().toLowerCase()
+              const v = l.slice(i + 1).trim()
+              if (k === 'set-cookie') h['set-cookie'] = [...(h['set-cookie'] ?? []), v]
+              else h[k] = v
+            }
+            rec.responseHeaders = h
+          }
+          socket.write(c)
+        })
+        socket.on('data', (c: Buffer) => up.write(c))
+        up.on('end', () => socket.end())
+        socket.on('end', () => up.end())
+        up.on('close', close)
+        socket.on('close', close)
+      })
     })
     this.listening = new Promise((r) => this.server.once('listening', r))
     if (typeof listen === 'string') this.server.listen(listen)
@@ -403,7 +470,12 @@ export class Stack {
 
     const bin = process.env.DRYDOCK_BIN || path.join(this.root, 'bin', 'drydock')
     if (!process.env.DRYDOCK_BIN) {
-      execFileSync('go', ['build', '-o', bin, './cmd/drydock'], { cwd: REPO, stdio: 'inherit' })
+      // -tags browsertier: the one difference from a release build. This
+      // tier's preview container is this host's own address (see
+      // previewContainer), which a release refuses to dial; the tagged build
+      // lists no local address and changes nothing else
+      // (internal/server/localaddrs_browsertier.go).
+      execFileSync('go', ['build', '-tags', 'browsertier', '-o', bin, './cmd/drydock'], { cwd: REPO, stdio: 'inherit' })
     }
     this.bin = bin
 
@@ -424,6 +496,26 @@ export class Stack {
 
   bin = ''
   secretsKey = ''
+  /**
+   * This Drydock's own label namespace, so reconciliation can never adopt or
+   * delete a container another Drydock — or a developer — owns (testing §5.4).
+   */
+  readonly labelPrefix = `test.browser.${randomBytes(4).toString('hex')}`
+
+  /**
+   * Makes the stand-in docker report workspace `ws`'s container running at
+   * `ip` — or, with null, report none: the container gone behind Drydock's
+   * back. What the preview proxy resolves before every dial (PF §8.1).
+   */
+  previewContainer(ws: string, ip: string | null): void {
+    const state = path.join(this.root, 'fakedocker')
+    if (ip === null) {
+      rmSync(path.join(state, 'preview-ip'), { force: true })
+      return
+    }
+    writeFileSync(path.join(state, 'preview-ws'), ws)
+    writeFileSync(path.join(state, 'preview-ip'), ip)
+  }
   /** The one login code fakeclaude accepts: a high-entropy canary, `<code>#<state>`. */
   readonly loginCode = `cnryCODE${randomBytes(10).toString('hex')}#cnrySTATE${randomBytes(10).toString('hex')}`
   /** The tier's own shared-volume name; the stand-in docker never creates a real one. */
@@ -468,6 +560,25 @@ case "$1 $2" in
 	exit 0 ;;
 "image inspect") echo sha256:${'b'.repeat(64)}; exit 0 ;;
 esac
+# A preview's container (preview.spec.ts, previewContainer()): running, at
+# the address the spec wrote, for the one workspace it seeded — the two calls
+# the preview proxy makes before and after every dial. Only while the spec
+# says it runs; otherwise, as every other container here, there is none.
+if [ -e "$S/preview-ip" ]; then
+	ws=$(cat "$S/preview-ws")
+	ip=$(cat "$S/preview-ip")
+	id=${'c'.repeat(64)}
+	case " $* " in
+	*" ps --quiet --no-trunc --filter status=running --filter label=${this.labelPrefix}.workspace=$ws ") echo "$id"; exit 0 ;;
+	" inspect --type container -- $id ")
+		printf '[{"Id":"%s","State":{"Running":true},"Config":{"Labels":{"%s":"%s"}},"NetworkSettings":{"Networks":{"bridge":{"NetworkID":"%s","IPAddress":"%s"}}}}]\n' \
+			"$id" '${this.labelPrefix}.workspace' "$ws" '${'d'.repeat(64)}' "$ip"
+		exit 0 ;;
+	" network inspect -- ${'d'.repeat(64)} ")
+		printf '[{"Id":"%s","Driver":"bridge"}]\n' '${'d'.repeat(64)}'
+		exit 0 ;;
+	esac
+fi
 case "$1" in
 ps|rm|stop|inspect) exit 0 ;;
 run) ;;
@@ -505,7 +616,7 @@ exit 0
       '--broker-dir', path.join(this.run, 'broker'),
       // Its own label namespace, so reconciliation can never adopt or delete
       // a container another Drydock — or a developer — owns (testing §5.4).
-      '--label-prefix', `test.browser.${randomBytes(4).toString('hex')}`,
+      '--label-prefix', this.labelPrefix,
       '--secrets-key', this.secretsKey,
       '--claude-volume', this.claudeVolume,
     ], { stdio: ['ignore', out, out], env: { ...process.env, PATH: `${this.fakeBin}:${process.env.PATH ?? ''}` } })
@@ -632,6 +743,71 @@ function unixAnswers(sock: string): Promise<boolean> {
     })
     req.on('error', () => resolve(false))
     req.end()
+  })
+}
+
+/**
+ * This host's first non-loopback IPv4 address: what the stand-in docker
+ * reports as a preview container's address, on a bridge network. A release
+ * refuses every address the host holds — dialling one would reach the host —
+ * which is why the tier builds with -tags browsertier (see boot()); loopback,
+ * gateways and non-bridge networks are still refused, so the dev server
+ * listens on every interface and is reached at this one.
+ */
+export function hostAddress(): string {
+  for (const list of Object.values(networkInterfaces())) {
+    for (const a of list ?? []) {
+      if (a.family === 'IPv4' && !a.internal) return a.address
+    }
+  }
+  throw new Error('no non-loopback IPv4 address on this host: the preview tests need one')
+}
+
+/** A real Vite dev server, HMR and all, on every interface. */
+export class DevServer {
+  proc: ChildProcess | null = null
+  constructor(
+    readonly root: string,
+    readonly port: number,
+  ) {}
+
+  /** Starts Vite from web/'s own install on `root`, and waits for it. */
+  static async start(root: string, files: Record<string, string>): Promise<DevServer> {
+    mkdirSync(root, { recursive: true })
+    for (const [name, text] of Object.entries(files)) writeFileSync(path.join(root, name), text)
+    const d = new DevServer(root, await freePort())
+    await d.restart()
+    return d
+  }
+
+  /** (Re)starts it on the same root and port. */
+  async restart(): Promise<void> {
+    const log = path.join(this.root, 'vite.log')
+    this.proc = spawn(process.execPath, [
+      path.join(REPO, 'web', 'node_modules', 'vite', 'bin', 'vite.js'),
+      '--host', '0.0.0.0', '--port', String(this.port), '--strictPort',
+    ], { cwd: this.root, stdio: ['ignore', openSync(log, 'a'), openSync(log, 'a')], env: { ...process.env, NODE_PATH: '' } })
+    const port = this.port
+    await waitFor('vite', () => tcpAnswers(port), log)
+  }
+
+  async stop(): Promise<void> {
+    const p = this.proc
+    this.proc = null
+    if (!p || p.exitCode !== null) return
+    const gone = new Promise((r) => p.once('exit', r))
+    p.kill('SIGTERM')
+    await Promise.race([gone, sleep(5000).then(() => p.kill('SIGKILL'))])
+  }
+}
+
+function tcpAnswers(port: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    const s = net.connect(port, '127.0.0.1', () => {
+      s.end()
+      resolve(true)
+    })
+    s.on('error', () => resolve(false))
   })
 }
 

@@ -159,6 +159,14 @@ type Config struct {
 	// one made never to end must cost one failed check, not the watch
 	// (§7.3). The Claude image's first build has its own, longer bound.
 	IdentityCheckTimeout time.Duration
+	// PreviewMaxConnections bounds how many requests the preview socket
+	// serves at once, an upgraded connection (an HMR websocket) counting
+	// for its whole life, and the handshake's redirects counting too (PF
+	// §10.7, §11). Past it, a plain 503.
+	PreviewMaxConnections int
+	// PreviewIdleTimeout closes an upgraded preview connection after this
+	// long with no byte in either direction (PF §10.7).
+	PreviewIdleTimeout time.Duration
 }
 
 // DefaultClaudeVolume is the shared Claude credential volume's name (§6).
@@ -223,6 +231,9 @@ func Default() Config {
 		IdentityInterval:       6 * time.Hour,
 		IdentityExpiringWindow: 72 * time.Hour,
 		IdentityCheckTimeout:   2 * time.Minute,
+
+		PreviewMaxConnections: 512,
+		PreviewIdleTimeout:    30 * time.Minute,
 	}
 }
 
@@ -320,6 +331,16 @@ func (c Config) Validate() error {
 	// seconds would fail a healthy check on a busy daemon.
 	if c.IdentityCheckTimeout < 10*time.Second {
 		return fmt.Errorf("identity check timeout %s is shorter than ten seconds: each read starts a container", c.IdentityCheckTimeout)
+	}
+	// Zero would refuse every preview request (or, read as "no cap", undo
+	// the bound §10.7 requires); a timeout under a minute would close a
+	// healthy HMR socket between two saves, and Vite reloads the page when
+	// its socket drops.
+	if c.PreviewMaxConnections < 1 {
+		return fmt.Errorf("preview max connections %d must be at least 1", c.PreviewMaxConnections)
+	}
+	if c.PreviewIdleTimeout < time.Minute {
+		return fmt.Errorf("preview idle timeout %s is shorter than a minute: a dev server's HMR socket is quiet between saves", c.PreviewIdleTimeout)
 	}
 	return nil
 }

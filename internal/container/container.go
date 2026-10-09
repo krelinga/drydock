@@ -16,6 +16,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/netip"
 	"os"
 	"regexp"
 	"sort"
@@ -42,6 +43,10 @@ type Manager struct {
 	// ClaudeUID and ClaudeGID own the shared credential volume: Drydock's
 	// own, which every workspace's remote user is given (volumeowner.go).
 	ClaudeUID, ClaudeGID int
+	// LocalAddrs lists the addresses this host holds, which Address never
+	// returns as a container's (PF §10.6). Nil asks the kernel
+	// (net.InterfaceAddrs), as production does; a test sets it.
+	LocalAddrs func() ([]netip.Addr, error)
 	// Guard is the docker guard every devcontainer invocation is given as
 	// --docker-path (guard.go). Up refuses to run without one; read-
 	// configuration and exec, which create nothing, run without it only
