@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"regexp"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/krelinga/drydock/internal/config"
@@ -126,17 +127,18 @@ func (d DockerLauncher) Launch(ctx context.Context, id string, cols, rows int) (
 	}
 	// A holder of the label from here until Remove, so boot's sweep spares
 	// this login's container (internal/ephemeral).
-	h := d.helper(id)
-	if err := h.Begin(ctx); err != nil {
+	lease, err := d.helper(id).Begin(ctx)
+	if err != nil {
 		return nil, &LaunchError{Problem: ProblemDocker, Detail: err.Error()}
 	}
 	// Env nil: docker inherits Drydock's own, as every other docker call
 	// does; the container gets only the --env RunArgs gives it.
 	p, err := StartProc(r, subproc.Cmd{Name: "docker", Args: args}, cols, rows)
 	if err != nil {
-		h.End(ctx, false)
+		lease.End(ctx, false)
 		return nil, &LaunchError{Problem: ProblemDocker, Detail: err.Error()}
 	}
+	leases.Store(id, lease)
 	return p, nil
 }
 
@@ -235,9 +237,19 @@ func (d DockerLauncher) Remove(ctx context.Context, id string, killed bool) erro
 	if !ValidID(id) {
 		return fmt.Errorf("%q is not a login id", id)
 	}
-	_, err := d.helper(id).End(ctx, killed)
+	if l, ok := leases.LoadAndDelete(id); ok {
+		_, err := l.(*ephemeral.Lease).End(ctx, killed)
+		return err
+	}
+	// No Launch got as far as a start: remove what carries the label all the
+	// same, unless something in this process holds it.
+	_, err := d.helper(id).Remove(ctx, killed)
 	return err
 }
+
+// leases are the login containers this process started, by login id, each
+// ended by its Remove. A login id is never reused.
+var leases sync.Map
 
 // Sweep implements Launcher: every login container but keep's and any this
 // process is running (ephemeral's Sweep of the login kind).

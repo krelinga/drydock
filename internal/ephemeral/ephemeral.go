@@ -113,8 +113,11 @@ var (
 	ErrWorkspaceLabel = errors.New("ephemeral: a helper never carries the workspace label")
 
 	prefixPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`)
-	valuePattern  = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`)
-	containerID   = regexp.MustCompile(`^[0-9a-f]{64}$`)
+	// valuePattern is config.ValidVolumeName's alphabet, uncapped, so any
+	// volume name config accepts is a value (a workspace id, a login id
+	// and "1" are all within it).
+	valuePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
+	containerID  = regexp.MustCompile(`^[0-9a-f]{64}$`)
 )
 
 // Key is a kind's label key under prefix: `<prefix>.<kind>`.
@@ -207,13 +210,15 @@ func (h Helper) check() (string, error) {
 }
 
 // checkArgs refuses an argv that does not carry label exactly once as a
-// `--label` pair, or that names the workspace label anywhere.
+// `--label` pair, or that names the workspace label anywhere: in any argument
+// that contains the key `<prefix>.workspace` as a whole key — bare, valued,
+// after `--label=`, or attached to a short flag (`-l<key>`, `-tl<key>`), each
+// of which docker reads as a workspace label, valued or empty.
 func (h Helper) checkArgs(args []string, label string) error {
 	ws := Key(h.Prefix, WorkspaceLabel)
 	carries := 0
 	for i, a := range args {
-		v := strings.TrimPrefix(strings.TrimPrefix(a, "--label="), "-l=")
-		if v == ws || strings.HasPrefix(v, ws+"=") || strings.Contains(a, ws+"=") {
+		if namesKey(a, ws) {
 			return fmt.Errorf("%w: %q", ErrWorkspaceLabel, a)
 		}
 		if strings.HasPrefix(a, "--label-file") {
@@ -229,18 +234,46 @@ func (h Helper) checkArgs(args []string, label string) error {
 	return nil
 }
 
-// Begin registers a holder of h's label: until its End, SweepAll spares the
-// label. When it is the label's first holder in this process, whatever
-// already carries the label — what an earlier attempt left — is removed first,
-// under ctx; if that fails nothing is registered.
+// namesKey reports whether a holds key as a whole label key: an occurrence
+// not followed by another character a key could continue with. What precedes
+// it does not matter — `-tl` and `--label=` read the same way to docker.
+func namesKey(a, key string) bool {
+	for i := 0; ; {
+		j := strings.Index(a[i:], key)
+		if j < 0 {
+			return false
+		}
+		end := i + j + len(key)
+		if end == len(a) || !keyChar(a[end]) {
+			return true
+		}
+		i = i + j + 1
+	}
+}
+
+func keyChar(c byte) bool {
+	return c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '.' || c == '_' || c == '-'
+}
+
+// Lease is one holder of a helper's label, from its Begin to its End.
+type Lease struct {
+	h    Helper
+	mu   sync.Mutex
+	done bool
+}
+
+// Begin registers a holder of h's label: until the Lease's End, a sweep
+// spares the label. When it is the label's first holder in this process,
+// whatever already carries the label — what an earlier attempt left — is
+// removed first, under ctx; if that fails nothing is registered.
 //
 // Run and Create call it; a caller that starts its container some other way
-// (the login's `docker run` on a PTY) calls it before the start, and End on
-// every path after.
-func (h Helper) Begin(ctx context.Context) error {
+// (the login's `docker run` on a PTY) calls it before the start, and the
+// Lease's End on every path after.
+func (h Helper) Begin(ctx context.Context) (*Lease, error) {
 	label, err := h.check()
 	if err != nil {
-		return err
+		return nil, err
 	}
 	r := h.registry()
 	e := r.acquire(label)
@@ -258,7 +291,7 @@ func (h Helper) Begin(ctx context.Context) error {
 			err = remove(ctx, h.Docker, ids)
 		}
 		if err != nil {
-			return fmt.Errorf("removing what an earlier %s helper left: %w", h.Kind, err)
+			return nil, fmt.Errorf("removing what an earlier %s helper left: %w", h.Kind, err)
 		}
 	}
 	r.mu.Lock()
@@ -267,19 +300,43 @@ func (h Helper) Begin(ctx context.Context) error {
 	}
 	e.holders++
 	r.mu.Unlock()
-	return nil
+	return &Lease{h: h}, nil
 }
 
-// End is a holder done. When it is the label's last holder in this process,
-// every container carrying the label — and any id Create was given for it —
-// is removed under sys.Cleanup(ctx, Clock, RemoveTimeout): ctx's values, not
-// its end. If this holder or any other since the first was killed — Drydock
-// killed the docker client — and nothing lists yet, it keeps listing until
-// Settle has passed, and removes what lists. It returns how many it removed.
+// End is the holder done. When it is the label's last holder in this
+// process, every container carrying the label — and any id Create was given
+// for it — is removed under sys.Cleanup(ctx, Clock, RemoveTimeout): ctx's
+// values, not its end. If this holder or any other since the first was
+// killed — Drydock killed the docker client — and nothing lists yet, it keeps
+// listing until Settle has passed, and removes what lists. It returns how
+// many it removed.
 //
-// End without a Begin removes as a last holder would: it is safe to call on
-// every path, whether or not the Begin got as far as registering.
-func (h Helper) End(ctx context.Context, killed bool) (int, error) {
+// killed is sticky across a shared label's holders: one holder's killed
+// client makes the last End settle, whichever holder that is, since the late
+// create it waits for carries the shared label. A second End of the same
+// Lease does nothing: it can never end another holder's hold.
+func (l *Lease) End(ctx context.Context, killed bool) (int, error) {
+	if l == nil {
+		return 0, nil
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.done {
+		return 0, nil
+	}
+	l.done = true
+	return l.h.end(ctx, killed, true)
+}
+
+// Remove removes what carries h's label as a last holder's End would, when
+// the label has no holder in this process — for a caller that may not have
+// got as far as a Begin, or whose Lease ended already. While the label has a
+// holder it does nothing: the holder's End removes it.
+func (h Helper) Remove(ctx context.Context, killed bool) (int, error) {
+	return h.end(ctx, killed, false)
+}
+
+func (h Helper) end(ctx context.Context, killed, held bool) (int, error) {
 	label, err := h.check()
 	if err != nil {
 		return 0, err
@@ -292,8 +349,12 @@ func (h Helper) End(ctx context.Context, killed bool) (int, error) {
 	r.sweep.RLock()
 	defer r.sweep.RUnlock()
 	r.mu.Lock()
+	if !held && e.holders > 0 {
+		r.mu.Unlock()
+		return 0, nil
+	}
 	e.killed = e.killed || killed
-	if e.holders > 0 {
+	if held && e.holders > 0 {
 		e.holders--
 	}
 	last := e.holders == 0
@@ -357,14 +418,15 @@ func (h Helper) Run(ctx context.Context, cmd subproc.Cmd) (subproc.Result, error
 	if err == nil {
 		err = h.checkArgs(cmd.Args, label)
 	}
+	var lease *Lease
 	if err == nil {
-		err = h.Begin(ctx)
+		lease, err = h.Begin(ctx)
 	}
 	if err != nil {
 		return subproc.Result{ExitCode: -1}, fmt.Errorf("%w: %w", ErrNotRun, err)
 	}
 	res := h.Docker.Run(ctx, cmd)
-	if _, err := h.End(ctx, killedBy(ctx, res)); err != nil && h.Logf != nil {
+	if _, err := lease.End(ctx, killedBy(ctx, res)); err != nil && h.Logf != nil {
 		h.Logf("drydock: removing a %s helper (%s): %v", h.Kind, label, err)
 	}
 	return res, nil
@@ -372,10 +434,11 @@ func (h Helper) Run(ctx context.Context, cmd subproc.Cmd) (subproc.Result, error
 
 // Create runs `docker create` (args are its whole argv, "create" first)
 // for a helper carrying h's label, after a Begin, and returns the container's
-// id. On success the caller owns the End, and must call it on every path;
-// the id is removed then, whatever the listing says. On any failure the End
-// has run, and the error says what failed. stderr, when set, gets docker's.
-func (h Helper) Create(ctx context.Context, args []string, stderr io.Writer) (string, error) {
+// id and its Lease. On success the caller owns the Lease's End, and must call
+// it on every path; the id is removed then, whatever the listing says. On any
+// failure the End has run, and the error says what failed. stderr, when set,
+// gets docker's.
+func (h Helper) Create(ctx context.Context, args []string, stderr io.Writer) (string, *Lease, error) {
 	label, err := h.check()
 	if err == nil {
 		if len(args) == 0 || args[0] != "create" {
@@ -384,11 +447,12 @@ func (h Helper) Create(ctx context.Context, args []string, stderr io.Writer) (st
 			err = h.checkArgs(args, label)
 		}
 	}
+	var lease *Lease
 	if err == nil {
-		err = h.Begin(ctx)
+		lease, err = h.Begin(ctx)
 	}
 	if err != nil {
-		return "", fmt.Errorf("%w: %w", ErrNotRun, err)
+		return "", nil, fmt.Errorf("%w: %w", ErrNotRun, err)
 	}
 	var out bytes.Buffer
 	if stderr == nil {
@@ -405,13 +469,13 @@ func (h Helper) Create(ctx context.Context, args []string, stderr io.Writer) (st
 		err = fmt.Errorf("docker create: %q is not a container id", short(id))
 	}
 	if err != nil {
-		if _, rerr := h.End(ctx, killedBy(ctx, res)); rerr != nil {
+		if _, rerr := lease.End(ctx, killedBy(ctx, res)); rerr != nil {
 			err = errors.Join(err, fmt.Errorf("removing it: %w", rerr))
 		}
-		return "", err
+		return "", nil, err
 	}
 	h.registry().note(label, id)
-	return id, nil
+	return id, lease, nil
 }
 
 // killedBy: the command was still running when ctx ended, and was killed for
@@ -551,20 +615,9 @@ func (r *Registry) Sweep(ctx context.Context, run subproc.Runner, prefix string,
 	if len(listed) == 0 {
 		return nil, nil
 	}
-	var out, stderr bytes.Buffer
-	res := run.Run(ctx, subproc.Cmd{Name: "docker", Args: append([]string{"inspect", "--type", "container"}, listed...),
-		Stdout: &out, Stderr: &capped{buf: &stderr, max: 64 << 10}})
-	if err := failed("docker inspect", res, &stderr); err != nil {
+	all, err := inspectListed(ctx, run, listed)
+	if err != nil {
 		return nil, err
-	}
-	var all []struct {
-		ID     string `json:"Id"`
-		Config struct {
-			Labels map[string]string
-		}
-	}
-	if err := json.Unmarshal(out.Bytes(), &all); err != nil {
-		return nil, fmt.Errorf("docker inspect: %w", err)
 	}
 	var gone []Found
 	var ids []string
@@ -600,12 +653,66 @@ func (r *Registry) Sweep(ctx context.Context, run subproc.Runner, prefix string,
 	return gone, nil
 }
 
+type inspected struct {
+	ID     string `json:"Id"`
+	Config struct {
+		Labels map[string]string
+	}
+}
+
+// inspectListed inspects what a sweep listed. A container can go between the
+// listing and the inspect — an --rm helper that just exited, removed by its
+// own End — and docker inspect then fails for the whole batch. So on a
+// failure each id is inspected alone, and one whose inspect fails is skipped
+// only when a listing by its id confirms it is gone; any other failure is an
+// error, as before.
+func inspectListed(ctx context.Context, run subproc.Runner, ids []string) ([]inspected, error) {
+	all, err := inspectIDs(ctx, run, ids)
+	if err == nil {
+		return all, nil
+	}
+	all = nil
+	for _, id := range ids {
+		one, err := inspectIDs(ctx, run, []string{id})
+		if err == nil {
+			all = append(all, one...)
+			continue
+		}
+		left, lerr := list(ctx, run, "", "id="+id)
+		if lerr != nil {
+			return nil, errors.Join(err, lerr)
+		}
+		if len(left) != 0 {
+			return nil, err
+		}
+	}
+	return all, nil
+}
+
+func inspectIDs(ctx context.Context, run subproc.Runner, ids []string) ([]inspected, error) {
+	var out, stderr bytes.Buffer
+	res := run.Run(ctx, subproc.Cmd{Name: "docker", Args: append([]string{"inspect", "--type", "container"}, ids...),
+		Stdout: &out, Stderr: &capped{buf: &stderr, max: 64 << 10}})
+	if err := failed("docker inspect", res, &stderr); err != nil {
+		return nil, err
+	}
+	var all []inspected
+	if err := json.Unmarshal(out.Bytes(), &all); err != nil {
+		return nil, fmt.Errorf("docker inspect: %w", err)
+	}
+	return all, nil
+}
+
 // list is every container, running or not, the filter `label=<filter>`
 // matches, by full id.
-func list(ctx context.Context, run subproc.Runner, filter string) ([]string, error) {
+func list(ctx context.Context, run subproc.Runner, label string, filter ...string) ([]string, error) {
+	f := "label=" + label
+	if len(filter) > 0 {
+		f = filter[0]
+	}
 	var out, stderr bytes.Buffer
 	res := run.Run(ctx, subproc.Cmd{Name: "docker",
-		Args:   []string{"ps", "--all", "--quiet", "--no-trunc", "--filter", "label=" + filter},
+		Args:   []string{"ps", "--all", "--quiet", "--no-trunc", "--filter", f},
 		Stdout: &capped{buf: &out, max: maxList}, Stderr: &capped{buf: &stderr, max: 64 << 10}})
 	if err := failed("docker ps", res, &stderr); err != nil {
 		return nil, err

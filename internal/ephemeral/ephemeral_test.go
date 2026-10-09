@@ -29,6 +29,9 @@ type daemon struct {
 	order []string
 	calls [][]string
 	n     int
+	// beforeInspect, when set, runs as an inspect starts: a container going
+	// between a listing and an inspect.
+	beforeInspect func()
 	// hook, when set, is run and create: it may make containers through add
 	// and returns the command's result.
 	hook func(ctx context.Context, args []string, out io.Writer) subproc.Result
@@ -99,6 +102,12 @@ func (d *daemon) Run(ctx context.Context, c subproc.Cmd) subproc.Result {
 	args := c.Args
 	switch args[0] {
 	case "ps":
+		if id, ok := strings.CutPrefix(args[len(args)-1], "id="); ok {
+			if d.exists(id) {
+				fmt.Fprintln(out, id)
+			}
+			return subproc.Result{}
+		}
 		f := strings.TrimPrefix(args[len(args)-1], "label=")
 		k, v, exact := strings.Cut(f, "=")
 		d.mu.Lock()
@@ -113,21 +122,32 @@ func (d *daemon) Run(ctx context.Context, c subproc.Cmd) subproc.Result {
 		}
 		d.mu.Unlock()
 	case "inspect":
+		// As docker: the ones it found on stdout, and exit 1 if any was
+		// missing.
+		if d.beforeInspect != nil {
+			d.beforeInspect()
+		}
 		type c struct {
 			ID     string `json:"Id"`
 			Config struct{ Labels map[string]string }
 		}
-		var all []c
+		all := []c{}
+		missing := false
 		d.mu.Lock()
 		for _, id := range args[3:] {
 			if l := d.ctrs[id]; l != nil {
 				x := c{ID: id}
 				x.Config.Labels = l
 				all = append(all, x)
+			} else {
+				missing = true
 			}
 		}
 		d.mu.Unlock()
 		json.NewEncoder(out).Encode(all)
+		if missing {
+			return subproc.Result{ExitCode: 1}
+		}
 	case "rm":
 		d.mu.Lock()
 		for _, id := range args[4:] {
@@ -235,11 +255,12 @@ func TestEndSettlesForAKilledCreate(t *testing.T) {
 		d := newDaemon()
 		h := helper(d, Login, "0123456789abcdef01234567")
 		label, _ := h.Label()
-		if err := h.Begin(context.Background()); err != nil {
+		lease, err := h.Begin(context.Background())
+		if err != nil {
 			t.Fatal(err)
 		}
 		go func() { time.Sleep(150 * time.Millisecond); d.add(label) }()
-		n, err := h.End(context.Background(), killed)
+		n, err := lease.End(context.Background(), killed)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -256,13 +277,14 @@ func TestEndSettlesForAKilledCreate(t *testing.T) {
 				t.Fatal("control: the late create never landed")
 			}
 			// The next holder's Begin clears it.
-			if err := h.Begin(context.Background()); err != nil {
+			next, err := h.Begin(context.Background())
+			if err != nil {
 				t.Fatal(err)
 			}
 			if d.exists(id) {
 				t.Error("Begin did not clear what an earlier holder left")
 			}
-			h.End(context.Background(), false)
+			next.End(context.Background(), false)
 		}
 	}
 
@@ -274,7 +296,7 @@ func TestEndSettlesForAKilledCreate(t *testing.T) {
 	h.Clock = clock
 	h.Settle = time.Second
 	done := make(chan error, 1)
-	go func() { _, err := h.End(context.Background(), true); done <- err }()
+	go func() { _, err := h.Remove(context.Background(), true); done <- err }()
 	for deadline := time.Now().Add(5 * time.Second); clock.Waiting() < 3; time.Sleep(time.Millisecond) {
 		if time.Now().After(deadline) {
 			t.Fatal("End never set its bound, its settle and a poll")
@@ -310,11 +332,11 @@ func TestCreateRemovesItsIDWhateverTheListing(t *testing.T) {
 		fmt.Fprintln(out, hidden)
 		return subproc.Result{}
 	}
-	id, err := h.Create(context.Background(), []string{"create", "--label", label, "--network", "none", "img"}, nil)
+	id, lease, err := h.Create(context.Background(), []string{"create", "--label", label, "--network", "none", "img"}, nil)
 	if err != nil || id != hidden {
 		t.Fatalf("create: %q %v", id, err)
 	}
-	if _, err := h.End(context.Background(), false); err != nil {
+	if _, err := lease.End(context.Background(), false); err != nil {
 		t.Fatal(err)
 	}
 	if d.exists(hidden) {
@@ -325,7 +347,7 @@ func TestCreateRemovesItsIDWhateverTheListing(t *testing.T) {
 		d.add(label)
 		return subproc.Result{ExitCode: 1}
 	}
-	if _, err := h.Create(context.Background(), []string{"create", "--label", label, "img"}, nil); err == nil {
+	if _, _, err := h.Create(context.Background(), []string{"create", "--label", label, "img"}, nil); err == nil {
 		t.Fatal("a failed create was not an error")
 	}
 	out := &strings.Builder{}
@@ -343,17 +365,27 @@ func TestASharedLabelIsRemovedByItsLastHolder(t *testing.T) {
 	h := helper(d, VolumeOwner, "drydock-claude-config")
 	label, _ := h.Label()
 	ctx := context.Background()
-	if err := h.Begin(ctx); err != nil {
+	a, err := h.Begin(ctx)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if err := h.Begin(ctx); err != nil {
+	b, err := h.Begin(ctx)
+	if err != nil {
 		t.Fatal(err)
 	}
 	other := d.add(label)
-	if n, err := h.End(ctx, false); err != nil || n != 0 || !d.exists(other) {
+	if n, err := a.End(ctx, false); err != nil || n != 0 || !d.exists(other) {
 		t.Fatalf("first end: %d %v; the other holder's container exists %v", n, err, d.exists(other))
 	}
-	if n, err := h.End(ctx, false); err != nil || n != 1 || d.exists(other) {
+	// An End with no hold of its own — the first lease ended again, or a
+	// Remove with no Begin — must not end the other holder's hold.
+	if n, err := a.End(ctx, false); err != nil || n != 0 || !d.exists(other) || !h.Registry.held(label) {
+		t.Fatalf("a second End of one lease: %d %v; exists %v, held %v", n, err, d.exists(other), h.Registry.held(label))
+	}
+	if n, err := h.Remove(ctx, false); err != nil || n != 0 || !d.exists(other) || !h.Registry.held(label) {
+		t.Fatalf("a Remove while held: %d %v; exists %v, held %v", n, err, d.exists(other), h.Registry.held(label))
+	}
+	if n, err := b.End(ctx, false); err != nil || n != 1 || d.exists(other) {
 		t.Errorf("last end: %d %v; exists %v", n, err, d.exists(other))
 	}
 }
@@ -388,6 +420,10 @@ func TestAHelperNeverCarriesTheWorkspaceLabel(t *testing.T) {
 		{"--label=" + ws + "=x"},
 		{"-l", ws + "=x"},
 		{"--label", ws},
+		{"-l" + ws},
+		{"-tl" + ws},
+		{"-tl" + ws + "=x"},
+		{"-l", ws},
 		{"--label-file", "/tmp/labels"},
 	} {
 		d := newDaemon()
@@ -399,7 +435,8 @@ func TestAHelperNeverCarriesTheWorkspaceLabel(t *testing.T) {
 	}
 	d := newDaemon()
 	h := helper(d, Cleanup, "01JABCDEFGHJKMNPQRSTVWXYZ0")
-	if _, err := h.Run(context.Background(), subproc.Cmd{Name: "docker", Args: runArgs(h)}); err != nil || d.count("run") != 1 {
+	// The key's own text inside a longer name is not the key.
+	if _, err := h.Run(context.Background(), subproc.Cmd{Name: "docker", Args: runArgs(h, "--network", ws+"-net", "--hostname", ws+"s")}); err != nil || d.count("run") != 1 {
 		t.Errorf("control: %v, %d runs", err, d.count("run"))
 	}
 	// An argv without the helper's own label is refused too: its removal
@@ -426,7 +463,8 @@ func TestSweepAll(t *testing.T) {
 	both := d.add(Key(prefix, Cleanup)+"=01JABCDEFGHJKMNPQRSTVWXYZ0", Key(prefix, WorkspaceLabel)+"=01JABCDEFGHJKMNPQRSTVWXYZ0")
 	workspace := d.add(Key(prefix, WorkspaceLabel) + "=01JABCDEFGHJKMNPQRSTVWXYZ1")
 	inflight := Helper{Docker: d, Prefix: prefix, Kind: Identity, Value: "1", Registry: r}
-	if err := inflight.Begin(context.Background()); err != nil {
+	lease, err := inflight.Begin(context.Background())
+	if err != nil {
 		t.Fatal(err)
 	}
 	held := d.add(Key(prefix, Identity) + "=1")
@@ -484,7 +522,7 @@ func TestSweepAll(t *testing.T) {
 
 	// Once the holder ends, its label is no longer spared — its End removes
 	// the container itself, and a sweep after finds nothing.
-	if n, err := inflight.End(context.Background(), false); err != nil || n != 1 || d.exists(held) {
+	if n, err := lease.End(context.Background(), false); err != nil || n != 1 || d.exists(held) {
 		t.Errorf("the holder's end: %d %v", n, err)
 	}
 }
@@ -507,7 +545,12 @@ func TestABeginWaitsForASweep(t *testing.T) {
 	<-inSweep
 	h := Helper{Docker: d, Prefix: prefix, Kind: Login, Value: "abc", Registry: r}
 	began := make(chan error, 1)
-	go func() { began <- h.Begin(context.Background()) }()
+	var lease *Lease
+	go func() {
+		var err error
+		lease, err = h.Begin(context.Background())
+		began <- err
+	}()
 	select {
 	case <-began:
 		t.Fatal("Begin registered while a sweep ran")
@@ -517,7 +560,7 @@ func TestABeginWaitsForASweep(t *testing.T) {
 	if err := <-began; err != nil {
 		t.Fatal(err)
 	}
-	h.End(context.Background(), false)
+	lease.End(context.Background(), false)
 }
 
 type runnerFunc func(context.Context, subproc.Cmd) subproc.Result
@@ -525,4 +568,43 @@ type runnerFunc func(context.Context, subproc.Cmd) subproc.Result
 func (f runnerFunc) Run(ctx context.Context, c subproc.Cmd) subproc.Result { return f(ctx, c) }
 func (f runnerFunc) Start(context.Context, subproc.Cmd) (subproc.Process, error) {
 	return nil, errors.New("unused")
+}
+
+// TestASweepSkipsAContainerGoneBeforeItsInspect: an --rm helper that exits
+// between the sweep's listing and its inspect makes docker inspect fail for
+// the whole batch. The sweep inspects each alone, skips the one a listing by
+// id confirms is gone, and removes the rest. The control is a container that
+// is still there but whose inspect fails: an error, nothing removed.
+func TestASweepSkipsAContainerGoneBeforeItsInspect(t *testing.T) {
+	d := newDaemon()
+	stay := d.add(Key(prefix, Cleanup) + "=gone1")
+	vanish := d.add(Key(prefix, Identity) + "=1")
+	once := sync.Once{}
+	d.beforeInspect = func() {
+		once.Do(func() {
+			d.mu.Lock()
+			delete(d.ctrs, vanish)
+			d.mu.Unlock()
+		})
+	}
+	gone, err := (&Registry{}).Sweep(context.Background(), d, prefix, Kinds, nil)
+	if err != nil {
+		t.Fatalf("one vanished container failed the sweep: %v", err)
+	}
+	if len(gone) != 1 || gone[0].ID != stay || d.exists(stay) {
+		t.Errorf("swept %+v; want the one still there", gone)
+	}
+
+	// Control: an inspect that fails for a container still listed.
+	d = newDaemon()
+	stuck := d.add(Key(prefix, Cleanup) + "=gone1")
+	failing := runnerFunc(func(ctx context.Context, c subproc.Cmd) subproc.Result {
+		if c.Args[0] == "inspect" {
+			return subproc.Result{ExitCode: 1}
+		}
+		return d.Run(ctx, c)
+	})
+	if _, err := (&Registry{}).Sweep(context.Background(), failing, prefix, Kinds, nil); err == nil || !d.exists(stuck) {
+		t.Errorf("an inspect that failed for a listed container: %v, exists %v", err, d.exists(stuck))
+	}
 }

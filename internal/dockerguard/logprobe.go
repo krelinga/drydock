@@ -124,26 +124,25 @@ func DaemonLogConfig(real string, p *Policy, warn io.Writer) (*LogConfig, error)
 	// The guard's own process: nothing above it to inherit a context from.
 	ctx, cancel := sys.WithTimeout(context.Background(), sys.RealClock{}, ProbeTimeout)
 	defer cancel()
-	// After a create that returned its id: nothing is still landing, so no
-	// settle — the id itself is removed, and whatever the label lists.
-	end := func(what string) {
-		if _, err := h.End(ctx, false); err != nil && warn != nil {
-			fmt.Fprintf(warn, "drydock-docker-guard: %s could not be removed: %v; boot's helper sweep removes it\n", what, err)
-		}
-	}
 	// create pulls ProbeImage when the daemon lacks it, deliberately: it is
 	// pinned by digest (the same busybox the cleanup and volume-owner
 	// helpers run), the pull is bounded by ProbeTimeout, and a host that
 	// cannot pull fails closed: the start is refused, as before this probe.
 	var stderr bytes.Buffer
-	id, err := h.Create(ctx, []string{"create", "--label", label, "--network", "none", p.ProbeImage}, &capped{buf: &stderr, max: 4 << 10})
+	id, lease, err := h.Create(ctx, []string{"create", "--label", label, "--network", "none", p.ProbeImage}, &capped{buf: &stderr, max: 4 << 10})
 	if err != nil {
 		if errors.Is(err, ephemeral.ErrNotRun) {
 			return nil, err
 		}
 		return nil, fmt.Errorf("%w: %s", err, strings.TrimSpace(short(stderr.String())))
 	}
-	defer end("the log probe " + id)
+	// After a create that returned its id: nothing is still landing, so no
+	// settle — the id itself is removed, and whatever the label lists.
+	defer func() {
+		if _, err := lease.End(ctx, false); err != nil && warn != nil {
+			fmt.Fprintf(warn, "drydock-docker-guard: the log probe %s could not be removed: %v; boot's helper sweep removes it\n", id, err)
+		}
+	}()
 	var out bytes.Buffer
 	stderr.Reset()
 	res := run.Run(ctx, subproc.Cmd{Name: "docker", Args: []string{"inspect", "--type", "container", "--", id},
