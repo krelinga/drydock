@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.9.0](https://github.com/krelinga/drydock/compare/v0.8.0...v0.9.0) (2026-10-09)
+
+
+### Features
+
+* tell the operator why a preview port can't be reached ([#122](https://github.com/krelinga/drydock/issues/122)) ([c87c2f0](https://github.com/krelinga/drydock/commit/c87c2f0ea347cfc184a7f531b8b97ac5186640be))
+
 ## [0.8.0](https://github.com/krelinga/drydock/compare/v0.7.4...v0.8.0) (2026-10-09)
 
 
