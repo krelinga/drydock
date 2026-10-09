@@ -149,11 +149,11 @@ var allowed = []allowance{
 
 	// The docker guard binary: a separate process (dockerguard.Main), with
 	// no Drydock lifecycle to join. Only DaemonLogConfig, which Main alone
-	// reaches, uses these; the rest of the package is imported by
-	// container, provision and server and is scanned like any other.
-	{use{"internal/dockerguard/logprobe.go", "DaemonLogConfig", "context.Background"}, 2, whyGuard},
-	{use{"internal/dockerguard/logprobe.go", "DaemonLogConfig", "context.WithTimeout"}, 2, whyGuard},
-	{use{"internal/dockerguard/logprobe.go", "DaemonLogConfig", "time.After"}, 0, whyGuard},
+	// reaches, uses this — the root of its probe's bound, which runs on
+	// sys.WithTimeout, its removal under internal/ephemeral's sys.Cleanup;
+	// the rest of the package is imported by container, provision and
+	// server and is scanned like any other.
+	{use{"internal/dockerguard/logprobe.go", "DaemonLogConfig", "context.Background"}, 0, whyGuard},
 }
 
 // moduleRoot finds go.mod above the test's directory.

@@ -127,10 +127,12 @@ func (f *fakeRunner) Start(context.Context, subproc.Cmd) (subproc.Process, error
 func id64(c byte) string { return strings.Repeat(string(c), 64) }
 
 // TestRemoveAndSweep: by label and full id; a sweep spares the login in
-// progress.
+// progress, and lists by the login label alone.
 func TestRemoveAndSweep(t *testing.T) {
+	other := "fedcba9876543210fedcba98"
 	f := &fakeRunner{ans: func(a []string) (string, int) {
-		if a[0] == "ps" {
+		switch a[0] {
+		case "ps":
 			switch a[len(a)-1] {
 			case "label=drydock.login":
 				return id64('a') + "\n" + id64('b') + "\n" + id64('c') + "\n", 0
@@ -138,6 +140,10 @@ func TestRemoveAndSweep(t *testing.T) {
 				return id64('b') + "\n", 0
 			}
 			return "", 0
+		case "inspect":
+			return `[{"Id":"` + id64('a') + `","Config":{"Labels":{"drydock.login":"` + other + `"}}},` +
+				`{"Id":"` + id64('b') + `","Config":{"Labels":{"drydock.login":"` + loginID + `"}}},` +
+				`{"Id":"` + id64('c') + `","Config":{"Labels":{"drydock.login":"` + other + `"}}}]`, 0
 		}
 		return "", 0
 	}}
@@ -156,7 +162,7 @@ func TestRemoveAndSweep(t *testing.T) {
 			rms = append(rms, strings.Join(c[1:], " "))
 		}
 	}
-	want := []string{"rm --force -- " + id64('b'), "rm --force -- " + id64('a') + " " + id64('c')}
+	want := []string{"rm --force --volumes -- " + id64('b'), "rm --force --volumes -- " + id64('a') + " " + id64('c')}
 	if !slices.Equal(rms, want) {
 		t.Errorf("rm calls %q; want %q", rms, want)
 	}
@@ -260,7 +266,7 @@ func TestRemoveWaitsForAKilledCreate(t *testing.T) {
 	if err := d.Remove(context.Background(), loginID, true); err != nil {
 		t.Fatal(err)
 	}
-	if ps, rms := count(f); ps != 4 || !slices.Equal(rms, []string{"rm --force -- " + id64('d')}) {
+	if ps, rms := count(f); ps != 4 || !slices.Equal(rms, []string{"rm --force --volumes -- " + id64('d')}) {
 		t.Errorf("killed: %d listings, rm %q; want 4 and the late container removed", ps, rms)
 	}
 
@@ -311,9 +317,9 @@ func TestRemoveSettleIsCapped(t *testing.T) {
 			}
 		}
 	}
-	waitTimers(2) // the settle and a poll
+	waitTimers(3) // the removal's bound, the settle and a poll
 	clock.Advance(login.MaxRemoveSettle - time.Millisecond)
-	waitTimers(2) // still settling: a new poll beside the settle
+	waitTimers(3) // still settling: a new poll beside the settle
 	select {
 	case err := <-done:
 		t.Fatalf("control: Remove gave up before MaxRemoveSettle: %v", err)

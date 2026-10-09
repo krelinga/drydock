@@ -52,6 +52,8 @@ ps)
     label=*.cleanup=*) [ -e "$dir/docker-fail-cleanup-ps" ] && { echo "docker ps: no" >&2; exit 1; }; exit 0 ;;
     label=*.cleanup) awk '{print $1}' "$hs"; exit 0 ;;
     label=*.log-probe) awk '{print $1}' "$dir/probes" 2>/dev/null; exit 0 ;;
+    # Every other helper kind's label, bare or valued: none in the world.
+    label=*.log-probe=*|label=*.identity|label=*.identity=*|label=*.login|label=*.login=*|label=*.volume-owner|label=*.volume-owner=*) exit 0 ;;
     esac
   done
   awk -v ws="$ws" -v s="$status" '(ws=="" || $2==ws) && (s=="" || $3==s) {print $1}' "$st" ;;

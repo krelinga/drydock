@@ -12,6 +12,7 @@ import (
 
 	"github.com/krelinga/drydock/internal/broker"
 	"github.com/krelinga/drydock/internal/container"
+	"github.com/krelinga/drydock/internal/ephemeral"
 	"github.com/krelinga/drydock/internal/events"
 	"github.com/krelinga/drydock/internal/sys"
 	"github.com/krelinga/drydock/internal/workspace"
@@ -360,55 +361,50 @@ func (p *Provisioner) removeBuiltImages(ctx context.Context, w workspace.Workspa
 // anything. data: {count}
 const KindHelpersSwept = "container.helpers_swept"
 
-// SweepHelpers removes every cleanup helper a delete left behind — Drydock
-// killed while one ran, and the daemon never reaching --rm — found by this
-// instance's <prefix>.cleanup label (design §6). RemoveContents already
-// clears a stray before running a new helper for the same workspace, but
-// only for a workspace whose delete needs the helper again; a delete
-// resumed at boot whose host removal then succeeds, or a workspace whose
-// row is gone, would leave one for good. The docker guard's log probes
-// (<prefix>.log-probe: created, never started, removed within a start's
-// check) are listed and swept with them: a guard killed mid-probe leaves
-// one, which its workspace's next probe removes — unless there is none.
-// So boot sweeps, after
-// reconciliation has resumed and finished every interrupted delete.
+// SweepHelpers is boot's sweep of helper containers (internal/ephemeral):
+// every kind there is — a delete's cleanup helper, the docker guard's log
+// probe, the identity watch's reads, a login container, the volume's owner
+// helper — under this instance's prefix, that an earlier process left behind:
+// Drydock killed while one ran, a killed docker client whose create landed
+// after it, the daemon never reaching --rm. Each helper already removes its
+// own label however it ends; this is for what a process that did not end
+// left. Boot runs it after reconciliation has resumed and finished every
+// interrupted delete.
 //
-// It never touches a workspace's container: ListHelpers lists by the cleanup
-// and log-probe labels alone and drops anything carrying the workspace label
-// too. And it
-// skips a helper whose workspace has a job in flight here — a delete the
-// operator started since boot may be running that helper right now. p.mu is
-// held throughout, so no job can start between that check and the removal;
-// the routes wait for a docker listing and a remove, once, at boot.
+// It never touches a workspace's container: ephemeral.SweepAll lists by the
+// helper labels alone and keeps anything carrying the workspace label too,
+// and another prefix's helpers are never listed. It spares a helper a holder
+// in this process is running (a login, an identity read), and — since the
+// docker guard's probe runs in a process of its own — a cleanup helper or log
+// probe whose workspace has a job in flight here: a delete or start the
+// operator asked for since boot may be running it right now. p.mu is held
+// throughout, so no job can start between that check and the removal; the
+// routes wait for the listings and a remove, once, at boot.
 func (p *Provisioner) SweepHelpers(ctx context.Context) (int, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if p.stopping() {
 		return 0, ErrShuttingDown
 	}
-	found, err := p.Containers.ListHelpers(ctx)
+	gone, err := p.Containers.SweepHelpers(ctx, func(f ephemeral.Found) bool {
+		switch f.Kind {
+		case ephemeral.Cleanup, ephemeral.LogProbe:
+			return p.active[f.Value] != nil
+		}
+		return false
+	})
 	if err != nil {
 		return 0, err
 	}
-	var ids []string
-	for _, h := range found {
-		if p.active[h.WorkspaceID] != nil {
-			continue
-		}
-		ids = append(ids, h.ContainerID)
-	}
-	if len(ids) == 0 {
+	if len(gone) == 0 {
 		return 0, nil
 	}
-	if err := p.Containers.Remove(ctx, ids); err != nil {
-		return 0, err
+	msg := "Removed a helper container an earlier Drydock left behind."
+	if len(gone) > 1 {
+		msg = fmt.Sprintf("Removed %d helper containers an earlier Drydock left behind.", len(gone))
 	}
-	msg := "Removed a helper container an interrupted delete or start left behind."
-	if len(ids) > 1 {
-		msg = fmt.Sprintf("Removed %d helper containers interrupted deletes or starts left behind.", len(ids))
-	}
-	_, err = p.Events.Emit(ctx, "", events.Info, KindHelpersSwept, msg, map[string]any{"count": len(ids)})
-	return len(ids), err
+	_, err = p.Events.Emit(ctx, "", events.Info, KindHelpersSwept, msg, map[string]any{"count": len(gone)})
+	return len(gone), err
 }
 
 // SweepGuardPolicies removes the docker guard's policy (and refusal) an up

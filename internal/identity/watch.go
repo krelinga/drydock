@@ -76,12 +76,13 @@
 // -c one byte past the 64 KiB cap; each read is bounded by Timeout
 // (--identity-check-timeout, two minutes) and the image's first build by
 // BuildTimeout, both through sys.WithTimeout on the injected clock; a read cut
-// off is a failed check, problem timeout, keeping the stored state; after any
-// failed read, and in the first check after boot, helpers carrying
-// <prefix>.identity are removed by label (Sweep) — a killed docker run client
-// leaves its container running, measured. Checks run one at a time and sweep
-// inside the one running, under sys.Cleanup's own bound, so a check that
-// shutdown cut off still removes its helper.
+// off is a failed check, problem timeout, keeping the stored state. Each read's
+// helper, carrying <prefix>.identity, is an internal/ephemeral helper, removed
+// by its label however the read ends — a killed docker run client leaves its
+// container running, measured — under sys.Cleanup's own bound, so a check
+// that shutdown cut off still removes its helper; boot's sweep of every helper
+// kind removes what a process that died mid-read left, sparing a read in
+// flight. Checks run one at a time.
 //
 // **expired is a live login** (§2.4): its event is info and the UI shows no
 // fault for it. **expiring counts down to the login, never the access token**:
@@ -182,10 +183,6 @@ const DefaultTimeout = 2 * time.Minute
 // read and a hung read is not given a build's minutes.
 const DefaultBuildTimeout = 15 * time.Minute
 
-// sweepTimeout bounds removing a cut-off read's helper. It runs even when the
-// check's own context has ended — at shutdown above all — so it has its own.
-const sweepTimeout = 30 * time.Second
-
 // CheckError is the last check's failure, in Drydock's words.
 type CheckError struct {
 	At      time.Time `json:"at"`
@@ -251,10 +248,6 @@ type Watch struct {
 	// over by the check that answered LoggedIn and consumed by the next
 	// check that stores a verdict, whatever it is.
 	login *time.Time
-	// swept: the boot sweep of helpers an earlier process left has run. It
-	// runs inside the first check, so it can never remove a helper of a
-	// check in flight.
-	swept bool
 
 	// observe is a test seam, nil in production, called on the worker:
 	// "announced" right after a check writes the event that answers it
@@ -355,8 +348,8 @@ func (w *Watch) LoggedIn(ctx context.Context, at time.Time) error {
 // interval's is.
 //
 // A check always ends: each read is bounded by Timeout and the image's build
-// by BuildTimeout, both on Clock, and a read cut off is followed by a sweep
-// with its own bound. So a workspace that turns the credential file into
+// by BuildTimeout, both on Clock, and a read cut off still has its helper
+// removed, under a bound of its own (DockerSource). So a workspace that turns the credential file into
 // something that never ends costs one failed check — reported, with the
 // stored state kept — and never the checks after it.
 func (w *Watch) Check(ctx context.Context) (View, error) {
@@ -387,17 +380,8 @@ func (w *Watch) run(ctx context.Context, asks []ask) (View, error) {
 // check reads, classifies and stores, and says whether it wrote an event
 // that answers whoever asked.
 func (w *Watch) check(ctx context.Context) (View, bool, error) {
-	if !w.swept {
-		w.swept = true
-		// Helpers an earlier process left: killed mid-read, or a read it
-		// cut off and could not clean up after.
-		w.sweep(ctx, "left by an earlier process")
-	}
 	id, err := w.read(ctx)
 	if err != nil {
-		// Whatever the read failed on, a helper may be left: a cut-off
-		// `docker run` client does not take its container with it.
-		w.sweep(ctx, "after a failed read")
 		if ctx.Err() != nil {
 			return View{}, false, ctx.Err()
 		}
@@ -424,24 +408,6 @@ func (w *Watch) checked(ctx context.Context) {
 	}
 	w.Events.Emit(ctx, "", events.Info, KindChecked, "Checked the Claude login: nothing has changed.", map[string]any{"identity": v})
 	w.at("announced")
-}
-
-// sweep removes the Source's helpers, if it leaves any, bounded on its own
-// even when ctx has ended — a check cut off by shutdown still cleans up.
-func (w *Watch) sweep(ctx context.Context, why string) {
-	s, ok := w.Source.(Sweeper)
-	if !ok {
-		return
-	}
-	sctx, cancel := sys.Cleanup(ctx, w.Clock, sweepTimeout)
-	defer cancel()
-	n, err := s.Sweep(sctx)
-	switch {
-	case err != nil:
-		w.logf("drydock: identity: removing helper containers %s: %v", why, err)
-	case n > 0:
-		w.logf("drydock: identity: removed %d helper container(s) %s", n, why)
-	}
 }
 
 func (w *Watch) logf(f string, a ...any) {

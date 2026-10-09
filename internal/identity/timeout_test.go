@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -20,14 +21,14 @@ import (
 
 // hangingSource is a Source whose credential read blocks until its context
 // ends — what a FIFO at the credential path, or a daemon that stopped
-// answering, does to the real one — and which counts its sweeps. While
-// hang is false it answers like fakeSource.
+// answering, does to the real one. While hang is false it answers like
+// fakeSource. (That the real one's helper is removed however a read ends is
+// DockerSource's, TestAReadRemovesItsHelperHoweverItEnds.)
 type hangingSource struct {
 	fakeSource
 	hmu     sync.Mutex
 	hang    bool
 	entered chan struct{}
-	sweeps  int
 }
 
 func newHanging() *hangingSource { return &hangingSource{entered: make(chan struct{}, 16)} }
@@ -46,13 +47,6 @@ func (h *hangingSource) Credentials(ctx context.Context) ([]byte, error) {
 	return h.fakeSource.Credentials(ctx)
 }
 
-func (h *hangingSource) Sweep(context.Context) (int, error) {
-	h.hmu.Lock()
-	defer h.hmu.Unlock()
-	h.sweeps++
-	return 1, nil
-}
-
 // srcReads is how many credential reads src answered — not counting one
 // that hung.
 func srcReads(src *hangingSource) int {
@@ -60,8 +54,6 @@ func srcReads(src *hangingSource) int {
 	defer src.mu.Unlock()
 	return src.credsCalls
 }
-
-func (h *hangingSource) sweepCount() int { h.hmu.Lock(); defer h.hmu.Unlock(); return h.sweeps }
 
 // TestAHungReadIsBoundedAndReported is #37's review finding: a read that
 // never returns must not freeze the fleet's login state. With Timeout on the
@@ -72,7 +64,6 @@ func (h *hangingSource) sweepCount() int { h.hmu.Lock(); defer h.hmu.Unlock(); r
 //     auth.identity_check_failed event — never silence;
 //   - the stored state is kept (a failed read keeps it, #37's rule) — here
 //     ok, which a frozen watch would have gone on asserting;
-//   - the helper is swept after the cut-off read;
 //   - a check asked for during the hung one is not stuck behind it: it runs
 //     when the hung one ends and reads normally (the positive control: same
 //     watch, same clock, a regular answer, stored).
@@ -89,10 +80,6 @@ func TestAHungReadIsBoundedAndReported(t *testing.T) {
 		t.Fatal(err)
 	}
 	stateIs(t, v, OK)
-	bootSweeps := src.sweepCount()
-	if bootSweeps != 1 {
-		t.Fatalf("sweeps after the first check = %d; want the boot sweep alone", bootSweeps)
-	}
 
 	src.setHang(true)
 	hung, err := h.w.c.Trigger()
@@ -141,9 +128,6 @@ func TestAHungReadIsBoundedAndReported(t *testing.T) {
 	}
 	if data.CheckError == nil || data.CheckError.Problem != ProblemTimeout || data.CheckError.Message != sentence(ProblemTimeout) {
 		t.Errorf("check_error = %+v; want the timeout's", data.CheckError)
-	}
-	if got := src.sweepCount(); got != bootSweeps+1 {
-		t.Errorf("sweeps = %d; want one after the cut-off read", got)
 	}
 
 	// Control: the check asked for meanwhile is not stuck behind the dead
@@ -201,8 +185,8 @@ func TestHungCheckKeepsTheStoredState(t *testing.T) {
 }
 
 // TestAShutdownEndsATriggeredCheck: a check runs under the watch's group,
-// whose Stop ends it — and whose Wait does not return before it has ended —
-// and the cut-off read is still swept, under its own bound. A check asked
+// whose Stop ends it — and whose Wait does not return before it has ended.
+// A check asked
 // for meanwhile never starts: its ticket is refused. The control is a
 // triggered check that reads normally before the shutdown. (#85's finding 5:
 // every wait here is bounded, so a regression fails by name.)
@@ -226,7 +210,6 @@ func TestAShutdownEndsATriggeredCheck(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	before := src.sweepCount()
 	ended := make(chan []string, 1)
 	go func() { ended <- h.group.Wait(nil) }()
 	select {
@@ -236,9 +219,6 @@ func TestAShutdownEndsATriggeredCheck(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("the group's Wait did not end a triggered check")
-	}
-	if src.sweepCount() != before+1 {
-		t.Errorf("sweeps %d → %d; want the cut-off read swept", before, src.sweepCount())
 	}
 	if _, err := h.w.c.Await(waitCtx(t), queued); !errors.Is(err, life.ErrStopping) {
 		t.Errorf("the check asked for during the cut-off one: %v; want life.ErrStopping", err)
@@ -460,35 +440,84 @@ func (l *limitedBuilder) Write(p []byte) (int, error) {
 	return l.b.Write(p)
 }
 
-// TestSweepRemovesHelpersByLabel: the sweep lists by this prefix's identity
-// label alone — never the workspace or login labels — and removes by full
-// id after --; a listing that is not ids removes nothing. The control is
-// an empty listing, which runs no rm.
-func TestSweepRemovesHelpersByLabel(t *testing.T) {
-	ctx := context.Background()
-	id := strings.Repeat("a", 64)
-	r := &scripted{answers: map[string]func(subproc.Cmd) subproc.Result{
-		"ps": write(id+"\n", 0),
-		"rm": write("", 0)}}
-	n, err := newSource(r, nil).Sweep(ctx)
-	if err != nil || n != 1 {
-		t.Fatalf("sweep: %d, %v", n, err)
+// TestAReadRemovesItsHelperHoweverItEnds: a read cut off — its context ended
+// while the docker client ran, which a killed client does not take its
+// container with — still has its helper removed, by this prefix's identity
+// label alone and by full id, under a context of its own (the runner refuses
+// a command under a done context, as exec does). The control is a read that
+// ends by itself: listed once, nothing to remove.
+func TestAReadRemovesItsHelperHoweverItEnds(t *testing.T) {
+	left := strings.Repeat("a", 64)
+	var mu sync.Mutex
+	var cmds []string
+	removed := false
+	run := ctxRunner(func(ctx context.Context, c subproc.Cmd) subproc.Result {
+		mu.Lock()
+		cmds = append(cmds, strings.Join(c.Args, " "))
+		mu.Unlock()
+		if ctx.Err() != nil {
+			return subproc.Result{ExitCode: -1, Err: ctx.Err()}
+		}
+		switch c.Args[0] {
+		case "volume":
+			if c.Args[1] == "ls" {
+				io.WriteString(c.Stdout, "drydock-claude-config\n")
+			} else {
+				io.WriteString(c.Stdout, `{"drydock.test.claude-config":"1"}`)
+			}
+		case "run":
+			<-ctx.Done()
+			return subproc.Result{ExitCode: -1, Err: ctx.Err()}
+		case "ps":
+			mu.Lock()
+			if !removed && len(cmds) > 4 {
+				io.WriteString(c.Stdout, left+"\n")
+			}
+			mu.Unlock()
+		case "rm":
+			mu.Lock()
+			removed = true
+			mu.Unlock()
+		}
+		return subproc.Result{}
+	})
+	d := DockerSource{Run: run, FileImage: testFileImage, Volume: "drydock-claude-config", LabelPrefix: "drydock.test"}
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	if _, err := d.Credentials(ctx); err == nil {
+		t.Fatal("a cut-off read was not an error")
 	}
-	if got := strings.Join(r.cmds[0].Args, " "); got != "ps --all --quiet --no-trunc --filter label=drydock.test.identity" {
-		t.Errorf("listing argv: %s", got)
-	}
-	if got := strings.Join(r.cmds[1].Args, " "); got != "rm --force -- "+id {
-		t.Errorf("rm argv: %s", got)
+	mu.Lock()
+	got := append([]string(nil), cmds...)
+	mu.Unlock()
+	list := "ps --all --quiet --no-trunc --filter label=drydock.test.identity=1"
+	if len(got) < 2 || got[len(got)-2] != list || got[len(got)-1] != "rm --force --volumes -- "+left {
+		t.Errorf("after a cut-off read docker ran %q; want the helper listed by its label and removed", got)
 	}
 
-	r = &scripted{answers: map[string]func(subproc.Cmd) subproc.Result{"ps": write("", 0)}}
-	if n, err := newSource(r, nil).Sweep(ctx); err != nil || n != 0 || len(r.cmds) != 1 {
-		t.Errorf("empty listing: %d, %v, %d commands", n, err, len(r.cmds))
+	// Control: a read that ends by itself is listed after and leaves
+	// nothing to remove.
+	r := &scripted{answers: map[string]func(subproc.Cmd) subproc.Result{
+		"volume ls":      write("drydock-claude-config\n", 0),
+		"volume inspect": write(`{"drydock.test.claude-config":"1"}`, 0),
+		"run sh":         write("{}", 0)}}
+	if _, err := newSource(r, nil).Credentials(context.Background()); err != nil {
+		t.Fatal(err)
 	}
-	r = &scripted{answers: map[string]func(subproc.Cmd) subproc.Result{"ps": write("--all\n", 0)}}
-	if _, err := newSource(r, nil).Sweep(ctx); err == nil || len(r.cmds) != 1 {
-		t.Errorf("a listing that is not ids: %v, %d commands", err, len(r.cmds))
+	var tail []string
+	for _, c := range r.cmds[2:] {
+		tail = append(tail, c.Args[0])
 	}
+	if strings.Join(tail, " ") != "ps run ps" {
+		t.Errorf("a read that ended by itself ran %q after the volume checks; want a listing either side of the run", tail)
+	}
+}
+
+type ctxRunner func(context.Context, subproc.Cmd) subproc.Result
+
+func (f ctxRunner) Run(ctx context.Context, c subproc.Cmd) subproc.Result { return f(ctx, c) }
+func (f ctxRunner) Start(context.Context, subproc.Cmd) (subproc.Process, error) {
+	return nil, errors.New("unused")
 }
 
 type countWriter int

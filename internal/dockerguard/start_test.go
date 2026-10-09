@@ -375,6 +375,7 @@ esac
 		"ps --all --quiet --no-trunc --filter label=" + label,
 		"create --label " + label + " --network none " + image,
 		"inspect --type container -- " + probe,
+		"ps --all --quiet --no-trunc --filter label=" + label,
 		"rm --force --volumes -- " + probe,
 	}
 

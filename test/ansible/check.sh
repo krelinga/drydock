@@ -113,13 +113,14 @@ journal() { # journal WANT(pass|fail) DESCRIPTION LINE...
 	fi
 }
 journal pass "control: the serving line alone" "$serving"
-journal pass "control: with the benign login sweep" "$serving" "drydock: login: removed 2 leftover login container(s)"
-journal fail "no serving line" "drydock: login: removed 2 leftover login container(s)"
+journal pass "control: the serving line and blank lines" "$serving" ""
+journal fail "no serving line" "drydock: secrets: x"
+journal fail "the login sweep's old boot line" "$serving" "drydock: login: removed 2 leftover login container(s)"
 journal fail "a broker failure" "$serving" "drydock: broker: reopening the sockets: permission denied"
 journal fail "a session-server failure" "$serving" "drydock: session servers: x"
 journal fail "a catalog refresh failure" "$serving" "drydock: catalog refresh: github: GET /app/installations: 401"
 journal fail "a line nobody has listed yet" "$serving" "drydock: something new: went wrong"
 journal fail "a panic" "$serving" "panic: runtime error" "goroutine 1 [running]:"
-journal fail "a failed login sweep" "$serving" "drydock: login: sweeping leftover login containers: docker: x"
+journal fail "a failed helper sweep" "$serving" "drydock: sweeping helper containers: docker: x"
 [ "$journal_fails" = 0 ] || exit 1
 echo PASS

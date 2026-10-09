@@ -94,12 +94,14 @@
 // dropped but DAC_OVERRIDE and FOWNER, and one bind mount — <root>/<id> at /w,
 // never a parent — running `find /w -mindepth 1 -delete`. It carries
 // <prefix>.cleanup=<id>, never <prefix>.workspace, so reconciliation's listing
-// never sees one; a stray left by an earlier attempt is removed by label
-// before the next runs. Everything before the helper's own docker run that
-// fails is ErrCleanupNotRun (an unpinned image also ErrCleanupImage), so the
-// delete never says a helper was tried when none ran. ListHelpers is the boot
-// sweep's listing: the bare cleanup label and the docker guard's bare
-// log-probe label, and nothing that also carries the workspace label.
+// never sees one. It runs as an internal/ephemeral helper, as the owner helper
+// does: a stray left by an earlier attempt is removed by label before the
+// next runs, and the label is removed again however the run ends. Everything
+// before the helper's own docker run that fails is ErrCleanupNotRun (an
+// unpinned image also ErrCleanupImage), so the delete never says a helper was
+// tried when none ran. SweepHelpers is boot's sweep, ephemeral.SweepAll: every
+// helper kind under the prefix, and nothing that also carries the workspace
+// label.
 //
 // BuiltImages(folder) are the names up gives the images it builds, measured on
 // CLI 0.89.0: vsc-<basename>-<sha256 of --workspace-folder> and that with
@@ -113,7 +115,7 @@
 // foreign or non-local one, and then runs the **owner helper**
 // (volumeowner.go: the pinned busybox as root with only CHOWN, FOWNER and
 // DAC_OVERRIDE, --network none, the volume alone, label
-// <prefix>.volume-owner): an *empty* volume, whoever owns it, is given to
+// <prefix>.volume-owner, run as an internal/ephemeral helper): an *empty* volume, whoever owns it, is given to
 // ClaudeUID (Drydock's own) 0700 with a marker directory .drydock-volume left
 // in it, because Docker copies an image directory's owner into a volume
 // whenever it is mounted while empty — and the Feature's /home/vscode/.claude
@@ -160,6 +162,7 @@ import (
 	"github.com/krelinga/drydock/internal/config"
 	"github.com/krelinga/drydock/internal/dockerguard"
 	"github.com/krelinga/drydock/internal/subproc"
+	"github.com/krelinga/drydock/internal/sys"
 )
 
 // Manager runs the devcontainer CLI and docker for one label prefix.
@@ -185,6 +188,12 @@ type Manager struct {
 	// configuration and exec, which create nothing, run without it only
 	// when it is nil.
 	Guard *dockerguard.Guard
+	// Clock is what the ephemeral helpers' removals are bounded and settled
+	// on (internal/ephemeral); nil is the real clock.
+	Clock sys.Clock
+	// Logf is the service log, told about a helper's removal that failed
+	// after its run; nil drops it (boot's sweep removes what was left).
+	Logf func(string, ...any)
 }
 
 // Label keys, under the prefix. Workspace is the id-label `up` matches on;

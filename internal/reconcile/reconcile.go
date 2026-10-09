@@ -42,9 +42,10 @@
 // mid-provision is marked failed by the plan, its step failed just before the
 // move. A deleting row is finished by provision.ResumeDelete — the route's own
 // delete — and broker sockets are reopened after it, for running workspaces
-// only. Then SweepHelpers removes any cleanup helper an interrupted delete
-// left (tested in test/container beside a workspace container, one carrying
-// both labels, and another prefix's helper, none of which it touches).
+// only. Then SweepHelpers removes any helper container of any kind an earlier
+// process left (internal/ephemeral; tested in test/container beside a
+// workspace container, one carrying both labels, and another prefix's helper
+// of every kind, none of which it touches).
 //
 // Run's error wraps ErrNothingChanged only when it could not read Docker or
 // the rows; a run in which some actions failed is a *Partial, and the boot

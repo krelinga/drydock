@@ -16,7 +16,8 @@ const (
 )
 
 // scripted is a Runner that answers each docker invocation by its first
-// argument, and records them all.
+// argument, and records them all. A helper's listing and removal by label
+// (internal/ephemeral) find nothing unless scripted.
 type scripted struct {
 	cmds    []subproc.Cmd
 	answers map[string]func(c subproc.Cmd) subproc.Result
@@ -34,7 +35,21 @@ func (s *scripted) Run(_ context.Context, c subproc.Cmd) subproc.Result {
 	if f := s.answers[key]; f != nil {
 		return f(c)
 	}
+	if key == "ps" || key == "rm" {
+		return subproc.Result{}
+	}
 	return subproc.Result{Err: errors.New("unscripted: " + key)}
+}
+
+// lastRun is the last `docker run` recorded: the helper itself, between the
+// listings of its label either side of it.
+func (s *scripted) lastRun() subproc.Cmd {
+	for i := len(s.cmds) - 1; i >= 0; i-- {
+		if s.cmds[i].Args[0] == "run" {
+			return s.cmds[i]
+		}
+	}
+	return subproc.Cmd{Args: []string{"<no run>"}}
 }
 
 func (s *scripted) Start(context.Context, subproc.Cmd) (subproc.Process, error) {
@@ -170,7 +185,7 @@ func TestCredentialsReadsTheFileOrSaysAbsent(t *testing.T) {
 		case !c.wantNil && !c.wantErr && (b == nil || string(b) != c.want):
 			t.Errorf("%s: %q; want %q, non-nil", c.name, b, c.want)
 		}
-		if run := r.cmds[len(r.cmds)-1].Args; !strings.Contains(strings.Join(run, " "), " "+testFileImage+" ") {
+		if run := r.lastRun().Args; !strings.Contains(strings.Join(run, " "), " "+testFileImage+" ") {
 			t.Errorf("%s: the file was not read with the busybox image: %v", c.name, run)
 		}
 	}
@@ -204,7 +219,7 @@ func TestAuthStatusTakesZeroAndOne(t *testing.T) {
 		if b, err := newSource(r, &fixedImage{id: testClaudeID}).AuthStatus(ctx); err != nil || string(b) != `{"loggedIn":false}` {
 			t.Errorf("exit %d: %q, %v", code, b, err)
 		}
-		if a := strings.Join(r.cmds[0].Args, " "); !strings.Contains(a, " "+testClaudeID+" auth status --json") {
+		if a := strings.Join(r.lastRun().Args, " "); !strings.Contains(a, " "+testClaudeID+" auth status --json") {
 			t.Errorf("not run in the Claude image: %s", a)
 		}
 	}

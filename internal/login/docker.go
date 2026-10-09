@@ -3,27 +3,25 @@
 package login
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"regexp"
 	"strconv"
-	"strings"
+	"sync"
 	"time"
 
 	"github.com/krelinga/drydock/internal/config"
 	"github.com/krelinga/drydock/internal/container"
+	"github.com/krelinga/drydock/internal/ephemeral"
 	"github.com/krelinga/drydock/internal/subproc"
 	"github.com/krelinga/drydock/internal/sys"
 )
 
 // LabelLogin is the label a login container carries, valued with its login
-// id: `<prefix>.login=<id>`. Never `<prefix>.workspace`, so reconciliation
-// never lists one; and not the identity watch's `<prefix>.identity` either,
-// because the boot sweep removes everything carrying this label while the
-// watch's first check runs beside it.
-const LabelLogin = "login"
+// id: `<prefix>.login=<id>`, ephemeral.Login's. Never `<prefix>.workspace`,
+// so reconciliation never lists one (internal/ephemeral refuses it).
+const LabelLogin = string(ephemeral.Login)
 
 // MountPoint is where the shared volume appears in the login container: the
 // path every workspace mounts it at (container.ClaudeConfigMountPoint, the
@@ -34,7 +32,6 @@ const MountPoint = container.ClaudeConfigMountPoint
 var (
 	imageIDPattern = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
 	pinnedPattern  = regexp.MustCompile(`^[a-z0-9][a-z0-9./_:-]*@sha256:[0-9a-f]{64}$`)
-	containerID    = regexp.MustCompile(`^[0-9a-f]{64}$`)
 )
 
 // Volumes makes the shared credential volume: container.Manager's
@@ -92,8 +89,8 @@ type DockerLauncher struct {
 	// is DefaultRemoveSettle, and more than MaxRemoveSettle is
 	// MaxRemoveSettle.
 	RemoveSettle time.Duration
-	// Clock is what RemoveSettle and its relisting are measured on; nil is
-	// the real clock.
+	// Clock is what a removal's bound, RemoveSettle and its relisting are
+	// measured on; nil is the real clock.
 	Clock sys.Clock
 }
 
@@ -128,12 +125,20 @@ func (d DockerLauncher) Launch(ctx context.Context, id string, cols, rows int) (
 	if r == nil {
 		r = subproc.Exec{}
 	}
+	// A holder of the label from here until Remove, so boot's sweep spares
+	// this login's container (internal/ephemeral).
+	lease, err := d.helper(id).Begin(ctx)
+	if err != nil {
+		return nil, &LaunchError{Problem: ProblemDocker, Detail: err.Error()}
+	}
 	// Env nil: docker inherits Drydock's own, as every other docker call
 	// does; the container gets only the --env RunArgs gives it.
 	p, err := StartProc(r, subproc.Cmd{Name: "docker", Args: args}, cols, rows)
 	if err != nil {
+		lease.End(ctx, false)
 		return nil, &LaunchError{Problem: ProblemDocker, Detail: err.Error()}
 	}
+	leases.Store(id, lease)
 	return p, nil
 }
 
@@ -169,8 +174,12 @@ func (d DockerLauncher) RunArgs(image, id string) ([]string, error) {
 	if entry == "" {
 		entry = "claude"
 	}
+	label, err := ephemeral.Label(d.LabelPrefix, ephemeral.Login, id)
+	if err != nil {
+		return nil, err
+	}
 	args := []string{"run", "--rm", "--interactive", "--tty",
-		"--label", d.label(id),
+		"--label", label,
 		"--read-only",
 		"--tmpfs", "/tmp:rw,nosuid,nodev,size=64m",
 		"--cap-drop", "ALL",
@@ -187,7 +196,19 @@ func (d DockerLauncher) RunArgs(image, id string) ([]string, error) {
 	return append(args, "--entrypoint", entry, image, "auth", "login", "--claudeai"), nil
 }
 
-func (d DockerLauncher) label(id string) string { return d.LabelPrefix + "." + LabelLogin + "=" + id }
+// helper is the login container as an ephemeral helper: its label, and how
+// it is removed.
+func (d DockerLauncher) helper(id string) ephemeral.Helper {
+	settle := d.RemoveSettle
+	if settle <= 0 {
+		settle = DefaultRemoveSettle
+	}
+	if settle > MaxRemoveSettle {
+		settle = MaxRemoveSettle
+	}
+	return ephemeral.Helper{Docker: d.Run, Prefix: d.LabelPrefix, Kind: ephemeral.Login, Value: id,
+		Clock: d.Clock, Settle: settle, RemoveTimeout: removeTimeout}
+}
 
 // DefaultRemoveSettle is how long Remove keeps looking for the container of
 // a killed `docker run` that is not listed yet. A `docker run` killed during
@@ -198,137 +219,45 @@ func (d DockerLauncher) label(id string) string { return d.LabelPrefix + "." + L
 const DefaultRemoveSettle = 3 * time.Second
 
 // MaxRemoveSettle is the longest Remove will wait for a killed CLI's
-// container, whatever RemoveSettle says. The Manager gives a removal 15 s in
-// all (removeTimeout), and after the settle Remove still lists once more and
+// container, whatever RemoveSettle says. A removal has 15 s in all
+// (removeTimeout), and after the settle Remove still lists once more and
 // runs docker rm: a settle as long as the removal's bound would run that
 // bound out first, and the end would log an error instead of removing. This
 // leaves those two commands 5 s; a test pins the arithmetic.
 const MaxRemoveSettle = 10 * time.Second
 
-// Remove implements Launcher: every container carrying this login's label,
-// by full id. When the CLI was killed and nothing is listed yet, it keeps
-// looking until RemoveSettle has passed, since the CLI's create may still be
-// landing; once something is listed it is removed, and that is the one
-// container the CLI's one create could make.
+// Remove implements Launcher: the end of the login container's holder
+// (ephemeral.Helper.End), so every container carrying this login's label
+// goes, by full id, under its own bound on the injected clock. When the CLI
+// was killed and nothing is listed yet, it keeps looking until RemoveSettle
+// has passed, since the CLI's create may still be landing; once something is
+// listed it is removed, and that is the one container the CLI's one create
+// could make.
 func (d DockerLauncher) Remove(ctx context.Context, id string, killed bool) error {
 	if !ValidID(id) {
 		return fmt.Errorf("%q is not a login id", id)
 	}
-	settle := d.RemoveSettle
-	if settle <= 0 {
-		settle = DefaultRemoveSettle
+	if l, ok := leases.LoadAndDelete(id); ok {
+		_, err := l.(*ephemeral.Lease).End(ctx, killed)
+		return err
 	}
-	if settle > MaxRemoveSettle {
-		settle = MaxRemoveSettle
-	}
-	clock := d.Clock
-	if clock == nil {
-		clock = sys.RealClock{}
-	}
-	settled, stopSettle := sys.NewTimer(clock, settle)
-	defer stopSettle()
-	over := false
-	for {
-		ids, err := d.list(ctx, d.label(id))
-		if err != nil {
-			return err
-		}
-		if len(ids) > 0 || !killed || over {
-			return d.rm(ctx, ids)
-		}
-		poll, stopPoll := sys.NewTimer(clock, removePoll)
-		select {
-		case <-ctx.Done():
-			stopPoll()
-			return ctx.Err()
-		case <-settled:
-			// One last look, then give up: what lands later goes at the
-			// next login's sweep.
-			over = true
-		case <-poll:
-		}
-		stopPoll()
-	}
+	// No Launch got as far as a start: remove what carries the label all the
+	// same, unless something in this process holds it.
+	_, err := d.helper(id).Remove(ctx, killed)
+	return err
 }
 
-// removePoll is Remove's interval while it waits for a container to list.
-const removePoll = 50 * time.Millisecond
+// leases are the login containers this process started, by login id, each
+// ended by its Remove. A login id is never reused.
+var leases sync.Map
 
-// Sweep implements Launcher: every login container but keep's.
+// Sweep implements Launcher: every login container but keep's and any this
+// process is running (ephemeral's Sweep of the login kind).
 func (d DockerLauncher) Sweep(ctx context.Context, keep string) (int, error) {
-	all, err := d.list(ctx, d.LabelPrefix+"."+LabelLogin)
-	if err != nil {
-		return 0, err
-	}
-	spare := map[string]bool{}
-	if keep != "" && ValidID(keep) {
-		kept, err := d.list(ctx, d.label(keep))
-		if err != nil {
-			return 0, err
-		}
-		for _, k := range kept {
-			spare[k] = true
-		}
-	}
-	var gone []string
-	for _, c := range all {
-		if !spare[c] {
-			gone = append(gone, c)
-		}
-	}
-	return len(gone), d.rm(ctx, gone)
-}
-
-func (d DockerLauncher) list(ctx context.Context, filter string) ([]string, error) {
 	if d.LabelPrefix == "" {
-		return nil, errors.New("login: no label prefix")
+		return 0, errors.New("login: no label prefix")
 	}
-	var out bytes.Buffer
-	res := d.Run.Run(ctx, subproc.Cmd{Name: "docker",
-		Args:   []string{"ps", "--all", "--quiet", "--no-trunc", "--filter", "label=" + filter},
-		Stdout: &capped{buf: &out, max: 1 << 20}})
-	if res.Err != nil {
-		return nil, fmt.Errorf("docker ps: %w", res.Err)
-	}
-	if res.ExitCode != 0 {
-		return nil, fmt.Errorf("docker ps exited %d", res.ExitCode)
-	}
-	ids := strings.Fields(out.String())
-	for _, id := range ids {
-		if !containerID.MatchString(id) {
-			return nil, fmt.Errorf("docker ps: %q is not a container id", id)
-		}
-	}
-	return ids, nil
-}
-
-func (d DockerLauncher) rm(ctx context.Context, ids []string) error {
-	if len(ids) == 0 {
-		return nil
-	}
-	res := d.Run.Run(ctx, subproc.Cmd{Name: "docker", Args: append([]string{"rm", "--force", "--"}, ids...)})
-	if res.Err != nil {
-		return fmt.Errorf("docker rm: %w", res.Err)
-	}
-	if res.ExitCode != 0 {
-		return fmt.Errorf("docker rm exited %d", res.ExitCode)
-	}
-	return nil
-}
-
-// capped keeps the first max bytes.
-type capped struct {
-	buf *bytes.Buffer
-	max int
-}
-
-func (c *capped) Write(p []byte) (int, error) {
-	if room := c.max - c.buf.Len(); room > 0 {
-		if len(p) > room {
-			c.buf.Write(p[:room])
-		} else {
-			c.buf.Write(p)
-		}
-	}
-	return len(p), nil
+	gone, err := ephemeral.Default.Sweep(ctx, d.Run, d.LabelPrefix, []ephemeral.Kind{ephemeral.Login},
+		func(f ephemeral.Found) bool { return keep != "" && f.Value == keep })
+	return len(gone), err
 }

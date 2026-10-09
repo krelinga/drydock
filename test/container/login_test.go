@@ -21,6 +21,7 @@ import (
 	"github.com/krelinga/drydock/internal/classify"
 	"github.com/krelinga/drydock/internal/claudetest"
 	"github.com/krelinga/drydock/internal/config"
+	"github.com/krelinga/drydock/internal/ephemeral"
 	"github.com/krelinga/drydock/internal/events"
 	"github.com/krelinga/drydock/internal/life"
 	"github.com/krelinga/drydock/internal/login"
@@ -376,8 +377,10 @@ func TestLoginManagerAgainstRealDocker(t *testing.T) {
 	if loginContainers(t, p) == "" {
 		t.Error("measured: with the docker CLI killed, its container went too — the sweep would be unneeded")
 	}
-	if n, err := m.Sweep(ctx); err != nil || n != 1 {
-		t.Errorf("sweep: %d, %v; want 1", n, err)
+	// Boot's sweep in a process that has just started: its own registry,
+	// holding nothing.
+	if gone, err := (&ephemeral.Registry{}).Sweep(ctx, subproc.Exec{}, p, ephemeral.Kinds, nil); err != nil || len(gone) != 1 {
+		t.Errorf("sweep: %v, %v; want 1", gone, err)
 	}
 	if left := loginContainers(t, p); left != "" {
 		t.Errorf("the sweep left %s", left)

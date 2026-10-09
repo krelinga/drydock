@@ -7,11 +7,14 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os/exec"
 	"regexp"
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/krelinga/drydock/internal/ephemeral"
+	"github.com/krelinga/drydock/internal/subproc"
+	"github.com/krelinga/drydock/internal/sys"
 )
 
 // The daemon's default log configuration, which a started container may
@@ -37,10 +40,10 @@ import (
 // a plain create's every time). It is asked only when a start needs it.
 
 // LabelLogProbe is the label a probe container carries, valued with the
-// workspace id: not the workspace label, so reconciliation never sees one,
-// and how a probe a killed guard left behind is found and removed before the
-// next.
-const LabelLogProbe = "log-probe"
+// workspace id: ephemeral.LogProbe's. Not the workspace label, so
+// reconciliation never sees one, and how a probe a killed guard left behind
+// is found and removed before the next, and by boot's sweep.
+const LabelLogProbe = string(ephemeral.LogProbe)
 
 // ProbeTimeout bounds the probe, a pull of ProbeImage included.
 // RemoveTimeout bounds removing it, apart: the probe's own time may be what
@@ -91,92 +94,61 @@ func (l LogConfig) String() string {
 // a container with no log options, through real (the real docker), reading
 // it and removing it. The container is created from p.ProbeImage, which must
 // be pinned by digest, with --network none and the probe label, and is never
-// started. A probe it could not remove is said on warn (the guard's stderr,
-// which reaches the service log with up's), and boot's helper sweep removes
-// it.
+// started.
+//
+// It is an internal/ephemeral helper, on the real clock (the guard is a
+// process of its own, with no Drydock clock to join): a probe an earlier
+// guard was killed beside is removed by the label before the create; the
+// probe is removed by its id and its label however this ends, under a bound
+// of its own (RemoveTimeout), since the probe's may be what ran out; and a
+// create cut off, which the daemon may still finish, is waited for (up to
+// ProbeSettle) and removed. A probe it could not remove is said on warn (the
+// guard's stderr, which reaches the service log with up's), and boot's helper
+// sweep removes it.
 func DaemonLogConfig(real string, p *Policy, warn io.Writer) (*LogConfig, error) {
 	if p == nil || !pinnedImage.MatchString(p.ProbeImage) {
 		return nil, errors.New("no probe image pinned by digest in the policy")
 	}
-	ws := p.IDLabels[p.LabelPrefix+".workspace"]
+	ws := p.IDLabels[p.LabelPrefix+"."+ephemeral.WorkspaceLabel]
 	if p.LabelPrefix == "" || ws == "" || strings.ContainsAny(ws, "=,\n") {
 		return nil, errors.New("no workspace id-label in the policy to label the probe with")
 	}
-	label := p.LabelPrefix + "." + LabelLogProbe + "=" + ws
-	ctx, cancel := context.WithTimeout(context.Background(), ProbeTimeout)
-	defer cancel()
-	docker := func(ctx context.Context, args ...string) ([]byte, error) {
-		var out, stderr bytes.Buffer
-		cmd := exec.CommandContext(ctx, real, args...)
-		cmd.Stdout, cmd.Stderr = &out, &stderr
-		// A child docker left holding the pipes must not hold this up.
-		cmd.WaitDelay = time.Second
-		if err := cmd.Run(); err != nil {
-			return nil, fmt.Errorf("docker %s: %w: %s", args[0], err, strings.TrimSpace(short(stderr.String())))
-		}
-		return out.Bytes(), nil
-	}
-	// sweep removes every probe of this workspace's, by label.
-	sweep := func(ctx context.Context) error {
-		out, err := docker(ctx, "ps", "--all", "--quiet", "--no-trunc", "--filter", "label="+label)
-		if err != nil {
-			return err
-		}
-		stray := strings.Fields(string(out))
-		if len(stray) == 0 {
-			return nil
-		}
-		for _, id := range stray {
-			if !fullID.MatchString(id) {
-				return fmt.Errorf("docker ps: %q is not a container id", short(id))
-			}
-		}
-		_, err = docker(ctx, append([]string{"rm", "--force", "--volumes", "--"}, stray...)...)
-		return err
-	}
-	// Cleanup runs under a context of its own: the probe's may be what just
-	// ran out, and exec starts nothing under a context already done.
-	cleanup := func(what string, remove func(context.Context) error) {
-		cctx, ccancel := context.WithTimeout(context.Background(), RemoveTimeout)
-		defer ccancel()
-		if err := remove(cctx); err != nil && warn != nil {
-			fmt.Fprintf(warn, "drydock-docker-guard: %s could not be removed: %v; boot's helper sweep removes it\n", what, err)
-		}
-	}
-	// A probe an earlier guard was killed beside: removed first, so they
-	// never accumulate.
-	if err := sweep(ctx); err != nil {
+	// A child docker left holding the pipes must not hold this up.
+	run := subproc.Exec{Resolver: subproc.FixedResolver{"docker": real}, WaitDelay: time.Second}
+	h := ephemeral.Helper{Docker: run, Prefix: p.LabelPrefix, Kind: ephemeral.LogProbe, Value: ws,
+		Settle: ProbeSettle, RemoveTimeout: RemoveTimeout}
+	label, err := h.Label()
+	if err != nil {
 		return nil, err
 	}
+	// The guard's own process: nothing above it to inherit a context from.
+	ctx, cancel := sys.WithTimeout(context.Background(), sys.RealClock{}, ProbeTimeout)
+	defer cancel()
 	// create pulls ProbeImage when the daemon lacks it, deliberately: it is
 	// pinned by digest (the same busybox the cleanup and volume-owner
 	// helpers run), the pull is bounded by ProbeTimeout, and a host that
 	// cannot pull fails closed: the start is refused, as before this probe.
-	out, err := docker(ctx, "create", "--label", label, "--network", "none", p.ProbeImage)
-	id := strings.TrimSpace(string(out))
-	if err == nil && !fullID.MatchString(id) {
-		err = fmt.Errorf("docker create: %q is not a container id", short(id))
-	}
+	var stderr bytes.Buffer
+	id, lease, err := h.Create(ctx, []string{"create", "--label", label, "--network", "none", p.ProbeImage}, &capped{buf: &stderr, max: 4 << 10})
 	if err != nil {
-		// A create cut off may still be finished by the daemon after the
-		// client is gone (measured for the login container): give it
-		// ProbeSettle, then remove whatever carries the label.
-		cleanup("a log probe", func(cctx context.Context) error {
-			select {
-			case <-time.After(ProbeSettle):
-			case <-cctx.Done():
-			}
-			return sweep(cctx)
-		})
-		return nil, err
+		if errors.Is(err, ephemeral.ErrNotRun) {
+			return nil, err
+		}
+		return nil, fmt.Errorf("%w: %s", err, strings.TrimSpace(short(stderr.String())))
 	}
-	defer cleanup("the log probe "+id, func(cctx context.Context) error {
-		_, err := docker(cctx, "rm", "--force", "--volumes", "--", id)
-		return err
-	})
-	out, err = docker(ctx, "inspect", "--type", "container", "--", id)
-	if err != nil {
-		return nil, err
+	// After a create that returned its id: nothing is still landing, so no
+	// settle — the id itself is removed, and whatever the label lists.
+	defer func() {
+		if _, err := lease.End(ctx, false); err != nil && warn != nil {
+			fmt.Fprintf(warn, "drydock-docker-guard: the log probe %s could not be removed: %v; boot's helper sweep removes it\n", id, err)
+		}
+	}()
+	var out bytes.Buffer
+	stderr.Reset()
+	res := run.Run(ctx, subproc.Cmd{Name: "docker", Args: []string{"inspect", "--type", "container", "--", id},
+		Stdout: &capped{buf: &out, max: 1 << 20}, Stderr: &capped{buf: &stderr, max: 4 << 10}})
+	if res.Err != nil || res.ExitCode != 0 {
+		return nil, fmt.Errorf("docker inspect: exit %d %v: %s", res.ExitCode, res.Err, strings.TrimSpace(short(stderr.String())))
 	}
 	var all []struct {
 		ID         string `json:"Id"`
@@ -184,7 +156,7 @@ func DaemonLogConfig(real string, p *Policy, warn io.Writer) (*LogConfig, error)
 			LogConfig *LogConfig
 		}
 	}
-	if err := json.Unmarshal(out, &all); err != nil {
+	if err := json.Unmarshal(out.Bytes(), &all); err != nil {
 		return nil, errors.New("docker inspect of the probe could not be read")
 	}
 	if len(all) != 1 || all[0].ID != id || all[0].HostConfig == nil || all[0].HostConfig.LogConfig == nil ||
@@ -192,4 +164,21 @@ func DaemonLogConfig(real string, p *Policy, warn io.Writer) (*LogConfig, error)
 		return nil, errors.New("docker inspect of the probe did not give its log configuration")
 	}
 	return all[0].HostConfig.LogConfig, nil
+}
+
+// capped keeps the first max bytes and reports every write whole.
+type capped struct {
+	buf *bytes.Buffer
+	max int
+}
+
+func (c *capped) Write(p []byte) (int, error) {
+	if room := c.max - c.buf.Len(); room > 0 {
+		if len(p) > room {
+			c.buf.Write(p[:room])
+		} else {
+			c.buf.Write(p)
+		}
+	}
+	return len(p), nil
 }
