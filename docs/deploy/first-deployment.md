@@ -54,6 +54,27 @@ them. Each one is also mentioned at the step where it bites.
    installer run.
 4. **There is no `uninstall`.** [Step 10](#10-upgrade-roll-back-uninstall-logs) lists what to remove
    by hand. The list is derived from what `deploy/install.sh` creates.
+5. **A Docker daemon whose default log driver is not `json-file` or `local` makes a stopped
+   workspace refuse to start.** A new container is created with `docker run`, which the guard checks
+   by its options, so the first **Start** after a create works. The container then carries the
+   daemon's default as its `LogConfig` (a `journald` driver, or `json-file` with `log-opts` such as
+   `max-size`). A later **Start** of the stopped workspace runs `docker start`, and the
+   [docker guard](../design/overall/drydock-design.md#the-docker-guard) reads that container with
+   `docker inspect` and compares its `LogConfig` with a fixed rule, not with the daemon's default:
+   only `json-file` or `local`, with no options, passes unless the repository's approved `runArgs`
+   exist. Anything else fails the step *starting the container* with *devcontainer up asked Docker
+   for host access the operator has not approved for this repository: runArgs. Drydock refused it,
+   and no container was created.* The journal (`journalctl -u drydock`) has
+   `drydock-docker-guard: refused: runArgs: a container created with LogConfig a log driver journald or log options`
+   (with your driver's name in place of `journald`). Check the daemon with
+   `docker info --format '{{.LoggingDriver}}'`; `json-file` or `local` is fine, but `log-opts` in
+   `/etc/docker/daemon.json` still count as options. To fix it, make the daemon's default a
+   file driver with no options: in `/etc/docker/daemon.json` set `"log-driver": "json-file"` (or
+   `"local"`) and remove `"log-opts"`, then `sudo systemctl restart docker`. A container keeps the
+   driver it was created with, so **Rebuild** each affected workspace (a rebuild recreates it).
+   The only other way through is a `runArgs` approval for the repository, which the guard reads as
+   permission for every setting only `runArgs` can set, not for the log driver alone. Drydock has
+   no flag for it, and changing the daemon is the narrower fix.
 Four issues listed here earlier are fixed: three in v0.2.0, and one in v0.2.1. This runbook
 deploys **v0.4.2**. v0.3.0 is the first release whose installer takes `--secrets-key`
 ([step 6](#6-the-secrets-master-key-supply-it-or-back-it-up)); v0.4.0 is the first that tells a
@@ -1369,6 +1390,7 @@ do not want.
 | A workspace fails at step *starting the container* with *Drydock's docker guard had no record of what this run may ask Docker for* | The guard's policy file in `/srv/drydock/ws/<id>/.drydock/guard/` could not be read during the build — removed or damaged while it ran | **Start** again; Drydock writes it afresh for every build. If it repeats, the journal line `drydock-docker-guard: …` says why. |
 | A workspace fails at step *starting the container* with *… has not approved for this repository: privileged …* (or another setting) right after a **Start** of a workspace that ran before | Its container was created with host access the repository's approval no longer covers — approved once and since narrowed, or created by a Drydock before v0.6.0, whose `up` could be given a moved tag's settings. The docker guard reads a stopped container's settings before starting it and refused this one | **Start** again: a start from *failed* recreates the container, under the current approval. If the access is wanted, the configuration step asks for it. After upgrading from an earlier release, a **Rebuild** of each workspace that runs with approved host access does the same at once. A **named volume** such a workspace was given with driver options (`volume-opt o=bind,…`) outlives both the container and a narrowed approval, and is reused by the same name: remove it (`docker volume ls`, then `docker volume rm`) after narrowing an approval that allowed one. A container using an approved `seccomp=<profile file>` is refused on every start, since docker stores the profile's content: each start recreates it. |
 | A workspace fails at step *resolving config* with *devcontainer.json names a Dockerfile, build context or bind mount inside the clone that is a symbolic link leading outside it* | The path is a link out of the repository — perhaps made by something in the container. An approval is of the path, and the link could be pointed anywhere, so Drydock never runs it | Look: `sudo -u drydock ls -l /srv/drydock/ws/<id>/repo/<path>`. Replace the link with what it should hold (or name the outside path directly in `devcontainer.json`, which can then be approved), and **Start**. |
+| A workspace fails at step *starting the container* with *… has not approved for this repository: runArgs …* on a **Start** of a stopped workspace, and the journal line ends `a container created with LogConfig a log driver … or log options` | The Docker daemon's default log driver is not a plain `json-file` or `local` ([Known issue 5](#0-known-issues--read-these-first)) | `docker info --format '{{.LoggingDriver}}'`. Set `"log-driver": "json-file"` in `/etc/docker/daemon.json`, drop `"log-opts"`, `sudo systemctl restart docker`, then **Rebuild** the workspace. |
 | Create refused with `at_capacity` | 10 workspaces already hold a container | Stop or delete one |
 | `git push` in a container: `GitHub access unavailable …` | The workspace is not *Running* in Drydock (its socket is closed), or GitHub refused | Start it in the UI. A container started by hand with `docker start` gets no GitHub access, by design. |
 | Pushing a workflow file is rejected | The App lacks `workflows: write` | Add the permission on the App, then accept the new permissions on the installation |

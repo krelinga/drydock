@@ -1229,4 +1229,5 @@ destructive list best run by a person who has just deleted every workspace in th
 | [8. First workspace](first-deployment.md#8-first-workspace), [8.5 the reboot drill](first-deployment.md#85-optional-the-reboot-drill) | UI work. |
 | Changing the operator password | Ends every session; `drydock passwd` by hand ([runbook §10.3](first-deployment.md#103-logs-and-state)). |
 | [10.2 manual rollback](first-deployment.md#102-roll-back), [10.4 uninstall](first-deployment.md#104-uninstall) | Destructive; see [10.2](#102-roll-back) above. |
+| [Known issue 5](first-deployment.md#0-known-issues--read-these-first): a daemon whose default log driver is not a plain `json-file` or `local` | A property of the Docker host: the play does not edit `/etc/docker/daemon.json`. Check with `ansible drydock -b -m command -a "docker info --format '{{.LoggingDriver}}'"`. |
 | [Known issue 3](first-deployment.md#0-known-issues--read-these-first): cap, bot identity, label prefix | The installer has no flags for them, and the unit is the installer's. |
