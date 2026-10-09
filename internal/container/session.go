@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -280,24 +281,43 @@ func (m Manager) SignalSession(ctx context.Context, workspaceID string, sig Sess
 	return found, errors.Join(errs...)
 }
 
-// Unpause unpauses every paused container carrying the workspace's label —
-// found by label, never a cached id — and returns how many it asked Docker
-// to unpause. A workspace stop, rebuild or delete calls it before stopping
-// the session server (internal/provision), so the server gets its SIGTERM
-// and deregisters (Spike 02). Without it the server is SIGKILLed with its
-// container: `docker stop` of a paused container thaws it to deliver
-// SIGTERM to PID 1 alone (measured, Docker 29.8.2: exit 0 in under a
+// Paused returns the id of every paused container carrying the workspace's
+// label — found by label, never a cached id.
+func (m Manager) Paused(ctx context.Context, workspaceID string) ([]string, error) {
+	return m.findByStatus(ctx, workspaceID, "paused")
+}
+
+// Unpause unpauses these containers (full ids, after "--"). A workspace
+// stop, rebuild or delete unpauses the workspace's paused containers before
+// stopping the session server (internal/provision), so the server gets its
+// SIGTERM and deregisters (Spike 02). Without it the server is SIGKILLed
+// with its container: `docker stop` of a paused container thaws it to
+// deliver SIGTERM to PID 1 alone (measured, Docker 29.8.2: exit 0 in under a
 // second with the CLI's PID 1, which exits on SIGTERM), PID 1's exit kills
 // everything else in it, and `docker rm --force` kills outright — and a
 // server killed so holds the folder's registration against the next start
-// for minutes. A restart of the session server alone never calls it: that
+// for minutes. A restart of the session server alone never unpauses: that
 // must not change the container's state.
-func (m Manager) Unpause(ctx context.Context, workspaceID string) (int, error) {
-	ids, err := m.findByStatus(ctx, workspaceID, "paused")
+func (m Manager) Unpause(ctx context.Context, ids []string) error {
+	return m.each(ctx, "unpause", []string{"unpause"}, ids)
+}
+
+// Repause pauses again those of ids that are running now and still carry
+// the workspace's label — the containers an action unpaused and then did not
+// end — and returns how many it paused. One the action ended (stopped,
+// removed) is not running and is left alone.
+func (m Manager) Repause(ctx context.Context, workspaceID string, ids []string) (int, error) {
+	running, err := m.findRunning(ctx, workspaceID)
 	if err != nil {
 		return 0, err
 	}
-	return len(ids), m.each(ctx, "unpause", []string{"unpause"}, ids)
+	var again []string
+	for _, id := range running {
+		if slices.Contains(ids, id) {
+			again = append(again, id)
+		}
+	}
+	return len(again), m.each(ctx, "pause", []string{"pause"}, again)
 }
 
 // findRunning is Find restricted to running containers. Docker's

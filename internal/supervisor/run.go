@@ -322,18 +322,17 @@ func (s *sup) runOnce(ctx context.Context) outcome {
 			// reads on until it does. If the stop failed with the terminal
 			// kept (a paused container), only shutdown ends the read.
 		case <-detach:
+			// A run that is not stopping leaves on the cancel, which Detach
+			// sends under the same lock; this case is for one a stop
+			// cancelled already. A stop under way may be waiting for the
+			// server on this very terminal (`devcontainer exec` exits when
+			// the server does), and closing it now would read to that stop
+			// as the server ending: leave once it has decided — at once for
+			// one that already failed. It is bounded by its own timeouts.
 			detach = nil
 			s.mu.Lock()
-			stopping, over := s.stopping, s.stopOver
+			stopDecided = s.stopOver // set with stopping; nil for a run not stopping
 			s.mu.Unlock()
-			if !stopping {
-				return leave()
-			}
-			// A stop under way may be waiting for the server on this very
-			// terminal (`devcontainer exec` exits when the server does), and
-			// closing it now would read to that stop as the server ending.
-			// Leave once it has decided; it is bounded by its own timeouts.
-			stopDecided = over
 		case <-stopDecided:
 			return leave()
 		}

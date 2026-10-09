@@ -192,9 +192,9 @@ exit 99`
 	}
 }
 
-// Unpause unpauses, by full id after "--", exactly the paused containers
-// carrying the workspace's label, and reports how many. The control is a
-// workspace with none paused: nothing is asked of Docker beyond the listing.
+// Paused lists the workspace's paused containers by label, and Unpause
+// unpauses them by full id after "--". The control is a workspace with none
+// paused: an empty listing, and nothing asked of Docker after it.
 func TestUnpauseUnpausesThePausedContainers(t *testing.T) {
 	for _, paused := range []bool{true, false} {
 		t.Run(fmt.Sprintf("paused=%v", paused), func(t *testing.T) {
@@ -208,7 +208,10 @@ unpause) ;;
 *) exit 99;;
 esac`})
 			m := Manager{Run: run, LabelPrefix: "dd"}
-			n, err := m.Unpause(context.Background(), wsID)
+			ids, err := m.Paused(context.Background(), wsID)
+			if err == nil {
+				err = m.Unpause(context.Background(), ids)
+			}
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -217,15 +220,42 @@ esac`})
 				t.Errorf("listing %q", got)
 			}
 			if paused {
-				if n != 1 || !strings.Contains(got, "unpause -- "+idA) {
-					t.Errorf("unpaused %d: %q", n, got)
+				if len(ids) != 1 || !strings.Contains(got, "unpause -- "+idA) {
+					t.Errorf("unpaused %v: %q", ids, got)
 				}
 				return
 			}
-			if n != 0 || strings.Contains(got, "unpause") {
-				t.Errorf("control: unpaused %d: %q", n, got)
+			if len(ids) != 0 || strings.Contains(got, "unpause") {
+				t.Errorf("control: unpaused %v: %q", ids, got)
 			}
 		})
+	}
+}
+
+// Repause pauses again only those of the ids given that are running now
+// under the workspace's label: an action's unpaused container it did not
+// end. One it ended (not running) and one it never unpaused (running, but
+// not among the ids) are left alone.
+func TestRepausePausesOnlyWhatWasUnpausedAndStillRuns(t *testing.T) {
+	run, dir := fakes(t, map[string]string{"docker": `case "$*" in
+ps*status=running*) echo ` + idA + `; echo ` + idB + `;;
+pause*) ;;
+*) exit 99;;
+esac`})
+	m := Manager{Run: run, LabelPrefix: "dd"}
+	idC := strings.Repeat("c", 64) // unpaused, and since ended: not running
+	n, err := m.Repause(context.Background(), wsID, []string{idA, idC})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := strings.Join(argv(t, dir, "docker"), " ")
+	i := strings.Index(got, "pause -- ")
+	if i < 0 {
+		t.Fatalf("nothing paused: %q", got)
+	}
+	call := strings.Fields(got[i:])
+	if n != 1 || strings.Join(call, " ") != "pause -- "+idA {
+		t.Errorf("paused %d with %q, want only %s", n, call, idA)
 	}
 }
 

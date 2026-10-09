@@ -120,17 +120,34 @@ func TestUnpauseLetsTheSessionServerHaveItsSIGTERM(t *testing.T) {
 	}
 
 	ws, id := start()
-	if n, err := m.Unpause(ctx, ws); n != 0 || err != nil {
-		t.Errorf("control: unpausing a running workspace: %d, %v; want nothing and no error", n, err)
+	if ids, err := m.Paused(ctx, ws); len(ids) != 0 || err != nil {
+		t.Errorf("control: a running workspace's paused containers: %v, %v; want none and no error", ids, err)
 	}
 	docker(t, "pause", id)
 	t.Cleanup(func() { exec.Command("docker", "unpause", id).Run() })
-	if n, err := m.Unpause(ctx, ws); n != 1 || err != nil {
-		t.Fatalf("unpausing the paused workspace: %d, %v", n, err)
+	unpause := func() []string {
+		t.Helper()
+		ids, err := m.Paused(ctx, ws)
+		if err == nil {
+			err = m.Unpause(ctx, ids)
+		}
+		if len(ids) != 1 || err != nil {
+			t.Fatalf("unpausing the paused workspace: %v, %v", ids, err)
+		}
+		if st := docker(t, "inspect", "-f", "{{.State.Status}}", id); st != "running" {
+			t.Fatalf("after Unpause the container is %q", st)
+		}
+		return ids
 	}
-	if st := docker(t, "inspect", "-f", "{{.State.Status}}", id); st != "running" {
-		t.Fatalf("after Unpause the container is %q", st)
+	ids := unpause()
+	// An action that stops short pauses it again; the server is untouched.
+	if n, err := m.Repause(ctx, ws, ids); n != 1 || err != nil {
+		t.Fatalf("Repause: %d, %v", n, err)
 	}
+	if st := docker(t, "inspect", "-f", "{{.State.Status}}", id); st != "paused" {
+		t.Fatalf("after Repause the container is %q", st)
+	}
+	unpause()
 	if found, err := m.SignalSession(ctx, ws, container.SessionTerm, ""); err != nil || !found {
 		t.Fatalf("SIGTERM after unpausing: found %v, err %v", found, err)
 	}

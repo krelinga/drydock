@@ -435,6 +435,13 @@ func TestAPausedContainerIsNotAStoppedServer(t *testing.T) {
 			if n := r.launches(); n != 0 {
 				t.Errorf("%d launches into a paused container", n)
 			}
+			// A restart or start leaves the container as it is: only a
+			// workspace stop, rebuild or delete unpauses (internal/provision).
+			for _, l := range strings.Split(r.dockerLog(), "\n") {
+				if strings.HasPrefix(l, "unpause") || strings.HasPrefix(l, "pause") {
+					t.Errorf("the supervisor changed the container's pause: docker %s", l)
+				}
+			}
 			if !alive(stray) || r.pid() != stray {
 				t.Errorf("the server: alive %v, pid file %d (was %d)", alive(stray), r.pid(), stray)
 			}

@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/krelinga/drydock/internal/container"
 	"github.com/krelinga/drydock/internal/workspace"
@@ -192,6 +193,7 @@ func TestAPausedContainerIsUnpausedForTheStop(t *testing.T) {
 				e := lifecycleEnv(t)
 				v := e.running(t, alpha)
 				var calls, stopped int
+				openAtStop := false
 				e.p.StopSupervisor = func(_ context.Context, w workspace.Workspace) error {
 					calls++
 					for _, st := range e.containers(t, w.ID) {
@@ -203,8 +205,14 @@ func TestAPausedContainerIsUnpausedForTheStop(t *testing.T) {
 						e.setStatus(t, w.ID, "paused")
 						return fmt.Errorf("stop: %w", container.ErrSessionContainerPaused)
 					}
+					// The container is running here: whatever was frozen in
+					// it runs again, and must do so without GitHub access.
+					openAtStop = e.broker.isOpen(w.ID)
 					stopped++
 					return nil
+				}
+				if !e.broker.isOpen(v.ID) {
+					t.Fatal("the running workspace's socket is not open to begin with")
 				}
 				if pause == "before" {
 					e.setStatus(t, v.ID, "paused")
@@ -228,6 +236,14 @@ func TestAPausedContainerIsUnpausedForTheStop(t *testing.T) {
 				if stopped != 1 {
 					t.Errorf("the session server was stopped in a running container %d times, want once (%d asks)", stopped, calls)
 				}
+				// Unpaused, the container runs with its access already closed;
+				// the control, never paused, is stopped with it still open.
+				if want := pause == "none"; openAtStop != want {
+					t.Errorf("GitHub access open while the session server was stopped: %v, want %v", openAtStop, want)
+				}
+				if pause != "none" && e.kinds(t, v.ID, KindUnpaused) == 0 {
+					t.Errorf("no %s event: the unpause is not in the workspace's feed", KindUnpaused)
+				}
 				unpauses := 0
 				for _, a := range e.cli.callsTo(t, "docker") {
 					if len(a) > 1 && a[1] == "unpause" {
@@ -240,7 +256,7 @@ func TestAPausedContainerIsUnpausedForTheStop(t *testing.T) {
 				if action != "rebuild" {
 					want := "Stopped the session server, SIGTERM first, so its environment is kept for the next start."
 					if pause != "none" {
-						want = "The workspace's container was paused, so Drydock unpaused it to stop the session server, SIGTERM first, so its environment is kept for the next start."
+						want = UnpausedNote
 					}
 					if got := e.actionDetail(t, v.ID, action, SubSessionServer); got != want {
 						t.Errorf("the session_server sub-step said %q, want %q", got, want)
@@ -258,6 +274,147 @@ func TestAPausedContainerIsUnpausedForTheStop(t *testing.T) {
 				case "rebuild":
 					if s := e.view(t, v.ID); s.State != workspace.Running {
 						t.Errorf("after the rebuild: %s", s.State)
+					}
+					if !e.broker.isOpen(v.ID) {
+						t.Error("the rebuilt workspace's GitHub access was not reopened at step 5")
+					}
+				}
+			})
+		}
+	}
+}
+
+// An action that unpaused the container and then stops short of ending it
+// pauses it again, so the operator's pause is not silently undone: a stop or
+// a delete whose session server could not be stopped for another reason
+// (Docker failing between the unpause and the exec), a stop cut off by
+// shutdown, and a rebuild whose step 3 could not stop the old container. The
+// re-pause runs on a context of its own, since the action's may be what was
+// cancelled. A stop, whose workspace stays running, reopens the GitHub
+// access it closed once the container is paused again; a delete leaves it
+// closed. The failure's detail says what happened, and a re-pause that fails
+// says that instead: the container is running, its access closed. The
+// control, in each case, is the same failure with a container that was never
+// paused: nothing is paused, and the detail is the failure's alone.
+func TestAnUnpausedContainerIsPausedAgainWhenTheActionStopsShort(t *testing.T) {
+	type tc struct {
+		name, action string
+		failPause    bool
+	}
+	for _, c := range []tc{
+		{"stop: the session server's stop failed", ActStop, false},
+		{"stop: cut off by shutdown", "shutdown", false},
+		{"delete: the session server's stop failed", ActDelete, false},
+		{"rebuild: step 3 could not stop the container", "rebuild", false},
+		{"stop: the re-pause failed", ActStop, true},
+	} {
+		for _, paused := range []bool{true, false} {
+			t.Run(fmt.Sprintf("%s/paused=%v", c.name, paused), func(t *testing.T) {
+				ctx := context.Background()
+				e := lifecycleEnv(t)
+				v := e.running(t, alpha)
+				dockerFails := errors.New("docker exec: Cannot connect to the Docker daemon")
+				entered := make(chan struct{})
+				e.p.StopSupervisor = func(ctx context.Context, w workspace.Workspace) error {
+					switch c.action {
+					case "shutdown":
+						close(entered)
+						<-ctx.Done()
+						return ctx.Err()
+					case "rebuild":
+						// The server stops; the rebuild's step 3 is what fails.
+						os.WriteFile(filepath.Join(e.cli.dir, "docker-fail-stop"), nil, 0o600)
+						return nil
+					}
+					return dockerFails
+				}
+				if c.failPause {
+					os.WriteFile(filepath.Join(e.cli.dir, "docker-fail-pause"), nil, 0o600)
+				}
+				if paused {
+					e.setStatus(t, v.ID, "paused")
+				}
+				switch c.action {
+				case ActStop:
+					if err := e.p.Stop(ctx, v.ID); err != nil {
+						t.Fatal(err)
+					}
+				case "shutdown":
+					if err := e.p.Stop(ctx, v.ID); err != nil {
+						t.Fatal(err)
+					}
+					// Shut down once the stop is waiting on the server.
+					<-entered
+					e.p.Shutdown(10 * time.Second)
+				case ActDelete:
+					if err := e.p.Delete(ctx, v.ID, "krelinga/alpha"); err != nil {
+						t.Fatal(err)
+					}
+				case "rebuild":
+					if err := e.p.Rebuild(ctx, v.ID); err != nil {
+						t.Fatal(err)
+					}
+				}
+				e.p.wg.Wait()
+
+				var status string
+				for _, st := range e.containers(t, v.ID) {
+					status = st
+				}
+				detail := deref(e.view(t, v.ID).StateDetail)
+				pauses := 0
+				for _, a := range e.cli.callsTo(t, "docker") {
+					if len(a) > 1 && a[1] == "pause" {
+						pauses++
+					}
+				}
+				if !paused {
+					if pauses != 0 || status == "paused" {
+						t.Errorf("control: %d pauses, container %s", pauses, status)
+					}
+					for _, s := range []string{RepausedSentence, RepausedClosedSentence, RepauseFailedSentence} {
+						if strings.Contains(detail, s) {
+							t.Errorf("control: the detail speaks of a re-pause: %q", detail)
+						}
+					}
+					return
+				}
+				if pauses != 1 {
+					t.Errorf("%d pauses, want 1", pauses)
+				}
+				if c.failPause {
+					if status != "running" || e.broker.isOpen(v.ID) {
+						t.Errorf("a failed re-pause: container %s, access open %v; want running, closed", status, e.broker.isOpen(v.ID))
+					}
+					if !strings.Contains(detail, RepauseFailedSentence) {
+						t.Errorf("the detail does not say the re-pause failed: %q", detail)
+					}
+					return
+				}
+				if status != "paused" {
+					t.Errorf("the container is %s after the %s stopped short, want paused again", status, c.action)
+				}
+				if e.kinds(t, v.ID, KindRepaused) == 0 {
+					t.Errorf("no %s event", KindRepaused)
+				}
+				switch c.action {
+				case ActStop, "shutdown":
+					if !e.broker.isOpen(v.ID) {
+						t.Error("the stop's workspace is running and paused again, but its GitHub access was not restored")
+					}
+				default:
+					if e.broker.isOpen(v.ID) {
+						t.Errorf("after a %s, GitHub access is open", c.action)
+					}
+				}
+				switch c.action {
+				case ActStop:
+					if !strings.Contains(detail, RepausedSentence) {
+						t.Errorf("the stop's detail does not say the container is paused again: %q", detail)
+					}
+				case ActDelete:
+					if !strings.Contains(detail, RepausedClosedSentence) {
+						t.Errorf("the delete's detail does not say the container is paused again: %q", detail)
 					}
 				}
 			})

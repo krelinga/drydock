@@ -55,6 +55,12 @@ ps)
     esac
   done
   awk -v ws="$ws" -v s="$status" '(ws=="" || $2==ws) && (s=="" || $3==s) {print $1}' "$st" ;;
+pause)
+  while [ "$1" != -- ]; do shift; done; shift
+  for id; do
+    awk -v id="$id" '$1==id && $3=="running" {f=1} END {exit !f}' "$st" || { echo "Container $id is not running" >&2; exit 1; }
+    awk -v id="$id" '{ if ($1==id) $3="paused"; print }' "$st" > "$st.t" && mv "$st.t" "$st"
+  done ;;
 unpause)
   # As Docker 29.8.2: a container that is not paused is refused.
   while [ "$1" != -- ]; do shift; done; shift

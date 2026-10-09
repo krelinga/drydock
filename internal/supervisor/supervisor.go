@@ -101,7 +101,9 @@
 // own sentence (unpause and ask again), nothing sent, Drydock's terminal
 // kept — and so is one paused between the listing and the exec, or while the
 // stop waits for the server to exit (SignalSession lists again after a
-// refused exec; the wait ends at once). Every start's own stop of a leftover
+// refused exec; the pause is noticed at the next question to the container —
+// at once when the exit is polled through the pid file, at SIGKILL when the
+// wait is on Drydock's terminal). Every start's own stop of a leftover
 // server records survived_kill, or that paused stop_failed, and starts
 // nothing, rather than a second server over the pid file or a launch into a
 // paused container. A restart never unpauses: it must not change the
