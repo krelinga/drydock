@@ -551,6 +551,9 @@ func TestAContextTheCLIHasNotMadeYet(t *testing.T) {
 		{"through a link in the TMPDIR", filepath.Join(tmp, "link", "empty-folder"), filepath.Join(outside, "empty-folder")},
 		{"through a link, deeper", filepath.Join(tmp, "link", "a", "b"), filepath.Join(outside, "a")},
 		{"the TMPDIR's parent", filepath.Join(root, ".drydock"), ""},
+		// Each of the Lstat-must-be-missing check and the final inside covers
+		// for the other; this case is refused only while one of them stands.
+		{"an existing link out, as the context", filepath.Join(tmp, "link"), ""},
 		// Only a path written below the TMPDIR is made: one that reaches it
 		// through a link elsewhere is not the CLI's.
 		{"into the TMPDIR through a link outside it", filepath.Join(root, "in", "new"), filepath.Join(tmp, "new")},

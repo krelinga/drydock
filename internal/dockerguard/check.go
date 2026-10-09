@@ -813,11 +813,11 @@ func (p *Policy) insideOwn(path string) bool {
 //
 // Nothing outside the TMPDIR is ever made, and a link in the TMPDIR leading
 // out of it is not followed into making anything. The Lstat-must-be-missing
-// check and the final inside are defence in depth: without a race, a path
-// that exists is refused by the first inside, and MkdirAll makes only real
-// directories below an ancestor already proved inside. Only something
+// check and the final inside are redundant with each other: an existing link
+// out of the TMPDIR, given as the context itself, is refused by either alone
+// (and a test fails only when both are removed). Beyond that, only something
 // swapping a component between those steps — Drydock or the CLI, nothing in
-// a container — reaches either, which is why no test can.
+// a container — could reach either.
 func (p *Policy) stagedContext(path string) bool {
 	if inside(path, p.TempDir) {
 		return true
