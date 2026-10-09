@@ -49,7 +49,13 @@ func TestMemoryNeverWaitsOnAWalk(t *testing.T) {
 	// And the next tick's memory round runs while the walk is still stuck.
 	// The memory loop's own interval, by its duration: the stuck walk has
 	// its timeout on the same clock, so any timer at all could be that one,
-	// and an Advance before the interval is set fires nothing.
+	// and an Advance before the interval is set fires nothing. The duration
+	// is unique only because of two things this test sets up: WalkTimeout is
+	// an hour above (DefaultWalkTimeout is 30 s, the same as
+	// DefaultMemoryInterval, and its timer would be counted too), and the
+	// disk loop, which also sleeps on the memory interval, is held inside
+	// the stuck walk and so never sets its own 30 s timer. Change either and
+	// this wait can again be satisfied by the wrong timer.
 	for i := 0; clock.WaitingFor(DefaultMemoryInterval) == 0; i++ {
 		if i > 5000 {
 			t.Fatal("the memory loop never waited for its next tick")

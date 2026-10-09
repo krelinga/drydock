@@ -613,10 +613,13 @@ func (s *sup) read(ctx context.Context, master *os.File) *reading {
 				if !ok {
 					return
 				}
-				s.log.Write(m.clock().Now(), b)
+				// The tail before the log: what is in the log is then in
+				// the tail the gate's verdict reads, which is what lets a
+				// test that sees a prompt in the log move the gate's clock.
 				rd.mu.Lock()
 				rd.last = keepTail(append(rd.last, b...), refusalTail)
 				rd.mu.Unlock()
+				s.log.Write(m.clock().Now(), b)
 				window = keepTail(append(window, b...), discoveryWindow)
 				if ctx.Err() == nil {
 					s.heartbeat(ctx)

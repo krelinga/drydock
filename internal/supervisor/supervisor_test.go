@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/krelinga/drydock/internal/claudetest"
+	"github.com/krelinga/drydock/internal/sys"
 	"github.com/krelinga/drydock/internal/workspace"
 )
 
@@ -217,18 +218,36 @@ func TestAHungGateIsATimeoutNamingTheKey(t *testing.T) {
 		{claudetest.RCHangTrust, ReasonHangTrust, "hasTrustDialogAccepted"},
 	} {
 		t.Run(string(tc.mode), func(t *testing.T) {
+			// The gate runs on a fake clock, moved only once the server
+			// waits at its prompt: on the wall clock, a test goroutine
+			// stalled past the gate (a loaded runner) saw the verdict
+			// before it had looked for its absence. Nothing else on this
+			// clock is set for the gate's duration: the heartbeat is an
+			// hour, and the stop's bounds are not set until the gate fires.
 			const gate = 1500 * time.Millisecond
-			r := newRig(t, func(_ *rig, p *Policy) { p.GateTimeout = gate })
+			clock := sys.NewFakeClock(time.Date(2026, 10, 9, 12, 0, 0, 0, time.UTC))
+			r := newRig(t, func(_ *rig, p *Policy) { p.GateTimeout, p.HeartbeatEvery = gate, time.Hour })
+			r.m.Env.Clock = clock
 			f := r.claude(claudetest.Step{Mode: tc.mode})
-			began := time.Now()
 			r.start()
 			r.waitFor(5*time.Second, "the server started", func() bool { return r.invocations() == 1 })
-			time.Sleep(gate / 2)
+			r.waitFor(5*time.Second, "the run to set its gate", func() bool { return clock.WaitingFor(gate) == 1 })
+			armed := clock.Now()
+			// The prompt is in the run's tail, as the gate's verdict will
+			// read it: it is what names the key.
+			r.waitFor(5*time.Second, "the server to wait at its prompt", func() bool { return hangReason(r.heldBack()) == tc.reason })
+			clock.Advance(gate - time.Millisecond)
+			// Advance fires what is due before it returns: a gate still set
+			// afterwards did not fire, so no verdict can be on its way.
+			if n := clock.WaitingFor(gate); n != 1 {
+				t.Fatalf("a millisecond short of the gate: %d gate timers pending; want it still set", n)
+			}
 			if l := r.last(); l.State != string(Starting) {
 				t.Fatalf("a verdict before the timeout: %+v", l)
 			}
+			clock.Advance(time.Millisecond)
 			r.waitState(Degraded, tc.reason)
-			if el := time.Since(began); el < gate {
+			if el := clock.Since(armed); el < gate {
 				t.Errorf("degraded after %v, before the %v timeout", el, gate)
 			}
 			if d := r.last().Detail; !strings.Contains(d, tc.key) {
