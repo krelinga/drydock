@@ -111,6 +111,7 @@ func (s *Store) awaitApproval(ctx context.Context, id, detail string, p PendingA
 	if err != nil {
 		return err
 	}
+	var done func()
 	_, err = s.Events.Commit(ctx, func(tx *sql.Tx) ([]events.Event, error) {
 		res, err := tx.ExecContext(ctx, `UPDATE workspace SET state = ?, state_detail = ?, pending_approval = ?
 			WHERE id = ? AND state = ?`, string(Stopped), nullable(detail), string(b), id, string(Building))
@@ -124,10 +125,12 @@ func (s *Store) awaitApproval(ctx context.Context, id, detail string, p PendingA
 			}
 			return nil, ErrIllegalMove{From: w.State, To: Stopped}
 		}
-		return one(events.NewEvent(id, events.Warn, KindState, message(Stopped, detail), map[string]any{
+		es, err := one(events.NewEvent(id, events.Warn, KindState, message(Stopped, detail), map[string]any{
 			"state": Stopped, "from": Building, "detail": detail, "approval": p.view(),
 		}))
+		return withEnd(ctx, id, &done, es, err)
 	})
+	ended(done, err)
 	return err
 }
 

@@ -412,6 +412,12 @@ func (m *Manager) Start(ctx context.Context, workspaceID string) error {
 // beside one that would not stop is refused as already served for as long as
 // the first lives — and Stop has recorded it (degraded, stop_failed or
 // survived_kill), so the press that asked is answered either way.
+//
+// A start returns once the new server's loop has said its first state
+// (starting, awaiting login, degraded…), or ended, or ctx has: the restart is
+// a provisioner job whose end is what ends the press (workspace.job), and
+// ending it on the stop's `exited` would show the card a stopped server
+// for as long as the new loop takes to say anything.
 func (m *Manager) Restart(ctx context.Context, workspaceID string) error {
 	if err := m.Stop(ctx, workspaceID); err != nil {
 		return err
@@ -432,7 +438,21 @@ func (m *Manager) Restart(ctx context.Context, workspaceID string) error {
 		m.logf("drydock: workspace %s: starting the session server after a restart's stop: %v", workspaceID, err)
 		m.answer(context.WithoutCancel(ctx), workspaceID, Degraded, ReasonStartFailed, startFailedSentence)
 	}
-	return err
+	if err != nil {
+		return err
+	}
+	m.mu.Lock()
+	s := m.sups[workspaceID]
+	m.mu.Unlock()
+	if s != nil && s.said != nil {
+		select {
+		case <-s.said:
+		case <-s.done:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	return nil
 }
 
 // answer announces a state for a workspace whose supervisor may not be in
@@ -534,7 +554,7 @@ func (m *Manager) launchLocked(ctx context.Context, workspaceID string) error { 
 	}
 	prev := m.sups[workspaceID]
 	s := &sup{m: m, ws: workspaceID, row: row, restarts: restarts, log: ring, done: make(chan struct{}),
-		detached: m.detachedCh()}
+		detached: m.detachedCh(), said: make(chan struct{})}
 	if prev != nil {
 		s.state, s.reason, s.detail = prev.state, prev.reason, prev.detail
 	} else {

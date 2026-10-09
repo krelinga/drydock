@@ -162,6 +162,7 @@ func (s *Store) Occupied(ctx context.Context) (int, error) {
 // `deleting` before `running` when the two were separate steps).
 func (s *Store) Move(ctx context.Context, id string, to State, detail string) (Workspace, error) {
 	var w Workspace
+	var done func()
 	_, err := s.Events.Commit(ctx, func(tx *sql.Tx) ([]events.Event, error) {
 		var err error
 		if w, err = get(ctx, tx, id); err != nil {
@@ -191,8 +192,10 @@ func (s *Store) Move(ctx context.Context, id string, to State, detail string) (W
 		if detail != "" {
 			data["detail"] = detail
 		}
-		return one(events.NewEvent(id, level, KindState, message(to, detail), data))
+		es, err := one(events.NewEvent(id, level, KindState, message(to, detail), data))
+		return withEnd(ctx, id, &done, es, err)
 	})
+	ended(done, err)
 	if err != nil {
 		return Workspace{}, err
 	}
@@ -222,6 +225,7 @@ func (s *Store) SetContainer(ctx context.Context, id, containerID string) error 
 // later move replaces it (Move writes its own detail), and ClearDetail
 // removes it as a retry starts.
 func (s *Store) Annotate(ctx context.Context, id string, want State, detail string) error {
+	var done func()
 	_, err := s.Events.Commit(ctx, func(tx *sql.Tx) ([]events.Event, error) {
 		res, err := tx.ExecContext(ctx, `UPDATE workspace SET state_detail = ? WHERE id = ? AND state = ?`,
 			nullable(detail), id, string(want))
@@ -239,8 +243,10 @@ func (s *Store) Annotate(ctx context.Context, id string, want State, detail stri
 		if detail != "" {
 			data["detail"] = detail
 		}
-		return one(events.NewEvent(id, events.Warn, KindState, message(want, detail), data))
+		es, err := one(events.NewEvent(id, events.Warn, KindState, message(want, detail), data))
+		return withEnd(ctx, id, &done, es, err)
 	})
+	ended(done, err)
 	return err
 }
 
@@ -291,6 +297,7 @@ func (s *Store) ClearDetail(ctx context.Context, id string, want State) (cleared
 // would then resolve to some later workspace's preview (PF §4).
 func (s *Store) Remove(ctx context.Context, id string) error {
 	var dropped int64
+	var done func()
 	_, err := s.Events.Commit(ctx, func(tx *sql.Tx) ([]events.Event, error) {
 		// The supervisor rows first, and only for a workspace in deleting:
 		// foreign keys are checked per statement.
@@ -321,7 +328,7 @@ func (s *Store) Remove(ctx context.Context, id string) error {
 			return nil, err
 		}
 		if len(repos) == 0 {
-			return []events.Event{gone}, nil
+			return withEnd(ctx, id, &done, []events.Event{gone}, nil)
 		}
 		// The repository rows went in this commit, so the event saying so
 		// does too: a repo.* event is what makes an open catalog refetch,
@@ -333,8 +340,9 @@ func (s *Store) Remove(ctx context.Context, id string) error {
 		if err != nil {
 			return nil, err
 		}
-		return []events.Event{gone, removed}, nil
+		return withEnd(ctx, id, &done, []events.Event{gone, removed}, nil)
 	})
+	ended(done, err)
 	if err == nil && dropped > 0 && s.GrantsDropped != nil {
 		s.GrantsDropped()
 	}

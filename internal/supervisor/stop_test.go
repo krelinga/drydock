@@ -5,6 +5,7 @@ package supervisor
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -17,6 +18,7 @@ import (
 	"github.com/krelinga/drydock/internal/claudetest"
 	"github.com/krelinga/drydock/internal/container"
 	"github.com/krelinga/drydock/internal/events"
+	"github.com/krelinga/drydock/internal/workspace"
 )
 
 // Stop is SIGTERM, delivered in the container: the server's clean shutdown
@@ -169,6 +171,23 @@ func TestRestartKeepsTheEnvironment(t *testing.T) {
 	first := r.pid()
 	if err := r.m.Restart(context.Background(), wsID); err != nil {
 		t.Fatal(err)
+	}
+	// Restart returns once the new server has said its first state, never
+	// on the stop's exited: the provisioner's job ends the press as it
+	// returns (workspace.job), and the card would show a stopped server.
+	evs, err := r.log.ForWorkspace(context.Background(), wsID, 1000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var said []string
+	for _, ev := range evs { // newest first
+		var d workspace.SupervisorData
+		if ev.Kind == workspace.KindSupervisor && json.Unmarshal(ev.Data, &d) == nil {
+			said = append(said, d.State)
+		}
+	}
+	if len(said) < 2 || said[0] == string(Exited) || said[1] != string(Exited) {
+		t.Errorf("supervisor states as Restart returned, newest first: %v; want the new server's after the stop's exited", said)
 	}
 	r.waitFor(10*time.Second, "a new server", func() bool { p := r.pid(); return p != first && p != 0 })
 	r.waitState(Serving, ReasonServing)

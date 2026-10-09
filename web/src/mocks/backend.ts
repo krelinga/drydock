@@ -106,6 +106,8 @@ export interface MockBackend {
    * in_progress`, and a delete joins a delete or cancels anything else.
    */
   jobs: Record<string, 'run' | 'stop' | 'delete'>
+  /** The kind each in-flight job's `workspace.job` names (internal/provision's Job* kinds). */
+  jobKinds: Record<string, JobKind>
   /** Each auto-mode job's pending timers, so a delete can cancel the run it replaces. */
   timers: Record<string, Array<ReturnType<typeof setTimeout>>>
   /** Hands out increasing ULID-shaped ids. */
@@ -494,6 +496,7 @@ function newBackendBare(now: number, overrides: Partial<MockBackend>): MockBacke
     approvalBodies: [],
     failAction: null,
     jobs: {},
+    jobKinds: {},
     timers: {},
     idSeq: 0,
     secretsKey: true,
@@ -826,6 +829,30 @@ export function completeRefresh(b: MockBackend, ok = true): StreamEvent {
   })
 }
 
+/** A job's kind, as a `workspace.job` event names it (internal/provision's Job* kinds). */
+export type JobKind = 'create' | 'start' | 'rebuild' | 'approve' | 'stop' | 'delete' | 'supervisor'
+
+/**
+ * A job's events, in order. `outcome` is how it ends (absent: ok), and
+ * `endAt` where its `workspace.job` goes when events follow the job's end —
+ * a restarted session server goes on serving after the restart job returns.
+ * `schedule` adds the end, as internal/provision's launch does.
+ */
+export type Script = Array<(at?: string) => void> & { outcome?: 'ok' | 'failed'; endAt?: number }
+
+function failed(out: Array<(at?: string) => void>): Script {
+  return Object.assign(out, { outcome: 'failed' as const })
+}
+
+/** The one `workspace.job` event every job ends with (internal/workspace KindJob). */
+function emitJob(b: MockBackend, id: string, kind: JobKind, outcome: 'ok' | 'failed' | 'cancelled', at?: string): void {
+  const said = outcome === 'ok' ? 'finished' : outcome === 'cancelled' ? 'was cut off' : 'failed'
+  emit(b, 'workspace.job', {
+    workspace_id: id, level: outcome === 'ok' ? 'info' : 'warn', message: `The ${kind} job ${said}.`,
+    data: { kind, outcome }, ...(at ? { at } : {}),
+  })
+}
+
 /**
  * The events a clone emits, in the order internal/workspace writes them: the
  * create, then each step's started/done around the state moves. `failAt`
@@ -833,7 +860,7 @@ export function completeRefresh(b: MockBackend, ok = true): StreamEvent {
  */
 export function cloneScript(
   b: MockBackend, repositoryId: number, id: string, failAt?: string, branch = 'main',
-): Array<(at?: string) => void> {
+): Script {
   const steps = new ScriptSteps(b, id)
   const out: Array<(at?: string) => void> = [
     steps.state('pending', { repository_id: repositoryId, branch }, 'Workspace created.'),
@@ -854,7 +881,7 @@ export function cloneScript(
  * reached past this run's failure keeps its old status too, which is what
  * the UI's runSteps exists to leave out.
  */
-export function startScript(b: MockBackend, id: string, failAt?: string, rebuild = false): Array<(at?: string) => void> {
+export function startScript(b: MockBackend, id: string, failAt?: string, rebuild = false): Script {
   const w = b.workspaces[id]
   const from = w?.state ?? 'stopped'
   const steps = new ScriptSteps(b, id)
@@ -946,7 +973,7 @@ export function stopFailedDetail(pub: string): string {
  * that sub-step failed and the workspace still running, annotated with the
  * sub-step's sentence (Annotate: a running → running state event).
  */
-export function stopScript(b: MockBackend, id: string, failAt?: string): Array<(at?: string) => void> {
+export function stopScript(b: MockBackend, id: string, failAt?: string): Script {
   const steps = new ScriptSteps(b, id)
   const out: Array<(at?: string) => void> = []
   for (const sub of STOP_SUBSTEPS) {
@@ -958,7 +985,7 @@ export function stopScript(b: MockBackend, id: string, failAt?: string): Array<(
         steps.action('stop', sub, 'failed', pub),
         steps.state('running', { from: 'running', detail }, `Running. ${detail}`, 'warn'),
       )
-      return out
+      return failed(out)
     }
     out.push(steps.action('stop', sub, 'done', actionNote(b, id, sub)))
     if (sub === 'session_server' && b.supervisor) out.push(steps.supervisor('exited', 'stopped', 'The session server was stopped.'))
@@ -974,7 +1001,7 @@ export function stopScript(b: MockBackend, id: string, failAt?: string): Array<(
  * `failAt` sticks it: the sub-step fails, and Annotate writes a deleting →
  * deleting state event whose detail names it. Asking again resumes.
  */
-export function deleteScript(b: MockBackend, id: string, from: WorkspaceState | null, failAt?: string): Array<(at?: string) => void> {
+export function deleteScript(b: MockBackend, id: string, from: WorkspaceState | null, failAt?: string): Script {
   const steps = new ScriptSteps(b, id)
   const out: Array<(at?: string) => void> = from === null ? [] : [steps.state('deleting', { from }, 'Deleting.')]
   for (const sub of DELETE_SUBSTEPS) {
@@ -986,7 +1013,7 @@ export function deleteScript(b: MockBackend, id: string, from: WorkspaceState | 
         steps.action('delete', sub, 'failed', pub),
         steps.state('deleting', { from: 'deleting', detail }, `Deleting. ${detail}`, 'warn'),
       )
-      return out
+      return failed(out)
     }
     out.push(steps.action('delete', sub, 'done', actionNote(b, id, sub)))
   }
@@ -1079,7 +1106,7 @@ class ScriptSteps {
 
   run(
     out: Array<(at?: string) => void>, plan: Array<[string, WorkspaceState | null]>, from: WorkspaceState, failAt?: string,
-  ): Array<(at?: string) => void> {
+  ): Script {
     const said: Partial<Record<WorkspaceState, string>> = { cloning: 'Cloning.', building: 'Building the container.' }
     for (const [name, enter] of plan) {
       if (enter !== null) {
@@ -1110,7 +1137,7 @@ class ScriptSteps {
       if (name === failAt) {
         const detail = FAILED_SENTENCE[name] ?? `The ${name} step failed.`
         out.push(this.step(name, 'failed', detail), this.state('failed', { from, detail }, `Failed. ${detail}`, 'error'))
-        return out
+        return failed(out)
       }
       out.push(this.step(name, 'done'))
     }
@@ -1135,40 +1162,51 @@ export const STOP_FAILED_SENTENCE: Record<SupervisorStopFailure, string> = {
 
 /**
  * A session server restart (POST …/supervisor), as internal/supervisor's
- * Restart writes it: the old server stopped, then the new one starting and
- * serving — or, when its stop fails (`supervisorStopFails`), degraded with
- * the failure's reason and nothing started.
+ * Restart writes it: the old server stopped, then the new one starting —
+ * where the restart job ends (`endAt`) — and serving; or, when its stop
+ * fails (`supervisorStopFails`), degraded with the failure's reason, nothing
+ * started, and the job failed.
  */
-export function supervisorScript(b: MockBackend, id: string): Array<(at?: string) => void> {
+export function supervisorScript(b: MockBackend, id: string): Script {
   const steps = new ScriptSteps(b, id)
   const fails = b.supervisorStopFails
-  if (fails !== null) return [steps.supervisor('degraded', fails, STOP_FAILED_SENTENCE[fails], 'error')]
-  return [
+  if (fails !== null) return failed([steps.supervisor('degraded', fails, STOP_FAILED_SENTENCE[fails], 'error')])
+  return Object.assign([
     steps.supervisor('exited', 'stopped', 'The session server was stopped.'),
     steps.supervisor('starting', 'launching', 'Starting the session server.'),
     steps.supervisor('serving', 'connected', ''),
     steps.session(1),
-  ]
+  ], { endAt: 2 })
 }
 
 /**
  * Plays a script as the server would: its first event now — the server
  * commits the transition and its event before answering 202 — and the rest
- * from a goroutine. In `manual` mode all of it is held for a spec. The
- * workspace's job is `kind` until the script's last event has played.
+ * from a goroutine. In `manual` mode all of it is held for a spec. The job
+ * ends with one `workspace.job` event of kind `job`, as internal/provision's
+ * launch writes it — after the script's events, or at its `endAt` — and the
+ * workspace's job is `kind` until then.
  */
-function schedule(b: MockBackend, id: string, script: Array<(at?: string) => void>, kind: 'run' | 'stop' | 'delete' = 'run'): void {
+function schedule(
+  b: MockBackend, id: string, steps: Script, job: JobKind, kind: 'run' | 'stop' | 'delete' = 'run',
+): void {
   b.jobs[id] = kind
-  const last = script.length - 1
-  if (last >= 0) {
-    const end = script[last]!
-    script[last] = (at?: string) => {
-      end(at)
-      if (b.jobs[id] === kind) delete b.jobs[id]
-      delete b.timers[id]
+  b.jobKinds[id] = job
+  const outcome = steps.outcome ?? 'ok'
+  const at = steps.endAt ?? steps.length
+  const end = (when?: string) => {
+    emitJob(b, id, job, outcome, when)
+    if (b.jobs[id] === kind) {
+      delete b.jobs[id]
+      delete b.jobKinds[id]
     }
-  } else {
-    delete b.jobs[id]
+  }
+  const script = [...steps.slice(0, at), end, ...steps.slice(at)]
+  const last = script.length - 1
+  const tail = script[last]!
+  script[last] = (when?: string) => {
+    tail(when)
+    delete b.timers[id]
   }
   if (b.scriptMode === 'manual') {
     b.scripts[id] = script
@@ -1178,12 +1216,19 @@ function schedule(b: MockBackend, id: string, script: Array<(at?: string) => voi
   b.timers[id] = script.slice(1).map((play, i) => setTimeout(() => play(), (i + 1) * b.scriptIntervalMs))
 }
 
-/** Ends a workspace's job where it stands: what a delete's cancel does to a run. */
+/**
+ * Ends a workspace's job where it stands: what a delete's cancel does to a
+ * run. The job still ends with its `workspace.job`, cancelled, before the
+ * delete's first event, as the server's does.
+ */
 function cancelJob(b: MockBackend, id: string): void {
   for (const t of b.timers[id] ?? []) clearTimeout(t)
   delete b.timers[id]
   delete b.scripts[id]
+  const job = b.jobs[id] !== undefined ? b.jobKinds[id] : undefined
   delete b.jobs[id]
+  delete b.jobKinds[id]
+  if (job !== undefined) emitJob(b, id, job, 'cancelled')
 }
 
 /**
@@ -1203,7 +1248,7 @@ export function scheduleStop(b: MockBackend, id: string): void {
   clearDetail(b, id, 'running')
   const failAt = b.failAction ?? undefined
   b.failAction = null
-  schedule(b, id, stopScript(b, id, failAt), 'stop')
+  schedule(b, id, stopScript(b, id, failAt), 'stop', 'stop')
 }
 
 /** Starts a delete, or resumes a stuck one; joins one already in flight, and cancels any other job. */
@@ -1214,7 +1259,7 @@ export function scheduleDelete(b: MockBackend, id: string): void {
   clearDetail(b, id, 'deleting')
   const failAt = b.failAction ?? undefined
   b.failAction = null
-  schedule(b, id, deleteScript(b, id, w.state === 'deleting' ? null : w.state, failAt), 'delete')
+  schedule(b, id, deleteScript(b, id, w.state === 'deleting' ? null : w.state, failAt), 'delete', 'delete')
 }
 
 /** Plays a held script (manual mode) to the end, or its first `n` events. */
@@ -1472,7 +1517,7 @@ export function handlersFor(b: MockBackend): HttpHandler[] {
       const id = nextWorkspaceId(b)
       const failAt = b.failNext ?? undefined
       b.failNext = null
-      schedule(b, id, cloneScript(b, repo.id, id, failAt, typeof branch === 'string' ? branch : repo.default_branch))
+      schedule(b, id, cloneScript(b, repo.id, id, failAt, typeof branch === 'string' ? branch : repo.default_branch), 'create')
       return HttpResponse.json({ id }, { status: 202 })
     }),
 
@@ -1499,7 +1544,7 @@ export function handlersFor(b: MockBackend): HttpHandler[] {
       if (Object.values(b.workspaces).filter((x) => OCCUPYING.has(x.state)).length >= b.capacity) return atCapacity()
       const failAt = b.failNext ?? undefined
       b.failNext = null
-      schedule(b, id, startScript(b, id, failAt))
+      schedule(b, id, startScript(b, id, failAt), 'start')
       return HttpResponse.json({}, { status: 202 })
     }),
 
@@ -1530,7 +1575,7 @@ export function handlersFor(b: MockBackend): HttpHandler[] {
       if (w.state !== 'running' || b.jobs[id] !== undefined) {
         return envelope(409, 'in_progress', 'The session server can be restarted only on a running workspace with nothing else in progress.')
       }
-      schedule(b, id, supervisorScript(b, id), 'run')
+      schedule(b, id, supervisorScript(b, id), 'supervisor')
       return HttpResponse.json({}, { status: 202 })
     }),
 
@@ -1581,7 +1626,7 @@ export function handlersFor(b: MockBackend): HttpHandler[] {
       }
       const failAt = b.failNext ?? undefined
       b.failNext = null
-      schedule(b, id, startScript(b, id, failAt, true))
+      schedule(b, id, startScript(b, id, failAt, true), 'rebuild')
       return HttpResponse.json({}, { status: 202 })
     }),
 
@@ -1614,7 +1659,7 @@ export function handlersFor(b: MockBackend): HttpHandler[] {
         workspace_id: id, level: 'warn', message: "Host access approved for this repository's configuration.",
         data: { repository_id: w.repository_id, hash: w.approval.hash },
       })
-      schedule(b, id, startScript(b, id, undefined, w.approvalRebuild === true))
+      schedule(b, id, startScript(b, id, undefined, w.approvalRebuild === true), 'approve')
       return HttpResponse.json({}, { status: 202 })
     }),
     http.delete('/api/workspaces/:id/config-approval', ({ request, params }) => {

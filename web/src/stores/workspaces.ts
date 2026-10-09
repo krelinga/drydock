@@ -12,7 +12,9 @@
 // 202, and let an event clear the mark. They resolve when the server accepts
 // and throw (clearing the mark) only when it refuses. What clears each mark
 // is the `settles*` function beside its key — the event that means the
-// action is over, not merely begun.
+// action is over, not merely begun — or, for an action the server runs as a
+// job, that job's own end: the one `workspace.job` event of its kind every
+// job ends with, whichever path it took (`settlesJob`).
 
 import { defineStore } from 'pinia'
 import * as api from '../api/client'
@@ -125,6 +127,25 @@ export const OVER = {
   /** A session server (re)start, as far as the workspace can say: it left `running`, or went. */
   session: (o: Outcome) => o.gone || (o.state !== null && o.state !== 'running'),
 } as const
+
+/**
+ * A job's kind, as the server's `workspace.job` names it
+ * (internal/provision's Job* kinds) — one per button that starts a job.
+ */
+export type JobKind = 'create' | 'start' | 'rebuild' | 'approve' | 'stop' | 'delete' | 'supervisor'
+
+/**
+ * The end of the job a press started: a `workspace.job` of this kind, for
+ * this workspace, newer than the mark (`since`, the stream position when it
+ * was made). The server writes exactly one as every job ends — ok, failed or
+ * cancelled — after the job's other events, so a press settles even on a
+ * path whose events imply nothing (a restart whose stop failed, an end with
+ * nothing new to say). It changes no entity: the card's state still comes
+ * from the events before it, which the `OVER` predicates read.
+ */
+export function settlesJob(id: string, kind: JobKind, since: number): (ev: StreamEvent) => boolean {
+  return (ev) => ev.kind === 'workspace.job' && ev.workspace_id === id && ev.id > since && ev.data?.kind === kind
+}
 
 function settlesBy(id: string, over: (o: Outcome) => boolean): (ev: StreamEvent) => boolean {
   return (ev) => {
@@ -319,22 +340,22 @@ export const useWorkspacesStore = defineStore('workspaces', {
 
     /** POST /api/workspaces/:id/start, for a stopped or failed workspace. */
     start(id: string): Promise<void> {
-      return this.mutate(startKey(id), settlesStart(id), overIn(id, OVER.build), 'POST', `/api/workspaces/${encodeURIComponent(id)}/start`)
+      return this.mutate(startKey(id), [id, 'start'], settlesStart(id), overIn(id, OVER.build), 'POST', `/api/workspaces/${encodeURIComponent(id)}/start`)
     },
 
     /** POST /api/workspaces/:id/stop, for a running workspace. */
     stop(id: string): Promise<void> {
-      return this.mutate(stopKey(id), settlesStop(id), overIn(id, OVER.stop), 'POST', `/api/workspaces/${encodeURIComponent(id)}/stop`)
+      return this.mutate(stopKey(id), [id, 'stop'], settlesStop(id), overIn(id, OVER.stop), 'POST', `/api/workspaces/${encodeURIComponent(id)}/stop`)
     },
 
     /** POST /api/workspaces/:id/rebuild: a new container, the clone kept. */
     rebuild(id: string): Promise<void> {
-      return this.mutate(rebuildKey(id), settlesRebuild(id), overIn(id, OVER.build), 'POST', `/api/workspaces/${encodeURIComponent(id)}/rebuild`)
+      return this.mutate(rebuildKey(id), [id, 'rebuild'], settlesRebuild(id), overIn(id, OVER.build), 'POST', `/api/workspaces/${encodeURIComponent(id)}/rebuild`)
     },
 
     /** POST /api/workspaces/:id/supervisor: start, or restart, the session server. */
     restartSession(id: string): Promise<void> {
-      return this.mutate(sessionKey(id), settlesSession(id), overIn(id, OVER.session), 'POST',
+      return this.mutate(sessionKey(id), [id, 'supervisor'], settlesSession(id), overIn(id, OVER.session), 'POST',
         `/api/workspaces/${encodeURIComponent(id)}/supervisor`)
     },
 
@@ -347,7 +368,7 @@ export const useWorkspacesStore = defineStore('workspaces', {
      */
     remove(id: string, confirm: string): Promise<void> {
       const path = `/api/workspaces/${encodeURIComponent(id)}?confirm=${encodeURIComponent(confirm)}`
-      return this.mutate(deleteKey(id), settlesDelete(id), overIn(id, OVER.delete), 'DELETE', path)
+      return this.mutate(deleteKey(id), [id, 'delete'], settlesDelete(id), overIn(id, OVER.delete), 'DELETE', path)
     },
 
     /**
@@ -357,28 +378,36 @@ export const useWorkspacesStore = defineStore('workspaces', {
      * continues the stopped start or rebuild, so it ends as one does.
      */
     approve(id: string, hash: string): Promise<void> {
-      return this.mutate(approveKey(id), settlesApprove(id), overIn(id, OVER.build), 'POST',
+      return this.mutate(approveKey(id), [id, 'approve'], settlesApprove(id), overIn(id, OVER.build), 'POST',
         `/api/workspaces/${encodeURIComponent(id)}/config-approval`, { hash })
     },
 
     /** DELETE /api/workspaces/:id/config-approval: the workspace stays stopped. */
     decline(id: string): Promise<void> {
-      return this.mutate(declineKey(id), settlesDecline(id), overIn(id, OVER.decline), 'DELETE',
+      // Not a job: the decline's own state event, written before the 202, ends it.
+      return this.mutate(declineKey(id), null, settlesDecline(id), overIn(id, OVER.decline), 'DELETE',
         `/api/workspaces/${encodeURIComponent(id)}/config-approval`)
     },
 
     /**
      * @internal §4.2 for one request: a second tap while in flight sends
-     * nothing. The mark ends on the event `settles` accepts or, once the 202
-     * has landed, on a snapshot whose entities `resolved` finds the action
-     * over in — each built from the action's one OVER predicate.
+     * nothing. The mark ends on the event `settles` accepts, on the end of
+     * the job the request starts (`job`: its workspace and kind; null for a
+     * request that runs none) or, once the 202 has landed, on a snapshot
+     * whose entities `resolved` finds the action over in — each built from
+     * the action's one OVER predicate.
      */
     async mutate(
-      key: string, settles: (ev: StreamEvent) => boolean, resolved: (e: Entities) => boolean,
+      key: string, job: [string, JobKind] | null, settles: (ev: StreamEvent) => boolean, resolved: (e: Entities) => boolean,
       method: 'POST' | 'DELETE', path: string, body?: unknown,
     ): Promise<void> {
       const stream = useStreamStore()
       if (key in stream.inFlight) return
+      if (job !== null) {
+        const ended = settlesJob(job[0], job[1], stream.lastEventId)
+        const implied = settles
+        settles = (ev) => ended(ev) || implied(ev)
+      }
       stream.begin(key, settles, resolved)
       try {
         await api.send(method, path, body)

@@ -335,7 +335,7 @@ describe('Delete and its confirm (§6.5)', () => {
     await confirmBtn(wrapper).trigger('click')
     await settle()
     const script = b.scripts[WS_RUNNING]!
-    playScript(b, WS_RUNNING, script.length - 1) // everything but the annotation
+    playScript(b, WS_RUNNING, script.length - 2) // everything but the annotation and the job's end
     await settle()
     // The sub-step failed, but the stuck annotation has not landed: still in flight.
     expect(deleteKey(WS_RUNNING) in stream.inFlight).toBe(true)

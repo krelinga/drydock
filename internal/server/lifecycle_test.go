@@ -312,9 +312,11 @@ func TestDeleteResumesAtBoot(t *testing.T) {
 		t.Errorf("its stale socket survived boot: %v", err)
 	}
 	evs, _ := srv.Events.ForWorkspace(ctx, deleting, 100)
-	if len(evs) == 0 || evs[0].Kind != workspace.KindGone {
+	// workspace.gone, and with it — the same commit — the delete job's end.
+	if len(evs) < 2 || evs[1].Kind != workspace.KindGone || evs[0].Kind != workspace.KindJob ||
+		string(evs[0].Data) != `{"kind":"delete","outcome":"ok"}` {
 		b, _ := json.Marshal(evs)
-		t.Errorf("the last event is not workspace.gone: %s", b)
+		t.Errorf("the last events are not workspace.gone and the delete's end: %s", b)
 	}
 	// The row came in stuck, annotated; the resume cleared that first, on
 	// the stream, before its first sub-step (frontend §4.5 #16).
