@@ -119,7 +119,7 @@ func TestWorkspaceContainerReachesOnlyItsOwnRepository(t *testing.T) {
 	// The helper answers only for GitHub's host; the fake is elsewhere. Given
 	// to exec as well as up: up's --remote-env does not persist (see Exec).
 	remoteEnv := map[string]string{"DRYDOCK_GITHUB_HOST": host}
-	upCtx, cancel := context.WithTimeout(ctx, 10*time.Minute)
+	upCtx, cancel := context.WithTimeout(ctx, upLimit+2*time.Minute)
 	defer cancel()
 	// The shared credential volume, as step 4 makes it: the Feature refuses
 	// a container without one.

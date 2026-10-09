@@ -17,8 +17,6 @@ import (
 	"github.com/krelinga/drydock/internal/config"
 	"github.com/krelinga/drydock/internal/github/githubtest"
 	"github.com/krelinga/drydock/internal/provision"
-	"github.com/krelinga/drydock/internal/server"
-	"github.com/krelinga/drydock/internal/sys"
 )
 
 // TestDeleteRemovesRootOwnedFiles: a process running as root inside the
@@ -45,9 +43,7 @@ import (
 func TestDeleteRemovesRootOwnedFiles(t *testing.T) {
 	needDevcontainer(t)
 	for _, img := range []string{provision.DefaultImage, config.DefaultCleanupImage} {
-		if out, err := exec.Command("docker", "pull", "--quiet", img).CombinedOutput(); err != nil {
-			t.Fatalf("docker pull %s: %v: %s", img, err, out)
-		}
+		pullImage(t, img)
 	}
 	p := prefix(t)
 	ctx := context.Background()
@@ -87,7 +83,7 @@ func TestDeleteRemovesRootOwnedFiles(t *testing.T) {
 	cfg.BotName, cfg.BotEmail = "krelinga-drydock-dev[bot]", botEmail
 	cfg.Feature, cfg.ClaudeVolume = newFeatureRegistry(t).Drydock, claudeVolume(p)
 
-	srv, err := server.New(ctx, cfg, sys.Production())
+	srv, err := newServer(ctx, cfg)
 	if err != nil {
 		t.Fatal(err)
 	}

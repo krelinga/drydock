@@ -70,4 +70,11 @@ runs:
         DRYDOCK_REQUIRE_RELEASE_HISTORY: "1"
         DRYDOCK_REQUIRE_TRANSPORTS: "1"
         DRYDOCK_PR_TITLE: ${{ inputs.pr-title }}
-      run: go test ./...
+      # -timeout 20m, twice the default: test/container takes under five
+      # minutes green, and its network-bound steps are bounded inside the
+      # tests (test/container/bound_test.go: `devcontainer up` 6 minutes,
+      # `docker pull` 3), which dump what they were waiting on. The package
+      # timeout is the backstop behind those, and is long enough that one
+      # stuck test fails by name with the others' results intact instead of
+      # panicking the package at 10 minutes. The job's 30-minute limit holds.
+      run: go test -timeout 20m ./...

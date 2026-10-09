@@ -16,8 +16,6 @@ import (
 	"github.com/krelinga/drydock/internal/container"
 	"github.com/krelinga/drydock/internal/github/githubtest"
 	"github.com/krelinga/drydock/internal/provision"
-	"github.com/krelinga/drydock/internal/server"
-	"github.com/krelinga/drydock/internal/sys"
 )
 
 // TestTheGuardRefusesAMovedTag is the attack the docker guard closes (design
@@ -36,9 +34,7 @@ import (
 // the approval, and comes up with HostConfig.Privileged true.
 func TestTheGuardRefusesAMovedTag(t *testing.T) {
 	needDevcontainer(t)
-	if out, err := exec.Command("docker", "pull", "--quiet", provision.DefaultImage).CombinedOutput(); err != nil {
-		t.Fatalf("docker pull %s: %v: %s", provision.DefaultImage, err, out)
-	}
+	pullImage(t, provision.DefaultImage)
 	p := prefix(t)
 	reg := newFeatureRegistry(t)
 
@@ -86,7 +82,7 @@ func TestTheGuardRefusesAMovedTag(t *testing.T) {
 	cfg.BotName, cfg.BotEmail = "krelinga-drydock-dev[bot]", botEmail
 	cfg.Feature, cfg.ClaudeVolume = reg.Drydock, claudeVolume(p)
 
-	srv, err := server.New(context.Background(), cfg, sys.Production())
+	srv, err := newServer(context.Background(), cfg)
 	if err != nil {
 		t.Fatal(err)
 	}

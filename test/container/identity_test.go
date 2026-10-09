@@ -41,9 +41,7 @@ import (
 // test makes itself, which does change the bytes.
 func TestIdentityWatchReadsARealVolume(t *testing.T) {
 	needDocker(t)
-	if out, err := exec.Command("docker", "pull", "--quiet", config.DefaultCleanupImage).CombinedOutput(); err != nil {
-		t.Fatalf("docker pull: %v: %s", err, out)
-	}
+	pullImage(t, config.DefaultCleanupImage)
 	p := prefix(t)
 	ctx := context.Background()
 	rnd := make([]byte, 4)

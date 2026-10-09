@@ -42,9 +42,7 @@ func needDocker(t *testing.T) {
 	}
 	// Pull up front, so no test's timing or output depends on whether the
 	// image happened to be cached.
-	if out, err := exec.Command("docker", "pull", "--quiet", image).CombinedOutput(); err != nil {
-		t.Fatalf("docker pull %s: %v: %s", image, err, out)
-	}
+	pullImage(t, image)
 }
 
 // prefix is unique per test, as testing §5.4 requires: a test Drydock on the
@@ -86,7 +84,7 @@ func claudeVolume(p string) string { return p + ".claude" }
 // (main_test.go), as the server's is its own binary.
 func manager(p string) container.Manager {
 	self, _ := os.Executable()
-	return container.Manager{Run: subproc.Exec{}, LabelPrefix: p, CleanupImage: config.DefaultCleanupImage,
+	return container.Manager{Run: boundedRunner{Inner: subproc.Exec{}}, LabelPrefix: p, CleanupImage: config.DefaultCleanupImage,
 		ClaudeUID: os.Getuid(), ClaudeGID: os.Getgid(), Guard: &dockerguard.Guard{Binary: self}}
 }
 

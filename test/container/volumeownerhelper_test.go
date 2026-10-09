@@ -24,9 +24,7 @@ import (
 //     its owner and its file are left exactly as they were.
 func TestTheOwnerHelperAgainstRealDocker(t *testing.T) {
 	needDocker(t)
-	if out, err := exec.Command("docker", "pull", "--quiet", config.DefaultCleanupImage).CombinedOutput(); err != nil {
-		t.Fatalf("docker pull: %v: %s", err, out)
-	}
+	pullImage(t, config.DefaultCleanupImage)
 	p := prefix(t)
 	vol := claudeVolume(p)
 	t.Cleanup(func() { exec.Command("docker", "volume", "rm", "-f", vol).Run() })
