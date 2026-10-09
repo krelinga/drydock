@@ -61,6 +61,8 @@ jobs:
       - name: Check the failure parser
         run: .github/stress/selftest.sh
       - name: Stress
+        # A backstop behind stress.sh's own deadline (minute 52).
+        timeout-minutes: 54
         env:
           PACKAGES: ${{ inputs.packages }}
           MINUTES: ${{ inputs.minutes || '40' }}

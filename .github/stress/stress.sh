@@ -51,6 +51,12 @@ record_or_die() { # pkg jsonfile [discard]
     echo "::error::build failed for $1"
     exit 1
   fi
+  if [ "$rc" = 3 ]; then
+    # Not silent: a real deadlock at the end of the budget looks the same.
+    echo "::warning::$1 timed out at the limit shortened to fit the deadline; not filed"
+    echo "$1 hit its shortened timeout and was not counted as a failure; check the log if that package hangs." >>"$WORK/notes"
+    return 0
+  fi
   return "$rc"
 }
 

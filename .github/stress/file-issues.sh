@@ -25,6 +25,11 @@ PREFIX=""
 summary "## Stress run"
 summary "$(note took). test/container: $(note container-note)."
 summary ""
+if [ -s "$WORK/notes" ]; then
+  summary ""
+  while read -r line; do summary "Note: $line"; done <"$WORK/notes"
+fi
+summary ""
 summary "| package | iterations |"
 summary "|---|---|"
 awk -F'\t' '{n[$1]+=$2} END {for (p in n) printf "| %s | %d |\n", p, n[p]}' "$RUNS" | sort | while read -r line; do summary "$line"; done
@@ -49,9 +54,10 @@ distinct=$(wc -l <"$WORK/distinct.tsv")
 body=$WORK/body.md
 
 if [ "$distinct" -gt "$CAP" ]; then
-  title="${PREFIX}flake: $distinct tests failed in the stress run of $(date -u +%F)"
+  # A stable title: a multi-night outage comments on the open issue.
+  title="${PREFIX}flake: many tests failed in the stress run"
   {
-    echo "@krelinga: $distinct distinct tests failed in one stress run, which usually means something shared broke (a registry, the network, a runner) rather than $distinct flakes. They are listed here instead of filed one by one."
+    echo "@krelinga: $distinct distinct tests failed in this stress run, which usually means something shared broke (a registry, the network, a runner) rather than $distinct flakes. They are listed here instead of filed one by one."
     echo
     echo "- Run: $RUN_URL"
     echo "- Commit: $COMMIT"
@@ -71,11 +77,18 @@ if [ "$distinct" -gt "$CAP" ]; then
     echo '```'
     first=$(head -n1 "$WORK/distinct.tsv")
     first=${first#*$'\t'}
-    tail -c 4000 "$(outfile "${first%% *}" "${first#* }")" | sed 's/```/` ` `/g'
+    (tail -c 4000 "$(outfile "${first%% *}" "${first#* }")" 2>/dev/null || echo '(no output kept)') | sed 's/```/` ` `/g'
     echo '```'
   } >"$body"
-  url=$(gh issue create --title "$title" --label flake --assignee krelinga --body-file "$body")
-  summary "- filed $url: $title"
+  existing=$(gh issue list --label flake --state open --limit 200 --json number,title |
+    jq -r --arg t "$title" '.[] | select(.title==$t) | .number' | head -n1)
+  if [ -n "$existing" ]; then
+    gh issue comment "$existing" --body-file "$body"
+    summary "- commented on #$existing: $title"
+  else
+    url=$(gh issue create --title "$title" --label flake --assignee krelinga --body-file "$body")
+    summary "- filed $url: $title"
+  fi
   exit 0
 fi
 
@@ -102,7 +115,7 @@ while IFS=$'\t' read -r k rest; do
     echo "Output of the last failure:"
     echo
     echo '```'
-    tail -c 6000 "$of" | sed 's/```/` ` `/g'
+    (tail -c 6000 "$of" 2>/dev/null || echo '(no output kept)') | sed 's/```/` ` `/g'
     echo '```'
   } >"$body"
   existing=$(gh issue list --label flake --state open --limit 200 --json number,title |
