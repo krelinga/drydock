@@ -16,6 +16,13 @@
 // approval does not cover. Everything the CLI runs that creates nothing
 // (inspect, ps, exec, start, …) is passed through untouched.
 //
+// It has one effect on the host besides running docker: a build context that
+// does not exist yet, written clean and below the run's own TMPDIR under an
+// existing directory that resolves inside it, is made there as a directory
+// before it is checked, because the CLI starts the Features build without
+// waiting for its own mkdir of it (stagedContext). Nothing else is ever made,
+// and nothing outside that TMPDIR.
+//
 // It is an allowlist, like the subset it enforces: a docker option it does
 // not know is host-affecting until someone has read what it does, and so is
 // a docker command it does not know.
@@ -26,7 +33,10 @@ import (
 	"crypto/sha256"
 	"encoding/csv"
 	"encoding/json"
+	"errors"
+	"io/fs"
 	"math/big"
+	"os"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -469,7 +479,8 @@ func (c *checker) build(args []string) Decision {
 	switch {
 	case len(positional) != 1:
 		c.refuse(SettingBuildCtx, "not exactly one build context")
-	case !c.p.insideOwn(positional[0]) && !c.p.approvedPath("build.context", positional[0]):
+	case !inside(positional[0], c.p.Clone) && !c.p.stagedContext(positional[0]) &&
+		!c.p.approvedPath("build.context", positional[0]):
 		c.refuse(SettingBuildCtx, "a build context outside the clone: "+positional[0])
 	}
 	return c.decision("build")
@@ -778,6 +789,67 @@ func (p *Policy) staysPut(path string) bool {
 // followed.
 func (p *Policy) insideOwn(path string) bool {
 	return inside(path, p.Clone) || inside(path, p.TempDir)
+}
+
+// stagedContext: path is a build context in the CLI's TMPDIR — making it
+// first when it is not there yet. CLI 0.89.0 starts the Features build
+// without waiting for its own mkdir of the empty context folder
+// (`<TMPDIR>/devcontainercli-<user>/empty-folder`: `s.mkdirp(l)` is not
+// awaited), and every up's TMPDIR is new, so the guard can run before the
+// folder exists, and a path that does not resolve is inside nothing: the
+// build was refused as a context outside the clone, now and then (CI, #90).
+// So a missing path is made here, as the CLI is about to make it, only when
+// it is already clean (no `.`, `..` or `//`), lexically below the TMPDIR,
+// and its nearest existing ancestor resolves, symbolic links followed,
+// inside the TMPDIR — and is then held to the same rule as any other.
+//
+// Clean, because docker reads the path as written and the kernel follows a
+// link before a later `..`: `<tmp>/link/../x` with link leading out names a
+// place beside link's target, not <tmp>/x (measured with buildx). The walk
+// up below is lexical, so it holds only for a path whose lexical and
+// resolved readings agree. The TMPDIR is beside the clone and in no
+// container, but its content is not trusted: the CLI extracts each Feature's
+// tarball into it, links and all.
+//
+// Nothing outside the TMPDIR is ever made, and a link in the TMPDIR leading
+// out of it is not followed into making anything. The Lstat-must-be-missing
+// check and the final inside are defence in depth: without a race, a path
+// that exists is refused by the first inside, and MkdirAll makes only real
+// directories below an ancestor already proved inside. Only something
+// swapping a component between those steps — Drydock or the CLI, nothing in
+// a container — reaches either, which is why no test can.
+func (p *Policy) stagedContext(path string) bool {
+	if inside(path, p.TempDir) {
+		return true
+	}
+	if p.TempDir == "" || !filepath.IsAbs(path) || !filepath.IsAbs(p.TempDir) {
+		return false
+	}
+	root, clean := filepath.Clean(p.TempDir), filepath.Clean(path)
+	if clean != path || !strings.HasPrefix(clean, root+"/") {
+		return false
+	}
+	if _, err := os.Lstat(clean); !errors.Is(err, fs.ErrNotExist) {
+		return false // there, and not inside: a link out, or unreadable
+	}
+	ancestor := filepath.Dir(clean)
+	for {
+		_, err := os.Lstat(ancestor)
+		if err == nil {
+			break
+		}
+		if !errors.Is(err, fs.ErrNotExist) || ancestor == root {
+			return false
+		}
+		ancestor = filepath.Dir(ancestor)
+	}
+	if !inside(ancestor, p.TempDir) {
+		return false
+	}
+	if err := os.MkdirAll(clean, 0o700); err != nil {
+		return false
+	}
+	return inside(clean, p.TempDir)
 }
 
 // inside reports whether path resolves, symbolic links followed, to root or
