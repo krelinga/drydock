@@ -251,10 +251,14 @@ const deniedPage = `<!doctype html><meta charset="utf-8"><meta name="viewport" c
 	`<p><a href="/">Try again</a></p>`
 
 // ClearSiteData is what a switched-off or retired preview host is sent (PF
-// §10.3): its cache, cookies — the preview cookie among them — and storage,
-// service workers included. The three types are named rather than "*", so an
-// engine that does not know the wildcard still clears what it can.
-const ClearSiteData = `"cache", "cookies", "storage"`
+// §10.3): its cache and its storage, service workers included — both scoped
+// to that one origin. Never "cookies" (nor "*", which includes it): the
+// cookies type clears every cookie of the whole registrable domain, so one
+// visit to a switched-off port would wipe every other preview's session
+// cookie and every previewed app's own, breaking preview-to-preview isolation
+// (PF §10.4) for nothing — the port's preview sessions are already deleted on
+// the server, so its cookie is dead.
+const ClearSiteData = `"cache", "storage"`
 
 // previewCleared answers a Clear grant on /.drydock/session: the denied page
 // itself, 403, with Clear-Site-Data — not a redirect to it, so no engine has

@@ -374,16 +374,24 @@ test.describe('the ports panel', () => {
     await closed
     expect(Date.now() - disabledAt).toBeLessThan(15_000)
 
+    // Another preview's session, held on another host of the same preview
+    // domain: clearing this one's site must not touch it (PF §10.3, §10.4).
+    await context.addCookies([{ name: PREVIEW_COOKIE, value: 'other-preview', url: `https://${OTHER_PREVIEW_HOST}/`, secure: true, httpOnly: true, sameSite: 'Lax' }])
+
     // The next load: the handshake, then the host's own dead end, clearing it.
     stack.previewTap.clear()
     await preview.goto(`${TARGET}/`).catch(() => {}) // Vite's client may be reloading it already
     await expect(preview.getByRole('heading', { name: 'This preview is not available' })).toBeVisible()
     const cleared = await seenBy(stack.previewTap.seen, (s) => s.path.startsWith('/.drydock/session?'), 'the clearing landing')
     expect(cleared.status).toBe(403)
-    expect(cleared.responseHeaders!['clear-site-data']).toBe('"cache", "cookies", "storage"')
+    expect(cleared.responseHeaders!['clear-site-data']).toBe('"cache", "storage"')
     expect(cleared.responseHeaders!['set-cookie']).toBeUndefined()
+    // This origin's storage is gone…
     expect(await preview.evaluate(() => localStorage.getItem('left-behind'))).toBeNull()
-    expect((await context.cookies(`${TARGET}/`)).map((c) => c.name)).not.toContain(PREVIEW_COOKIE)
+    // …and the other preview's cookie is not: "cookies" would have cleared
+    // the whole registrable domain.
+    const other = (await context.cookies(`https://${OTHER_PREVIEW_HOST}/`)).find((c) => c.name === PREVIEW_COOKIE)
+    expect(other?.value).toBe('other-preview')
     await preview.close()
   })
 })

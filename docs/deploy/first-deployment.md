@@ -1204,8 +1204,11 @@ iOS or macOS version), and which checks passed.
   the preview tab: it ends on *This preview is not available*, still on the preview address
   (`/.drydock/session?t=…` in the bar is expected: that answer also tells Safari to clear what the
   app left on that address). A live-reload connection, if the app had one, was closed when you
-  pressed the button. Press **Preview this port** again and reload: the app is back, after one
-  more trip through `<ui-host>`.
+  pressed the button. Press **Preview this port** again, then, in the preview tab, press **Try
+  again** on the *This preview is not available* page (or tap the address in the Drydock tab
+  again): the app is back, after one more trip through `<ui-host>`. Do not reload instead: the tab
+  is still on the spent `/.drydock/session?t=…` address, and a spent token always ends on the
+  denied page, with nothing wrong.
 - [ ] **Sign out everywhere.** In the Drydock tab, open **Settings**, press **Sign out
   everywhere**, then **Sign out everywhere** again to confirm. Reload the preview tab: it shows
   Drydock's sign-in page on `<ui-host>`, not the app. Sign in, and it carries on to the preview.

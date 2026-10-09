@@ -610,8 +610,10 @@ func TestAuthorizeClearsASpentPreview(t *testing.T) {
 		spend()
 		tok := f.authorize(t, "https://"+h+"/x")
 		a := f.get(t, "https://"+h+preview.SessionPath+"?t="+tok)
-		if a.status != http.StatusForbidden || a.header.Get("Clear-Site-Data") != ClearSiteData {
-			t.Errorf("%s: %s; want 403 with Clear-Site-Data", h, a)
+		// Origin-scoped types only: "cookies" (or "*") would clear every
+		// cookie of the registrable domain — every other preview's session.
+		if a.status != http.StatusForbidden || a.header.Get("Clear-Site-Data") != `"cache", "storage"` {
+			t.Errorf("%s: %s; want 403 with Clear-Site-Data: \"cache\", \"storage\"", h, a)
 		}
 		if a.body != deniedPage {
 			t.Errorf("%s: the clearing answer is not the denied page: %q", h, a.body)

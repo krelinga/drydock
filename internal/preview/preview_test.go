@@ -315,6 +315,46 @@ func TestDisableAndRetireEndSessions(t *testing.T) {
 	}
 }
 
+// TestADisableDuringStartSessionLeavesNoSession: a disable or retire that
+// commits between StartSession's checks and its insert — after its own DELETE
+// of the port's sessions has run — must not leave a session behind. The
+// insert itself requires the port enabled and unretired. The control is the
+// same grant with nothing landing in between, which starts a session.
+func TestADisableDuringStartSessionLeavesNoSession(t *testing.T) {
+	ctx := context.Background()
+	for name, land := range map[string]func(f *fixture){
+		"disable": func(f *fixture) {
+			if _, err := f.svc.SetEnabled(ctx, "w1", "p1", false); err != nil {
+				t.Fatal(err)
+			}
+		},
+		"retire": func(f *fixture) {
+			if err := f.svc.Retire(ctx, "w1", "p1"); err != nil {
+				t.Fatal(err)
+			}
+		},
+	} {
+		f := newFixture(t)
+		if c := f.handshake(t); !f.valid(c) {
+			t.Fatalf("%s: control: a handshake with nothing in between failed", name)
+		}
+		f.svc.SetBeforeInsert(func() { land(f) })
+		tok, _ := f.svc.Mint(f.grant())
+		g, ok := f.svc.Consume(tok, host)
+		if !ok {
+			t.Fatal("consume")
+		}
+		if _, _, err := f.svc.StartSession(ctx, g); !errors.Is(err, preview.ErrNotPreviewable) {
+			t.Errorf("%s between the check and the insert: StartSession = %v; want ErrNotPreviewable", name, err)
+		}
+		var n int
+		f.db.QueryRow(`SELECT count(*) FROM preview_session`).Scan(&n)
+		if n != 0 {
+			t.Errorf("%s between the check and the insert left %d preview sessions", name, n)
+		}
+	}
+}
+
 // TestRevokeAllEndsPreviews is §13.2's one button, reaching previews: every
 // preview session derived from a revoked auth session stops on its next use,
 // and a grant minted before the revoke cannot start one after it.

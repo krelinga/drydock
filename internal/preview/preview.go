@@ -250,6 +250,10 @@ type Service struct {
 	// §13.4). Nil tells no one.
 	Revoked func(portID string)
 
+	// beforeInsert, in a test, runs between StartSession's checks and its
+	// insert: where a disable can land (export_test.go).
+	beforeInsert func()
+
 	mu      sync.Mutex
 	pending map[string]pendingToken // keyed by the token's SHA-256
 }
@@ -385,15 +389,27 @@ func (s *Service) StartSession(ctx context.Context, g Grant) (string, Target, er
 	}
 	cookie := base64.RawURLEncoding.EncodeToString(raw)
 	now := ts(s.Clock.Now())
-	// The foreign key refuses a row for an auth session deleted since the
-	// check above, so a revoke that races this insert still wins.
-	if _, err := s.DB.ExecContext(ctx, `INSERT INTO preview_session
+	if s.beforeInsert != nil {
+		s.beforeInsert()
+	}
+	// One statement that inserts only while the port is still enabled,
+	// unretired and on a running workspace: a disable or retire committed
+	// since the Resolve above leaves no session, rather than one its own
+	// DELETE has already run past. The foreign key refuses a row for an auth
+	// session deleted since the check above, so a revoke that races this
+	// insert still wins too.
+	res, err := s.DB.ExecContext(ctx, `INSERT INTO preview_session
 		(id, auth_session_id, forwarded_port_id, preview_host, created_at, last_seen_at)
-		VALUES (?, ?, ?, ?, ?, ?)`, hash(cookie), g.AuthSessionID, t.PortID, g.Host, now, now); err != nil {
+		SELECT ?, ?, fp.id, ?, ?, ? FROM forwarded_port fp JOIN workspace w ON w.id = fp.workspace_id
+		WHERE fp.id = ? AND `+previewable, hash(cookie), g.AuthSessionID, g.Host, now, now, t.PortID)
+	if err != nil {
 		if isConstraint(err) {
 			return "", Target{}, ErrSessionGone
 		}
 		return "", Target{}, fmt.Errorf("store preview session: %w", err)
+	}
+	if n, err := res.RowsAffected(); err != nil || n != 1 {
+		return "", Target{}, ErrNotPreviewable
 	}
 	return cookie, t, nil
 }

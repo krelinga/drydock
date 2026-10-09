@@ -704,7 +704,7 @@ func TestAnUpgradeClosesWhenItsSessionEnds(t *testing.T) {
 	waitFor(t, "the watch", func() bool { return clock.Waiting() == 1 })
 
 	clock.Advance(30 * time.Second)
-	waitFor(t, "the first recheck", func() bool { return asked.Load() == 1 && clock.Waiting() == 1 })
+	waitFor(t, "the first recheck", func() bool { return asked.Load() == 2 && clock.Waiting() == 1 })
 	if p.Upgrades() != 1 {
 		t.Fatal("control: closed while the session still held")
 	}
@@ -719,6 +719,42 @@ func TestAnUpgradeClosesWhenItsSessionEnds(t *testing.T) {
 	c.SetReadDeadline(time.Now().Add(5 * time.Second))
 	if _, err := br.ReadString('\n'); err == nil {
 		t.Error("the device's side is still open after its session ended")
+	}
+}
+
+// TestAnUpgradeRevokedBeforeItRegisteredClosesAtOnce: a disable (or a
+// sign-out) whose CloseWhere ran after the gate passed an upgrade but before
+// the upgrade registered found nothing to close. The watch asks the session
+// once as it starts, so that upgrade closes at once — with the clock never
+// advanced, so not at a recheck. The control is TestAnUpgradeClosesWhenItsSessionEnds,
+// whose session holds at registration and stays open.
+func TestAnUpgradeRevokedBeforeItRegisteredClosesAtOnce(t *testing.T) {
+	clock := sys.NewFakeClock(time.Date(2026, 10, 8, 12, 0, 0, 0, time.UTC))
+	p := &preview.Proxy{Resolver: &fakeResolver{ips: []string{"127.0.0.1"}}, Clock: clock,
+		IdleTimeout: time.Hour, RecheckEvery: 30 * time.Second}
+	var asked atomic.Int32
+	tg := proxyTarget(t, websocketUpstream(t, &seen{}).URL)
+	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		r = r.WithContext(preview.WithRecheck(r.Context(), func(context.Context) bool {
+			asked.Add(1)
+			return false // the port was disabled while this request was in flight
+		}))
+		p.ServePreview(&preview.CookieGuard{ResponseWriter: w}, preview.StripCookie(r), tg)
+	}))
+	t.Cleanup(func() { p.Close(); s.Close() })
+	resp, c, br := upgradeVia(t, s)
+	if resp.StatusCode != http.StatusSwitchingProtocols {
+		t.Fatalf("%d", resp.StatusCode)
+	}
+	waitFor(t, "the upgrade to close", func() bool { return asked.Load() >= 1 && p.Upgrades() == 0 })
+	c.SetReadDeadline(time.Now().Add(5 * time.Second))
+	for {
+		if _, err := br.ReadString('\n'); err != nil {
+			break
+		}
+	}
+	if clock.Waiting() != 0 {
+		t.Errorf("the watch is still sleeping on the clock (%d)", clock.Waiting())
 	}
 }
 

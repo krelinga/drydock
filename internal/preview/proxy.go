@@ -702,6 +702,14 @@ func (u *upgrade) watch() {
 		every = DefaultRecheckEvery
 	}
 	idleLeft := limit
+	// Once at once, now that the upgrade is registered: a disable or a
+	// sign-out whose CloseWhere ran after the gate passed this request but
+	// before it registered found nothing to close, and would otherwise be
+	// noticed only at the first RecheckEvery.
+	if u.recheck != nil && !u.stillHolds() {
+		u.close()
+		return
+	}
 	for {
 		wait := idleLeft
 		if u.recheck != nil && every < wait {
