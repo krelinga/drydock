@@ -147,6 +147,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"runtime/debug"
 	"sync"
 	"time"
 
@@ -737,14 +738,28 @@ func (p *Provisioner) launch(id, kind string, f func(ctx context.Context) error)
 
 // recovered runs f, turning a panic into an error naming it — so the job's
 // end says failed rather than ok — and handing the panic back to re-raise
-// once the end is written.
+// once the end is written, as a jobPanic carrying the stack it was recovered
+// on, so the crash still shows where it happened.
 func recovered(kind string, f func() error) (panicked any, err error) {
 	defer func() {
 		if r := recover(); r != nil {
-			panicked, err = r, fmt.Errorf("provision: the %s job panicked: %v", kind, r)
+			panicked = jobPanic{value: r, stack: debug.Stack()}
+			err = fmt.Errorf("provision: the %s job panicked: %v", kind, r)
 		}
 	}()
 	return nil, f()
+}
+
+// jobPanic is a job's panic re-raised after its end was written: the value,
+// and the stack of the goroutine that panicked, which the re-raise would
+// otherwise replace with launch's.
+type jobPanic struct {
+	value any
+	stack []byte
+}
+
+func (p jobPanic) Error() string {
+	return fmt.Sprintf("%v\n\nrecovered at:\n%s", p.value, p.stack)
 }
 
 // endJob writes the job's workspace.job event unless its last commit carried

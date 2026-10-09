@@ -421,8 +421,13 @@ func TestAJobCutOffByShutdownEndsCancelled(t *testing.T) {
 // control is a job that returns.
 func TestAPanickingJobEndsFailed(t *testing.T) {
 	r, err := recovered(JobStop, func() error { panic("boom") })
-	if err == nil || r != "boom" || !strings.Contains(err.Error(), "panicked") {
+	jp, ok := r.(jobPanic)
+	if err == nil || !ok || jp.value != "boom" || !strings.Contains(err.Error(), "panicked") {
 		t.Errorf("a panic: err %v, panic %v", err, r)
+	}
+	// The re-raised panic keeps the stack it was recovered on: this test's.
+	if ok && !strings.Contains(jp.Error(), "TestAPanickingJobEndsFailed") {
+		t.Errorf("the re-raised panic lost its stack: %s", jp.Error())
 	}
 	want := errors.New("x")
 	if r, err := recovered(JobStop, func() error { return want }); err != want || r != nil {

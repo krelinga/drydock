@@ -389,6 +389,12 @@ func TestAnUnpausedContainerIsPausedAgainWhenTheActionStopsShort(t *testing.T) {
 					}
 				}
 				e.p.wg.Wait()
+				// The re-pause is the job's, so the job's end comes after it
+				// (a rebuild's re-pause follows its run's move to failed).
+				if all := e.allEvents(t, v.ID); all[len(all)-1].Kind != workspace.KindJob {
+					last := all[len(all)-1]
+					t.Errorf("the last event is %s %s, not the job's end", last.Kind, last.Data)
+				}
 
 				var status string
 				for _, st := range e.containers(t, v.ID) {
