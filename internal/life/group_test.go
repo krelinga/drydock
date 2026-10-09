@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -98,6 +99,15 @@ func TestWaitNamesStragglers(t *testing.T) {
 	defer stop()
 	got := make(chan []string)
 	go func() { got <- g.Wait(deadline) }()
+	// "quick" has ended — so Wait has begun and stopped the group — before
+	// the clock moves: an Advance that landed before Wait ran fired the
+	// deadline first, and a Wait reading its stragglers at once named quick
+	// as well, which only a loaded machine's scheduling ever showed.
+	for deadline := time.Now().Add(5 * time.Second); slices.Contains(g.stragglers(), "quick"); time.Sleep(time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatal("quick never ended: Wait did not stop the group")
+		}
+	}
 	select {
 	case late := <-got:
 		t.Fatalf("Wait returned %v before its deadline", late)
