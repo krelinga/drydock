@@ -46,7 +46,7 @@ func TestLessThanApprovedRunsWithoutAsking(t *testing.T) {
 	if err := e.p.ApproveConfig(ctx, v.ID, a.Hash, "s"); err != nil {
 		t.Fatal(err)
 	}
-	e.p.wg.Wait()
+	e.p.idle()
 	if r := e.view(t, v.ID); r.State != workspace.Running {
 		t.Fatalf("approved: %s (%s)", r.State, deref(r.StateDetail))
 	}
@@ -57,7 +57,7 @@ func TestLessThanApprovedRunsWithoutAsking(t *testing.T) {
 		if err := e.p.Rebuild(ctx, v.ID); err != nil {
 			t.Fatal(err)
 		}
-		e.p.wg.Wait()
+		e.p.idle()
 		return e.view(t, v.ID)
 	}
 	// In order: each runs without asking, and none narrows the approval.

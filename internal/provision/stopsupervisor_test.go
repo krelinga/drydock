@@ -43,7 +43,7 @@ func TestASessionServerThatWillNotStopSettlesEachAction(t *testing.T) {
 	if err := e.p.Stop(ctx, v.ID); err != nil {
 		t.Fatal(err)
 	}
-	e.p.wg.Wait()
+	e.p.idle()
 	want := StopFailedDetail("Drydock could not stop the session server.")
 	got := e.view(t, v.ID)
 	if got.State != workspace.Running || deref(got.StateDetail) != want {
@@ -61,7 +61,7 @@ func TestASessionServerThatWillNotStopSettlesEachAction(t *testing.T) {
 	if err := e.p.Rebuild(ctx, v.ID); err != nil {
 		t.Fatal(err)
 	}
-	e.p.wg.Wait()
+	e.p.idle()
 	if calls.Load() == before {
 		t.Error("the rebuild did not try to stop the session server first")
 	}
@@ -73,7 +73,7 @@ func TestASessionServerThatWillNotStopSettlesEachAction(t *testing.T) {
 	if err := e.p.Delete(ctx, v.ID, "krelinga/alpha"); err != nil {
 		t.Fatal(err)
 	}
-	e.p.wg.Wait()
+	e.p.idle()
 	d := e.view(t, v.ID)
 	if d.State != workspace.Deleting || !strings.Contains(deref(d.StateDetail), "Drydock could not stop the session server.") {
 		t.Errorf("after a failed delete: %s (%q)", d.State, deref(d.StateDetail))
@@ -87,7 +87,7 @@ func TestASessionServerThatWillNotStopSettlesEachAction(t *testing.T) {
 	if err := e.p.Delete(ctx, v.ID, "krelinga/alpha"); err != nil {
 		t.Fatal(err)
 	}
-	e.p.wg.Wait()
+	e.p.idle()
 	if _, err := e.p.Workspaces.Get(ctx, v.ID); !errors.Is(err, workspace.ErrNotFound) {
 		t.Errorf("control: the resumed delete left the workspace: %v", err)
 	}
@@ -126,7 +126,7 @@ func TestASessionServerThatSurvivedKillGoesWithItsContainer(t *testing.T) {
 			if err := e.p.Stop(ctx, v.ID); err != nil {
 				t.Fatal(err)
 			}
-			e.p.wg.Wait()
+			e.p.idle()
 			if s := e.view(t, v.ID); s.State != workspace.Stopped || s.StateDetail != nil {
 				t.Fatalf("after a stop with %s: %s (%q); actions %v",
 					c.name, s.State, deref(s.StateDetail), e.actions(t, v.ID))
@@ -143,7 +143,7 @@ func TestASessionServerThatSurvivedKillGoesWithItsContainer(t *testing.T) {
 			if err := e.p.Delete(ctx, v.ID, "krelinga/alpha"); err != nil {
 				t.Fatal(err)
 			}
-			e.p.wg.Wait()
+			e.p.idle()
 			if _, err := e.p.Workspaces.Get(ctx, v.ID); !errors.Is(err, workspace.ErrNotFound) {
 				t.Errorf("the delete did not finish: %v; actions %v", err, e.actions(t, v.ID))
 			}
@@ -231,7 +231,7 @@ func TestAPausedContainerIsUnpausedForTheStop(t *testing.T) {
 						t.Fatal(err)
 					}
 				}
-				e.p.wg.Wait()
+				e.p.idle()
 
 				if stopped != 1 {
 					t.Errorf("the session server was stopped in a running container %d times, want once (%d asks)", stopped, calls)
@@ -378,7 +378,7 @@ func TestAnUnpausedContainerIsPausedAgainWhenTheActionStopsShort(t *testing.T) {
 					}
 					// Shut down once the stop is waiting on the server.
 					<-entered
-					e.p.Shutdown(10 * time.Second)
+					e.shutdown(10 * time.Second)
 				case ActDelete:
 					if err := e.p.Delete(ctx, v.ID, "krelinga/alpha"); err != nil {
 						t.Fatal(err)
@@ -388,7 +388,7 @@ func TestAnUnpausedContainerIsPausedAgainWhenTheActionStopsShort(t *testing.T) {
 						t.Fatal(err)
 					}
 				}
-				e.p.wg.Wait()
+				e.p.idle()
 				// The re-pause is the job's, so the job's end comes after it
 				// (a rebuild's re-pause follows its run's move to failed).
 				if all := e.allEvents(t, v.ID); all[len(all)-1].Kind != workspace.KindJob {

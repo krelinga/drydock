@@ -67,6 +67,13 @@
 // sub-step is Broker.Remove, and its ErrLeftover is a note, not a stuck
 // delete.
 //
+// **A running workspace whose container boot finds paused** (PausedAtBoot,
+// one listing shared by both follow-ups) gets no broker socket from
+// ReopenSockets, and ResumeSupervisors parks its session server as
+// container_paused with ContainerPausedSentence rather than starting it, so
+// the card says the access and the session are off and why; a stop and a
+// start, or a rebuild, restores both.
+//
 // Unowned(id, act) is reconciliation's Exclusive: it runs act under the lock
 // every job starts under, only if this process has started no job for the
 // workspace, so a create in the first seconds after boot is not marked
@@ -74,6 +81,21 @@
 // by a plan made before it (a check and then the act left that window).
 // ReopenSockets and ResumeSupervisors, boot's follow-ups, likewise decide from
 // the row read again under the lock.
+//
+// Every job is a goroutine of the life.Group RunIn is given — Serve's
+// work.Child("provision") — so there is no root context, flag or wait of the
+// provisioner's own. A job's place is taken with the group's TryGo under
+// p.mu before anything is written for it (admit), and the job is handed to
+// it once the request's writes are done (launch) or the place released
+// (abandon): so once the group is stopping a request is ErrShuttingDown with
+// nothing written, and a request admitted just before the stop still runs
+// its job, under a context already cancelled, so its row never says
+// something no job will finish. The group's Stop cancels every job; each
+// fails the step it was on through its book context and writes its
+// workspace.job end under sys.Cleanup, and the group's Wait — Serve's, before
+// the database closes — waits for that. Unowned and boot's follow-ups refuse
+// to act once the group is stopping. Every bound here (the run's timeout, a
+// re-pause, a job's end) is on the workspace store's injected clock.
 //
 // One workspace per repository in any state; a start honours the cap. Tested
 // with a fake CLI for argv and every step's failure sentence, and in
@@ -154,6 +176,7 @@ import (
 	"github.com/krelinga/drydock/internal/clone"
 	"github.com/krelinga/drydock/internal/container"
 	"github.com/krelinga/drydock/internal/events"
+	"github.com/krelinga/drydock/internal/life"
 	"github.com/krelinga/drydock/internal/redact"
 	"github.com/krelinga/drydock/internal/sys"
 	"github.com/krelinga/drydock/internal/workspace"
@@ -192,8 +215,12 @@ var (
 	// ErrBadBranch: a branch name the clone would refuse anyway, refused
 	// before a row exists rather than as a failed clone.
 	ErrBadBranch = errors.New("provision: not a branch name Drydock can clone")
-	// ErrShuttingDown: Drydock is stopping and starts nothing new.
+	// ErrShuttingDown: Drydock is stopping and starts nothing new — the
+	// provisioner's group is stopping, so no job could run.
 	ErrShuttingDown = errors.New("provision: Drydock is shutting down")
+	// ErrNotStarted: a job asked for before RunIn, with nothing to run it.
+	// Serve calls RunIn before it serves or reconciles.
+	ErrNotStarted = errors.New("provision: not started")
 	// ErrDiskFull: the filesystem holding the workspaces is at or above
 	// the configured limit (design §12, *Disk full*). Returned as a
 	// *DiskFullError, which carries the figures the refusal names.
@@ -316,11 +343,13 @@ type Provisioner struct {
 	StartSupervisor  func(ctx context.Context, w workspace.Workspace) error
 	ForgetSupervisor func(id string)
 	// ParkSupervisor records, in place of StartSupervisor at boot, that a
-	// running workspace's session server cannot work until its container is
-	// rebuilt, with Drydock's sentence saying so: the container has the
-	// broker socket mounted as a file, as an earlier Drydock made it
-	// (container.Manager.LegacyBrokerMount). Nil starts it as usual.
-	ParkSupervisor func(ctx context.Context, w workspace.Workspace, detail string) error
+	// running workspace's session server is not started, for reason (one of
+	// the Park* codes), with Drydock's sentence saying why and what fixes
+	// it: the container has the broker socket mounted as a file, as an
+	// earlier Drydock made it (container.Manager.LegacyBrokerMount), or the
+	// container is paused (PausedAtBoot). Nil starts a legacy container's
+	// server as usual and leaves a paused one's alone.
+	ParkSupervisor func(ctx context.Context, w workspace.Workspace, reason, detail string) error
 	// SupervisorRestart stops (SIGTERM first) and starts a workspace's
 	// session server: the job RestartSupervisor runs. Nil refuses the
 	// route with ErrNoSupervisor.
@@ -349,14 +378,43 @@ type Provisioner struct {
 	jobEnded func(kind string, carried bool)
 
 	mu     sync.Mutex
+	g      *life.Group     // RunIn's: every job is one of its goroutines
 	active map[string]*job // jobs in flight: a run, a stop or a delete
 	// buildLogs holds each workspace's latest failed `up` (messages.go).
 	buildLogs map[string]BuildLog
 	owned     map[string]bool // every workspace a job was started for
-	base      context.Context
-	stop      context.CancelFunc
-	closed    bool
-	wg        sync.WaitGroup
+}
+
+// RunIn runs the provisioner's jobs under g until g stops: every job — a
+// run, a stop, a delete, a session server restart — is one of g's
+// goroutines, so g's Stop cancels each one in flight (its step fails, saying
+// Drydock shut down, and its workspace.job end is written, both under
+// contexts of their own) and g's Wait waits for that, which is what keeps a
+// job from writing after the database has closed. Once g is stopping no job
+// starts: the request is ErrShuttingDown, refused before anything is written
+// for it. Before RunIn it is ErrNotStarted.
+func (p *Provisioner) RunIn(g *life.Group) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.g != nil {
+		return errors.New("provision: already started")
+	}
+	p.g = g
+	return nil
+}
+
+// stopping reports (p.mu held) whether no job can start now: before RunIn,
+// or once the group is stopping. It is for boot's follow-ups, which are not
+// jobs; a job is refused by admit itself.
+func (p *Provisioner) stopping() bool { return p.g == nil || p.g.Ctx().Err() != nil }
+
+// clock is the injected clock every bound here runs on: the workspace
+// store's, which a test replaces with a FakeClock.
+func (p *Provisioner) clock() sys.Clock {
+	if p.Workspaces == nil || p.Workspaces.Env.Clock == nil {
+		return sys.RealClock{}
+	}
+	return p.Workspaces.Env.Clock
 }
 
 func (p *Provisioner) logf(format string, args ...any) {
@@ -408,7 +466,7 @@ func (p *Provisioner) Owns(id string) bool {
 func (p *Provisioner) Unowned(id string, act func() error) (bool, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if p.closed || p.owned[id] {
+	if p.stopping() || p.owned[id] {
 		return false, nil
 	}
 	return true, act()
@@ -457,17 +515,21 @@ func (p *Provisioner) Create(ctx context.Context, repositoryID int64, branch str
 	}
 
 	// The row and the in-flight mark are made under one lock, so Busy can
-	// never see the row without the mark.
+	// never see the row without the mark. The job's place in the group is
+	// taken first, so a create refused for shutdown writes no row, and a row
+	// written always has its job.
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if p.closed {
-		return workspace.Workspace{}, ErrShuttingDown
+	a, err := p.admit(JobCreate)
+	if err != nil {
+		return workspace.Workspace{}, err
 	}
+	defer a.abandon()
 	w, err := p.Workspaces.Create(ctx, repositoryID, branch)
 	if err != nil {
 		return workspace.Workspace{}, err
 	}
-	p.launch(w.ID, JobCreate, func(ctx context.Context) error {
+	a.launch(w.ID, JobCreate, func(ctx context.Context) error {
 		return p.run(ctx, w.ID, workspace.StepAllocate, false)
 	})
 	return w, nil
@@ -557,9 +619,18 @@ func (p *Provisioner) restartWith(ctx context.Context, id string, rebuild bool, 
 
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if p.closed {
-		return ErrShuttingDown
+	kind := JobStart
+	switch {
+	case ap != nil:
+		kind = JobApprove
+	case rebuild:
+		kind = JobRebuild
 	}
+	a, err := p.admit(kind + " " + id)
+	if err != nil {
+		return err
+	}
+	defer a.abandon()
 	if p.active[id] != nil {
 		return workspace.ErrInProgress
 	}
@@ -621,14 +692,7 @@ func (p *Provisioner) restartWith(ctx context.Context, id string, rebuild bool, 
 	if _, err := p.Workspaces.Move(ctx, id, to, ""); err != nil {
 		return err
 	}
-	kind := JobStart
-	switch {
-	case ap != nil:
-		kind = JobApprove
-	case rebuild:
-		kind = JobRebuild
-	}
-	p.launch(id, kind, func(ctx context.Context) error {
+	a.launch(id, kind, func(ctx context.Context) error {
 		un := &unpaused{}
 		if wasRunning && p.StopSupervisor != nil {
 			// Phase 5: the server goes before its container does — unpaused
@@ -652,7 +716,7 @@ func (p *Provisioner) restartWith(ctx context.Context, id string, rebuild bool, 
 		// container leaves it running: what was unpaused is paused again.
 		// After a run that got that far there is nothing running to pause.
 		// The failure is the step's; the re-pause is said in the feed.
-		p.repause(w, un, false)
+		p.repause(ctx, w, un, false)
 		return err
 	})
 	return nil
@@ -691,8 +755,57 @@ const (
 // local database write, owed whether or not the job was cancelled.
 const jobEndTimeout = 30 * time.Second
 
-// launch starts a job for the workspace in the background (p.mu held). Its
-// context ends at Drydock's shutdown, or when a delete cancels it.
+// admission is a job's place in the provisioner's group, taken (p.mu held)
+// before anything is written for the job: a goroutine already started by the
+// group's TryGo, waiting to be handed the job's body (launch) or told there
+// is none (abandon), which the caller does before it lets go of p.mu.
+//
+// It is taken first, rather than when the job launches, because what a
+// request writes before its job starts — a create's row, a start's move to
+// building, a delete's move to deleting — is owed a job: a TryGo refused
+// after that write would leave the row saying something no job will finish.
+// Taken first, a request refused for shutdown has written nothing (the
+// route's 503), and one admitted runs its job even if the group stops before
+// it launches, under a context already cancelled — so its step fails saying
+// Drydock shut down, and its end is written, like any job cut off.
+type admission struct {
+	p     *Provisioner
+	body  chan func()
+	given bool
+}
+
+// admit takes a place in the group for one job, named for Wait's list of
+// stragglers (p.mu held). ErrShuttingDown once the group is stopping;
+// ErrNotStarted before RunIn.
+func (p *Provisioner) admit(name string) (*admission, error) {
+	if p.g == nil {
+		return nil, ErrNotStarted
+	}
+	a := &admission{p: p, body: make(chan func(), 1)}
+	err := p.g.TryGo(name, func(context.Context) {
+		if f := <-a.body; f != nil {
+			f()
+		}
+	})
+	if err != nil {
+		return nil, ErrShuttingDown
+	}
+	return a, nil
+}
+
+// abandon releases a place no job was launched into; after launch it does
+// nothing. Deferred by every caller of admit, so the goroutine never waits
+// for ever.
+func (a *admission) abandon() {
+	if !a.given {
+		a.given = true
+		a.body <- nil
+	}
+}
+
+// launch starts a job for the workspace in its admitted place (p.mu held).
+// Its context descends from the group's, so it ends at Drydock's shutdown,
+// or when a delete cancels it.
 //
 // Every job ends with exactly one workspace.job event (workspace.KindJob,
 // {kind, outcome}), which is what ends the press that started it (frontend
@@ -703,19 +816,16 @@ const jobEndTimeout = 30 * time.Second
 // returns, so after every event the job wrote, and before the job releases
 // the workspace — so no job that follows can write an event ahead of it, and
 // a delete waiting on this job writes its first after it.
-func (p *Provisioner) launch(id, kind string, f func(ctx context.Context) error) *job {
+func (a *admission) launch(id, kind string, f func(ctx context.Context) error) *job {
+	p := a.p
 	if p.active == nil {
 		p.active, p.owned = map[string]*job{}, map[string]bool{}
 	}
-	if p.base == nil {
-		p.base, p.stop = context.WithCancel(context.Background())
-	}
-	ctx, cancel := context.WithCancelCause(p.base)
+	ctx, cancel := context.WithCancelCause(p.g.Ctx())
 	j := &job{kind: kind, cancel: cancel, done: make(chan struct{})}
 	p.active[id], p.owned[id] = j, true
-	p.wg.Add(1)
-	go func() {
-		defer p.wg.Done()
+	a.given = true
+	a.body <- func() {
 		defer close(j.done)
 		defer cancel(nil)
 		defer func() {
@@ -732,7 +842,7 @@ func (p *Provisioner) launch(id, kind string, f func(ctx context.Context) error)
 		if panicked != nil {
 			panic(panicked) // ended failed, and still a crash, as before
 		}
-	}()
+	}
 	return j
 }
 
@@ -769,33 +879,10 @@ func (p *Provisioner) endJob(ctx context.Context, end *workspace.JobEnd, err err
 	if p.jobEnded != nil {
 		p.jobEnded(end.Kind(), end.Written())
 	}
-	clock := p.Workspaces.Env.Clock
-	if clock == nil {
-		clock = sys.RealClock{}
-	}
-	book, cancel := sys.Cleanup(ctx, clock, jobEndTimeout)
+	book, cancel := sys.Cleanup(ctx, p.clock(), jobEndTimeout)
 	defer cancel()
 	if werr := p.Workspaces.EndJob(book, end, err); werr != nil {
 		p.logf("drydock: workspace %s: recording the end of its %s job: %v", end.ID(), end.Kind(), werr)
-	}
-}
-
-// Shutdown stops starting runs, cancels the ones in flight — each fails the
-// step it was on, saying Drydock shut down — and waits for them to write that
-// down, for at most wait. A run still going after that is left to boot
-// reconciliation, which marks it failed.
-func (p *Provisioner) Shutdown(wait time.Duration) {
-	p.mu.Lock()
-	p.closed = true
-	if p.stop != nil {
-		p.stop()
-	}
-	p.mu.Unlock()
-	done := make(chan struct{})
-	go func() { p.wg.Wait(); close(done) }()
-	select {
-	case <-done:
-	case <-time.After(wait):
 	}
 }
 
@@ -804,7 +891,8 @@ func (p *Provisioner) run(parent context.Context, id string, first workspace.Ste
 	if timeout <= 0 {
 		timeout = 30 * time.Minute
 	}
-	ctx, cancel := context.WithTimeout(parent, timeout)
+	// On the injected clock, so a test moves the run past its timeout.
+	ctx, cancel := sys.WithTimeout(parent, p.clock(), timeout)
 	defer cancel()
 	// The steps run under ctx; the bookkeeping does not. When a step is
 	// cancelled, the event saying so and the move to failed still have to
@@ -879,7 +967,7 @@ func guard(ctx context.Context, timeout time.Duration, f workspace.StepFunc) wor
 }
 
 func interrupted(ctx context.Context, timeout time.Duration, err error) error {
-	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+	if sys.TimedOut(ctx) {
 		return workspace.Public(fmt.Sprintf("Provisioning did not finish within %s, so Drydock stopped it.", timeout), err)
 	}
 	if errors.Is(context.Cause(ctx), errDeleting) {

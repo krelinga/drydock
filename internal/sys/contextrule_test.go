@@ -91,9 +91,8 @@ type allowance struct {
 }
 
 const (
-	whyRoot    = "component root; R1 replaces with Group"
-	whyShutWin = "Shutdown's wait bound on the wall clock; R1 moves it to the injected clock"
-	whyGuard   = "the docker guard's log probe, reached only from dockerguard.Main: a separate short-lived process with no Drydock lifecycle"
+	whyRoot  = "component root; R1 replaces with Group"
+	whyGuard = "the docker guard's log probe, reached only from dockerguard.Main: a separate short-lived process with no Drydock lifecycle"
 )
 
 // allowed is every use the rule tolerates today. Remove an entry when its use
@@ -101,11 +100,9 @@ const (
 var allowed = []allowance{
 	// Component roots: the context every background job of the component
 	// runs under, ended by its Shutdown.
-	{use{"internal/provision/provision.go", "Provisioner.launch", "context.Background"}, 0, whyRoot},
 	{use{"internal/supervisor/supervisor.go", "Manager.launchLocked", "context.Background"}, 0, whyRoot},
 
 	// Shutdown: bounds that start once the component's context has ended.
-	{use{"internal/provision/provision.go", "Provisioner.Shutdown", "time.After"}, 0, whyShutWin},
 	{use{"internal/server/server.go", "Server.Serve", "context.Background"}, 0,
 		"R1 debt: the HTTP servers' graceful-shutdown bound starts after the serving context has ended"},
 	{use{"internal/server/server.go", "Server.Serve", "context.WithTimeout"}, 0,
@@ -122,8 +119,6 @@ var allowed = []allowance{
 	// rest are in code #96 is changing (provision, supervisor).
 	{use{"internal/provision/provision.go", "Provisioner.run", "context.WithoutCancel"}, 0,
 		"book: a run's step events and its move to failed, owed after cancellation"},
-	{use{"internal/provision/provision.go", "Provisioner.run", "context.WithTimeout"}, 0,
-		"R1 debt: Provisioner has no Clock; the run's timeout is real, and its test waits 3 real seconds"},
 	{use{"internal/provision/lifecycle.go", "Provisioner.stopJob", "context.WithoutCancel"}, 0,
 		"book: the stop's own record, owed after cancellation"},
 	{use{"internal/provision/lifecycle.go", "Provisioner.deleteJob", "context.WithoutCancel"}, 0,
@@ -132,10 +127,6 @@ var allowed = []allowance{
 		"book: each sub-step's workspace.action event, owed after cancellation"},
 	{use{"internal/provision/lifecycle.go", "Provisioner.unpauseAndStopSupervisor", "context.WithoutCancel"}, 0,
 		"book: the unpause's event, owed once the container was unpaused even if the action was then cancelled"},
-	{use{"internal/provision/lifecycle.go", "Provisioner.repause", "context.Background"}, 0,
-		"R1 debt: pausing again what a halted or cancelled action unpaused, owed after its context ended; repause takes no parent, so this is not yet sys.Cleanup"},
-	{use{"internal/provision/lifecycle.go", "Provisioner.repause", "context.WithTimeout"}, 0,
-		"R1 debt: that repause's 30 s bound (repauseTimeout), on the wall clock"},
 	{use{"internal/provision/steps.go", "runState.up", "context.WithoutCancel"}, 0,
 		"records the container up created, even when up's context then ended"},
 	{use{"internal/provision/messages.go", "Provisioner.keepBuildLog", "context.WithoutCancel"}, 0,

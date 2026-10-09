@@ -106,7 +106,7 @@ func TestHostAccessNeedsAnApprovalThatMatches(t *testing.T) {
 	if err := e.p.Rebuild(ctx, v.ID); err != nil {
 		t.Fatal(err)
 	}
-	e.p.wg.Wait()
+	e.p.idle()
 	r, a := e.approval(t, v.ID)
 	if r.State != workspace.Stopped || names(a.Added) != "privileged/feature_or_image" || !strings.HasPrefix(a.Hash, "sha256:") {
 		t.Fatalf("a Feature adding privileged: %s %+v", r.State, a)
@@ -129,7 +129,7 @@ func TestHostAccessNeedsAnApprovalThatMatches(t *testing.T) {
 	if err := e.p.ApproveConfig(ctx, v.ID, a.Hash, "session-x"); err != nil {
 		t.Fatal(err)
 	}
-	e.p.wg.Wait()
+	e.p.idle()
 	all := e.cli.callsTo(t, "up")
 	if r := e.view(t, v.ID); r.State != workspace.Running || len(all) != ups+1 ||
 		!strings.Contains(strings.Join(all[len(all)-1], " "), "--remove-existing-container") {
@@ -168,7 +168,7 @@ func TestHostAccessNeedsAnApprovalThatMatches(t *testing.T) {
 	if err := e.p.ApproveConfig(ctx, d.ID, da.Hash, "session-x"); err != nil {
 		t.Fatal(err)
 	}
-	e.p.wg.Wait()
+	e.p.idle()
 	if r, a := e.approval(t, d.ID); r.State != workspace.Running || r.Approval != nil || a.Hash != "" {
 		t.Fatalf("after the approval: %s (%s) %+v", r.State, deref(r.StateDetail), r.Approval)
 	}
@@ -193,7 +193,7 @@ func TestHostAccessNeedsAnApprovalThatMatches(t *testing.T) {
 	if err := e.p.Rebuild(ctx, d.ID); err != nil {
 		t.Fatal(err)
 	}
-	e.p.wg.Wait()
+	e.p.idle()
 	if r := e.view(t, d.ID); r.State != workspace.Running || r.Approval != nil ||
 		!strings.Contains(r.Steps[workspace.StepResolveConfig].Detail, "host access the operator approved") {
 		t.Errorf("a rebuild with the approved subset: %s %+v %+v", r.State, r.Approval, r.Steps[workspace.StepResolveConfig])
@@ -208,7 +208,7 @@ func TestHostAccessNeedsAnApprovalThatMatches(t *testing.T) {
 	if err := e.p.Rebuild(ctx, d.ID); err != nil {
 		t.Fatal(err)
 	}
-	e.p.wg.Wait()
+	e.p.idle()
 	if r := e.view(t, d.ID); r.State != workspace.Running {
 		t.Errorf("with the approved setting removed: %s", r.State)
 	}
@@ -216,7 +216,7 @@ func TestHostAccessNeedsAnApprovalThatMatches(t *testing.T) {
 	if err := e.p.Rebuild(ctx, d.ID); err != nil {
 		t.Fatal(err)
 	}
-	e.p.wg.Wait()
+	e.p.idle()
 	if r := e.view(t, d.ID); r.State != workspace.Running || r.Approval != nil {
 		t.Errorf("the approved setting put back: %s %+v", r.State, r.Approval)
 	}
@@ -244,7 +244,7 @@ func TestARebuildAsksForAConfigTheContainerRewrote(t *testing.T) {
 	if err := e.p.Rebuild(ctx, v.ID); err != nil {
 		t.Fatal(err)
 	}
-	e.p.wg.Wait()
+	e.p.idle()
 	r, a := e.approval(t, v.ID)
 	if r.State != workspace.Stopped || !strings.Contains(names(a.Added), "initializeCommand/repository") {
 		t.Fatalf("a rebuild of a rewritten config: %s %+v", r.State, a)
@@ -281,7 +281,7 @@ func TestARebuildAsksForAConfigTheContainerRewrote(t *testing.T) {
 	if err := e.p.Start(ctx, v.ID); err != nil {
 		t.Fatal(err)
 	}
-	e.p.wg.Wait()
+	e.p.idle()
 	r, a = e.approval(t, v.ID)
 	if r.State != workspace.Stopped || a.Hash == "" {
 		t.Fatalf("start after a decline: %s %+v", r.State, a)
@@ -294,7 +294,7 @@ func TestARebuildAsksForAConfigTheContainerRewrote(t *testing.T) {
 	if err := e.p.ApproveConfig(ctx, v.ID, a.Hash, "session-y"); err != nil {
 		t.Fatal(err)
 	}
-	e.p.wg.Wait()
+	e.p.idle()
 	if r := e.view(t, v.ID); r.State != workspace.Running {
 		t.Fatalf("after the approval: %s (%s)", r.State, deref(r.StateDetail))
 	}
@@ -311,7 +311,7 @@ func TestARebuildAsksForAConfigTheContainerRewrote(t *testing.T) {
 	if err := e.p.Rebuild(ctx, v.ID); err != nil {
 		t.Fatal(err)
 	}
-	e.p.wg.Wait()
+	e.p.idle()
 	_, a = e.approval(t, v.ID)
 	if names(a.Added) != "securityOpt/feature_or_image" || len(a.Changed) != 0 || len(a.Removed) != 0 {
 		t.Errorf("the difference from the approved subset: %+v", a)
@@ -319,7 +319,7 @@ func TestARebuildAsksForAConfigTheContainerRewrote(t *testing.T) {
 	if err := e.p.ApproveConfig(ctx, v.ID, a.Hash, "session-y"); err != nil {
 		t.Fatal(err)
 	}
-	e.p.wg.Wait()
+	e.p.idle()
 	if cur, sup := e.approvals(t); cur != 1 || sup != 1 {
 		t.Errorf("a second approval: current %d superseded %d; want the first kept, superseded", cur, sup)
 	}

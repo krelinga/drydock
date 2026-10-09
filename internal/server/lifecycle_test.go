@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -59,8 +60,10 @@ func appServer(t *testing.T, dir string) (*Server, func() *running) {
 		ctx, cancel := context.WithCancel(context.Background())
 		done := make(chan error, 1)
 		go func() { done <- srv.Serve(ctx) }()
-		t.Cleanup(func() { cancel(); <-done })
-		return &running{cfg: cfg, srv: srv, client: unixClient(cfg.APISocket)}
+		var once sync.Once
+		stop := func() { once.Do(func() { cancel(); <-done }) }
+		t.Cleanup(stop)
+		return &running{cfg: cfg, srv: srv, client: unixClient(cfg.APISocket), stop: stop}
 	}
 }
 

@@ -30,6 +30,9 @@ describe('the card, supervisor half (§6.1)', () => {
     // A container an earlier Drydock made, with the broker socket mounted as a
     // file: no broker since the restart, and only a rebuild fixes it.
     ['degraded', 'stale_broker_mount', 'Container misconfigured', 'bad', 'rebuild'],
+    // Boot found the container paused and left its access and its session
+    // server off: Stop, then Start, restores both; a restart would not.
+    ['degraded', 'container_paused', 'Container paused', 'idle', 'stop'],
     ['degraded', 'bad_command_line', 'Drydock built a bad command line', 'bad', null],
     // A restart whose stop half failed (design §8): Docker could not be asked,
     // so asking again is the fix; or the server outlived SIGKILL, so only
@@ -129,6 +132,7 @@ describe('one fault, ten cards (§6.6)', () => {
   it.each(signedOut)('%s: a card whose fault is not the login’s keeps its own status and action', (fleet) => {
     expect(cardStatus(withSup('degraded', 'not_trusted'), fleet)).toMatchObject({ line: 'Container misconfigured', action: 'rebuild' })
     expect(cardStatus(withSup('degraded', 'stale_broker_mount'), fleet)).toMatchObject({ line: 'Container misconfigured', action: 'rebuild' })
+    expect(cardStatus(withSup('degraded', 'container_paused'), fleet)).toMatchObject({ line: 'Container paused', action: 'stop' })
     expect(cardStatus(withSup('degraded', 'bad_command_line'), fleet).line).toBe('Drydock built a bad command line')
     // A server that outlived SIGKILL is the container's to end; a sign-in
     // cannot.

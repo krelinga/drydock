@@ -36,7 +36,7 @@ func TestDiskPreflightRefusesBeforeAnything(t *testing.T) {
 	if err := e.p.Stop(ctx, v.ID); err != nil {
 		t.Fatal(err)
 	}
-	e.p.wg.Wait()
+	e.p.idle()
 
 	disk.Set(90, 100) // exactly at the limit: refused
 	// The cheaper, truer refusal comes first even on a full disk: a second
@@ -61,7 +61,7 @@ func TestDiskPreflightRefusesBeforeAnything(t *testing.T) {
 			t.Errorf("%s at the limit = %v", name, err)
 		}
 	}
-	e.p.wg.Wait()
+	e.p.idle()
 	if len(e.fake.TokenRequests) != mints || len(e.stepEvents(t, v.ID)) != events {
 		t.Error("a refused request reached GitHub or wrote a step")
 	}
@@ -75,7 +75,7 @@ func TestDiskPreflightRefusesBeforeAnything(t *testing.T) {
 	if err := e.p.Start(ctx, v.ID); err != nil {
 		t.Errorf("start with an unreadable disk = %v", err)
 	}
-	e.p.wg.Wait()
+	e.p.idle()
 	disk.Err = nil
 
 	// A limit of 100 is the check turned off, even on a full disk.
@@ -84,7 +84,7 @@ func TestDiskPreflightRefusesBeforeAnything(t *testing.T) {
 	if _, err := e.p.Create(ctx, plain, ""); err != nil {
 		t.Errorf("create with the check off = %v", err)
 	}
-	e.p.wg.Wait()
+	e.p.idle()
 }
 
 func TestOverLimitBoundary(t *testing.T) {

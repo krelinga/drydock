@@ -173,6 +173,11 @@ const (
 	// had no broker since the restart and every command's secrets prelude
 	// exits 69. Not started; only a rebuild fixes it (Park).
 	ReasonStaleBrokerMount Reason = "stale_broker_mount"
+	// ReasonContainerPaused: boot found the workspace's container paused, so
+	// Drydock started no server and opened no broker socket for it. A stop
+	// and a start, or a rebuild, restores both (Park; provision's
+	// ContainerPausedSentence).
+	ReasonContainerPaused Reason = "container_paused"
 	// ReasonStopFailed: a stop (a restart's first half) could not reach the
 	// server — docker ps or docker exec failed, or its container is
 	// paused — so it may still be running. Asking again is the fix once
