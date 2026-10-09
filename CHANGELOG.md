@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.7.0](https://github.com/krelinga/drydock/compare/v0.6.1...v0.7.0) (2026-10-09)
+
+
+### Features
+
+* the port registry: enable, open and disable a preview from the workspace page ([#97](https://github.com/krelinga/drydock/issues/97)) ([7598d41](https://github.com/krelinga/drydock/commit/7598d41a455b0f974ac0096f145fd5cb182f1615))
+
+
+### Bug Fixes
+
+* unpause a paused workspace before stopping its session server ([#96](https://github.com/krelinga/drydock/issues/96)) ([975445d](https://github.com/krelinga/drydock/commit/975445d94acb6baa1f3a8778e1aacfeca1196ca1))
+
 ## [0.6.1](https://github.com/krelinga/drydock/compare/v0.6.0...v0.6.1) (2026-10-09)
 
 
