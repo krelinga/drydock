@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.8.0](https://github.com/krelinga/drydock/compare/v0.7.4...v0.8.0) (2026-10-09)
+
+
+### Features
+
+* discover listening ports in a workspace and list them, off ([#120](https://github.com/krelinga/drydock/issues/120)) ([ad63e6b](https://github.com/krelinga/drydock/commit/ad63e6b508bfaaeff31ddfd7a9acb69802f8513b))
+
+
+### Bug Fixes
+
+* retire every supervisor-loop write with its owner, and pin the stop-wait bounds ([#118](https://github.com/krelinga/drydock/issues/118)) ([4504ca0](https://github.com/krelinga/drydock/commit/4504ca0abbf27d5f4dd1dd1938d727f03b521cb6))
+
 ## [0.7.4](https://github.com/krelinga/drydock/compare/v0.7.3...v0.7.4) (2026-10-09)
 
 
