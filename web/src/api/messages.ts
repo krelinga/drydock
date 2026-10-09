@@ -68,6 +68,11 @@ const SENTENCES: Record<string, string> = {
   secret_description_invalid: 'The description must be text.',
   unknown_repository: 'That repository is not in the catalog.',
   secret_exists: 'A secret by this name already exists, and a new secret never replaces it. Nothing was changed.',
+  // The port registry's (port forwarding §6).
+  port_exists: 'This workspace already lists that port. Turn on its preview where it is.',
+  too_many_ports: 'This workspace lists as many ports as Drydock allows. Remove one first.',
+  previews_not_configured:
+    'No preview domain is set up, so no port can be previewed. Install with --preview-domain and its wildcard certificate.',
   // Design §7.2's refusals. None can say anything about the code itself:
   // the code goes up and nothing about it comes back (frontend §2.5).
   login_code_invalid: 'That looks like only part of the code. Copy the whole code Claude shows, both sides of the #.',

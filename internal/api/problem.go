@@ -127,6 +127,13 @@ const (
 	// CodeUnknownRepository: a grant names a repository id the catalog
 	// does not have.
 	CodeUnknownRepository = secrets.CodeUnknownRepo
+	// CodePortExists: a port added by hand that the workspace already lists
+	// live (PF §6).
+	CodePortExists = "port_exists"
+	// CodeTooManyPorts: a workspace already lists preview.MaxPorts ports.
+	CodeTooManyPorts = "too_many_ports"
+	// CodePreviewsNotConfigured: an enable with no preview domain.
+	CodePreviewsNotConfigured = "previews_not_configured"
 )
 
 // WriteError sends the envelope. Nothing else in the codebase should write an

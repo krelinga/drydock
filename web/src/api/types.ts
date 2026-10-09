@@ -75,6 +75,9 @@ export type ErrorCode =
   | 'secret_description_invalid'
   | 'unknown_repository'
   | 'secret_exists'
+  | 'port_exists'
+  | 'too_many_ports'
+  | 'previews_not_configured'
   | 'login_code_invalid'
   | 'login_not_awaiting_code'
   | 'login_ended'
@@ -287,6 +290,50 @@ export interface BuildLogBody {
   held: boolean
   /** Held but not served: the secret values to mask it of cannot be read. */
   withheld?: boolean
+}
+
+/** `host_header` (port forwarding §8.3): what Host the dev server is sent. */
+export type HostHeader = 'localhost' | 'passthrough'
+
+/**
+ * One live forwarded_port row (internal/preview Port): from GET
+ * /api/workspaces/:id/ports and the `port.*` events, which carry it whole.
+ */
+export interface PortView {
+  id: string
+  workspace_id: string
+  container_port: number
+  slug: string
+  /** The preview host; null when no preview domain is configured. */
+  host: string | null
+  /** Set only while the port is enabled. */
+  url: string | null
+  label: string | null
+  upstream_scheme: 'http' | 'https'
+  host_header: HostHeader
+  enabled: boolean
+  hidden: boolean
+  declared: boolean
+  observed: boolean
+  manual: boolean
+  bind_addr: string | null
+  observed_state: 'listening' | 'gone' | 'never_seen' | null
+  last_seen_at: string | null
+  created_at: string | null
+}
+
+/** `GET /api/workspaces/:id/ports` (internal/api PortList). */
+export interface PortList {
+  ports: PortView[]
+  /** Whether a preview domain is configured: without one nothing can be enabled. */
+  previews: boolean
+}
+
+/** `GET /api/workspaces/:id/ports/:port/probe` (internal/preview ProbeResult). */
+export interface ProbeResult {
+  outcome: 'answering' | 'not_running' | 'refused' | 'timed_out' | 'lookup_failed'
+  /** The sentence the proxy's own page says for the same outcome. */
+  message: string
 }
 
 /** One `workspace.action` event as the view reports it (internal/workspace ActionOutcome). */

@@ -96,6 +96,23 @@ event id. Unknown is *"—"*, never 0; stale says so; memory only for `running`.
   ref in an `<input>` in no `<form>`, shape-checked by `lib/login.ts` (whose spec reads the Go
   rule), cleared before the request, and swept by a canary spec.
 
+## Ports: `src/components/PortsPanel.vue`, `src/stores/ports.ts`
+
+The ports panel (frontend §6.3; port forwarding §13 step 4), on the workspace's page under its card.
+
+- Port entities (`entities.ports`, by row id) are written only by `GET …/ports?hidden=true` (the
+  `ports` snapshot) and the `port.*` events, which carry the whole row; each is versioned by event
+  id. `port.retired` tombstones the id (`portsRetired`), so neither a late event nor an older list
+  revives it, and **only the list drops a live row**, as only the workspace list drops a workspace.
+  `workspace.gone` takes a workspace's rows.
+- Every switch is an `ActionButton` keyed per row (`portEnableKey` and friends), ended by its event
+  or a later snapshot showing it over — one predicate, `OVER_PORT`, for both — and never by the
+  `202`. An add is settled by `port.added` for that number on that workspace.
+- The link is the row's `url`, taken only when it is `https://`, opened in a new tab with
+  `rel="noopener noreferrer"`. With no preview domain (`previews: false`) the panel offers no switch.
+- **Check the port** is a GET whose answer is the proxy's own sentence; it is the panel's read,
+  never entity state. "Show hidden" is a `localStorage` preference.
+
 ## Secrets UI: `src/views/secrets/`, `src/lib/secretRules.ts`
 
 One lazy chunk: the list, the write-only form (`reach` labelled with the literal question), grants
@@ -123,6 +140,9 @@ with the `all_repos` confirm, the two-kinds rotate result, delete.
 - It serves the workspace routes with the cap and the duplicate check; `scriptMode: 'manual'`
   holds a create's events for a spec to play with `playScript`.
 - `loginMode: 'manual'` holds each login phase for `loginReady`/`loginVerdict`.
+- It serves the port routes with the server's refusals and one `port.*` event per mutation;
+  `seedPorts` (dev:mock's) declares a listening Vite port and a silent one on the running sample,
+  `listening` is what a probe finds answering, and `previewDomain: null` is previews off.
 - It checks identity as the watch does (`startIdentityCheck`/`finishIdentityCheck`/
   `intervalIdentityCheck`, `identityCheckMode: 'manual'`): silent for an unchanged interval check,
   `auth.identity_checked` for an unchanged requested one, a press during a check joining it, and

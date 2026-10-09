@@ -17,7 +17,7 @@
 
 import { http, HttpResponse, sse, type HttpHandler } from 'msw'
 import type {
-  ActionView, ApprovalView, BuildLogBody, HostDiskView, ResourcesView, HostSettingView, CatalogView, Device, IdentityState, IdentityView, InstallationView, LoginView, PutSecretResult, RepoView, SecretMeta, SessionInfo, SessionView, Stale, StaleWorkspace, SupervisorView,
+  ActionView, ApprovalView, BuildLogBody, PortList, PortView, ProbeResult, HostDiskView, ResourcesView, HostSettingView, CatalogView, Device, IdentityState, IdentityView, InstallationView, LoginView, PutSecretResult, RepoView, SecretMeta, SessionInfo, SessionView, Stale, StaleWorkspace, SupervisorView,
   StepView, StreamEvent, Undeliverable, UndeliverableSecret, WorkspaceDetail, WorkspaceList, WorkspaceState, WorkspaceView,
 } from '../api/types'
 import { checkDescription, checkName, checkReach, checkValue, type SecretRefusal } from '../lib/secretRules'
@@ -191,6 +191,23 @@ export interface MockBackend {
   loginMode: 'auto' | 'manual'
   /** The code waiting for its verdict, in manual mode: whether it was the accepted one. */
   loginPending: boolean | null
+
+  /**
+   * forwarded_port, retired rows included (PF §5): a row is retired, never
+   * deleted, so its slug stays spent, as the server's UNIQUE keeps it.
+   */
+  ports: Record<string, MockPort>
+  /** The preview domain; null is a Drydock with previews off (no --preview-domain). */
+  previewDomain: string | null
+  /** Per workspace, the container ports something listens on: what a probe finds answering. */
+  listening: Record<string, number[]>
+  /** Hands out port row ids and slug suffixes. */
+  portSeq: number
+}
+
+/** One forwarded_port row: the view the API serves, and whether it was retired. */
+export interface MockPort extends PortView {
+  retired: boolean
 }
 
 /** The authorize URL the mock shows: shaped like the real one, pointing nowhere real. */
@@ -497,6 +514,10 @@ function newBackendBare(now: number, overrides: Partial<MockBackend>): MockBacke
     loginBodies: [],
     loginMode: 'auto',
     loginPending: null,
+    ports: {},
+    previewDomain: 'drydock-preview.test',
+    listening: {},
+    portSeq: 0,
     ...overrides,
   }
 }
@@ -777,7 +798,14 @@ export function emit(
       b.workspaces[id] = { ...cur, session: { ...(d as unknown as SessionView), at: ev.at }, environment_id: env }
     }
   }
-  if (id !== undefined && kind === 'workspace.gone') delete b.workspaces[id]
+  if (id !== undefined && kind === 'workspace.gone') {
+    delete b.workspaces[id]
+    // workspace.Remove retires its ports in the same commit; nothing is said
+    // of them on the stream but the gone itself.
+    for (const p of Object.values(b.ports)) {
+      if (p.workspace_id === id && !p.retired) b.ports[p.id] = { ...p, retired: true, enabled: false, url: null }
+    }
+  }
   for (const s of b.subscribers) s(ev)
   return ev
 }
@@ -1196,6 +1224,58 @@ export function playScript(b: MockBackend, id: string, n?: number): void {
   for (const play of now) play()
 }
 
+/** A port row as the API serves it (internal/preview Port): host with a domain, url only while enabled. */
+export function portView(b: MockBackend, p: MockPort): PortView {
+  const { retired: _retired, ...v } = p
+  const host = b.previewDomain === null ? null : `${p.slug}.${b.previewDomain}`
+  return { ...v, host, url: host !== null && p.enabled ? `https://${host}/` : null }
+}
+
+/** `<repo>-<port>-<4 chars>` (PF §4), never one any row — retired or not — holds. */
+function mintSlug(b: MockBackend, wsId: string, port: number): string {
+  const w = b.workspaces[wsId]
+  const full = b.repos.find((r) => r.id === w?.repository_id)?.full_name ?? ''
+  const base = (full.split('/').pop() ?? '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'port'
+  const taken = new Set(Object.values(b.ports).map((p) => p.slug))
+  for (;;) {
+    const n = ++b.portSeq
+    const suffix = n.toString(36).padStart(4, '0').slice(-4)
+    const slug = `${base}-${port}-${suffix}`
+    if (!taken.has(slug)) return slug
+  }
+}
+
+/** Lists a port on a workspace, off, and emits port.added — the registry's Add, or its declared sync. */
+export function addMockPort(
+  b: MockBackend, wsId: string, port: number,
+  opts: { label?: string | null; declared?: boolean; hostHeader?: 'localhost' | 'passthrough'; scheme?: 'http' | 'https' } = {},
+): MockPort {
+  const id = `01JP${String(++b.portSeq).padStart(22, '0')}`
+  const row: MockPort = {
+    id, workspace_id: wsId, container_port: port, slug: mintSlug(b, wsId, port), host: null, url: null,
+    label: opts.label ?? null, upstream_scheme: opts.scheme ?? 'http', host_header: opts.hostHeader ?? 'localhost',
+    enabled: false, hidden: false, declared: opts.declared === true, observed: false, manual: opts.declared !== true,
+    bind_addr: null, observed_state: null, last_seen_at: null, created_at: new Date().toISOString(), retired: false,
+  }
+  b.ports[id] = row
+  emit(b, 'port.added', {
+    workspace_id: wsId,
+    message: opts.declared ? `Port ${port} is declared by the dev container configuration.` : `Port ${port} added to the ports list.`,
+    data: { port: portView(b, row) },
+  })
+  return row
+}
+
+/** dev:mock's ports: the running sample declares a Vite server, listening, and a Storybook that is not. */
+export function seedPorts(b: MockBackend): void {
+  if (b.workspaces[WS_RUNNING] === undefined) return
+  addMockPort(b, WS_RUNNING, 5173, { label: 'vite dev server', declared: true })
+  addMockPort(b, WS_RUNNING, 6006, { label: 'storybook', declared: true })
+  b.listening[WS_RUNNING] = [5173]
+}
+
+const PORT_PATCH_FIELDS = { enabled: 'boolean', hidden: 'boolean', label: 'string', host_header: 'string' } as const
+
 function envelope(status: number, code: string, message: string, headers: Record<string, string> = {}, detail?: string) {
   return HttpResponse.json({ error: { code, message, ...(detail ? { detail } : {}) } }, { status, headers })
 }
@@ -1219,7 +1299,7 @@ const refused = (r: SecretRefusal, name: string) =>
  * Reads a body the way internal/api's `decode` does: a JSON object, every
  * field of the right type, and no field it does not know.
  */
-function strictBody(text: string, fields: Record<string, 'string' | 'boolean' | 'ints'>): Record<string, unknown> | null {
+function strictBody(text: string, fields: Record<string, 'string' | 'boolean' | 'number' | 'ints'>): Record<string, unknown> | null {
   let body: unknown
   try {
     body = JSON.parse(text)
@@ -1567,6 +1647,134 @@ export function handlersFor(b: MockBackend): HttpHandler[] {
       }
       scheduleDelete(b, id)
       return HttpResponse.json({}, { status: 202 })
+    }),
+
+    // The port registry (PF §6, §13 step 4), internal/api/port_routes.go:
+    // every mutation 202 and settled by its one port.* event, which carries
+    // the row; refusals as writePortError answers them.
+    http.get('/api/workspaces/:id/ports', ({ request, params }) => {
+      record(request)
+      if (!b.signedIn) return unauthenticated()
+      const id = String(params.id)
+      if (b.workspaces[id] === undefined) return envelope(404, 'not_found', 'There is no such workspace.')
+      const hidden = new URL(request.url).searchParams.get('hidden') === 'true'
+      const ports = Object.values(b.ports)
+        .filter((p) => p.workspace_id === id && !p.retired && (hidden || !p.hidden))
+        .sort((x, y) => x.container_port - y.container_port)
+        .map((p) => portView(b, p))
+      return HttpResponse.json({ ports, previews: b.previewDomain !== null } satisfies PortList)
+    }),
+
+    http.post('/api/workspaces/:id/ports/rescan', ({ request }) => {
+      record(request)
+      if (!b.signedIn) return unauthenticated()
+      return envelope(501, 'not_implemented', 'This route is not implemented yet.')
+    }),
+
+    http.post('/api/workspaces/:id/ports', async ({ request, params }) => {
+      record(request)
+      if (!b.signedIn) return unauthenticated()
+      const id = String(params.id)
+      const body = strictBody(await request.text(),
+        { container_port: 'number', label: 'string', upstream_scheme: 'string', host_header: 'string' })
+      const port = body?.container_port
+      if (body === null || typeof port !== 'number' || !Number.isInteger(port)) {
+        return envelope(400, 'bad_request', 'The request needs a container_port, and optionally a label, upstream_scheme and host_header.')
+      }
+      if (port < 1 || port > 65535) return envelope(400, 'bad_request', 'A port is a number from 1 to 65535.')
+      const scheme = body.upstream_scheme ?? 'http'
+      const hostHeader = body.host_header ?? 'localhost'
+      if (scheme !== 'http' && scheme !== 'https') return envelope(400, 'bad_request', 'upstream_scheme is http or https.')
+      if (hostHeader !== 'localhost' && hostHeader !== 'passthrough') return envelope(400, 'bad_request', 'host_header is localhost or passthrough.')
+      const label = typeof body.label === 'string' ? body.label.trim() : ''
+      if (label.length > 100 || /\p{Cc}/u.test(label)) return envelope(400, 'bad_request', 'A label is at most 100 bytes of one line.')
+      const w = b.workspaces[id]
+      if (w === undefined) return envelope(404, 'not_found', 'There is no such workspace.')
+      if (w.state === 'deleting') return envelope(409, 'in_progress', 'This workspace is being deleted.')
+      const live = Object.values(b.ports).filter((p) => p.workspace_id === id && !p.retired)
+      if (live.length >= 64) return envelope(409, 'too_many_ports', 'This workspace lists as many ports as it may. Remove one first.')
+      if (live.some((p) => p.container_port === port)) {
+        return envelope(409, 'port_exists', 'This workspace already lists that port. Enable it where it is.')
+      }
+      const row = addMockPort(b, id, port, { label: label === '' ? null : label, hostHeader, scheme })
+      return HttpResponse.json({ id: row.id }, { status: 202 })
+    }),
+
+    http.patch('/api/workspaces/:id/ports/:port', async ({ request, params }) => {
+      record(request)
+      if (!b.signedIn) return unauthenticated()
+      const id = String(params.id)
+      const body = strictBody(await request.text(), PORT_PATCH_FIELDS)
+      if (body === null || Object.keys(body).length === 0) {
+        return envelope(400, 'bad_request', 'The request changes one or more of enabled, hidden, label and host_header.')
+      }
+      if (body.host_header !== undefined && body.host_header !== 'localhost' && body.host_header !== 'passthrough') {
+        return envelope(400, 'bad_request', 'host_header is localhost or passthrough.')
+      }
+      const label = typeof body.label === 'string' ? body.label.trim() : undefined
+      if (label !== undefined && (label.length > 100 || /\p{Cc}/u.test(label))) {
+        return envelope(400, 'bad_request', 'A label is at most 100 bytes of one line.')
+      }
+      if (body.enabled === true && b.previewDomain === null) {
+        return envelope(503, 'previews_not_configured', 'No preview domain is configured, so no port can be previewed.',
+          {}, 'Install with --preview-domain and its wildcard certificate.')
+      }
+      const w = b.workspaces[id]
+      if (w === undefined) return envelope(404, 'not_found', 'There is no such workspace.')
+      const cur = b.ports[String(params.port)]
+      if (cur === undefined || cur.retired || cur.workspace_id !== id) return envelope(404, 'not_found', 'This workspace lists no such port.')
+      if (body.enabled === true && w.state === 'deleting') return envelope(409, 'in_progress', 'This workspace is being deleted.')
+      const next: MockPort = {
+        ...cur,
+        ...(typeof body.hidden === 'boolean' ? { hidden: body.hidden } : {}),
+        ...(label !== undefined ? { label: label === '' ? null : label } : {}),
+        ...(body.host_header !== undefined ? { host_header: body.host_header as 'localhost' | 'passthrough' } : {}),
+        ...(typeof body.enabled === 'boolean' ? { enabled: body.enabled } : {}),
+      }
+      b.ports[cur.id] = next
+      // One event per PATCH, as Update writes: the switch's when it was named.
+      const kind = typeof body.enabled === 'boolean' ? (body.enabled ? 'port.enabled' : 'port.disabled') : 'port.updated'
+      const view = portView(b, next)
+      const message = kind === 'port.enabled' ? `Port ${next.container_port} previewed at ${view.url}.`
+        : kind === 'port.disabled' ? `Port ${next.container_port} no longer previewed.` : `Port ${next.container_port} updated.`
+      emit(b, kind, { workspace_id: id, message, data: { port: view } })
+      return HttpResponse.json({}, { status: 202 })
+    }),
+
+    http.delete('/api/workspaces/:id/ports/:port', ({ request, params }) => {
+      record(request)
+      if (!b.signedIn) return unauthenticated()
+      const id = String(params.id)
+      if (b.workspaces[id] === undefined) return envelope(404, 'not_found', 'There is no such workspace.')
+      const cur = b.ports[String(params.port)]
+      if (cur === undefined || cur.retired || cur.workspace_id !== id) return envelope(404, 'not_found', 'This workspace lists no such port.')
+      b.ports[cur.id] = { ...cur, retired: true, enabled: false }
+      emit(b, 'port.retired', {
+        workspace_id: id, message: `Port ${cur.container_port} removed from the ports list.`,
+        data: { port_id: cur.id, container_port: cur.container_port },
+      })
+      return HttpResponse.json({}, { status: 202 })
+    }),
+
+    http.get('/api/workspaces/:id/ports/:port/probe', ({ request, params }) => {
+      record(request)
+      if (!b.signedIn) return unauthenticated()
+      const id = String(params.id)
+      const w = b.workspaces[id]
+      if (w === undefined) return envelope(404, 'not_found', 'There is no such workspace.')
+      const cur = b.ports[String(params.port)]
+      if (cur === undefined || cur.retired || cur.workspace_id !== id) return envelope(404, 'not_found', 'This workspace lists no such port.')
+      const n = cur.container_port
+      // internal/preview OutcomeSentence's words.
+      const result: ProbeResult = w.state !== 'running'
+        ? { outcome: 'not_running', message: "This workspace has no running container to reach." }
+        : (b.listening[id] ?? []).includes(n)
+          ? { outcome: 'answering', message: `Something is answering on port ${n} in this workspace's container.` }
+          : {
+            outcome: 'refused',
+            message: `Nothing is answering on port ${n} in this workspace's container. Is the dev server running, and listening on 0.0.0.0 rather than 127.0.0.1?`,
+          }
+      return HttpResponse.json(result)
     }),
 
     // The Claude identity (design §7.3) and the login handshake (§7.2),

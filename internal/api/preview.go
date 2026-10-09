@@ -174,6 +174,19 @@ func (p PreviewHandshake) authorize(w http.ResponseWriter, r *http.Request) {
 	slug, _ := p.Previews.Slug(host)
 	t, err := p.Previews.Resolve(r.Context(), slug)
 	if errors.Is(err, preview.ErrNotPreviewable) {
+		// A port switched off or retired: the device may hold what a page
+		// there left behind — storage, a service worker — so it lands on
+		// that host's /.drydock/session with a token that clears the site
+		// rather than starting a session (PF §10.3). Only a signed-in
+		// device gets here, and it was shown the switch, so telling this
+		// apart from a stopped workspace tells it nothing new.
+		if portID, spent, err := p.Previews.Spent(r.Context(), slug); err == nil && spent {
+			tok, err := p.Previews.Mint(preview.Grant{AuthSessionID: sess.ID, Host: host, PortID: portID, Clear: true})
+			if err == nil {
+				http.Redirect(w, r, "https://"+host+preview.SessionPath+"?t="+tok, http.StatusFound)
+				return
+			}
+		}
 		// The host is a well-formed preview host, so its own dead end is
 		// the right place to land — and says nothing about which of "no
 		// such port", "disabled" or "workspace stopped" it was.
@@ -206,6 +219,10 @@ func (p PreviewHandshake) session(w http.ResponseWriter, r *http.Request) {
 		previewDeny(w, r)
 		return
 	}
+	if g.Clear {
+		previewCleared(w, r)
+		return
+	}
 	cookie, _, err := p.Previews.StartSession(r.Context(), g)
 	if err != nil {
 		if !errors.Is(err, preview.ErrNotPreviewable) && !errors.Is(err, preview.ErrSessionGone) {
@@ -232,6 +249,25 @@ const deniedPage = `<!doctype html><meta charset="utf-8"><meta name="viewport" c
 	`<h1>This preview is not available</h1>` +
 	`<p>Its port may be switched off, its workspace may be stopped, or this device may need to sign in to Drydock again.</p>` +
 	`<p><a href="/">Try again</a></p>`
+
+// ClearSiteData is what a switched-off or retired preview host is sent (PF
+// §10.3): its cache and its storage, service workers included — both scoped
+// to that one origin. Never "cookies" (nor "*", which includes it): the
+// cookies type clears every cookie of the whole registrable domain, so one
+// visit to a switched-off port would wipe every other preview's session
+// cookie and every previewed app's own, breaking preview-to-preview isolation
+// (PF §10.4) for nothing — the port's preview sessions are already deleted on
+// the server, so its cookie is dead.
+const ClearSiteData = `"cache", "storage"`
+
+// previewCleared answers a Clear grant on /.drydock/session: the denied page
+// itself, 403, with Clear-Site-Data — not a redirect to it, so no engine has
+// to honour the header on a 3xx. The URL left in the bar holds a spent token,
+// and the answer says no-referrer and no-store as every other does.
+func previewCleared(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Clear-Site-Data", ClearSiteData)
+	previewDenied(w, r)
+}
 
 // previewDenied answers /.drydock/denied: 403 and the constant page. No CSP
 // and no framing rule — a preview origin's headers are the previewed app's,

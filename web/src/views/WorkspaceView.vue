@@ -14,6 +14,9 @@
 // and Delete behind §6.5's confirm — the repository's full name, typed, and
 // nothing else.
 //
+// Under the card, the ports panel (PortsPanel, §6.3): off until enabled, each
+// switch settled by its port.* event (port forwarding §13 step 4).
+//
 // Event messages are rendered as text, never HTML (§8): `message` is the
 // server's prose about things that can carry repository content.
 import { computed, nextTick, onMounted, ref, watch } from 'vue'
@@ -26,6 +29,7 @@ import WorkspaceIdentityNote from '../components/WorkspaceIdentityNote.vue'
 import { useStreamRefetch } from '../lib/refetch'
 import { relativeTime } from '../lib/time'
 import MakeRoom from '../components/MakeRoom.vue'
+import PortsPanel from '../components/PortsPanel.vue'
 import ResourceLine from '../components/ResourceLine.vue'
 import ReadOnlyNote from '../components/ReadOnlyNote.vue'
 import { githubAccess } from '../lib/githubAccess'
@@ -264,6 +268,8 @@ watch(id, () => {
           </li>
         </ol>
       </div>
+
+      <PortsPanel v-if="ws.state !== 'deleting'" :workspace="ws" />
 
       <div class="block" data-test="steps">
         <div class="sec-label"><span>Steps</span></div>

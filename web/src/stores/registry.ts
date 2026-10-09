@@ -17,9 +17,10 @@ import { useSessionStore } from './session'
 import { useStreamStore } from './stream'
 import { useSecretsStore } from './secrets'
 import { useWorkspacesStore } from './workspaces'
+import { usePortsStore } from './ports'
 
 const ENTITY_STORES = [
-  useSessionStore, useStreamStore, useCatalogStore, useWorkspacesStore, useSecretsStore, useIdentityStore,
+  useSessionStore, useStreamStore, useCatalogStore, useWorkspacesStore, useSecretsStore, useIdentityStore, usePortsStore,
 ] as const
 
 export function clearEntityState(pinia?: Pinia): void {

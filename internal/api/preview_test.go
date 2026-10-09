@@ -539,13 +539,13 @@ func TestAuthorizeRefusesOpenRedirects(t *testing.T) {
 }
 
 // TestAuthorizeSendsTheUnpreviewableToDenied: a well-formed preview host whose
-// slug is unknown, disabled, or whose workspace is stopped lands on its own
-// denied page, with no token minted; and the denied page says nothing about
-// which.
+// slug is unknown, or whose workspace is stopped, lands on its own denied page
+// with no token minted; and the denied page says nothing about which. (A
+// disabled or retired port's host is TestAuthorizeClearsASpentPreview's.)
 func TestAuthorizeSendsTheUnpreviewableToDenied(t *testing.T) {
 	f := newHandshake(t)
 	var pages []string
-	for _, h := range []string{"nosuch-1-abcd." + testPreviewDomain, "myapp-9000-off0." + testPreviewDomain} {
+	for _, h := range []string{"nosuch-1-abcd." + testPreviewDomain} {
 		a := f.get(t, testUIOrigin+"/preview/authorize?return="+url.QueryEscape("https://"+h+"/x"), f.uiCookie())
 		if a.status != http.StatusFound || a.header.Get("Location") != "https://"+h+preview.DeniedPath || f.svc.Pending() != 0 {
 			t.Errorf("%s: %s; want its denied page and no token", h, a)
@@ -554,6 +554,9 @@ func TestAuthorizeSendsTheUnpreviewableToDenied(t *testing.T) {
 		pages = append(pages, d.String())
 		if d.status != http.StatusForbidden {
 			t.Errorf("%s's denied page = %d", h, d.status)
+		}
+		if d.header.Get("Clear-Site-Data") != "" {
+			t.Errorf("%s's denied page clears the site", h)
 		}
 	}
 	f.db.Exec(`UPDATE workspace SET state = 'stopped'`)
@@ -571,6 +574,73 @@ func TestAuthorizeSendsTheUnpreviewableToDenied(t *testing.T) {
 		if strings.Contains(pages[0], leak) {
 			t.Errorf("the denied page says %q", leak)
 		}
+	}
+}
+
+// TestAuthorizeClearsASpentPreview is PF §10.3's countermeasure: a signed-in
+// device sent to a switched-off or retired port's host lands on that host's
+// /.drydock/session with a token that clears the site — Clear-Site-Data on the
+// denied page itself, no preview cookie set — while an enabled port on a
+// stopped workspace (not a revocation) gets the plain denied page. The
+// clearing token is spent like any other: shown twice, the second is the
+// uniform refusal, with no Clear-Site-Data.
+func TestAuthorizeClearsASpentPreview(t *testing.T) {
+	f := newHandshake(t)
+	ctx := context.Background()
+	// Control first: the enabled port starts a session, clearing nothing.
+	tok := f.authorize(t, "https://"+testPreviewHost+"/")
+	if a := f.get(t, "https://"+testPreviewHost+preview.SessionPath+"?t="+tok); a.status != http.StatusFound || a.header.Get("Clear-Site-Data") != "" {
+		t.Fatalf("control: an enabled port's session = %s", a)
+	}
+
+	spent := map[string]func(){
+		"myapp-9000-off0." + testPreviewDomain: func() {}, // born disabled
+		"myapp-5173-p2mq." + testPreviewDomain: func() {
+			if _, err := f.svc.SetEnabled(ctx, "w1", "p1", false); err != nil {
+				t.Fatal(err)
+			}
+		},
+		"myapp-8080-zzzz." + testPreviewDomain: func() {
+			if err := f.svc.Retire(ctx, "w1", "p2"); err != nil {
+				t.Fatal(err)
+			}
+		},
+	}
+	for h, spend := range spent {
+		spend()
+		tok := f.authorize(t, "https://"+h+"/x")
+		a := f.get(t, "https://"+h+preview.SessionPath+"?t="+tok)
+		// Origin-scoped types only: "cookies" (or "*") would clear every
+		// cookie of the registrable domain — every other preview's session.
+		if a.status != http.StatusForbidden || a.header.Get("Clear-Site-Data") != `"cache", "storage"` {
+			t.Errorf("%s: %s; want 403 with Clear-Site-Data: \"cache\", \"storage\"", h, a)
+		}
+		if a.body != deniedPage {
+			t.Errorf("%s: the clearing answer is not the denied page: %q", h, a.body)
+		}
+		if len((&http.Response{Header: a.header}).Cookies()) != 0 {
+			t.Errorf("%s: the clearing answer set a cookie: %v", h, a.header)
+		}
+		checkNoStore(t, h, a.header)
+		again := f.get(t, "https://"+h+preview.SessionPath+"?t="+tok)
+		if again.status != http.StatusFound || again.header.Get("Location") != preview.DeniedPath || again.header.Get("Clear-Site-Data") != "" {
+			t.Errorf("%s: a spent clearing token = %s; want the uniform refusal", h, again)
+		}
+	}
+	var n int
+	f.db.QueryRow(`SELECT count(*) FROM preview_session`).Scan(&n)
+	if n != 0 {
+		t.Errorf("%d preview sessions remain after the disable and the retire", n)
+	}
+
+	// A stopped workspace's enabled port is not spent.
+	if _, err := f.svc.SetEnabled(ctx, "w1", "p1", true); err != nil {
+		t.Fatal(err)
+	}
+	f.db.Exec(`UPDATE workspace SET state = 'stopped'`)
+	a := f.get(t, testUIOrigin+"/preview/authorize?return="+url.QueryEscape("https://"+testPreviewHost+"/"), f.uiCookie())
+	if a.header.Get("Location") != "https://"+testPreviewHost+preview.DeniedPath || f.svc.Pending() != 0 {
+		t.Errorf("a stopped workspace's enabled port = %s; want the plain denied page", a)
 	}
 }
 

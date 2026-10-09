@@ -205,7 +205,7 @@ drydock_secrets_key_backup: "{{ lookup('ansible.builtin.env', 'HOME') }}/drydock
 # Optional: allow 443 from this network with ufw (§3.4). Empty: leave the firewall alone.
 drydock_firewall_lan_cidr: ""
 
-# Optional: previews, sign-in only (runbook §8.7). A second registrable
+# Optional: previews (runbook §8.7, §8.8). A second registrable
 # domain, lowercase, with a LAN wildcard record pointing at this server, and
 # controller paths of its wildcard certificate (full chain) and key. All three
 # or none. Empty: no preview site, and the installer is told --no-preview.
@@ -595,7 +595,7 @@ cannot traverse. A changed certificate (a renewal you copy in) reloads Caddy thr
       name {{ drydock_ui_host }}. See runbook §1.3.
 ```
 
-**With previews** (`drydock_preview_domain` set; [runbook §8.7](first-deployment.md#87-optional-enable-previews-no-ports-panel-yet)),
+**With previews** (`drydock_preview_domain` set; [runbook §8.7](first-deployment.md#87-optional-enable-previews)),
 the wildcard pair goes beside the UI's with the same owners and modes, and gets the same two
 checks, with the SAN required to carry the wildcard itself. Without previews these tasks are
 skipped.
@@ -703,9 +703,12 @@ download, not a compromised release.
 and `--ca-cert` for option A. Without a CA certificate the task passes `--no-ca-cert`, so the variables
 stay the whole truth: the installer otherwise keeps a `--ca-cert` from an earlier run. Likewise
 `--preview-domain`, `--preview-cert` and `--preview-key` when `drydock_preview_domain` is set, and
-`--no-preview` when it is not, which removes a preview site an earlier run installed. Previews have no
-ports panel yet: a preview URL runs the handshake and ends on the denied page, since no port can be
-enabled yet ([runbook §8.7](first-deployment.md#87-optional-enable-previews-no-ports-panel-yet), [§9](first-deployment.md#9-what-does-not-work-yet)).
+`--no-preview` when it is not, which removes a preview site an earlier run installed. A port is
+previewed from the workspace's page in the UI, never from the playbook
+([runbook §8.7](first-deployment.md#87-optional-enable-previews)). The runbook's real-Safari check
+([§8.8](first-deployment.md#88-preview-a-port-and-the-real-safari-check)) is done by hand on an
+iPhone and a Mac, and has no task here: it is a browser's behaviour that is being checked, and
+nothing Ansible can drive.
 
 **The password.** The installer asks for it on `/dev/tty`, and Ansible has no terminal to answer
 on. Worse, with `ssh -tt` it may *have* one, and then the installer waits on a prompt nobody sees.

@@ -36,7 +36,10 @@ stand-in `docker` reports it as the seeded workspace's container, on a bridge, a
 non-loopback address (`previewContainer()`). A release refuses any address the host holds, so the
 tier builds `drydock` with **`-tags browsertier`** (`internal/server/localaddrs_browsertier.go`: no
 local addresses listed, nothing else changed, a startup line saying so; `deploy/package.sh` passes
-no tags). HMR is thus tested through Caddy, the tap and the proxy.
+no tags). HMR is thus tested through Caddy, the tap and the proxy. So is port forwarding §13 step
+4's done-when: the ports panel enables a seeded port, its link opens the app in a new tab, and
+*Turn off preview* closes its HMR socket at once; the next load ends on the host's own denied page
+with `Clear-Site-Data`, and what the app put in `localStorage` is gone.
 
 ## Not Chromium-only
 

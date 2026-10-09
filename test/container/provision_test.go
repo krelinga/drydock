@@ -58,6 +58,10 @@ func TestCreateWorkspaceThroughTheServer(t *testing.T) {
 
 	f := githubtest.New(t, 4242, time.Now)
 	hostNetConfig := `{"image":"` + provision.DefaultImage + `","runArgs":["--network=host"]}`
+	// alpha declares two ports, one another Compose service's (skipped), and
+	// labels one: the port registry's declared rows (PF §13 step 4).
+	alphaConfig := `{"image":"` + provision.DefaultImage + `","runArgs":["--network=host"],` +
+		`"forwardPorts":[5173,"db:5432"],"portsAttributes":{"5173":{"label":"vite"}}}`
 	reg := newFeatureRegistry(t, "1.0.0", "1.1.0")
 	markerConfig := `{"image":"` + provision.DefaultImage + `","runArgs":["--network=host"],"features":{"` + reg.Ref + `":{}}}`
 	locked := func(id int64, name, lock string) githubtest.Repo {
@@ -73,7 +77,7 @@ func TestCreateWorkspaceThroughTheServer(t *testing.T) {
 	f.Installations = []githubtest.Installation{{ID: 77, Account: "krelinga", Repos: []githubtest.Repo{
 		{ID: 101, FullName: "krelinga/alpha", DefaultBranch: "main", PushedAt: time.Now(),
 			Files:    []string{"README.md", ".devcontainer/devcontainer.json"},
-			Contents: map[string]string{".devcontainer/devcontainer.json": hostNetConfig}},
+			Contents: map[string]string{".devcontainer/devcontainer.json": alphaConfig}},
 		{ID: 102, FullName: "krelinga/plain", DefaultBranch: "main", PushedAt: time.Now(),
 			Files: []string{"README.md"}},
 		locked(103, "krelinga/pinned", reg.lockfile("1.0.0")),
@@ -275,6 +279,29 @@ func TestCreateWorkspaceThroughTheServer(t *testing.T) {
 	}
 	if d := views["101"].Steps["resolve_config"].Detail; !strings.Contains(d, "host access the operator approved for this repository: runArgs.") {
 		t.Errorf("the configured repository's resolve_config says %q", d)
+	}
+	// The ports alpha's configuration declares, read through the real CLI's
+	// read-configuration, are listed — declared, labelled, off — and the
+	// other Compose service's is not; the plain repository, on Drydock's
+	// minimal configuration, declares none (the control).
+	type portList struct {
+		Ports []struct {
+			ContainerPort int     `json:"container_port"`
+			Label         *string `json:"label"`
+			Enabled       bool    `json:"enabled"`
+			Declared      bool    `json:"declared"`
+			URL           *string `json:"url"`
+		} `json:"ports"`
+	}
+	var alphaPorts, plainPorts portList
+	c.get("/api/workspaces/"+ids["101"]+"/ports", &alphaPorts)
+	c.get("/api/workspaces/"+ids["102"]+"/ports", &plainPorts)
+	if ps := alphaPorts.Ports; len(ps) != 1 || ps[0].ContainerPort != 5173 || ps[0].Label == nil || *ps[0].Label != "vite" ||
+		!ps[0].Declared || ps[0].Enabled || ps[0].URL != nil {
+		t.Errorf("alpha's declared ports = %+v; want 5173, vite, declared and off", ps)
+	}
+	if len(plainPorts.Ports) != 0 {
+		t.Errorf("the plain repository lists ports %+v", plainPorts.Ports)
 	}
 	cid := docker(t, "ps", "-q", "--no-trunc", "--filter", "label="+p+".workspace="+ids["106"])
 	if got := docker(t, "inspect", "-f", "{{.HostConfig.Privileged}}", cid); got != "true" {

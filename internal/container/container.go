@@ -133,6 +133,13 @@
 // with an approved --ip can name the host or the LAN (ErrNoAddress, as is
 // --network=host); Confirm inspects the same container again after the connect
 // (ErrMoved).
+//
+// DeclaredPorts (ports.go, PF §13 step 4) reads the ports a resolved and
+// merged configuration declares — forwardPorts (a number, digits or
+// localhost:N; another Compose service's skipped), then appPort's container
+// half (/udp skipped), labelled by an exact-number portsAttributes key — and
+// skips anything malformed: a declaration is a row in the ports panel, never
+// an exposure.
 package container
 
 import (

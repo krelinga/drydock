@@ -345,7 +345,7 @@ func TestPreviewSocketReachesNoAPIRoute(t *testing.T) {
 	}
 	hdr := http.Header{"Cookie": {"__Host-drydock=" + cookie + "; " + preview.CookieName + "=forged"}, "Origin": {uiOrigin}}
 	for _, rt := range api.Table {
-		p := strings.NewReplacer("{id}", "01JABCDEFGHJKMNPQRSTVWXYZ", "{name}", "TEST_X", "{lid}", "01JLOGIN").Replace(rt.Pattern)
+		p := strings.NewReplacer("{id}", "01JABCDEFGHJKMNPQRSTVWXYZ", "{name}", "TEST_X", "{lid}", "01JLOGIN", "{port}", "01JPORT").Replace(rt.Pattern)
 		for _, host := range []string{"a-b." + previewDomain, uiHost, "evil.example"} {
 			for _, m := range []string{"GET", "POST", "DELETE"} {
 				resp, body := r.previewDo(t, m, "https://"+host+p, hdr)

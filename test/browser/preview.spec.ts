@@ -102,7 +102,7 @@ test.afterAll(async () => {
   await dev?.stop()
 })
 
-/** What PF §13 step 4's registry will write: one enabled port on a running workspace, whose container runs. */
+/** One enabled port on a running workspace, whose container runs: what the registry's enable leaves. */
 function seed(stack: Stack): void {
   const db = new DatabaseSync(stack.db)
   try {
@@ -312,6 +312,87 @@ test.describe('the handshake', () => {
     stack.previewContainer(WS, hostAddress())
     await page.goto(`${TARGET}/`)
     await expect(page.locator('#out')).toHaveText('version two')
+  })
+})
+
+/** A port listed by hand and switched off, as POST …/ports leaves it: what the panel enables. */
+function seedOff(stack: Stack): void {
+  const db = new DatabaseSync(stack.db)
+  try {
+    db.exec('PRAGMA busy_timeout = 5000')
+    db.exec(`INSERT INTO repository (id, installation_id, full_name, default_branch) VALUES (424242, 1, 'o/myapp', 'main')`)
+    db.exec(`INSERT INTO workspace (id, repository_id, host_path, branch, state) VALUES ('${WS}', 424242, '/x', 'main', 'running')`)
+    db.exec(`INSERT INTO forwarded_port (id, workspace_id, container_port, slug, label, manual) VALUES ('ppreview', '${WS}', ${dev.port}, '${SLUG}', 'vite', 1)`)
+  } finally {
+    db.close()
+  }
+  stack.previewContainer(WS, hostAddress())
+}
+
+// PF §13 step 4's done-when, through real Caddy: enable a port from the
+// workspace's panel, open it, disable it, and watch it close — the open HMR
+// websocket at once (the recheck is 30 s away), and the next load of the
+// preview ending on its own host with Clear-Site-Data (PF §10.3), which the
+// browser honours: what the page stored there is gone.
+test.describe('the ports panel', () => {
+  test.beforeEach(({ stack }) => seedOff(stack))
+  test.afterEach(({ stack }) => unseed(stack))
+
+  test('enable, open, disable: the preview closes', async ({ signedIn: page, context, stack }) => {
+    if (dev.proc === null) await dev.restart()
+    writeFileSync(path.join(dev.root, 'main.js'), MAIN('version one')) // the HMR test above left it edited
+    await page.goto(`${UI}/ws/${WS}`)
+    const row = page.locator(`[data-test=port][data-port="${dev.port}"]`)
+    await expect(row.locator('[data-test=port-off]')).toBeVisible()
+    // Off: the preview host is refused before anything is enabled (control).
+    await expect(row.locator('[data-test=port-open]')).toHaveCount(0)
+
+    await row.locator('[data-test=port-enable] [data-test=action]').click()
+    const link = row.locator('[data-test=port-open]')
+    await expect(link).toHaveText(SLUG_HOST)
+    expect(await link.getAttribute('target')).toBe('_blank')
+    expect(await link.getAttribute('rel')).toBe('noopener noreferrer')
+    const patch = await seenBy(stack.apiTap.seen, (s) => s.method === 'PATCH' && s.path === `/api/workspaces/${WS}/ports/ppreview`, 'the enable')
+    expect(patch.status).toBe(202)
+
+    // Open it: a new tab, through the handshake, onto the app and its HMR socket.
+    const [preview] = await Promise.all([context.waitForEvent('page'), link.click()])
+    const closed = new Promise<void>((resolve) => {
+      preview.on('websocket', (ws) => ws.on('close', () => resolve()))
+    })
+    await expect(preview.locator('#out')).toHaveText('version one')
+    await expect(preview.locator('#echo')).toHaveText('round trip')
+    expect(new URL(preview.url()).host).toBe(SLUG_HOST)
+    await preview.evaluate(() => localStorage.setItem('left-behind', 'by the app'))
+    expect(await preview.evaluate(() => localStorage.getItem('left-behind'))).toBe('by the app')
+
+    // Disable it: the link goes, and the websocket closes at once.
+    const disabledAt = Date.now()
+    await row.locator('[data-test=port-disable] [data-test=action]').click()
+    await expect(row.locator('[data-test=port-open]')).toHaveCount(0)
+    await expect(row.locator('[data-test=port-enable] [data-test=action]')).toBeEnabled()
+    await closed
+    expect(Date.now() - disabledAt).toBeLessThan(15_000)
+
+    // Another preview's session, held on another host of the same preview
+    // domain: clearing this one's site must not touch it (PF §10.3, §10.4).
+    await context.addCookies([{ name: PREVIEW_COOKIE, value: 'other-preview', url: `https://${OTHER_PREVIEW_HOST}/`, secure: true, httpOnly: true, sameSite: 'Lax' }])
+
+    // The next load: the handshake, then the host's own dead end, clearing it.
+    stack.previewTap.clear()
+    await preview.goto(`${TARGET}/`).catch(() => {}) // Vite's client may be reloading it already
+    await expect(preview.getByRole('heading', { name: 'This preview is not available' })).toBeVisible()
+    const cleared = await seenBy(stack.previewTap.seen, (s) => s.path.startsWith('/.drydock/session?'), 'the clearing landing')
+    expect(cleared.status).toBe(403)
+    expect(cleared.responseHeaders!['clear-site-data']).toBe('"cache", "storage"')
+    expect(cleared.responseHeaders!['set-cookie']).toBeUndefined()
+    // This origin's storage is gone…
+    expect(await preview.evaluate(() => localStorage.getItem('left-behind'))).toBeNull()
+    // …and the other preview's cookie is not: "cookies" would have cleared
+    // the whole registrable domain.
+    const other = (await context.cookies(`https://${OTHER_PREVIEW_HOST}/`)).find((c) => c.name === PREVIEW_COOKIE)
+    expect(other?.value).toBe('other-preview')
+    await preview.close()
   })
 })
 
