@@ -649,8 +649,10 @@ const launchingSentence = "Starting the session server."
 // and the supervisor stays registered, so the next stop or restart reaches
 // the same server, through the terminal Drydock may still hold. A stop cut
 // off by its caller (a delete, shutdown) records nothing: one still queued
-// is taken back, having sent nothing, and one under way ends as its context
-// does, with no SIGKILL.
+// is taken back and sends no signal, and one under way ends as its context
+// does, with no SIGKILL. Taken back is not undone, though: asking made the
+// supervisor stopping, so its loop launches nothing more and its run records
+// nothing more, as a cancelled stop always left it.
 func (m *Manager) Stop(ctx context.Context, workspaceID string) error {
 	req := &stopReq{ctx: ctx, reply: make(chan error, 1)}
 	m.mu.Lock()
@@ -679,9 +681,13 @@ func (m *Manager) Stop(ctx context.Context, workspaceID string) error {
 		err = <-req.reply
 	}
 	// A stop that worked drops the supervisor, as does one by a sup that
-	// recorded nothing (born for a server no supervisor held, cut off before
-	// it had to); one that failed keeps it, for the retry.
-	if err == nil || !s.hasRow() {
+	// recorded nothing (born for a server no supervisor held) — but only
+	// once that sup is quiet: its owner may still be stopping the server for
+	// another request, and unregistered, the next Stop would start a second
+	// owner waiting for no one, and two SIGTERMs. Kept, the next Stop queues
+	// on it, or takes it as the sup it waits for. One that failed keeps it,
+	// for the retry.
+	if err == nil || (!s.hasRow() && s.isQuiet()) {
 		m.mu.Lock()
 		if m.sups[workspaceID] == s {
 			delete(m.sups, workspaceID)
@@ -763,6 +769,9 @@ func (m *Manager) Forget(workspaceID string) {
 		if s.cancel != nil { // nil for one with no loop (born stopped)
 			s.cancel()
 		}
+		// Retired without a handoff: a sup born later for this workspace
+		// has no prev and waits for nothing. Forget follows a delete whose
+		// own stop was answered, so nothing is left to signal.
 		s.retire()
 		delete(m.sups, workspaceID)
 	}

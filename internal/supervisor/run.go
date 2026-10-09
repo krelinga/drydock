@@ -174,14 +174,14 @@ func (s *sup) loop(ctx context.Context) {
 				// shown as a wait that never clears, and would overwrite
 				// the pid file that is the only way to reach it. Say so,
 				// with the fix, and start nothing.
-				s.set(ctx, Degraded, ReasonSurvivedKill, stopFailedSentence(ReasonSurvivedKill), 0)
+				s.ownSet(ctx, Degraded, ReasonSurvivedKill, stopFailedSentence(ReasonSurvivedKill), 0)
 				return
 			}
 			if errors.Is(err, container.ErrSessionContainerPaused) {
 				// Frozen, not gone, and a `devcontainer exec` into a paused
 				// container fails: a launch would only spend the restart
 				// budget. Asking again once it is unpaused is the fix.
-				s.set(ctx, Degraded, ReasonStopFailed, pausedSentence, 0)
+				s.ownSet(ctx, Degraded, ReasonStopFailed, pausedSentence, 0)
 				return
 			}
 		}
@@ -353,7 +353,7 @@ func (s *sup) runOnce(ctx context.Context) outcome {
 	// A retry while the previous server's registration lapses stays a wait
 	// on the card: it is the same wait, asked again, not a new start.
 	if s.current() != WaitingRegistration {
-		s.set(ctx, Starting, ReasonLaunching, launchingSentence, proc.Pid())
+		s.ownSet(ctx, Starting, ReasonLaunching, launchingSentence, proc.Pid())
 	}
 
 	// rctx is what the run's reading records under — the heartbeat, what
@@ -375,10 +375,26 @@ func (s *sup) runOnce(ctx context.Context) outcome {
 	gate := m.clock().After(p.GateTimeout)
 	served := rd.served
 	var hang Reason
+	// closing bounds how long the terminal may stay open once the server is
+	// known gone (a stop that worked): an orphaned `docker exec` client can
+	// hold it after Drydock's end was killed, and a stop's caller, and a
+	// successor waiting for this sup to be quiet, must not wait on it until
+	// shutdown. Armed once.
+	var closing <-chan time.Time
+	armed := false
+	arm := func() {
+		if s.serverGone && !armed {
+			armed = true
+			closing = m.clock().After(p.KillWait)
+		}
+	}
 	for open := true; open; {
 		select {
 		case <-rd.done:
 			open = false
+		case <-closing:
+			closing = nil
+			master.Close() // the reader ends, and the run with it
 		case <-served:
 			served, gate = nil, nil
 		case <-gate:
@@ -399,13 +415,15 @@ func (s *sup) runOnce(ctx context.Context) outcome {
 			// worked, and shutdown cuts it off like any of the loop's own
 			// (no SIGKILL under a cancelled context) — leaving the server at
 			// its prompt for the next boot's start to stop first.
-			if s.beginOwn() {
+			// Not after a stop that already worked: the server is gone.
+			if !s.serverGone && s.beginOwn() {
 				_, err := m.terminate(ctx, s.ws, proc, waited)
 				s.endOwn()
 				if err == nil {
 					s.serverGone = true
 				}
 			}
+			arm()
 		case <-ctx.Done():
 			// Shutdown, or the workspace forgotten: close the terminal and
 			// leave the server serving. A stop under way here has already
@@ -425,9 +443,21 @@ func (s *sup) runOnce(ctx context.Context) outcome {
 				}
 				stopped = append(stopped, req)
 			}
+			arm()
 		}
 	}
-	<-waited
+	// Drydock's end has exited by now — the terminal's end is its — save
+	// where a stop that worked killed it or closed the terminal on it: bound
+	// that wait as the terminal's was.
+	select {
+	case <-waited:
+	case <-m.clock().After(p.KillWait):
+		proc.Signal(subproc.SignalKill)
+		select {
+		case <-waited:
+		case <-m.clock().After(p.KillWait):
+		}
+	}
 	master.Close()
 	s.log.Flush(m.clock().Now())
 

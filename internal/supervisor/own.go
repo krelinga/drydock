@@ -57,8 +57,10 @@ func (s *sup) submit(req *stopReq) bool {
 }
 
 // withdraw takes back a request its owner has not yet taken, and reports
-// whether it did: a caller whose context ended while queued has sent nothing,
-// and need not wait behind whatever its owner is doing.
+// whether it did: a caller whose context ended while queued has had no
+// signal sent for it, and need not wait behind whatever its owner is doing.
+// The stopping its submit set stands (the loop launches nothing more, the run
+// records nothing more), as a cancelled stop always left it.
 func (s *sup) withdraw(req *stopReq) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -229,6 +231,20 @@ func (s *sup) record(write func()) {
 	if !retired {
 		write()
 	}
+}
+
+// isQuiet reports whether the sup will never signal again.
+func (s *sup) isQuiet() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.quietClosed
+}
+
+// ownSet is the loop's own state write — not a stop's — gated as record is:
+// a loop replaced while it was stopping a leftover server or launching
+// writes nothing over its successor's starting.
+func (s *sup) ownSet(ctx context.Context, st State, r Reason, detail string, pid int) {
+	s.record(func() { s.set(ctx, st, r, detail, pid) })
 }
 
 // stoppedSentence is exited's sentence after a stop.

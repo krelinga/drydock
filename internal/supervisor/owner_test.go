@@ -380,3 +380,40 @@ func TestAFailingDiscoveryIsSaidOnceAndHealsQuietly(t *testing.T) {
 		})
 	}
 }
+
+// A Stop withdrawn from the queue of a sup born stopped — which has no row,
+// so records nothing — while that sup's owner is still stopping the server
+// for an earlier Stop leaves the sup registered: the next Stop queues on it
+// (or waits for it), and does not start a second owner beside it. Before,
+// the withdrawn Stop unregistered the busy sup, the next one found nothing
+// and started an owner waiting for no one, and two SIGTERMs landed (#114's
+// review, round 1). The control is the first Stop's own SIGTERM, delivered
+// and counted.
+func TestAWithdrawnStopKeepsItsOwner(t *testing.T) {
+	r := newRig(t, func(_ *rig, p *Policy) {
+		p.StopTimeout, p.KillWait = 1500*time.Millisecond, 500*time.Millisecond
+	})
+	r.script("claude", counting(r))
+	server := r.stray()
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() { defer wg.Done(); r.m.Stop(context.Background(), wsID) }()
+	r.waitFor(5*time.Second, "the first SIGTERM", func() bool { return r.terms() >= 1 })
+	cctx, cancel := context.WithCancel(context.Background())
+	withdrawn := make(chan error, 1)
+	go func() { withdrawn <- r.m.Stop(cctx, wsID) }()
+	time.Sleep(100 * time.Millisecond)
+	cancel()
+	if err := <-withdrawn; err == nil {
+		t.Error("a Stop withdrawn by its caller reported success")
+	}
+	wg.Add(1)
+	go func() { defer wg.Done(); r.m.Stop(context.Background(), wsID) }()
+	wg.Wait()
+	if alive(server) {
+		t.Fatal("control: the server is still running")
+	}
+	if n := r.terms(); n != 1 {
+		t.Errorf("%d SIGTERMs delivered, want 1", n)
+	}
+}
