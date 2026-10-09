@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.1](https://github.com/krelinga/drydock/compare/v0.7.0...v0.7.1) (2026-10-09)
+
+
+### Bug Fixes
+
+* run provision's jobs on life.Group, and leave a paused workspace parked at boot ([#106](https://github.com/krelinga/drydock/issues/106)) ([a8a4a30](https://github.com/krelinga/drydock/commit/a8a4a300f33391388e04361cf286d240aa615da3))
+
 ## [0.7.0](https://github.com/krelinga/drydock/compare/v0.6.1...v0.7.0) (2026-10-09)
 
 
