@@ -2,6 +2,7 @@ package events
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"path/filepath"
@@ -331,5 +332,48 @@ func TestFeedLeavesDiscoveryOut(t *testing.T) {
 	all, err := l.ForWorkspace(ctx, "ws1", 1000)
 	if err != nil || len(all) != 66 {
 		t.Errorf("control: ForWorkspace = %d events, %v; want all 66", len(all), err)
+	}
+}
+
+// TestCommitThenRunsBeforePublishing: CommitThen's committed runs after a
+// commit and before its events reach any subscriber, given the events as
+// stored, so state set there is in place before anyone can have seen the
+// event; a commit that fails runs nothing. Mutation-checked: calling
+// committed after the publish loop, or before the commit, fails it.
+func TestCommitThenRunsBeforePublishing(t *testing.T) {
+	ctx := context.Background()
+	l, _ := newLog(t)
+	sub := l.Subscribe()
+	defer l.Cancel(sub)
+	e, err := NewEvent("ws1", Info, "k", "m", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var seen []int64
+	out, err := l.CommitThen(ctx, func(*sql.Tx) ([]Event, error) { return []Event{e}, nil }, func(es []Event) {
+		if n := len(sub.C); n != 0 {
+			t.Errorf("committed ran after %d event(s) were published", n)
+		}
+		for _, e := range es {
+			seen = append(seen, e.ID)
+		}
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(out) != 1 || len(seen) != 1 || seen[0] != out[0].ID || out[0].ID <= 0 {
+		t.Fatalf("committed saw %v; want the stored event %+v", seen, out)
+	}
+	if got := <-sub.C; got.ID != out[0].ID {
+		t.Errorf("published %d; want %d", got.ID, out[0].ID)
+	}
+
+	called := false
+	if _, err := l.CommitThen(ctx, func(*sql.Tx) ([]Event, error) { return nil, errors.New("no") },
+		func([]Event) { called = true }); err == nil {
+		t.Fatal("a failing fn committed")
+	}
+	if called {
+		t.Error("committed ran for a commit that failed")
 	}
 }

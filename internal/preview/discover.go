@@ -225,11 +225,20 @@ type Scanner struct {
 	// said of it, so a start that finds discovery working says so) and goes
 	// only with the workspace.
 	reports map[string]*report
+
+	// afterObserve, when set, runs after each Registry write a round makes
+	// returns: a test's way to read the port list in the window between an
+	// event's publication and the end of the round.
+	afterObserve func()
 }
 
 type report struct {
 	state  string // DiscoveryOK, DiscoveryUnavailable or DiscoveryLimited
 	budget bucket // StatusEvery, StatusBurst
+	// raced: state is a raced rescan's "unavailable", which read nothing
+	// and is not discovery's state; the next round that reads the table
+	// reports what it finds whatever the budget says.
+	raced bool
 }
 
 // Discovery is a workspace's discovery state as the events last reported it:
@@ -438,7 +447,8 @@ func (s *Scanner) scanOne(ctx context.Context, t target, asked bool) {
 		ls = nil // scanned as empty: its rows go after their grace
 	case errors.Is(err, ErrScanRaced):
 		// Nothing learned, so nothing read: a rescan is not told "ok",
-		// and nobody else is told anything. The next round reads again.
+		// and nobody else is told anything. The next round reads again,
+		// and corrects a rescan's "unavailable" whatever the budget.
 		s.observe(ctx, t.id, nil, DiscoveryUnavailable, asked, false)
 		return
 	default:
@@ -466,7 +476,8 @@ func (s *Scanner) scanOne(ctx context.Context, t target, asked bool) {
 // carries the verdict whatever it is; otherwise port.discovery when the
 // verdict differs from what was last reported and its budget allows
 // (`settles`: false for a raced read, which teaches nothing to anyone who did
-// not ask). What was reported is remembered only once it is committed.
+// not ask). What was reported is remembered only once it is committed, and
+// before the event is published.
 func (s *Scanner) observe(ctx context.Context, id string, ss []Sighting, verdict string, asked, settles bool) {
 	now := s.Clock.Now()
 	s.mu.Lock()
@@ -484,28 +495,51 @@ func (s *Scanner) observe(ctx context.Context, id string, ss []Sighting, verdict
 	switch {
 	case asked:
 		note = &ScanNote{Discovery: verdict}
-	case settles && verdict != last && r.budget.tokens >= 1:
+	case settles && verdict != last && (r.raced || r.budget.tokens >= 1):
+		// A raced rescan's "unavailable" is corrected by the first round
+		// that reads the table, without the status budget: a race is
+		// transient, and the budget could leave it on the panel for
+		// StatusEvery. It costs no token; only a rescan can owe one.
 		note = &ScanNote{Status: verdict}
+	}
+	if note == nil && settles && verdict == last {
+		// What was last reported is true now, whatever a raced rescan
+		// said: nothing is owed to correct it.
+		r.raced = false
 	}
 	s.mu.Unlock()
 	if len(ss) == 0 && note == nil {
 		return
 	}
-	if err := s.Registry.Observe(ctx, id, ss, note); err != nil {
-		if ctx.Err() == nil {
-			s.logf("drydock: port discovery: recording what workspace %s listens on: %v", id, err)
+	var committed func(bool)
+	if note != nil {
+		// Set after the commit and before the event is published, under the
+		// event log's lock (events.Log.CommitThen): a port list fetched after
+		// the event reads what the event said, never what it replaced — the
+		// reducer would let that older value overwrite the newer event, and
+		// it would stay until the next report.
+		committed = func(wrote bool) {
+			if !wrote {
+				return // the workspace is going: nothing was reported
+			}
+			s.mu.Lock()
+			if note.Status != "" && !r.raced {
+				r.budget.tokens--
+			}
+			r.state = verdict
+			// A raced read's "unavailable" is owed a correction the moment a
+			// round reads the table, budget or not (see the switch above).
+			r.raced = !settles && (verdict != last || r.raced)
+			s.mu.Unlock()
 		}
-		return
 	}
-	if note == nil {
-		return
+	err := s.Registry.observe(ctx, id, ss, note, committed)
+	if s.afterObserve != nil {
+		s.afterObserve()
 	}
-	s.mu.Lock()
-	if note.Status != "" {
-		r.budget.tokens--
+	if err != nil && ctx.Err() == nil {
+		s.logf("drydock: port discovery: recording what workspace %s listens on: %v", id, err)
 	}
-	r.state = verdict
-	s.mu.Unlock()
 }
 
 // budget lets through, in port order, the changes the workspace's budgets
@@ -790,8 +824,15 @@ func held(p Port) bool { return p.Enabled || p.Manual || p.Declared || p.Hidden 
 // It never writes `enabled`. A workspace being deleted, or gone, is left
 // alone.
 func (s *Service) Observe(ctx context.Context, workspaceID string, ss []Sighting, note *ScanNote) error {
+	return s.observe(ctx, workspaceID, ss, note, nil)
+}
+
+// observe is Observe with committed run after its commit and before its
+// events are published, told whether it wrote any (events.Log.CommitThen):
+// how the scanner's reported state changes with the event that reports it.
+func (s *Service) observe(ctx context.Context, workspaceID string, ss []Sighting, note *ScanNote, committed func(wrote bool)) error {
 	var revoked []string
-	err := s.commit(ctx, func(tx *sql.Tx) ([]events.Event, error) {
+	err := s.commitThen(ctx, func(tx *sql.Tx) ([]events.Event, error) {
 		revoked = nil
 		state, err := workspaceState(ctx, tx, workspaceID)
 		if errors.Is(err, ErrNoWorkspace) {
@@ -922,7 +963,7 @@ func (s *Service) Observe(ctx context.Context, workspaceID string, ss []Sighting
 			es = append(es, e)
 		}
 		return es, nil
-	})
+	}, committed)
 	if err == nil && s.Revoked != nil {
 		for _, id := range revoked {
 			s.Revoked(id)

@@ -242,8 +242,19 @@ func workspaceState(ctx context.Context, q interface {
 // commit runs fn in one transaction with the events it returns — through the
 // event log when there is one, so the row and its event are one fact.
 func (s *Service) commit(ctx context.Context, fn func(tx *sql.Tx) ([]events.Event, error)) error {
+	return s.commitThen(ctx, fn, nil)
+}
+
+// commitThen is commit with committed run after a successful commit and
+// before its events are published (events.Log.CommitThen), told whether fn
+// wrote any.
+func (s *Service) commitThen(ctx context.Context, fn func(tx *sql.Tx) ([]events.Event, error), committed func(wrote bool)) error {
 	if s.Events != nil {
-		_, err := s.Events.Commit(ctx, fn)
+		var after func([]events.Event)
+		if committed != nil {
+			after = func(es []events.Event) { committed(len(es) > 0) }
+		}
+		_, err := s.Events.CommitThen(ctx, fn, after)
 		return err
 	}
 	tx, err := s.DB.BeginTx(ctx, nil)
@@ -251,10 +262,17 @@ func (s *Service) commit(ctx context.Context, fn func(tx *sql.Tx) ([]events.Even
 		return err
 	}
 	defer tx.Rollback()
-	if _, err := fn(tx); err != nil {
+	es, err := fn(tx)
+	if err != nil {
 		return err
 	}
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	if committed != nil {
+		committed(len(es) > 0)
+	}
+	return nil
 }
 
 // Add lists a port by hand: a new row, manual, disabled, with a freshly
