@@ -100,7 +100,8 @@
 // still-running row (StopFailedDetail), so a list snapshot says it as the live
 // events did; a stop asked again, and a resumed delete, clear their annotation
 // under the lock before the job's first event. SweepHelpers is the boot sweep:
-// after reconciliation, cleanup helpers by this instance's label, skipping any
+// after reconciliation, cleanup helpers and docker guard log probes by this
+// instance's labels, skipping any
 // workspace with a job in flight, under the lock.
 //
 // Crash-tested by cutting a delete off after every sub-step and resuming in a

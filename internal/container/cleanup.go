@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/krelinga/drydock/internal/dockerguard"
 	"github.com/krelinga/drydock/internal/subproc"
 )
 
@@ -119,15 +120,24 @@ func (m Manager) RemoveContents(ctx context.Context, workspaceID, dir string) er
 	return failed("docker run (cleanup)", res, &stderr)
 }
 
-// Helper is a cleanup helper container, found by its label.
+// LabelLogProbe is the docker guard's log probe (dockerguard.LabelLogProbe):
+// a container created, never started, and removed in one start's check, which
+// a guard killed mid-probe leaves behind. The boot sweep lists it beside the
+// cleanup helpers, so a stray outlives neither a restart nor its workspace.
+const LabelLogProbe = dockerguard.LabelLogProbe
+
+// Helper is a cleanup helper container, or a docker guard log probe, found
+// by its label.
 type Helper struct {
 	ContainerID string
-	// WorkspaceID is the label's value: the workspace whose delete ran it.
+	// WorkspaceID is the label's value: the workspace whose delete ran it,
+	// or whose start the probe was for.
 	WorkspaceID string
 }
 
 // ListHelpers finds every container, running or not, carrying this prefix's
-// cleanup label, whatever its value: the boot sweep's listing (design §6). As
+// cleanup label or log-probe label, whatever its value: the boot sweep's
+// listing (design §6). As
 // List does, `docker ps` for the ids, filtered on the daemon's side, then
 // `docker inspect` for the labels — never a table parse.
 //
@@ -138,14 +148,25 @@ type Helper struct {
 // A container listed by the cleanup label whose inspect lacks it is an error,
 // as in List: the contract moved, and acting on it would be guessing.
 func (m Manager) ListHelpers(ctx context.Context) ([]Helper, error) {
-	var ids, stderr bytes.Buffer
-	res := m.Run.Run(ctx, subproc.Cmd{Name: "docker",
-		Args:   []string{"ps", "--all", "--quiet", "--no-trunc", "--filter", "label=" + m.key(LabelCleanup)},
-		Stdout: limit(&ids, 1<<20), Stderr: limit(&stderr, 64<<10)})
-	if err := failed("docker ps", res, &stderr); err != nil {
-		return nil, err
+	var list []string
+	seen := map[string]bool{}
+	var stderr bytes.Buffer
+	for _, label := range []string{LabelCleanup, LabelLogProbe} {
+		var ids bytes.Buffer
+		stderr.Reset()
+		res := m.Run.Run(ctx, subproc.Cmd{Name: "docker",
+			Args:   []string{"ps", "--all", "--quiet", "--no-trunc", "--filter", "label=" + m.key(label)},
+			Stdout: limit(&ids, 1<<20), Stderr: limit(&stderr, 64<<10)})
+		if err := failed("docker ps", res, &stderr); err != nil {
+			return nil, err
+		}
+		for _, id := range strings.Fields(ids.String()) {
+			if !seen[id] {
+				seen[id] = true
+				list = append(list, id)
+			}
+		}
 	}
-	list := strings.Fields(ids.String())
 	if len(list) == 0 {
 		return nil, nil
 	}
@@ -156,7 +177,7 @@ func (m Manager) ListHelpers(ctx context.Context) ([]Helper, error) {
 	}
 	var out bytes.Buffer
 	stderr.Reset()
-	res = m.Run.Run(ctx, subproc.Cmd{Name: "docker", Args: append([]string{"inspect", "--type", "container"}, list...),
+	res := m.Run.Run(ctx, subproc.Cmd{Name: "docker", Args: append([]string{"inspect", "--type", "container"}, list...),
 		Stdout: &out, Stderr: limit(&stderr, 64<<10)})
 	if err := failed("docker inspect", res, &stderr); err != nil {
 		return nil, err
@@ -168,8 +189,12 @@ func (m Manager) ListHelpers(ctx context.Context) ([]Helper, error) {
 	var found []Helper
 	for _, c := range all {
 		ws, ok := c.Config.Labels[m.key(LabelCleanup)]
+		if !ok {
+			ws, ok = c.Config.Labels[m.key(LabelLogProbe)]
+		}
 		if !ok || !containerID.MatchString(c.ID) {
-			return nil, fmt.Errorf("docker inspect: container %q lacks the %s label it was listed by", c.ID, m.key(LabelCleanup))
+			return nil, fmt.Errorf("docker inspect: container %q lacks the %s or %s label it was listed by", c.ID,
+				m.key(LabelCleanup), m.key(LabelLogProbe))
 		}
 		if _, isWorkspace := c.Config.Labels[m.key(LabelWorkspace)]; isWorkspace {
 			continue
