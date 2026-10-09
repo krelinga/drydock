@@ -425,13 +425,16 @@ sudo apt-get install -y caddy
 > ```sh
 > sudo rm -f /etc/apt/sources.list.d/caddy-stable.list /usr/share/keyrings/caddy-stable-archive-keyring.gpg
 > sudo apt-get update
-> CADDY_VERSION=2.11.7
-> base=https://github.com/caddyserver/caddy/releases/download/v$CADDY_VERSION
-> deb=caddy_${CADDY_VERSION}_linux_amd64.deb
-> cd "$(mktemp -d)"
-> curl -fsSLO "$base/$deb" -fsSLO "$base/caddy_${CADDY_VERSION}_checksums.txt"
-> grep " $deb\$" "caddy_${CADDY_VERSION}_checksums.txt" | sha512sum -c -
-> sudo apt-get install -y "./$deb"
+> (
+>   set -euo pipefail
+>   CADDY_VERSION=2.11.7
+>   base=https://github.com/caddyserver/caddy/releases/download/v$CADDY_VERSION
+>   deb=caddy_${CADDY_VERSION}_linux_amd64.deb
+>   cd "$(mktemp -d)"
+>   curl -fsSLO "$base/$deb" -fsSLO "$base/caddy_${CADDY_VERSION}_checksums.txt"
+>   grep " $deb\$" "caddy_${CADDY_VERSION}_checksums.txt" | sha512sum -c -
+>   sudo apt-get install -y "./$deb"
+> )
 > ```
 
 - [ ] **Verify:**

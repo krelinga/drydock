@@ -419,27 +419,48 @@ their signing keys, rather than the runbook's `.list` files and `apt_key`-era ke
   failed_when: drydock_tool_check.rc != 0 or not drydock_tool_check.stdout.startswith(item.want)
 ```
 
-> **If `apt` fails with `402 Payment Required` from `dl.cloudsmith.io`**, Caddy's apt repository is
-> unavailable. Drop the `Add Caddy's apt repository` task and `caddy` from the package list, and
-> install Caddy's GitHub release `.deb` instead (the same package; no updates from apt, so bump the
-> version by hand). Keep `caddy` in the `Start Docker and Caddy` loop. Add after the package task:
->
-> ```yaml
-> - name: Install Caddy from its GitHub release, checked against the release's checksums
->   ansible.builtin.shell:
->     cmd: |
->       set -euo pipefail
->       cd "$(mktemp -d)"
->       base=https://github.com/caddyserver/caddy/releases/download/v{{ drydock_caddy_version }}
->       deb=caddy_{{ drydock_caddy_version }}_linux_amd64.deb
->       curl -fsSLO "$base/$deb" -fsSLO "$base/caddy_{{ drydock_caddy_version }}_checksums.txt"
->       grep " $deb\$" "caddy_{{ drydock_caddy_version }}_checksums.txt" | sha512sum -c -
->       apt-get install -y "./$deb"
->     creates: /usr/bin/caddy
->     executable: /bin/bash
->   vars:
->     drydock_caddy_version: "2.11.7"
-> ```
+**If `apt` fails with `402 Payment Required` from `dl.cloudsmith.io`**, Caddy's apt repository is
+unavailable. Make three changes to `roles/drydock/tasks/prerequisites.yml`, then re-run. The first
+removes the repository file an earlier run left behind (otherwise the play's first
+`update_cache: true` still fails on it); the third installs the same package from Caddy's GitHub
+release. This is a variant of the blocks above, so `test/ansible/check.sh` does not extract it.
+
+1. Replace the `Add Caddy's apt repository` task with this, **before** the task that refreshes the
+   package lists:
+
+   ```yaml
+   - name: Remove Caddy's apt repository (it answers 402)
+     ansible.builtin.deb822_repository:
+       name: caddy-stable
+       state: absent
+   ```
+
+2. In the `Refresh the package lists` task, delete `or drydock_repo_caddy is changed` from its
+   `when:` (that variable no longer exists), and delete `caddy` from the `Install Docker Engine, Node.js
+   and Caddy` package list. Keep `caddy` in the `Start Docker and Caddy` loop.
+3. Add this task after the package task. It reinstalls only when the installed version differs, so to
+   upgrade Caddy change `drydock_caddy_version`:
+
+   ```yaml
+   - name: Install Caddy from its GitHub release, checked against the release's checksums
+     ansible.builtin.shell:
+       cmd: |
+         set -euo pipefail
+         if [ "$(dpkg-query -W -f='${Version}' caddy 2>/dev/null)" = "{{ drydock_caddy_version }}" ]; then
+           echo unchanged; exit 0
+         fi
+         cd "$(mktemp -d)"
+         base=https://github.com/caddyserver/caddy/releases/download/v{{ drydock_caddy_version }}
+         deb=caddy_{{ drydock_caddy_version }}_linux_amd64.deb
+         curl -fsSLO "$base/$deb" -fsSLO "$base/caddy_{{ drydock_caddy_version }}_checksums.txt"
+         grep " $deb\$" "caddy_{{ drydock_caddy_version }}_checksums.txt" | sha512sum -c -
+         apt-get install -y "./$deb"
+       executable: /bin/bash
+     register: drydock_caddy_deb
+     changed_when: "'unchanged' not in drydock_caddy_deb.stdout"
+     vars:
+       drydock_caddy_version: "2.11.7"
+   ```
 
 
 Not automated from §3: the runbook's `sudo docker run --rm hello-world` (it pulls from Docker Hub

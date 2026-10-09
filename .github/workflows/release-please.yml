@@ -148,7 +148,7 @@ jobs:
         with:
           sparse-checkout: |
             test/install
-            .github/actions/go-suite/install-caddy.sh
+            .github/actions/go-suite
       - name: Download the draft's assets
         env:
           TAG: ${{ needs.release-please.outputs.tag }}
