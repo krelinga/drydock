@@ -134,7 +134,7 @@ jobs:
   # now. The bytes installed are the bytes that will be published. The
   # harness is test/install from this workflow's own commit, not the tag's:
   # it tests the downloaded assets, not the tag's source, and its Dockerfile
-  # (unpinned Debian, Caddy's live apt repository) is the part most likely to
+  # (unpinned Debian, Caddy's GitHub release .deb) is the part most likely to
   # need a fix that a resumed draft must pick up.
   verify:
     needs: [release-please, assets]
@@ -146,7 +146,9 @@ jobs:
     steps:
       - uses: actions/checkout@v5
         with:
-          sparse-checkout: test/install
+          sparse-checkout: |
+            test/install
+            .github/actions/go-suite
       - name: Download the draft's assets
         env:
           TAG: ${{ needs.release-please.outputs.tag }}

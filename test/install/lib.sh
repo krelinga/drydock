@@ -13,7 +13,8 @@ fi
 start_server() {
 	local name="$1" here state
 	here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-	docker build -q -t drydock-install-test "$here" >/dev/null
+	docker build -q -t drydock-install-test \
+		--build-arg "CADDY_VERSION=$(sed -n 's/^CADDY_VERSION=//p' "$here/../../.github/actions/go-suite/install-caddy.sh")" "$here" >/dev/null
 	docker run -d --name "$name" --privileged --cgroupns=host \
 		-v /sys/fs/cgroup:/sys/fs/cgroup:rw --tmpfs /run --tmpfs /run/lock \
 		drydock-install-test >/dev/null

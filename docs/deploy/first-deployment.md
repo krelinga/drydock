@@ -417,6 +417,26 @@ sudo apt-get update
 sudo apt-get install -y caddy
 ```
 
+> **If `apt-get update` fails with `402 Payment Required` from `dl.cloudsmith.io`**, Caddy's apt
+> repository is unavailable (it was, in October 2026). Remove the repository and install the same
+> package from Caddy's GitHub release instead (amd64; it provides the same `caddy` user and
+> `caddy.service`, but gets no updates from apt, so bump the version by hand):
+>
+> ```sh
+> sudo rm -f /etc/apt/sources.list.d/caddy-stable.list /usr/share/keyrings/caddy-stable-archive-keyring.gpg
+> sudo apt-get update
+> (
+>   set -euo pipefail
+>   CADDY_VERSION=2.11.7
+>   base=https://github.com/caddyserver/caddy/releases/download/v$CADDY_VERSION
+>   deb=caddy_${CADDY_VERSION}_linux_amd64.deb
+>   cd "$(mktemp -d)"
+>   curl -fsSLO "$base/$deb" -fsSLO "$base/caddy_${CADDY_VERSION}_checksums.txt"
+>   grep " $deb\$" "caddy_${CADDY_VERSION}_checksums.txt" | sha512sum -c -
+>   sudo apt-get install -y "./$deb"
+> )
+> ```
+
 - [ ] **Verify:**
   ```sh
   caddy version                                   # v2.x
