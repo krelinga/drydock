@@ -24,8 +24,9 @@ const testPrefix = "drydock.test.provision"
 // fakeDocker is a docker stand-in holding its containers in a file, one
 // "<id> <workspace> <status>" line each — and a fourth field "legacy" for a
 // container an earlier Drydock made, with the broker socket mounted as a
-// file, which inspect then reports in Mounts — so up, ps, inspect, stop and rm all
-// see one world. It records argv beside the devcontainer fake's, first line
+// file, which inspect then reports in Mounts — so up, ps, inspect, stop, rm
+// and unpause all see one world (ps honouring a status= filter, so a
+// "paused" container is listed as Docker lists one). It records argv beside the devcontainer fake's, first line
 // "docker". A file docker-fail-<subcommand> in dir makes that subcommand
 // fail, and docker-fail-cleanup-ps only the helper label's listing;
 // docker-sticky makes rm report success and remove nothing. run is the
@@ -43,23 +44,37 @@ touch "$st" "$hs"
 if [ -e "$dir/docker-fail-$1" ]; then echo "docker $1: the daemon said no" >&2; exit 1; fi
 case "$1" in
 ps)
-  ws=
+  ws=; status=
   for a in "$@"; do
     case "$a" in
+    status=*) status=${a#status=} ;;
     label=*.workspace=*) ws=${a#label=*.workspace=} ;;
     label=*.cleanup=*) [ -e "$dir/docker-fail-cleanup-ps" ] && { echo "docker ps: no" >&2; exit 1; }; exit 0 ;;
     label=*.cleanup) awk '{print $1}' "$hs"; exit 0 ;;
     label=*.log-probe) awk '{print $1}' "$dir/probes" 2>/dev/null; exit 0 ;;
     esac
   done
-  if [ -n "$ws" ]; then awk -v ws="$ws" '$2==ws {print $1}' "$st"; else awk '{print $1}' "$st"; fi ;;
+  awk -v ws="$ws" -v s="$status" '(ws=="" || $2==ws) && (s=="" || $3==s) {print $1}' "$st" ;;
+pause)
+  while [ "$1" != -- ]; do shift; done; shift
+  for id; do
+    awk -v id="$id" '$1==id && $3=="running" {f=1} END {exit !f}' "$st" || { echo "Container $id is not running" >&2; exit 1; }
+    awk -v id="$id" '{ if ($1==id) $3="paused"; print }' "$st" > "$st.t" && mv "$st.t" "$st"
+  done ;;
+unpause)
+  # As Docker 29.8.2: a container that is not paused is refused.
+  while [ "$1" != -- ]; do shift; done; shift
+  for id; do
+    awk -v id="$id" '$1==id && $3=="paused" {f=1} END {exit !f}' "$st" || { echo "Container $id is not paused" >&2; exit 1; }
+    awk -v id="$id" '{ if ($1==id) $3="running"; print }' "$st" > "$st.t" && mv "$st.t" "$st"
+  done ;;
 inspect)
   shift 3
   printf '['
   sep=
   for id; do
     printf '%s' "$sep"
-    awk -v id="$id" -v p='` + testPrefix + `' '$1==id {printf "{\"Id\":\"%s\",\"State\":{\"Status\":\"%s\",\"Running\":%s},\"Config\":{\"Labels\":{\"%s.workspace\":\"%s\",\"%s.repository-id\":\"101\",\"%s.repo\":\"krelinga/alpha\",\"%s.branch\":\"main\"}},\"Mounts\":[%s]}", $1, $3, ($3=="running"?"true":"false"), p, $2, p, p, p, ($4=="legacy"?"{\"Type\":\"bind\",\"Destination\":\"/run/drydock/broker.sock\"}":"{\"Type\":\"bind\",\"Destination\":\"/run/drydock\"}")}' "$st"
+    awk -v id="$id" -v p='` + testPrefix + `' '$1==id {printf "{\"Id\":\"%s\",\"State\":{\"Status\":\"%s\",\"Running\":%s},\"Config\":{\"Labels\":{\"%s.workspace\":\"%s\",\"%s.repository-id\":\"101\",\"%s.repo\":\"krelinga/alpha\",\"%s.branch\":\"main\"}},\"Mounts\":[%s]}", $1, $3, (($3=="running" || $3=="paused")?"true":"false"), p, $2, p, p, p, ($4=="legacy"?"{\"Type\":\"bind\",\"Destination\":\"/run/drydock/broker.sock\"}":"{\"Type\":\"bind\",\"Destination\":\"/run/drydock\"}")}' "$st"
     awk -v id="$id" -v p='` + testPrefix + `' '$1==id {printf "{\"Id\":\"%s\",\"State\":{\"Status\":\"exited\",\"Running\":false},\"Config\":{\"Labels\":{\"%s.cleanup\":\"%s\"}}}", $1, p, $2}' "$hs"
     sep=,
   done

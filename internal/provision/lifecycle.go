@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"time"
 
 	"github.com/krelinga/drydock/internal/broker"
 	"github.com/krelinga/drydock/internal/container"
@@ -92,8 +93,9 @@ func (p *Provisioner) Stop(ctx context.Context, id string) error {
 
 func (p *Provisioner) stopJob(ctx context.Context, w workspace.Workspace) error {
 	book := context.WithoutCancel(ctx)
+	un := &unpaused{}
 	steps := []subStep{
-		{SubSessionServer, func(ctx context.Context) error { return p.stopSupervisor(ctx, w) }},
+		{SubSessionServer, func(ctx context.Context) error { return p.stopSupervisor(ctx, w, un) }},
 		{SubContainer, func(ctx context.Context) error {
 			ids, err := p.Containers.Find(ctx, w.ID)
 			if err != nil {
@@ -127,6 +129,11 @@ func (p *Provisioner) stopJob(ctx context.Context, w workspace.Workspace) error 
 		detail := StopFailedDetail("")
 		if errors.As(err, &pub) {
 			detail = StopFailedDetail(pub.Public())
+		}
+		// A container this stop unpaused and did not stop goes back to the
+		// pause the operator made, with its access as it was.
+		if said := p.repause(w, un, true); said != "" {
+			detail += " " + said
 		}
 		var ill workspace.ErrIllegalMove
 		if aerr := p.Workspaces.Annotate(book, w.ID, workspace.Running, detail); aerr != nil && !errors.As(aerr, &ill) {
@@ -237,8 +244,9 @@ func (p *Provisioner) deleteJob(ctx context.Context, id string) error {
 	if err != nil {
 		return err
 	}
+	un := &unpaused{}
 	steps := []subStep{
-		{SubSessionServer, func(ctx context.Context) error { return p.stopSupervisor(ctx, w) }},
+		{SubSessionServer, func(ctx context.Context) error { return p.stopSupervisor(ctx, w, un) }},
 		{SubContainers, func(ctx context.Context) error {
 			ids, err := p.Containers.Find(ctx, id)
 			if err != nil {
@@ -297,6 +305,11 @@ func (p *Provisioner) deleteJob(ctx context.Context, id string) error {
 		detail := "The delete stopped part-way; delete again to retry."
 		if errors.As(err, &pub) {
 			detail = "The delete stopped part-way: " + pub.Public() + " Delete again to retry."
+		}
+		// Halted or cancelled before its containers went: what it unpaused
+		// is paused again, its access left closed (the workspace is deleting).
+		if said := p.repause(w, un, false); said != "" {
+			detail += " " + said
 		}
 		if aerr := p.Workspaces.Annotate(book, id, workspace.Deleting, detail); aerr != nil {
 			err = errors.Join(err, aerr)
@@ -415,11 +428,12 @@ func (p *Provisioner) SweepGuardPolicies(ctx context.Context) error {
 	return errors.Join(errs...)
 }
 
-func (p *Provisioner) stopSupervisor(ctx context.Context, w workspace.Workspace) error {
+func (p *Provisioner) stopSupervisor(ctx context.Context, w workspace.Workspace, un *unpaused) error {
 	if p.StopSupervisor == nil {
 		return workspace.Note("Nothing to do yet: the Claude Code session server arrives with Claude support.")
 	}
-	if err := p.StopSupervisor(ctx, w); err != nil {
+	err := p.unpauseAndStopSupervisor(ctx, w, un)
+	if err != nil {
 		if errors.Is(err, container.ErrSessionSurvivedKill) {
 			// SIGTERM first exists so the server deregisters (Spike 02); one
 			// that outlived SIGKILL will not, and asking again cannot end
@@ -431,17 +445,196 @@ func (p *Provisioner) stopSupervisor(ctx context.Context, w workspace.Workspace)
 			return workspace.Note("The session server was still running after SIGKILL, so it ends with the container, in the next step.")
 		}
 		if errors.Is(err, container.ErrSessionContainerPaused) {
-			// Frozen, not gone, and Docker will not exec into it to signal
-			// the server; but docker stop and docker rm --force do end a
-			// paused container (measured), so the next sub-step ends it, as
-			// for a server that outlived SIGKILL. Stopping here would leave
-			// a delete stuck until someone unpaused the container by hand.
-			p.logf("drydock: workspace %s: the container is paused, so the session server could not be signalled; the container step ends it: %v", w.ID, err)
-			return workspace.Note("The workspace's container is paused, so the session server could not be signalled; it ends with the container, in the next step.")
+			// Still paused: Docker would not unpause it, or it was paused
+			// again. Frozen, not gone, and Docker will not exec into it to
+			// signal the server; but docker stop and docker rm --force do
+			// end a paused container (measured), so the next sub-step ends
+			// it, as for a server that outlived SIGKILL. Stopping here would
+			// leave a delete stuck until someone unpaused the container by
+			// hand. The cost is the one the unpause exists to avoid: killed
+			// with its container, the server never deregisters (Spike 02).
+			p.logf("drydock: workspace %s: the container is paused and could not be unpaused, so the session server could not be signalled; the container step ends it: %v", w.ID, err)
+			return workspace.Note(PausedNote)
 		}
 		return workspace.Public("Drydock could not stop the session server.", err)
 	}
+	if len(un.ids) > 0 {
+		return workspace.Note(UnpausedNote)
+	}
 	return workspace.Note("Stopped the session server, SIGTERM first, so its environment is kept for the next start.")
+}
+
+// UnpausedNote is the session_server sub-step's note when the container was
+// paused and Drydock unpaused it to stop the server.
+const UnpausedNote = "The workspace's container was paused, so Drydock closed its GitHub access and unpaused it to stop the session server, SIGTERM first, so its environment is kept for the next start."
+
+// PausedNote is the session_server sub-step's note when the container is
+// paused and stays paused: the server is ended with the container — docker
+// stop thaws a paused container to signal PID 1 alone, and PID 1's exit
+// SIGKILLs the rest (measured, test/container) — so it does not release its
+// environment, and the next start waits for the registration to lapse
+// (Spike 02: one to three minutes, shown as waiting_registration, a wait and
+// not a failure).
+const PausedNote = "The workspace's container is paused and Drydock could not unpause it, so the session server could not be signalled; it ends with the container, in the next step. " +
+	"Ended that way it does not release its environment, so the next start may wait a few minutes for it."
+
+// unpaused is what one stop, rebuild or delete unpaused: the containers to
+// pause again if the action ends without ending them.
+type unpaused struct {
+	ids []string
+}
+
+// Kinds of the events an action's unpause and re-pause write, which join the
+// workspace's feed (a rebuild's unpause has no sub-step to note it on).
+// data: {action, count} and {action, count, failed}.
+const (
+	KindUnpaused = "container.unpaused"
+	KindRepaused = "container.repaused"
+)
+
+// unpauseAndStopSupervisor is how a workspace stop, rebuild or delete stops
+// the session server: the workspace's container is unpaused first, and then
+// the server is stopped as always, SIGTERM first. Each of those ends the
+// container anyway, but a server ended with its container — docker stop
+// signals PID 1 alone, even of a paused container, which it thaws to do so,
+// and docker rm --force kills — is SIGKILLed without deregistering, which
+// holds the folder against the next start for minutes (Spike 02); unpaused,
+// it gets its SIGTERM.
+//
+// **Access goes before the unpause.** A pause can be the operator's brake on
+// an agent, and the unpause resumes every process in the container, not just
+// the server, for as long as the stop takes. So the workspace's broker socket
+// is closed first (§9.1: access follows Drydock's state, and this workspace
+// is on its way out): what runs in that window gets no *new* token or
+// secret — a fresh git or gh call fails, a tool command's secrets prelude
+// exits 69. It withholds only what is fetched after the close: a process
+// frozen after its fetch (a git push past its credential helper, a command
+// whose prelude ran) keeps what it holds. The server needs neither to
+// deregister. If the
+// socket cannot be closed, nothing is unpaused, and the server ends with its
+// container as for one that stays paused. A stop and a delete close the
+// socket later anyway; a rebuild reopens it at step 5.
+//
+// A pause that lands after the unpause (the stop then fails with
+// container.ErrSessionContainerPaused) is unpaused once more and the stop
+// asked again. What was unpaused is recorded in un, so an action that then
+// ends without ending the container pauses it again (repause). A session
+// server restart alone never comes here: it must not change the container's
+// state.
+func (p *Provisioner) unpauseAndStopSupervisor(ctx context.Context, w workspace.Workspace, un *unpaused) error {
+	unpause := func() bool {
+		ids, err := p.Containers.Paused(ctx, w.ID)
+		if err != nil || len(ids) == 0 {
+			if err != nil {
+				p.logf("drydock: workspace %s: listing paused containers before stopping the session server: %v", w.ID, err)
+			}
+			return false
+		}
+		if p.Broker != nil {
+			if err := p.Broker.Close(w.ID); err != nil {
+				p.logf("drydock: workspace %s: closing GitHub access before unpausing the container, so it stays paused: %v", w.ID, err)
+				return false
+			}
+		}
+		// Recorded before the unpause, so one that half-worked is paused
+		// again all the same (repause pauses only what is running).
+		un.ids = append(un.ids, ids...)
+		if err := p.Containers.Unpause(ctx, ids); err != nil {
+			p.logf("drydock: workspace %s: unpausing the container before stopping the session server: %v", w.ID, err)
+			return false
+		}
+		p.emit(context.WithoutCancel(ctx), w.ID, events.Info, KindUnpaused,
+			"The workspace's container was paused; Drydock closed its GitHub access and unpaused it to stop the session server cleanly.",
+			map[string]any{"count": len(ids)})
+		return true
+	}
+	unpause()
+	err := p.StopSupervisor(ctx, w)
+	if errors.Is(err, container.ErrSessionContainerPaused) && ctx.Err() == nil && unpause() {
+		err = p.StopSupervisor(ctx, w)
+	}
+	return err
+}
+
+// repauseTimeout bounds a re-pause, which runs on a context of its own: the
+// action's may be the very thing that was cancelled.
+const repauseTimeout = 30 * time.Second
+
+// repause pauses again what an action unpaused and then did not end — a stop
+// or delete that halted or was cancelled before its container step, a
+// rebuild that failed before its step 3 stopped the container — so the
+// operator's pause is not silently undone. A container the action ended is
+// not running and is left alone, so it is safe to call after any outcome.
+// reopen (a stop's, whose workspace stays running) reopens the broker socket
+// once everything is paused again, restoring the state the action found; a
+// container that could not be paused again keeps its access closed. It
+// returns a sentence for the action's failure detail, or "" when there was
+// nothing to pause again.
+func (p *Provisioner) repause(w workspace.Workspace, un *unpaused, reopen bool) string {
+	if un == nil || len(un.ids) == 0 {
+		return ""
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), repauseTimeout)
+	defer cancel()
+	n, err := p.Containers.Repause(ctx, w.ID, un.ids)
+	if n == 0 && err == nil {
+		return ""
+	}
+	// Reopened only for a workspace still running: one a delete has taken
+	// over is deleting, and has no access. A running one left without
+	// access says how to get it back (a delete's is on its way out, and a
+	// failed rebuild's start reopens it at step 5).
+	running := false
+	if reopen {
+		cur, gerr := p.Workspaces.Get(ctx, w.ID)
+		running = gerr == nil && cur.State == workspace.Running
+	}
+	hint := func(s string) string {
+		if running {
+			return s + " " + RestoreAccessHint
+		}
+		return s
+	}
+	if err != nil {
+		p.logf("drydock: workspace %s: pausing the container again: %v", w.ID, err)
+		said := hint(RepauseFailedSentence)
+		p.emit(ctx, w.ID, events.Warn, KindRepaused, said, map[string]any{"count": n, "failed": true})
+		return said
+	}
+	said := RepausedClosedSentence
+	switch {
+	case p.Broker == nil:
+		said = RepausedSentence // there was no access to close
+	case running:
+		if oerr := p.Broker.Open(ctx, w.ID); oerr != nil {
+			p.logf("drydock: workspace %s: reopening GitHub access after pausing the container again: %v", w.ID, oerr)
+			said = hint(RepausedClosedSentence)
+		} else {
+			said = RepausedSentence
+		}
+	}
+	p.emit(ctx, w.ID, events.Info, KindRepaused, said, map[string]any{"count": n, "failed": false})
+	return said
+}
+
+// The sentences repause adds to a failed action's detail.
+const (
+	RepausedSentence       = "Drydock had unpaused the workspace's container to stop its session server; it is paused again, as it was."
+	RepausedClosedSentence = "Drydock had unpaused the workspace's container to stop its session server; it is paused again, with its GitHub access closed."
+	RepauseFailedSentence  = "Drydock had unpaused the workspace's container to stop its session server and could not pause it again: it is running, with its GitHub access closed."
+	// RestoreAccessHint follows either closed-access sentence on a stop,
+	// whose workspace stays running: a start's or a rebuild's step 5 is
+	// what opens the socket again.
+	RestoreAccessHint = "To restore its GitHub access, stop the workspace and start it again, or rebuild it."
+)
+
+func (p *Provisioner) emit(ctx context.Context, id string, level events.Level, kind, msg string, data map[string]any) {
+	if p.Events == nil {
+		return
+	}
+	if _, err := p.Events.Emit(ctx, id, level, kind, msg, data); err != nil {
+		p.logf("drydock: workspace %s: writing %s: %v", id, kind, err)
+	}
 }
 
 func (p *Provisioner) closeSocket(id string) error {

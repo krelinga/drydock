@@ -96,12 +96,22 @@
 // Drydock's state; a failed postCreateCommand's container is still up, but not
 // handed over), and start or rebuild reopens it at step 5. StopSupervisor is
 // the supervisor's Stop, run *before* the container in a stop, a rebuild and a
-// delete. ResumeDelete is reconciliation's. A failed stop annotates the
-// still-running row (StopFailedDetail), so a list snapshot says it as the live
-// events did; a stop asked again, and a resumed delete, clear their annotation
-// under the lock before the job's first event. SweepHelpers is the boot sweep:
-// after reconciliation, cleanup helpers and docker guard log probes by this
-// instance's labels, skipping any
+// delete — after unpausing the workspace's container if it is paused
+// (container.Unpause), since each of those ends the container anyway and a
+// server ended with its container never deregisters (Spike 02). The broker
+// socket is closed before the unpause, so nothing the unpause resumes can
+// fetch a new token or secret; a pause that lands after the unpause is unpaused and
+// the stop asked once more, and one that stays paused carries on to the
+// container step with PausedNote. An action that then stops short of ending
+// the container — a halted or cancelled stop or delete, a rebuild failing
+// before step 3 — pauses it again (repause; a stop also reopens the socket)
+// and says so in its detail. The supervisor's own restart never unpauses.
+// ResumeDelete is reconciliation's.
+// A failed stop annotates the still-running row (StopFailedDetail), so a list
+// snapshot says it as the live events did; a stop asked again, and a resumed
+// delete, clear their annotation under the lock before the job's first event.
+// SweepHelpers is the boot sweep: after reconciliation, cleanup helpers and
+// docker guard log probes by this instance's labels, skipping any
 // workspace with a job in flight, under the lock.
 //
 // Crash-tested by cutting a delete off after every sub-step and resuming in a
@@ -584,13 +594,24 @@ func (p *Provisioner) restartWith(ctx context.Context, id string, rebuild bool, 
 		return err
 	}
 	p.launch(id, "run", func(ctx context.Context) error {
+		un := &unpaused{}
 		if wasRunning && p.StopSupervisor != nil {
-			// Phase 5: the server goes before its container does.
-			if err := p.StopSupervisor(ctx, w); err != nil {
+			// Phase 5: the server goes before its container does — unpaused
+			// first if it is paused (its access closed before that), since
+			// the rebuild replaces the container anyway, and a server ended
+			// with it would hold the folder against the new one's start for
+			// minutes. Step 5 reopens the access.
+			if err := p.unpauseAndStopSupervisor(ctx, w, un); err != nil {
 				p.logf("drydock: workspace %s: stopping the session server before a rebuild: %v", id, err)
 			}
 		}
-		return p.run(ctx, id, first, removeExisting)
+		err := p.run(ctx, id, first, removeExisting)
+		// A run that failed or was cancelled before step 3 stopped the old
+		// container leaves it running: what was unpaused is paused again.
+		// After a run that got that far there is nothing running to pause.
+		// The failure is the step's; the re-pause is said in the feed.
+		p.repause(w, un, false)
+		return err
 	})
 	return nil
 }

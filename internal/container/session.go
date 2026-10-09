@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -81,11 +82,15 @@ const RemoteControlLaunch = `printf '%s\n' "$$" > "$1" && ` +
 // signal, which a stop reports as one that survived SIGKILL. (The window
 // between the first test and the kill is the pid file's own, and sh has no
 // way to close it.)
+//
+// In rc, stderr goes to /dev/null before the cmdline is opened: a shell
+// applies redirections left to right, so with `<` first a pid that is gone
+// made the shell itself print "cannot open /proc/N/cmdline" to stderr.
 const remoteControlSignal = `f=$1; s=$2
 [ -r "$f" ] || exit 3
 p=$(cat "$f")
 case $p in ''|*[!0-9]*) exit 3;; esac
-rc() { tr '\000' '\n' < "/proc/$p/cmdline" 2>/dev/null | grep -qx remote-control; }
+rc() { tr '\000' '\n' 2>/dev/null <"/proc/$p/cmdline" | grep -qx remote-control; }
 rc || exit 3
 kill -"$s" "$p" 2>/dev/null && exit 0
 rc || exit 3
@@ -107,9 +112,10 @@ var ErrSessionSurvivedKill = errors.New("the session server did not exit after S
 // into it, so whether a session server is there — and whether a signal
 // reached it — cannot be asked until it is unpaused. Never "no server": a
 // stop that took a paused container's silence for the server's absence
-// would call a frozen server stopped. `docker stop` and `docker rm --force`
-// do end a paused container (measured, Docker 29.8.2), so a workspace stop
-// or delete carries on to its container step.
+// would call a frozen server stopped. A workspace stop, rebuild or delete
+// unpauses the container first (Unpause); if it stays paused, `docker stop`
+// and `docker rm --force` still end it (measured, Docker 29.8.2), so they
+// carry on to their container step.
 var ErrSessionContainerPaused = errors.New("container: the workspace's container is paused, so its session server cannot be signalled")
 
 // SessionSpec is one workspace's session server.
@@ -199,7 +205,9 @@ const (
 // and reports whether a server was there to receive it. No running container
 // is no server: a stopped container's processes are gone with it. A paused
 // one is not stopped: its processes are frozen and Docker will not exec into
-// it, so it is ErrSessionContainerPaused, never "no server".
+// it, so it is ErrSessionContainerPaused, never "no server" — and so is one
+// paused between the listing and the exec, whose refused exec is told from
+// Docker failing by listing paused containers again.
 func (m Manager) SignalSession(ctx context.Context, workspaceID string, sig SessionSignal, pidFile string) (bool, error) {
 	switch sig {
 	case SessionTerm, SessionKill, SessionAlive:
@@ -222,6 +230,12 @@ func (m Manager) SignalSession(ctx context.Context, workspaceID string, sig Sess
 	if len(paused) > 0 {
 		errs = append(errs, ErrSessionContainerPaused)
 	}
+	// Each exec that did not answer, by container. One paused after the
+	// listing above is refused (exit 1), which alone reads as Docker
+	// failing; it is told apart below by listing again, never by the
+	// daemon's wording.
+	failed := map[string]error{}
+	var order []string
 	for _, id := range ids {
 		var stderr bytes.Buffer
 		res := m.Run.Run(ctx, subproc.Cmd{Name: "docker",
@@ -229,7 +243,8 @@ func (m Manager) SignalSession(ctx context.Context, workspaceID string, sig Sess
 			Stderr: limit(&stderr, 16<<10)})
 		switch {
 		case res.Err != nil:
-			errs = append(errs, fmt.Errorf("docker exec: %w", res.Err))
+			failed[id] = fmt.Errorf("docker exec: %w", res.Err)
+			order = append(order, id)
 		case res.ExitCode == 0:
 			found = true
 		case res.ExitCode == 3:
@@ -237,11 +252,72 @@ func (m Manager) SignalSession(ctx context.Context, workspaceID string, sig Sess
 			found = true
 			errs = append(errs, fmt.Errorf("%w: %s", ErrSessionSignalRefused, sig))
 		default:
-			errs = append(errs, fmt.Errorf("docker exec: signalling the session server exited %d: %s",
-				res.ExitCode, strings.TrimSpace(stderr.String())))
+			failed[id] = fmt.Errorf("docker exec: signalling the session server exited %d: %s",
+				res.ExitCode, strings.TrimSpace(stderr.String()))
+			order = append(order, id)
+		}
+	}
+	if len(failed) > 0 && ctx.Err() == nil {
+		// Paused between the listing and the exec: the paused case, so a
+		// workspace stop or delete carries on rather than halting on what
+		// looked like Docker failing. A listing that fails changes nothing.
+		if now, err := m.findByStatus(ctx, workspaceID, "paused"); err == nil {
+			for _, id := range now {
+				if failed[id] == nil {
+					continue
+				}
+				delete(failed, id)
+				if !errors.Is(errors.Join(errs...), ErrSessionContainerPaused) {
+					errs = append(errs, ErrSessionContainerPaused)
+				}
+			}
+		}
+	}
+	for _, id := range order {
+		if e := failed[id]; e != nil {
+			errs = append(errs, e)
 		}
 	}
 	return found, errors.Join(errs...)
+}
+
+// Paused returns the id of every paused container carrying the workspace's
+// label — found by label, never a cached id.
+func (m Manager) Paused(ctx context.Context, workspaceID string) ([]string, error) {
+	return m.findByStatus(ctx, workspaceID, "paused")
+}
+
+// Unpause unpauses these containers (full ids, after "--"). A workspace
+// stop, rebuild or delete unpauses the workspace's paused containers before
+// stopping the session server (internal/provision), so the server gets its
+// SIGTERM and deregisters (Spike 02). Without it the server is SIGKILLed
+// with its container: `docker stop` of a paused container thaws it to
+// deliver SIGTERM to PID 1 alone (measured, Docker 29.8.2: exit 0 in under a
+// second with the CLI's PID 1, which exits on SIGTERM), PID 1's exit kills
+// everything else in it, and `docker rm --force` kills outright — and a
+// server killed so holds the folder's registration against the next start
+// for minutes. A restart of the session server alone never unpauses: that
+// must not change the container's state.
+func (m Manager) Unpause(ctx context.Context, ids []string) error {
+	return m.each(ctx, "unpause", []string{"unpause"}, ids)
+}
+
+// Repause pauses again those of ids that are running now and still carry
+// the workspace's label — the containers an action unpaused and then did not
+// end — and returns how many it paused. One the action ended (stopped,
+// removed) is not running and is left alone.
+func (m Manager) Repause(ctx context.Context, workspaceID string, ids []string) (int, error) {
+	running, err := m.findRunning(ctx, workspaceID)
+	if err != nil {
+		return 0, err
+	}
+	var again []string
+	for _, id := range running {
+		if slices.Contains(ids, id) {
+			again = append(again, id)
+		}
+	}
+	return len(again), m.each(ctx, "pause", []string{"pause"}, again)
 }
 
 // findRunning is Find restricted to running containers. Docker's

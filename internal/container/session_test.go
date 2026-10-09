@@ -146,3 +146,159 @@ esac`
 		})
 	}
 }
+
+// A container paused between SignalSession's listing and its `docker exec`
+// is refused by Docker (exit 1, "is paused"), which on its own reads as
+// Docker failing — and a workspace stop or delete halted on that at its
+// session_server sub-step. Listed again as paused after the failure, it is
+// the paused case, ErrSessionContainerPaused. The control is the same
+// refused exec with the container not paused on the second look — Docker
+// really failing — which stays a plain error and is never called paused.
+func TestAContainerPausedBeforeTheExecIsPaused(t *testing.T) {
+	for _, pausedLater := range []bool{true, false} {
+		t.Run(fmt.Sprintf("paused on the second look=%v", pausedLater), func(t *testing.T) {
+			state := t.TempDir()
+			later := "no"
+			if pausedLater {
+				later = "yes"
+			}
+			body := `case "$*" in
+*status=running*) echo ` + idA + `; exit 0;;
+*status=paused*) [ -e ` + state + `/execed ] && [ ` + later + ` = yes ] && echo ` + idA + `; exit 0;;
+exec*) : > ` + state + `/execed; echo "Error response from daemon: something" >&2; exit 1;;
+esac
+exit 99`
+			run, dir := fakes(t, map[string]string{"docker": body})
+			m := Manager{Run: run, LabelPrefix: "dd"}
+			_, err := m.SignalSession(context.Background(), wsID, SessionTerm, "")
+			if err == nil {
+				t.Fatal("a refused exec was no error")
+			}
+			if got := errors.Is(err, ErrSessionContainerPaused); got != pausedLater {
+				t.Errorf("paused %v (%v), want %v", got, err, pausedLater)
+			}
+			// Told apart by listing, not by the daemon's words, which here
+			// say nothing about pausing.
+			ps := 0
+			for _, a := range argv(t, dir, "docker") {
+				if a == "status=paused" {
+					ps++
+				}
+			}
+			if ps != 2 {
+				t.Errorf("%d listings of paused containers, want 2 (before and after the exec)", ps)
+			}
+		})
+	}
+}
+
+// Paused lists the workspace's paused containers by label, and Unpause
+// unpauses them by full id after "--". The control is a workspace with none
+// paused: an empty listing, and nothing asked of Docker after it.
+func TestUnpauseUnpausesThePausedContainers(t *testing.T) {
+	for _, paused := range []bool{true, false} {
+		t.Run(fmt.Sprintf("paused=%v", paused), func(t *testing.T) {
+			list := ""
+			if paused {
+				list = "echo " + idA
+			}
+			run, dir := fakes(t, map[string]string{"docker": `case "$1" in
+ps) ` + list + `;;
+unpause) ;;
+*) exit 99;;
+esac`})
+			m := Manager{Run: run, LabelPrefix: "dd"}
+			ids, err := m.Paused(context.Background(), wsID)
+			if err == nil {
+				err = m.Unpause(context.Background(), ids)
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			got := strings.Join(argv(t, dir, "docker"), " ")
+			if !strings.Contains(got, "status=paused --filter label=dd.workspace="+wsID) {
+				t.Errorf("listing %q", got)
+			}
+			if paused {
+				if len(ids) != 1 || !strings.Contains(got, "unpause -- "+idA) {
+					t.Errorf("unpaused %v: %q", ids, got)
+				}
+				return
+			}
+			if len(ids) != 0 || strings.Contains(got, "unpause") {
+				t.Errorf("control: unpaused %v: %q", ids, got)
+			}
+		})
+	}
+}
+
+// Repause pauses again only those of the ids given that are running now
+// under the workspace's label: an action's unpaused container it did not
+// end. One it ended (not running) and one it never unpaused (running, but
+// not among the ids) are left alone.
+func TestRepausePausesOnlyWhatWasUnpausedAndStillRuns(t *testing.T) {
+	run, dir := fakes(t, map[string]string{"docker": `case "$*" in
+ps*status=running*) echo ` + idA + `; echo ` + idB + `;;
+pause*) ;;
+*) exit 99;;
+esac`})
+	m := Manager{Run: run, LabelPrefix: "dd"}
+	idC := strings.Repeat("c", 64) // unpaused, and since ended: not running
+	n, err := m.Repause(context.Background(), wsID, []string{idA, idC})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := strings.Join(argv(t, dir, "docker"), " ")
+	i := strings.Index(got, "pause -- ")
+	if i < 0 {
+		t.Fatalf("nothing paused: %q", got)
+	}
+	call := strings.Fields(got[i:])
+	if n != 1 || strings.Join(call, " ") != "pause -- "+idA {
+		t.Errorf("paused %d with %q, want only %s", n, call, idA)
+	}
+}
+
+// The signal script says nothing on stderr when the pid file names a pid
+// that is gone: rc sends stderr to /dev/null before it opens
+// /proc/N/cmdline, since a shell applies redirections left to right. The
+// control is the old order, `<` before `2>`, under the same shell and pid,
+// which does print the shell's "cannot open" — so the case really opens a
+// missing file, and the silence is the order's doing.
+func TestTheSignalScriptIsQuietForAPidThatIsGone(t *testing.T) {
+	gone := 0
+	for p := 4194000; p > 1000; p-- {
+		if _, err := os.Stat(fmt.Sprintf("/proc/%d", p)); os.IsNotExist(err) {
+			gone = p
+			break
+		}
+	}
+	pidFile := filepath.Join(t.TempDir(), "rc.pid")
+	if err := os.WriteFile(pidFile, []byte(strconv.Itoa(gone)+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	run := func(script string) (int, string) {
+		cmd := exec.Command("sh", "-c", script, "sh", pidFile, "0")
+		var stderr strings.Builder
+		cmd.Stderr = &stderr
+		err := cmd.Run()
+		code := 0
+		var ee *exec.ExitError
+		if errors.As(err, &ee) {
+			code = ee.ExitCode()
+		} else if err != nil {
+			t.Fatal(err)
+		}
+		return code, stderr.String()
+	}
+	if code, stderr := run(remoteControlSignal); code != 3 || stderr != "" {
+		t.Errorf("exit %d, stderr %q; want 3 and nothing", code, stderr)
+	}
+	old := strings.Replace(remoteControlSignal, `2>/dev/null <"/proc/$p/cmdline"`, `<"/proc/$p/cmdline" 2>/dev/null`, 1)
+	if old == remoteControlSignal {
+		t.Fatal("control: the script's redirection is not where this test expects it")
+	}
+	if code, stderr := run(old); code != 3 || !strings.Contains(stderr, "cmdline") {
+		t.Errorf("control: the old order gave exit %d, stderr %q; want 3 and the shell's complaint", code, stderr)
+	}
+}
