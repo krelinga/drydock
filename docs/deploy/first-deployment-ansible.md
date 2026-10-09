@@ -293,7 +293,8 @@ their signing keys, rather than the runbook's `.list` files and `apt_key`-era ke
 > [!NOTE]
 > **If you already followed the runbook by hand on this server,** its `docker.list` and
 > `caddy-stable.list` describe the same repositories with a different `Signed-By`, and apt refuses
-> the pair (`Conflicting values set for option Signed-By`). The fourth task removes them. A host
+> the pair (`Conflicting values set for option Signed-By`). The task that removes the runbook's
+> hand-written source lists deletes them (Caddy's goes even earlier, before the first cache refresh). A host
 > with **Debian's `docker.io`** installed (which the installer also accepts) gets it replaced by
 > Docker's packages; remove `docker-ce*` from the list if you would rather keep `docker.io`.
 
@@ -323,6 +324,7 @@ their signing keys, rather than the runbook's `.list` files and `apt_key`-era ke
     state: absent
   loop:
     - /etc/apt/sources.list.d/caddy-stable.sources
+    - /etc/apt/sources.list.d/caddy-stable.list
     - /etc/apt/keyrings/caddy-stable.asc
 
 - name: Install the base packages (runbook §3)
@@ -387,10 +389,11 @@ their signing keys, rather than the runbook's `.list` files and `apt_key`-era ke
   ansible.builtin.shell:
     cmd: |
       set -euo pipefail
-      if [ "$(dpkg-query -W -f='${Version}' caddy 2>/dev/null)" = "{{ drydock_caddy_version }}" ]; then
+      if [ "$(dpkg-query -W -f='${Status} ${Version}' caddy 2>/dev/null)" = "install ok installed {{ drydock_caddy_version }}" ]; then
         echo unchanged; exit 0
       fi
-      cd "$(mktemp -d)"
+      dir=$(mktemp -d); trap 'rm -rf "$dir"' EXIT
+      cd "$dir"
       base=https://github.com/caddyserver/caddy/releases/download/v{{ drydock_caddy_version }}
       deb=caddy_{{ drydock_caddy_version }}_linux_amd64.deb
       curl -fsSLO "$base/$deb" -fsSLO "$base/caddy_{{ drydock_caddy_version }}_checksums.txt"
