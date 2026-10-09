@@ -32,7 +32,7 @@ printf "%s\n" "$PW" | ./drydock passwd --db x.db  # set the operator password (n
 | Package | Is — and what not to break there |
 |---|---|
 | `internal/api` | The route table as **data**, both muxes, the gate, the error envelope, the preview front door; meta-tests walk the table. |
-| `internal/sys` | `Clock`, `DiskUsage`, `Random`. Never call `time.Now()` directly. |
+| `internal/sys` | `Clock`, `DiskUsage`, `Random`, and `Cleanup` (the context rule's rule 3). Never call `time.Now()` directly; `TestContextRule` enforces it. |
 | `internal/subproc` | Invocations as data, resolved by `PATH` or a `Resolver`. No shell anywhere; `Env` replaces rather than inherits; `StartPTY` is the one PTY start. |
 | `internal/config` | Settings that must not be constants (`LabelPrefix` first); `Validate` refuses configs that silently undo a design property (`CrossSite`, lowercase origins). |
 | `internal/store` | SQLite in WAL mode, the single-instance lock, §4's schema with enums as `CHECK`s. Every transaction opens `IMMEDIATE`; a golden snapshot pins the schema. |
@@ -383,6 +383,18 @@ These come from §2 (Claude Code constraints) and §13.5 (non-negotiables). Most
 - **`blanked` and `absent` are different sentences.** *"Signed out. Sign in again."* means everyone
   just lost access; *"No one has signed in yet."* is the first-run state. `auth status --json` says
   `loggedIn:false` for both and only the credential file separates them (§7.3).
+- **The context rule.** #83, #85 and #94's probe cleanup each ran under a context from the wrong
+  parent. (1) A request's context is for the synchronous part of a handler only. (2) Background work
+  runs under its component's context (today each component's `base`). (3) Bookkeeping or cleanup
+  owed after a cancellation uses `sys.Cleanup(parent, clock, d)`: `WithoutCancel` plus a bound on the
+  injected clock. (4) Shared, joinable work never runs under a caller's context. `TestContextRule`
+  (`internal/sys/contextrule_test.go`) parses every non-test file and fails, by file and function, on
+  `context.Background`/`TODO`/`WithoutCancel`, a wall-clock deadline (`context.WithTimeout`,
+  `WithDeadline` and their `Cause` forms) or a wall-clock `time` call (`Now`, `After`, `Sleep`,
+  timers and tickers) outside `cmd/`, `internal/sys` and the helper packages `claudetest` (with
+  `fakeclaude`), `githubtest` and `logintest`, unless its allowlist names it with a reason. Entries
+  marked *R1 debt* are wall-clock bounds R1 moves to the injected clock. A new entry is a design
+  decision, so its reason must say which rule makes it right.
 
 ## Build order
 
