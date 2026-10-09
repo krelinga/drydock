@@ -74,24 +74,50 @@ func newRig(t *testing.T, opts ...rigOpt) *rig {
 	r.script("drydock-secrets", "exit 0\n")
 	fakes := filepath.Join(dir, "fakes")
 	os.MkdirAll(fakes, 0o755)
+	// With the file "exec-detaches", the fake devcontainer is what real
+	// Docker is: the server runs apart from Drydock's process (its own
+	// session, no hold on the terminal) and its output is relayed, so
+	// killing Drydock's end closes the terminal and leaves the server
+	// running (measured: SIGKILL to a `docker exec` client does not reach
+	// the process it started). Without it the server is Drydock's process.
 	writeExec(t, filepath.Join(fakes, "devcontainer"), fmt.Sprintf(`#!/bin/sh
 printf '%%s\n' "$*" >> %q
 while [ "$#" -gt 0 ] && [ "$1" != "--" ]; do shift; done
 shift
 PATH=%q:/usr/bin:/bin
 export PATH
+if [ -e %q ]; then
+	f=$(mktemp -u); mkfifo "$f"
+	setsid "$@" </dev/null >"$f" 2>&1 &
+	exec cat "$f"
+fi
 exec "$@"
-`, r.devc, r.bin))
+`, r.devc, r.bin, filepath.Join(dir, "exec-detaches")))
 	running := filepath.Join(dir, "container-running")
 	os.WriteFile(running, nil, 0o600)
+	// Two more files make the fake docker misbehave: "docker-fails" holding
+	// a subcommand (ps, exec) or a signal (KILL, or 0 for the alive check)
+	// fails that call as an unreachable daemon does, and "kill-ignored" makes
+	// a KILL report success and deliver nothing — a server that survives
+	// SIGKILL — and "kill-refused" answers a KILL as the signal script does
+	// when the kernel refuses it (exit 4).
 	writeExec(t, filepath.Join(fakes, "docker"), fmt.Sprintf(`#!/bin/sh
 printf '%%s\n' "$*" >> %q
+for last; do :; done
+if [ -e %q ] && { [ "$(cat %q)" = "$1" ] || [ "$(cat %q)" = "$last" ]; }; then
+	echo 'Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?' >&2
+	exit 1
+fi
 case "$1" in
 ps) [ -e %q ] && echo %s; exit 0;;
-exec) while [ "$1" != "--" ]; do shift; done; shift; shift; exec "$@";;
+exec) while [ "$1" != "--" ]; do shift; done; shift; shift
+	if [ "$last" = KILL ] && [ -e %q ]; then exit 0; fi
+	if [ "$last" = KILL ] && [ -e %q ]; then exit 4; fi
+	exec "$@";;
 esac
 exit 99
-`, r.docker, running, fakeCID))
+`, r.docker, filepath.Join(dir, "docker-fails"), filepath.Join(dir, "docker-fails"), filepath.Join(dir, "docker-fails"), running, fakeCID,
+		filepath.Join(dir, "kill-ignored"), filepath.Join(dir, "kill-refused")))
 	res := subproc.FixedResolver{"devcontainer": filepath.Join(fakes, "devcontainer"), "docker": filepath.Join(fakes, "docker")}
 	run := subproc.Exec{Resolver: res}
 	p := Policy{Capacity: 4, Backoff: 20 * time.Millisecond, BackoffMax: 80 * time.Millisecond, Budget: 6,
@@ -226,6 +252,18 @@ func (r *rig) logText() string {
 func (r *rig) dockerLog() string {
 	b, _ := os.ReadFile(r.docker)
 	return string(b)
+}
+
+// launches is how many servers the fake devcontainer was asked to start.
+func (r *rig) launches() int {
+	b, _ := os.ReadFile(r.devc)
+	n := 0
+	for _, l := range strings.Split(string(b), "\n") {
+		if strings.HasPrefix(l, "exec ") {
+			n++
+		}
+	}
+	return n
 }
 
 func (r *rig) invocations() int {

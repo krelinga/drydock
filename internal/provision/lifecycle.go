@@ -415,6 +415,16 @@ func (p *Provisioner) stopSupervisor(ctx context.Context, w workspace.Workspace)
 		return workspace.Note("Nothing to do yet: the Claude Code session server arrives with Claude support.")
 	}
 	if err := p.StopSupervisor(ctx, w); err != nil {
+		if errors.Is(err, container.ErrSessionSurvivedKill) {
+			// SIGTERM first exists so the server deregisters (Spike 02); one
+			// that outlived SIGKILL will not, and asking again cannot end
+			// it. The next sub-step — docker stop, or docker rm --force —
+			// ends every process in the container, so carry on: a stop or
+			// delete that stopped here would fail the same way for good,
+			// and a stuck delete has no other way out.
+			p.logf("drydock: workspace %s: the session server outlived SIGKILL; the container step ends it: %v", w.ID, err)
+			return workspace.Note("The session server was still running after SIGKILL, so it ends with the container, in the next step.")
+		}
 		return workspace.Public("Drydock could not stop the session server.", err)
 	}
 	return workspace.Note("Stopped the session server, SIGTERM first, so its environment is kept for the next start.")

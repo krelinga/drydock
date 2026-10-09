@@ -145,6 +145,14 @@ export interface MockBackend {
    * whose views carry none of the three.
    */
   supervisor: boolean
+  /**
+   * How a session server restart's stop half fails, as internal/supervisor's
+   * Stop records it: `stop_failed` (Docker could not be asked) or
+   * `survived_kill` (the server outlived SIGKILL). The restart then writes
+   * degraded with that reason and its sentence, and starts nothing. Null
+   * (the default) restarts as usual.
+   */
+  supervisorStopFails: SupervisorStopFailure | null
 
   /**
    * The stored Claude identity internal/identity.Watch holds. Seeded ok and a
@@ -483,6 +491,7 @@ function newBackendBare(now: number, overrides: Partial<MockBackend>): MockBacke
     identityCheckMode: 'auto',
     identityWatchStopped: false,
     supervisor: false,
+    supervisorStopFails: null,
     login: null,
     loginAccepts: 'mockcode123#mockstate',
     loginBodies: [],
@@ -1088,9 +1097,24 @@ export function mockEnvironmentId(id: string): string {
   return `env_01${id.slice(-12).replace(/[^A-Za-z0-9]/g, '')}`
 }
 
-/** A session server restart (POST …/supervisor), as internal/supervisor's Restart writes it. */
+export type SupervisorStopFailure = 'stop_failed' | 'survived_kill'
+
+/** internal/supervisor's stopFailedSentence, word for word. */
+export const STOP_FAILED_SENTENCE: Record<SupervisorStopFailure, string> = {
+  stop_failed: 'Drydock could not stop the session server: Docker did not answer when asked to signal it or whether it had exited, so it may still be running. Ask again once Docker answers.',
+  survived_kill: 'The session server was still running after SIGKILL, so Drydock could not stop it, and it may still hold the workspace\'s environment. Only its container going ends it: Rebuild the workspace to replace the container; the clone is kept.',
+}
+
+/**
+ * A session server restart (POST …/supervisor), as internal/supervisor's
+ * Restart writes it: the old server stopped, then the new one starting and
+ * serving — or, when its stop fails (`supervisorStopFails`), degraded with
+ * the failure's reason and nothing started.
+ */
 export function supervisorScript(b: MockBackend, id: string): Array<(at?: string) => void> {
   const steps = new ScriptSteps(b, id)
+  const fails = b.supervisorStopFails
+  if (fails !== null) return [steps.supervisor('degraded', fails, STOP_FAILED_SENTENCE[fails], 'error')]
   return [
     steps.supervisor('exited', 'stopped', 'The session server was stopped.'),
     steps.supervisor('starting', 'launching', 'Starting the session server.'),

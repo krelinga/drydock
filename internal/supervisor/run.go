@@ -93,6 +93,15 @@ func (s *sup) loop(ctx context.Context) {
 		// reconnect to the new one (Spike 02).
 		if _, err := m.terminate(ctx, s.ws, nil, nil); err != nil && ctx.Err() == nil {
 			m.logf("drydock: workspace %s: stopping a session server left running: %v", s.ws, err)
+			if errors.Is(err, container.ErrSessionSurvivedKill) {
+				// It outlived SIGKILL and still holds the folder: a new
+				// server beside it would be refused as already served,
+				// shown as a wait that never clears, and would overwrite
+				// the pid file that is the only way to reach it. Say so,
+				// with the fix, and start nothing.
+				s.set(ctx, Degraded, ReasonSurvivedKill, stopFailedSentence(ReasonSurvivedKill), 0)
+				return
+			}
 		}
 		out := s.runOnce(ctx)
 		switch out.kind {
@@ -396,9 +405,19 @@ func (s *sup) stop(ctx context.Context) error {
 	proc, procDone := s.proc, s.procDone
 	s.mu.Unlock()
 	_, err := s.m.terminate(ctx, s.ws, proc, procDone)
-	s.cancel()
+	if s.cancel != nil { // nil for one with no loop (detachedLocked)
+		s.cancel()
+	}
+	// After a failed stop the loop may be reading a terminal whose server
+	// did not end; it ends when the server does (stopping is set, so it
+	// writes nothing), and the stop does not wait on it for good.
+	var bound <-chan time.Time
+	if err != nil {
+		bound = s.m.clock().After(s.m.policy().KillWait)
+	}
 	select {
 	case <-s.done:
+	case <-bound:
 	case <-ctx.Done():
 		return errors.Join(err, ctx.Err())
 	}
@@ -419,20 +438,33 @@ func (m *Manager) terminate(ctx context.Context, ws string, proc subproc.Process
 	if done == nil && !found {
 		return false, err
 	}
-	gone := func(d time.Duration) bool {
-		deadline := m.clock().After(d)
-		if done != nil {
-			select {
-			case <-done:
-				return true
-			case <-deadline:
-				return false
-			case <-ctx.Done():
-				return false
-			}
+	// lookErr is the last failure to ask whether the server is alive: a
+	// stop that ends on one could not tell, which is Docker's failure, not a
+	// server seen alive after SIGKILL.
+	var lookErr error
+	// ended waits for Drydock's own end of the server — `devcontainer
+	// exec`, which exits when the server does.
+	ended := func(d time.Duration) bool {
+		select {
+		case <-done:
+			return true
+		case <-m.clock().After(d):
+			return false
+		case <-ctx.Done():
+			return false
 		}
+	}
+	// exited asks the container, through the pid file, until the server is
+	// gone or d passes.
+	exited := func(d time.Duration) bool {
+		deadline := m.clock().After(d)
 		for {
 			alive, aerr := m.Runtime.Signal(ctx, ws, container.SessionAlive, m.PidFile)
+			if errors.Is(aerr, container.ErrSessionSignalRefused) {
+				// It is there; the kernel would not let even signal 0 by.
+				alive, aerr = true, nil
+			}
+			lookErr = aerr
 			if aerr == nil && !alive {
 				return true
 			}
@@ -444,6 +476,12 @@ func (m *Manager) terminate(ctx context.Context, ws string, proc subproc.Process
 			case <-m.clock().After(p.StopPoll):
 			}
 		}
+	}
+	gone := func(d time.Duration) bool {
+		if done != nil {
+			return ended(d)
+		}
+		return exited(d)
 	}
 	if gone(p.StopTimeout) {
 		return true, nil
@@ -462,7 +500,8 @@ func (m *Manager) terminate(ctx context.Context, ws string, proc subproc.Process
 		return true, errors.Join(err, cerr)
 	}
 	m.logf("drydock: workspace %s: the session server did not exit within %s of SIGTERM; sending SIGKILL", ws, p.StopTimeout)
-	if _, kerr := m.Runtime.Signal(ctx, ws, container.SessionKill, m.PidFile); kerr != nil {
+	_, kerr := m.Runtime.Signal(ctx, ws, container.SessionKill, m.PidFile)
+	if kerr != nil {
 		err = errors.Join(err, kerr)
 	}
 	if gone(p.KillWait) {
@@ -470,10 +509,27 @@ func (m *Manager) terminate(ctx context.Context, ws string, proc subproc.Process
 	}
 	if proc != nil {
 		// The server is beyond reach; at least end Drydock's side of it.
+		// That proves nothing about the server: killing a `docker exec`
+		// client leaves the process it started running in the container
+		// (measured, Docker 29.8.2), and Drydock's terminal closes all the
+		// same. So the container is asked, through the pid file, as for a
+		// server Drydock holds no terminal for — never "Drydock's end is
+		// gone, so the server is".
 		proc.Signal(subproc.SignalKill)
-		if gone(p.KillWait) {
+		ended(p.KillWait)
+		if exited(p.KillWait) {
 			return true, nil
 		}
 	}
-	return true, errors.Join(err, fmt.Errorf("the session server did not exit after SIGKILL"))
+	if cerr := ctx.Err(); cerr != nil {
+		return true, errors.Join(err, cerr)
+	}
+	if (kerr != nil && !errors.Is(kerr, container.ErrSessionSignalRefused)) || lookErr != nil {
+		// SIGKILL could not be sent, or whether it worked could not be
+		// asked: Docker failed, which says nothing about the server.
+		return true, errors.Join(err, lookErr, errors.New("the session server could not be confirmed stopped after SIGKILL"))
+	}
+	// SIGKILL went out (or the container refused it), and the container
+	// says the server is still there.
+	return true, errors.Join(err, container.ErrSessionSurvivedKill)
 }

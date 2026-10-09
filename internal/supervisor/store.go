@@ -53,8 +53,19 @@ func (m *Manager) storedState(ctx context.Context, row string) (State, Reason, s
 // supervisor.state event — only when one of them changed, so a retry loop
 // does not write the same event every few seconds.
 func (s *sup) set(ctx context.Context, st State, r Reason, detail string, pid int) {
+	s.write(ctx, st, r, detail, pid, false)
+}
+
+// announce is set without the check for a change: for the answer to a
+// request, which is owed one even when it repeats the last (a restart whose
+// stop fails twice the same way).
+func (s *sup) announce(ctx context.Context, st State, r Reason, detail string) {
+	s.write(ctx, st, r, detail, 0, true)
+}
+
+func (s *sup) write(ctx context.Context, st State, r Reason, detail string, pid int, always bool) {
 	s.mu.Lock()
-	if s.state == st && s.reason == r && s.detail == detail {
+	if !always && s.state == st && s.reason == r && s.detail == detail {
 		s.mu.Unlock()
 		return
 	}

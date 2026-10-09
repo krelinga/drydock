@@ -88,8 +88,20 @@ const (
 	// had no broker since the restart and every command's secrets prelude
 	// exits 69. Not started; only a rebuild fixes it (Park).
 	ReasonStaleBrokerMount Reason = "stale_broker_mount"
-	ReasonServing          Reason = "connected"
-	ReasonStopped          Reason = "stopped"
+	// ReasonStopFailed: a stop (a restart's first half) could not reach the
+	// server — docker ps or docker exec failed — so it may still be
+	// running. Asking again is the fix once Docker answers.
+	ReasonStopFailed Reason = "stop_failed"
+	// ReasonSurvivedKill: the server was still there after SIGTERM and then
+	// SIGKILL were delivered. Asking again cannot help; replacing the
+	// container (Rebuild) ends it.
+	ReasonSurvivedKill Reason = "survived_kill"
+	// ReasonStartFailed: a restart stopped the old server and could not
+	// start the new one (its row could not be read or written). Asking
+	// again is the fix; the card reads it as any other degraded.
+	ReasonStartFailed Reason = "start_failed"
+	ReasonServing     Reason = "connected"
+	ReasonStopped     Reason = "stopped"
 )
 
 // Policy is the supervisor's timing, all of it configuration rather than
@@ -192,6 +204,10 @@ type Manager struct {
 	Policy  Policy
 	Logf    func(format string, args ...any)
 
+	// afterStop, when set (tests only), runs in Restart between its stop
+	// and its start: the window a delete or a broken row can land in.
+	afterStop func()
+
 	mu     sync.Mutex
 	sups   map[string]*sup
 	logs   map[string]*Ring
@@ -282,7 +298,9 @@ func (m *Manager) Start(ctx context.Context, workspaceID string) error {
 	if m.closed {
 		return ErrClosed
 	}
-	if s := m.sups[workspaceID]; s != nil && s.running() {
+	// One kept after a failed stop is not left alone: it is stopping, and
+	// ends when its server does.
+	if s := m.sups[workspaceID]; s != nil && s.running() && !s.isStopping() {
 		return nil
 	}
 	return m.launchLocked(ctx, workspaceID)
@@ -291,12 +309,57 @@ func (m *Manager) Start(ctx context.Context, workspaceID string) error {
 // Restart stops the workspace's server (SIGTERM first) and starts it again:
 // POST …/supervisor on a running one. Every session it was serving is ended
 // (§5); Spike 02 says they reconnect, since a SIGTERMed server keeps its
-// environment.
+// environment. A stop that fails is not followed by a start — a second server
+// beside one that would not stop is refused as already served for as long as
+// the first lives — and Stop has recorded it (degraded, stop_failed or
+// survived_kill), so the press that asked is answered either way.
 func (m *Manager) Restart(ctx context.Context, workspaceID string) error {
 	if err := m.Stop(ctx, workspaceID); err != nil {
 		return err
 	}
-	return m.Start(ctx, workspaceID)
+	if m.afterStop != nil {
+		m.afterStop()
+	}
+	// Cancelled after a good stop — a delete or shutdown cut in: start
+	// nothing, since what cancelled it asked for the opposite, and write
+	// nothing, since it answers the press (the delete's own events end it;
+	// after a shutdown, the next boot's adoption writes starting).
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	err := m.Start(ctx, workspaceID)
+	if err != nil && ctx.Err() == nil && !errors.Is(err, ErrClosed) {
+		// The stop's `exited` does not end the press; this does.
+		m.logf("drydock: workspace %s: starting the session server after a restart's stop: %v", workspaceID, err)
+		m.answer(context.WithoutCancel(ctx), workspaceID, Degraded, ReasonStartFailed, startFailedSentence)
+	}
+	return err
+}
+
+// answer announces a state for a workspace whose supervisor may not be in
+// memory, and whose row may not be readable: the event is what answers the
+// press, so it is written even when the row is not.
+func (m *Manager) answer(ctx context.Context, workspaceID string, st State, r Reason, detail string) {
+	m.mu.Lock()
+	s := m.sups[workspaceID]
+	if s == nil {
+		if m.logs == nil {
+			m.logs = map[string]*Ring{}
+		}
+		ring := m.logs[workspaceID]
+		if ring == nil {
+			ring = NewRing(m.policy().LogBytes, m.redactValues(workspaceID))
+			m.logs[workspaceID] = ring
+		}
+		var row string
+		m.DB.QueryRowContext(ctx, `SELECT id FROM supervisor WHERE workspace_id = ?
+			ORDER BY started_at DESC LIMIT 1`, workspaceID).Scan(&row)
+		s = &sup{m: m, ws: workspaceID, row: row, log: ring, done: make(chan struct{})}
+		s.state, _, _ = m.storedState(ctx, row)
+		close(s.done)
+	}
+	m.mu.Unlock()
+	s.announce(ctx, st, r, detail)
 }
 
 // Park records the workspace's session server as degraded for a reason
@@ -316,12 +379,27 @@ func (m *Manager) Park(ctx context.Context, workspaceID string, r Reason, detail
 	if s := m.sups[workspaceID]; s != nil && s.running() {
 		return nil
 	}
+	s, err := m.detachedLocked(ctx, workspaceID)
+	if err != nil {
+		return err
+	}
+	s.set(ctx, Degraded, r, detail, 0)
+	return nil
+}
+
+// detachedLocked is a supervisor with no loop, to record a state on: its row
+// (made if need be), its log, and the state the row holds. m.mu held.
+func (m *Manager) detachedLocked(ctx context.Context, workspaceID string) (*sup, error) {
 	if m.logs == nil {
 		m.logs = map[string]*Ring{}
 	}
+	// A row made just now holds ensureRow's placeholder state, which no
+	// server ever had: the first event then comes from nothing ("").
+	var existed bool
+	m.DB.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM supervisor WHERE workspace_id = ?)`, workspaceID).Scan(&existed)
 	row, restarts, err := m.ensureRow(ctx, workspaceID)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	ring := m.logs[workspaceID]
 	if ring == nil {
@@ -329,10 +407,11 @@ func (m *Manager) Park(ctx context.Context, workspaceID string, r Reason, detail
 		m.logs[workspaceID] = ring
 	}
 	s := &sup{m: m, ws: workspaceID, row: row, restarts: restarts, log: ring, done: make(chan struct{})}
-	s.state, _, _ = m.storedState(ctx, row)
+	if existed {
+		s.state, _, _ = m.storedState(ctx, row)
+	}
 	close(s.done)
-	s.set(ctx, Degraded, r, detail, 0)
-	return nil
+	return s, nil
 }
 
 func (m *Manager) launchLocked(ctx context.Context, workspaceID string) error { // m.mu held
@@ -340,7 +419,10 @@ func (m *Manager) launchLocked(ctx context.Context, workspaceID string) error { 
 		m.base, m.cancel = context.WithCancel(context.Background())
 	}
 	if m.sups == nil {
-		m.sups, m.logs = map[string]*sup{}, map[string]*Ring{}
+		m.sups = map[string]*sup{}
+	}
+	if m.logs == nil { // Park or a failed stop may have made it first
+		m.logs = map[string]*Ring{}
 	}
 	row, restarts, err := m.ensureRow(ctx, workspaceID)
 	if err != nil {
@@ -372,6 +454,16 @@ func (m *Manager) launchLocked(ctx context.Context, workspaceID string) error { 
 // start for minutes). A server this process has no terminal for — one an
 // earlier Drydock left running — is stopped the same way, through its pid
 // file. Nothing running is not an error.
+//
+// A stop that fails is recorded, never only returned: degraded, with
+// stop_failed when Docker could not be asked and survived_kill when the
+// server outlived SIGKILL, each with the sentence naming the one action that
+// can fix it — written even when it repeats the last, because every press of
+// Restart session server waits for a supervisor.state (frontend §4.2). The
+// supervisor stays registered, so the next stop or restart reaches the same
+// server, through the terminal Drydock may still hold. A stop cut off by its
+// caller (a delete, shutdown) records nothing: that is not a stop that
+// failed, and what cancelled it says what happens next.
 func (m *Manager) Stop(ctx context.Context, workspaceID string) error {
 	m.mu.Lock()
 	s := m.sups[workspaceID]
@@ -383,11 +475,54 @@ func (m *Manager) Stop(ctx context.Context, workspaceID string) error {
 	} else {
 		_, err = m.terminate(ctx, workspaceID, nil, nil)
 	}
-	if s != nil && err == nil {
-		s.set(context.WithoutCancel(ctx), Exited, ReasonStopped, "The session server was stopped.", 0)
+	book := context.WithoutCancel(ctx)
+	if err == nil {
+		if s != nil {
+			s.set(book, Exited, ReasonStopped, "The session server was stopped.", 0)
+		}
+		return nil
+	}
+	m.logf("drydock: workspace %s: stopping the session server: %v", workspaceID, err)
+	m.mu.Lock()
+	if s == nil && ctx.Err() == nil && !m.closed {
+		ns, nerr := m.detachedLocked(book, workspaceID)
+		if nerr != nil {
+			m.mu.Unlock()
+			return errors.Join(err, nerr)
+		}
+		s = ns
+	}
+	if s != nil && m.sups[workspaceID] == nil {
+		if m.sups == nil {
+			m.sups = map[string]*sup{}
+		}
+		m.sups[workspaceID] = s
+	}
+	m.mu.Unlock()
+	if s != nil && ctx.Err() == nil {
+		r := ReasonStopFailed
+		if errors.Is(err, container.ErrSessionSurvivedKill) {
+			r = ReasonSurvivedKill
+		}
+		s.announce(book, Degraded, r, stopFailedSentence(r))
 	}
 	return err
 }
+
+// stopFailedSentence is the card's sentence for a stop that failed, naming
+// what can fix it. It is written by every stop — a restart's, and the first
+// sub-step of a workspace stop, rebuild or delete — so it names no one of
+// them. Never the error: docker's stderr can carry anything.
+func stopFailedSentence(r Reason) string {
+	if r == ReasonSurvivedKill {
+		return "The session server was still running after SIGKILL, so Drydock could not stop it, and it may still hold the workspace's environment. Only its container going ends it: Rebuild the workspace to replace the container; the clone is kept."
+	}
+	return "Drydock could not stop the session server: Docker did not answer when asked to signal it or whether it had exited, so it may still be running. Ask again once Docker answers."
+}
+
+// startFailedSentence: a restart stopped the old server and could not start
+// the new one (its row could not be read or written).
+const startFailedSentence = "Drydock stopped the session server but could not start a new one. Restart the session server to try again."
 
 // Forget drops what the manager holds for a deleted workspace: its log.
 func (m *Manager) Forget(workspaceID string) {
@@ -395,7 +530,9 @@ func (m *Manager) Forget(workspaceID string) {
 	defer m.mu.Unlock()
 	delete(m.logs, workspaceID)
 	if s := m.sups[workspaceID]; s != nil {
-		s.cancel()
+		if s.cancel != nil { // nil for one with no loop (detachedLocked)
+			s.cancel()
+		}
 		delete(m.sups, workspaceID)
 	}
 }
