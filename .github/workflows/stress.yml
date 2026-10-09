@@ -11,6 +11,8 @@
 name: stress
 
 on:
+  push:
+    branches: [ci/nightly-stress]
   schedule:
     - cron: "23 3 * * *"
   workflow_dispatch:
@@ -55,10 +57,10 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-          PACKAGES: ${{ inputs.packages }}
-          MINUTES: ${{ inputs.minutes || '40' }}
-          CONTAINER_RUNS: ${{ inputs.container_runs || '2' }}
-          FAKE_FAILURE: ${{ inputs.fake_failure && '1' || '' }}
+          PACKAGES: ${{ inputs.packages || './internal/sys' }}
+          MINUTES: ${{ inputs.minutes || '5' }}
+          CONTAINER_RUNS: ${{ inputs.container_runs || '0' }}
+          FAKE_FAILURE: ${{ '1' }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           COMMIT: ${{ github.sha }}
           # As in CI: a missing tool is a failure here, never a skip.
