@@ -47,7 +47,10 @@ func TestMemoryNeverWaitsOnAWalk(t *testing.T) {
 	}
 	mu.Unlock()
 	// And the next tick's memory round runs while the walk is still stuck.
-	for i := 0; clock.Waiting() == 0; i++ {
+	// The memory loop's own interval, by its duration: the stuck walk has
+	// its timeout on the same clock, so any timer at all could be that one,
+	// and an Advance before the interval is set fires nothing.
+	for i := 0; clock.WaitingFor(DefaultMemoryInterval) == 0; i++ {
 		if i > 5000 {
 			t.Fatal("the memory loop never waited for its next tick")
 		}

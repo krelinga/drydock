@@ -19,6 +19,7 @@ type FakeClock struct {
 
 type waiter struct {
 	at time.Time
+	d  time.Duration // what it was set for, which WaitingFor matches
 	ch chan time.Time
 }
 
@@ -43,7 +44,7 @@ func (c *FakeClock) After(d time.Duration) <-chan time.Time {
 		ch <- c.now
 		return ch
 	}
-	c.waiters = append(c.waiters, waiter{at, ch})
+	c.waiters = append(c.waiters, waiter{at, d, ch})
 	return ch
 }
 
@@ -70,6 +71,24 @@ func (c *FakeClock) Waiting() int {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return len(c.waiters)
+}
+
+// WaitingFor reports how many pending timers were set for exactly d. It is
+// Waiting for one timer among several: the code under test often has more
+// than one on the same clock — a loop's interval beside a read's timeout —
+// and a count of all of them is satisfied by the wrong one, so an Advance
+// meant for the interval lands before it is set and fires nothing. Give the
+// timer a test waits for a duration nothing else on the clock uses.
+func (c *FakeClock) WaitingFor(d time.Duration) int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	n := 0
+	for _, w := range c.waiters {
+		if w.d == d {
+			n++
+		}
+	}
+	return n
 }
 
 // Timer is After with a stop: the returned func removes the timer if it has
