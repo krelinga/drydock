@@ -785,6 +785,13 @@ func (u *upgrade) client(c net.Conn) net.Conn {
 // the device saw the connection cut rather than switched and closed. Begun
 // here, it looks only once the 101 is on the wire. An upgrade whose 101 was
 // never written starts no watch; ServePreview's deferred close ends it.
+//
+// The call in activeConn.Read is the one that matters. A Write comes only
+// when the app sends something, and an app may never speak first; but
+// ReverseProxy starts its device-to-app copier, which reads this side, as soon
+// as the 101 is flushed, so a silent upgrade's watch starts then. That is an
+// undocumented detail of httputil, pinned by TestASilentUpgradeIsStillWatched:
+// without it a silent upgrade would be neither rechecked nor idled out.
 func (u *upgrade) start() {
 	u.watched.Do(func() {
 		select {
