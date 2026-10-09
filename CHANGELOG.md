@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.9.1](https://github.com/krelinga/drydock/compare/v0.9.0...v0.9.1) (2026-10-09)
+
+
+### Bug Fixes
+
+* keep the reported discovery state in step with its event, and let a raced read pass ([#124](https://github.com/krelinga/drydock/issues/124)) ([24036bf](https://github.com/krelinga/drydock/commit/24036bf9530b8b541599a4d9845c69124ab38a52))
+
 ## [0.9.0](https://github.com/krelinga/drydock/compare/v0.8.0...v0.9.0) (2026-10-09)
 
 
