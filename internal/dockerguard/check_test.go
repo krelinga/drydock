@@ -505,3 +505,71 @@ func TestApprovedBindInTheCloneStaysPut(t *testing.T) {
 		t.Errorf("an approved bind outside the clone: %+v", d)
 	}
 }
+
+// CLI 0.89.0 starts the Features build without waiting for its mkdir of the
+// empty context folder in its TMPDIR, so the guard can be asked before the
+// folder exists (CI, #90: refused as a build context outside the clone). A
+// missing context below the TMPDIR is made and passes; one anywhere else —
+// outside the TMPDIR, out of it by `..`, or through a link in it leading
+// out — is still refused, and nothing is made for it.
+func TestAContextTheCLIHasNotMadeYet(t *testing.T) {
+	root := t.TempDir()
+	build := command(t, Recorded(t, "drydock", root), "buildx", "build")
+	tmp := filepath.Join(root, ".drydock", "tmp")
+	staged := build[len(build)-1]
+	if filepath.Base(staged) != "empty-folder" || !strings.HasPrefix(staged, tmp+"/") {
+		t.Fatalf("the recorded Features build's context is %q, not the CLI's empty folder in %s", staged, tmp)
+	}
+	with := func(ctx string) []string {
+		return append(append([]string(nil), build[:len(build)-1]...), ctx)
+	}
+
+	// The control: the CLI has not made its folder yet, and the build passes.
+	if err := os.RemoveAll(staged); err != nil {
+		t.Fatal(err)
+	}
+	if d := Check(FixturePolicy(root, nil), build); d.Refused {
+		t.Fatalf("the CLI's own context, not yet made: refused %+v", d)
+	}
+	if fi, err := os.Lstat(staged); err != nil || !fi.IsDir() {
+		t.Errorf("the context was not made for docker: %v", err)
+	}
+
+	outside := filepath.Join(root, "elsewhere")
+	os.MkdirAll(outside, 0o700)
+	if err := os.Symlink(outside, filepath.Join(tmp, "link")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(tmp, filepath.Join(root, "in")); err != nil {
+		t.Fatal(err)
+	}
+	os.MkdirAll(filepath.Join(root, "hostsecret"), 0o700)
+	for _, c := range []struct{ name, ctx, made string }{
+		{"missing outside the TMPDIR", filepath.Join(outside, "empty-folder"), filepath.Join(outside, "empty-folder")},
+		{"missing beside the TMPDIR", filepath.Join(root, ".drydock", "other", "empty-folder"), filepath.Join(root, ".drydock", "other")},
+		{"out of the TMPDIR by ..", tmp + "/../escape/empty-folder", filepath.Join(root, ".drydock", "escape")},
+		{"through a link in the TMPDIR", filepath.Join(tmp, "link", "empty-folder"), filepath.Join(outside, "empty-folder")},
+		{"through a link, deeper", filepath.Join(tmp, "link", "a", "b"), filepath.Join(outside, "a")},
+		{"the TMPDIR's parent", filepath.Join(root, ".drydock"), ""},
+		// Each of the Lstat-must-be-missing check and the final inside covers
+		// for the other; this case is refused only while one of them stands.
+		{"an existing link out, as the context", filepath.Join(tmp, "link"), ""},
+		// Only a path written below the TMPDIR is made: one that reaches it
+		// through a link elsewhere is not the CLI's.
+		{"into the TMPDIR through a link outside it", filepath.Join(root, "in", "new"), filepath.Join(tmp, "new")},
+		// docker follows link before the `..`, so this names <root>/hostsecret,
+		// which exists; cleaned, it would read as <tmp>/hostsecret.
+		{"out by a link and then ..", filepath.Join(tmp, "link") + "/../hostsecret", filepath.Join(tmp, "hostsecret")},
+		{"not clean, though inside", tmp + "//devcontainercli-vscode/./new", filepath.Join(tmp, "devcontainercli-vscode", "new")},
+	} {
+		d := Check(FixturePolicy(root, nil), with(c.ctx))
+		if !d.Refused || !reflect.DeepEqual(d.Settings, []string{SettingBuildCtx}) {
+			t.Errorf("%s: %+v, want refused naming %s", c.name, d, SettingBuildCtx)
+		}
+		if c.made != "" {
+			if _, err := os.Lstat(c.made); err == nil {
+				t.Errorf("%s: the guard made %s", c.name, c.made)
+			}
+		}
+	}
+}
