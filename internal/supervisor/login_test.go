@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -57,13 +58,15 @@ func (v volumeOfLogin) AuthStatus(context.Context) ([]byte, error) {
 // halves end to end, with fakeclaude on both sides: a running workspace's
 // supervisor parks in awaiting_login while no one has signed in, the login
 // handshake (internal/login, fakeclaude on its PTY) succeeds, the handshake
-// tells the expiry watch, the watch stores a live login and emits
-// auth.identity — and the supervisor resumes on that event, by itself, to
-// serving. Nothing signals the supervisor directly.
+// tells the expiry watch, the watch stores a live login, emits auth.identity
+// and calls its OnChange — and the supervisor resumes from that call to
+// serving. Nothing the handshake does reaches the supervisor directly, and
+// nothing follows the event log.
 //
 // The positive control is a handshake that does not succeed: a wrong code
 // leaves the login at the prompt, the watch is not told, no auth.identity is
-// written, and the supervisor stays parked with remote-control never run.
+// written, OnChange resumes nothing, and the supervisor stays parked with
+// remote-control never run.
 func TestASuccessfulHandshakeResumesAWaitingSupervisor(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -82,6 +85,25 @@ func TestASuccessfulHandshakeResumesAWaitingSupervisor(t *testing.T) {
 	clock := sys.NewFakeClock(time.Date(2026, 10, 4, 6, 14, 37, 0, time.UTC))
 	w := &identity.Watch{DB: r.db.DB, Events: r.log, Clock: clock, Volume: "drydock-claude-config",
 		Window: 72 * time.Hour, Source: volumeOfLogin{t: t, login: lf, creds: creds}}
+	// As the server wires it, with the provisioner's door reduced to the job
+	// body it runs: the watch calls OnChange after it stores a verdict that
+	// changed, and on a live login every supervisor waiting on one is
+	// resumed (internal/provision gives each Resume a supervisor job of its
+	// own; internal/server's TestASignInResumesThroughProvisionJobs drives
+	// that half). Set before the watch starts: its worker reads it.
+	var resumes atomic.Int64
+	w.OnChange = func(ctx context.Context, v identity.View) {
+		if v.State == nil || !v.State.Live() {
+			return
+		}
+		r.m.SignedIn()
+		for _, id := range r.m.AwaitingLogin() {
+			resumes.Add(1)
+			if err := r.m.Resume(ctx, id); err != nil {
+				t.Errorf("Resume(%s): %v", id, err)
+			}
+		}
+	}
 	startWatch(t, w)
 	// As the server wires it: the supervisor reads the watch's stored verdict.
 	r.m.Identity = func(ctx context.Context) (string, bool) {
@@ -94,7 +116,6 @@ func TestASuccessfulHandshakeResumesAWaitingSupervisor(t *testing.T) {
 	if v, err := w.Check(ctx); err != nil || v.State == nil || *v.State != identity.Absent {
 		t.Fatalf("first check: %+v %v; want absent", v, err)
 	}
-	go r.m.Watch(ctx)
 
 	cfgDir := filepath.Join(t.TempDir(), "claude-config")
 	os.MkdirAll(cfgDir, 0o700)
@@ -148,9 +169,9 @@ func TestASuccessfulHandshakeResumesAWaitingSupervisor(t *testing.T) {
 	}
 	phase(login.InvalidCode)
 	time.Sleep(300 * time.Millisecond)
-	if st, _ := r.row(); st != AwaitingLogin || r.invocations() != 0 || identityEvents() != before {
-		t.Fatalf("control: after a wrong code the supervisor is %s with %d remote-control runs and %d new auth.identity",
-			st, r.invocations(), identityEvents()-before)
+	if st, _ := r.row(); st != AwaitingLogin || r.invocations() != 0 || identityEvents() != before || resumes.Load() != 0 {
+		t.Fatalf("control: after a wrong code the supervisor is %s with %d remote-control runs, %d new auth.identity and %d resumes",
+			st, r.invocations(), identityEvents()-before, resumes.Load())
 	}
 
 	// The right code: the handshake succeeds, the watch stores a live

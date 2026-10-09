@@ -46,6 +46,98 @@ func (p *Provisioner) RestartSupervisor(ctx context.Context, id string) error {
 	return nil
 }
 
+// ResumeAwaitingLogin is what a sign-in sets off: the identity watch's
+// OnChange calls it when the stored verdict becomes (or stays, renewed) a
+// live login, and every workspace whose session server is waiting on one
+// (SupervisorsAwaitingLogin) gets a short supervisor job that starts it
+// (SupervisorResume) — through the same admission as every other job, so
+// the resume is refused while Drydock is shutting down and never runs beside
+// a stop, a rebuild, a restart or a delete of the same workspace. It is the
+// only way a sign-in starts a server: there is no event subscription.
+//
+// A workspace busy with another job at that moment is owed the resume, and
+// it is retried once, as that job ends (launch), from the same lock: the job
+// may leave the workspace running with its server still parked — a restart,
+// or a run's step 8, whose start read the identity just before the sign-in
+// was stored — and skipping it would leave that server waiting for a sign-in
+// that has already happened. The retry is the same job, deciding afresh, so
+// after a stop or a step 8 that started the server it does nothing. A delete
+// forgets what is owed. Only a running workspace is resumed; nothing stopped
+// is started (§6).
+//
+// It returns ErrShuttingDown, having started nothing more, once the group is
+// stopping; and ErrNotStarted before RunIn.
+func (p *Provisioner) ResumeAwaitingLogin(ctx context.Context) error {
+	if p.SupervisorsAwaitingLogin == nil || p.SupervisorResume == nil {
+		return nil
+	}
+	var errs []error
+	for _, id := range p.SupervisorsAwaitingLogin() {
+		if err := ctx.Err(); err != nil {
+			return err // the watch is shutting down: nothing more to say
+		}
+		p.mu.Lock()
+		err := p.resumeLocked(ctx, id)
+		p.mu.Unlock()
+		if errors.Is(err, ErrShuttingDown) || errors.Is(err, ErrNotStarted) {
+			return err
+		}
+		if err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// resumeLocked (p.mu held) launches one workspace's resume job, or, when a
+// job holds the workspace, records that it is owed one when that job ends.
+func (p *Provisioner) resumeLocked(ctx context.Context, id string) error {
+	a, err := p.admit(JobSupervisor + " " + id)
+	if err != nil {
+		return err
+	}
+	defer a.abandon()
+	if p.active[id] != nil {
+		if p.resumeOwed == nil {
+			p.resumeOwed = map[string]bool{}
+		}
+		p.resumeOwed[id] = true
+		return nil
+	}
+	w, err := p.Workspaces.Get(ctx, id)
+	if errors.Is(err, workspace.ErrNotFound) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if w.State != workspace.Running {
+		return nil
+	}
+	a.launch(id, JobSupervisor, func(ctx context.Context) error {
+		if err := p.SupervisorResume(ctx, id); err != nil {
+			p.logf("drydock: workspace %s: starting the session server after a sign-in: %v", id, err)
+			return err
+		}
+		return nil
+	})
+	return nil
+}
+
+// owedResume (p.mu held) is launch's half of a resume owed to a workspace
+// that was busy: called as a job releases the workspace, it launches the
+// resume then, under the same lock, so no other job can take the workspace
+// in between. Under the group's context: the job's own is about to end.
+func (p *Provisioner) owedResume(id string) {
+	if !p.resumeOwed[id] {
+		return
+	}
+	delete(p.resumeOwed, id)
+	if err := p.resumeLocked(p.g.Ctx(), id); err != nil && !errors.Is(err, ErrShuttingDown) {
+		p.logf("drydock: workspace %s: starting the session server after a sign-in: %v", id, err)
+	}
+}
+
 // stillRunning re-reads the workspace (p.mu held) and reports whether it is
 // still running, refreshing w. A failed read is not running: boot's
 // follow-ups act only on what they can confirm.

@@ -253,6 +253,10 @@ func New(ctx context.Context, cfg config.Config, env sys.Env) (*Server, error) {
 		return s.Supervisor.Park(ctx, w.ID, supervisor.Reason(reason), detail)
 	}
 	s.Provisioner.SupervisorRestart = s.Supervisor.Restart
+	// A sign-in resumes the supervisors waiting on one, each as a provisioner
+	// job (ResumeAwaitingLogin, wired to the identity watch below).
+	s.Provisioner.SupervisorsAwaitingLogin = s.Supervisor.AwaitingLogin
+	s.Provisioner.SupervisorResume = s.Supervisor.Resume
 	// Step 3's declared ports become the registry's declared rows: listed,
 	// never enabled by it (PF §13 step 4).
 	s.Provisioner.DeclarePorts = func(ctx context.Context, id string, ports []container.DeclaredPort) error {
@@ -362,6 +366,23 @@ func New(ctx context.Context, cfg config.Config, env sys.Env) (*Server, error) {
 			return "", false
 		}
 		return string(*v.State), true
+	}
+	// …and a live login, announced, resumes every supervisor waiting on one:
+	// a direct call from the watch into the provisioner, which gives each a
+	// job of its own (§8). No component follows the event log; only the SSE
+	// stream does.
+	s.Identity.OnChange = func(ctx context.Context, v identity.View) {
+		if v.State == nil || !v.State.Live() {
+			return
+		}
+		// First every loop still running — one mid-start that the server is
+		// about to refuse as no_organization goes round again rather than
+		// park — then a job for each that has parked (supervisor.SignedIn).
+		s.Supervisor.SignedIn()
+		err := s.Provisioner.ResumeAwaitingLogin(ctx)
+		if err != nil && ctx.Err() == nil && !errors.Is(err, provision.ErrShuttingDown) && !errors.Is(err, context.Canceled) {
+			fmt.Fprintf(os.Stderr, "drydock: resuming session servers after a sign-in: %v\n", err)
+		}
 	}
 	// The login handshake (§7.2) runs as Drydock's own uid: the dev
 	// container CLI gives every workspace's remote user this uid, so the
@@ -737,7 +758,6 @@ func (s *Server) Serve(ctx context.Context) error {
 	if err := s.Identity.Start(identityWork); err != nil {
 		fmt.Fprintf(os.Stderr, "drydock: identity: %v\n", err)
 	}
-	supervisorWork.Go("watch", s.Supervisor.Watch)
 	// The login handshake (§7.2): each login, and everything it starts, in
 	// work. A login container an earlier process left — killed mid-login,
 	// or a crash — goes at the next login's start, and in boot's helper

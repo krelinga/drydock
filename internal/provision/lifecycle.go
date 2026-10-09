@@ -237,6 +237,8 @@ func (p *Provisioner) startDelete(ctx context.Context, id string) (*job, error) 
 	if prev != nil {
 		prev.cancel(errDeleting)
 	}
+	// A resume a sign-in left owed is for a workspace that is going.
+	delete(p.resumeOwed, id)
 	return a.launch(id, JobDelete, func(ctx context.Context) error {
 		if prev != nil {
 			<-prev.done

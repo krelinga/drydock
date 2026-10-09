@@ -17,7 +17,6 @@ import (
 
 	"github.com/krelinga/drydock/internal/claudetest"
 	"github.com/krelinga/drydock/internal/container"
-	"github.com/krelinga/drydock/internal/events"
 	"github.com/krelinga/drydock/internal/workspace"
 )
 
@@ -202,8 +201,8 @@ func TestRestartKeepsTheEnvironment(t *testing.T) {
 	}
 }
 
-// A signed-out fleet starts nothing and spends nothing; signing in starts
-// the server that was waiting. The control is the same rig with ok. Expired
+// A signed-out fleet starts nothing and spends nothing; a sign-in's Resume
+// (internal/provision's supervisor job) starts the server that was waiting. The control is the same rig with ok. Expired
 // is not signed out (TestAnExpiredAccessTokenStillStarts).
 func TestASignedOutIdentityDefersTheStart(t *testing.T) {
 	for _, st := range []string{"blanked", "absent"} {
@@ -213,18 +212,33 @@ func TestASignedOutIdentityDefersTheStart(t *testing.T) {
 			if _, err := r.db.Exec(`INSERT INTO claude_identity (id, volume_name, state) VALUES (1, 'v', ?)`, st); err != nil {
 				t.Fatal(err)
 			}
-			ctx, cancel := context.WithCancel(context.Background())
-			defer cancel()
-			go r.m.Watch(ctx)
+			ctx := context.Background()
 			r.start()
 			r.waitState(AwaitingLogin, ReasonSignedOut)
 			time.Sleep(200 * time.Millisecond)
 			if n := r.invocations(); n != 0 {
 				t.Fatalf("%d starts while signed out", n)
 			}
+			if got := r.m.AwaitingLogin(); len(got) != 1 || got[0] != wsID {
+				t.Fatalf("AwaitingLogin = %v, want [%s]", got, wsID)
+			}
+			// A resume while still signed out starts nothing: the control
+			// for the one below.
+			if err := r.m.Resume(ctx, wsID); err != nil {
+				t.Fatal(err)
+			}
+			time.Sleep(200 * time.Millisecond)
+			if got, _ := r.row(); got != AwaitingLogin || r.invocations() != 0 {
+				t.Fatalf("a resume while %s: %s, %d starts", st, got, r.invocations())
+			}
 			r.db.Exec(`UPDATE claude_identity SET state = 'ok' WHERE id = 1`)
-			r.log.Emit(ctx, "", events.Info, "auth.identity", "Signed in.", map[string]any{})
+			if err := r.m.Resume(ctx, wsID); err != nil {
+				t.Fatal(err)
+			}
 			r.waitState(Serving, ReasonServing)
+			if got := r.m.AwaitingLogin(); len(got) != 0 {
+				t.Errorf("AwaitingLogin after the resume = %v", got)
+			}
 			if _, n := r.row(); n != 0 {
 				t.Errorf("restart_count %d", n)
 			}

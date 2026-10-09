@@ -246,8 +246,8 @@ func ownListeners(t *testing.T) int {
 
 // TestServeEndsWhenAListenerFails: Serve ends when a listener fails, with its
 // context still live — and then it must stop what it started as surely as a
-// cancelled context does. The loops it runs beside serving (the identity watch, the catalog, the
-// supervisor's Watch) end on that context, and Serve waits for each of them
+// cancelled context does. The loops it runs beside serving (the identity
+// watch, the catalog, the session supervisors) end on that context, and Serve waits for each of them
 // before closing the database, so a context nobody cancelled held Serve, and
 // the process, forever.
 //

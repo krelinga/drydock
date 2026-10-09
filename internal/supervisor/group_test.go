@@ -56,7 +56,8 @@ func (h *heldRuntime) Signal(ctx context.Context, ws string, sig container.Sessi
 }
 
 // Once the supervisor's group has stopped — shutdown — nothing starts: not
-// a Start (step 8, a restart's second half, boot adoption), not a Park, and
+// a Start (step 8, a restart's second half, boot adoption), not a Park, not
+// a sign-in's Resume, and
 // no loop, launch, row change or event follows either. The control is the
 // same Start before the stop, which serves.
 func TestNothingStartsOnceTheGroupStops(t *testing.T) {
@@ -77,7 +78,9 @@ func TestNothingStartsOnceTheGroupStops(t *testing.T) {
 	if err := r.m.Park(context.Background(), wsID, ReasonContainerPaused, "parked"); !errors.Is(err, ErrClosed) {
 		t.Errorf("Park after shutdown: %v, want ErrClosed", err)
 	}
-	r.m.resumeWaiting(context.Background())
+	if err := r.m.Resume(context.Background(), wsID); !errors.Is(err, ErrClosed) {
+		t.Errorf("Resume after shutdown: %v, want ErrClosed", err)
+	}
 	time.Sleep(300 * time.Millisecond)
 	if n := r.launches(); n != launches {
 		t.Errorf("%d launches after shutdown", n-launches)

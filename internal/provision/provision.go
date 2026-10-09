@@ -57,6 +57,24 @@
 // is a job under the same ownership, and ResumeSupervisors is boot adoption's
 // half.
 //
+// **One door per workspace**: every change to a workspace's session server
+// after a sign-in is a job too. ResumeAwaitingLogin — called by the identity
+// watch's OnChange when a live login is stored, never from an event
+// subscription — launches a supervisor job for each workspace whose server is
+// waiting on one (SupervisorsAwaitingLogin, SupervisorResume), admitted like
+// any job: refused once shutting down, and never beside another job on the
+// same workspace. A workspace busy at that moment is owed the resume, launched
+// as the busy job releases it (owedResume, under the same lock, after that
+// job's end), since a restart or a run's step 8 may have parked the server on
+// the identity it read just before the sign-in; a delete forgets it. Boot's
+// ReopenSockets and ResumeSupervisors are not jobs: they act under the same
+// lock, from the row read again there, only for a workspace with no job in
+// flight and never once shutting down — the door's exclusion — and run before
+// anything else asks, in the order the socket must precede the server; as
+// jobs they would write a workspace.job end per running workspace at every
+// boot that settles no press, and the two would have to be one job to keep
+// that order.
+//
 // **A container an earlier Drydock made, with the broker socket mounted as a
 // file** (container.LegacyBrokerMount), is named, never left to exit 69:
 // ResumeSupervisors calls ParkSupervisor instead of starting it (the server
@@ -138,10 +156,10 @@
 // of a workspace with a job in flight, under the lock.
 //
 // Every job — a create's, start's, rebuild's or approval's run, a stop, a
-// delete, a session server restart — ends with exactly one workspace.job
-// event ({kind, outcome}: ok, failed, cancelled), written by launch rather
-// than by each path through the job, so a press always settles (frontend
-// §4.2). When the job's last act is a move, an annotation or the row's
+// delete, a session server restart or a sign-in's resume — ends with exactly
+// one workspace.job event ({kind, outcome}: ok, failed, cancelled), written
+// by launch rather than by each path through the job, so a press always
+// settles (frontend §4.2). When the job's last act is a move, an annotation or the row's
 // removal, that commit carries it (workspace.Ending); otherwise launch writes
 // it after the job returns and before it releases the workspace. A job cut
 // off by shutdown or a delete ends cancelled; a delete's end comes after its
@@ -355,6 +373,14 @@ type Provisioner struct {
 	// session server: the job RestartSupervisor runs. Nil refuses the
 	// route with ErrNoSupervisor.
 	SupervisorRestart func(ctx context.Context, id string) error
+	// SupervisorsAwaitingLogin lists the workspaces whose session server is
+	// waiting on a sign-in, and SupervisorResume starts one again if it
+	// still is and the login is live: ResumeAwaitingLogin's set and the body
+	// of the supervisor job it launches for each (supervisor.Manager's
+	// AwaitingLogin and Resume). Either nil makes ResumeAwaitingLogin a
+	// no-op.
+	SupervisorsAwaitingLogin func() []string
+	SupervisorResume         func(ctx context.Context, id string) error
 	// DeclarePorts receives, at step 3, the ports the resolved and merged
 	// configuration names (container.DeclaredPorts: forwardPorts, appPort,
 	// portsAttributes' labels) once the configuration is cleared to run —
@@ -384,6 +410,9 @@ type Provisioner struct {
 	// buildLogs holds each workspace's latest failed `up` (messages.go).
 	buildLogs map[string]BuildLog
 	owned     map[string]bool // every workspace a job was started for
+	// resumeOwed: workspaces a sign-in found busy, whose resume launches as
+	// the job holding them ends (ResumeAwaitingLogin).
+	resumeOwed map[string]bool
 }
 
 // RunIn runs the provisioner's jobs under g until g stops: every job — a
@@ -425,9 +454,9 @@ func (p *Provisioner) logf(format string, args ...any) {
 }
 
 // job is one background operation on a workspace. There is at most one per
-// workspace: a run, a stop, a delete or a session server restart. A delete
-// is the only one that may replace another — it cancels the job in flight and
-// waits for it to end.
+// workspace: a run, a stop, a delete, a session server restart or a
+// sign-in's resume. A delete is the only one that may replace another — it
+// cancels the job in flight and waits for it to end.
 type job struct {
 	kind   string // one of the Job* kinds
 	cancel context.CancelCauseFunc
@@ -833,6 +862,9 @@ func (a *admission) launch(id, kind string, f func(ctx context.Context) error) *
 			p.mu.Lock()
 			if p.active[id] == j { // a delete may have replaced it
 				delete(p.active, id)
+				// A sign-in that landed while this job held the
+				// workspace is resumed now (ResumeAwaitingLogin).
+				p.owedResume(id)
 			}
 			p.mu.Unlock()
 		}()

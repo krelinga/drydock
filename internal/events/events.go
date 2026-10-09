@@ -35,6 +35,14 @@
 // for events with no row (token.refused, the login's phases, a step, a
 // container fact). TestRowRule lists every bare call with the reason it has
 // no row, and fails on a new one.
+//
+// The subscriber rule: the log is the record and the SSE feed, and nothing
+// inside Drydock follows it — GET /api/events is the only Subscribe
+// (TestOnlySSESubscribes). A component that must act on another's change is
+// called by it (the identity watch's OnChange resumes the session servers
+// through the provisioner), so the action runs under its owner's rules
+// rather than beside them, and no goroutine can subscribe after shutdown
+// closed the log (#54).
 package events
 
 import (

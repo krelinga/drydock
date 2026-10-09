@@ -32,6 +32,15 @@ type sup struct {
 	// cancelled by a stop. Nil for one with no loop.
 	detached <-chan struct{}
 
+	// loginSeen and parked are m.mu's, not mu's: they are how a sign-in
+	// (Manager.Resume) and the loop's decision to park in awaiting_login
+	// (park) are ordered. loginSeen: a sign-in landed while this loop was
+	// running and had not parked, so its next park goes round again instead.
+	// parked: the loop has parked and is only returning, so a sign-in
+	// replaces it rather than telling it.
+	loginSeen bool
+	parked    bool
+
 	// wmu serialises this sup's state writes (write), from the check for a
 	// change to the memory update after the commit. Taken before mu, and
 	// held across the commit, which mu never is.
@@ -93,12 +102,18 @@ func (s *sup) loop(ctx context.Context) {
 		if ctx.Err() != nil || s.isStopping() {
 			return
 		}
+		// A sign-in before this point is in what this pass reads — the
+		// identity below, the credential the server starts with — so only
+		// one after it is news to the park.
+		s.clearLoginSeen()
 		// Defer to the fleet's identity before spending anything (§7.3,
 		// frontend §6.6): a server that cannot run is not started, and
 		// waiting for a sign-in costs no restart.
 		if st, known := m.identity(ctx); known && signedOut(st) {
-			s.set(ctx, AwaitingLogin, ReasonSignedOut, signedOutSentence(st), 0)
-			return
+			if s.park(ctx, ReasonSignedOut, signedOutSentence(st)) {
+				return
+			}
+			continue
 		}
 		// A server an earlier process (or an earlier run) left behind still
 		// holds the folder, and every start would be refused as already
@@ -135,8 +150,9 @@ func (s *sup) loop(ctx context.Context) {
 				return
 			}
 		case outLogin:
-			s.set(ctx, AwaitingLogin, out.reason, out.detail, 0)
-			return
+			if s.park(ctx, out.reason, out.detail) {
+				return
+			}
 		case outSignedOut:
 			continue // the top of the loop says so
 		case outFatal:
@@ -170,6 +186,34 @@ func (s *sup) loop(ctx context.Context) {
 			}
 		}
 	}
+}
+
+// park records awaiting_login and reports true — the loop is to return, and
+// waits for a sign-in — unless a sign-in landed since this pass began
+// (loginSeen), when it records nothing and reports false: go round again,
+// under the new login. Decided and recorded under m.mu, which Manager.Resume
+// holds too, so a sign-in is never lost between the loop's read and its park:
+// a Resume before the park has set loginSeen, and one after it finds the loop
+// parked and replaces it — after this write, so the replacement's starting
+// follows this awaiting_login.
+func (s *sup) park(ctx context.Context, r Reason, detail string) bool {
+	m := s.m
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if s.loginSeen {
+		s.loginSeen = false
+		return false
+	}
+	s.set(ctx, AwaitingLogin, r, detail, 0)
+	s.parked = true
+	return true
+}
+
+// clearLoginSeen forgets a sign-in the pass about to begin will see anyway.
+func (s *sup) clearLoginSeen() {
+	s.m.mu.Lock()
+	s.loginSeen = false
+	s.m.mu.Unlock()
 }
 
 func (s *sup) isStopping() bool {

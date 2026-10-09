@@ -84,7 +84,9 @@
 //
 // logintest.Launcher runs fakeclaude on a PTY directly (through the same
 // StartPTY) for the component tier. A success reaches the supervisors only
-// through the watch's auth.identity, which they resume on:
+// through the watch: the check it asks for stores the live login and calls
+// OnChange, which the server wires to the supervisors (SignedIn) and to
+// internal/provision's ResumeAwaitingLogin, a job per waiting workspace:
 // internal/supervisor/login_test.go drives both halves with fakeclaude, a
 // wrong code as the control. Tested there (with the canary sweep, and again
 // through the real server's socket, HTTP responses and SSE transcript
