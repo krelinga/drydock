@@ -505,9 +505,12 @@ const (
 // an agent, and the unpause resumes every process in the container, not just
 // the server, for as long as the stop takes. So the workspace's broker socket
 // is closed first (§9.1: access follows Drydock's state, and this workspace
-// is on its way out): what runs in that window — a half-done git push, a
-// tool command's secrets prelude — fails closed (exit 69) rather than acting
-// with live credentials. The server needs neither to deregister. If the
+// is on its way out): what runs in that window gets no *new* token or
+// secret — a fresh git or gh call fails, a tool command's secrets prelude
+// exits 69. It withholds only what is fetched after the close: a process
+// frozen after its fetch (a git push past its credential helper, a command
+// whose prelude ran) keeps what it holds. The server needs neither to
+// deregister. If the
 // socket cannot be closed, nothing is unpaused, and the server ends with its
 // container as for one that stays paused. A stop and a delete close the
 // socket later anyway; a rebuild reopens it at step 5.
@@ -577,24 +580,37 @@ func (p *Provisioner) repause(w workspace.Workspace, un *unpaused, reopen bool) 
 	if n == 0 && err == nil {
 		return ""
 	}
+	// Reopened only for a workspace still running: one a delete has taken
+	// over is deleting, and has no access. A running one left without
+	// access says how to get it back (a delete's is on its way out, and a
+	// failed rebuild's start reopens it at step 5).
+	running := false
+	if reopen {
+		cur, gerr := p.Workspaces.Get(ctx, w.ID)
+		running = gerr == nil && cur.State == workspace.Running
+	}
+	hint := func(s string) string {
+		if running {
+			return s + " " + RestoreAccessHint
+		}
+		return s
+	}
 	if err != nil {
 		p.logf("drydock: workspace %s: pausing the container again: %v", w.ID, err)
-		p.emit(ctx, w.ID, events.Warn, KindRepaused, RepauseFailedSentence, map[string]any{"count": n, "failed": true})
-		return RepauseFailedSentence
+		said := hint(RepauseFailedSentence)
+		p.emit(ctx, w.ID, events.Warn, KindRepaused, said, map[string]any{"count": n, "failed": true})
+		return said
 	}
 	said := RepausedClosedSentence
 	switch {
 	case p.Broker == nil:
 		said = RepausedSentence // there was no access to close
-	case reopen:
-		// Only for a workspace still running: one a delete has taken over
-		// is deleting, and has no access.
-		if cur, gerr := p.Workspaces.Get(ctx, w.ID); gerr == nil && cur.State == workspace.Running {
-			if oerr := p.Broker.Open(ctx, w.ID); oerr != nil {
-				p.logf("drydock: workspace %s: reopening GitHub access after pausing the container again: %v", w.ID, oerr)
-			} else {
-				said = RepausedSentence
-			}
+	case running:
+		if oerr := p.Broker.Open(ctx, w.ID); oerr != nil {
+			p.logf("drydock: workspace %s: reopening GitHub access after pausing the container again: %v", w.ID, oerr)
+			said = hint(RepausedClosedSentence)
+		} else {
+			said = RepausedSentence
 		}
 	}
 	p.emit(ctx, w.ID, events.Info, KindRepaused, said, map[string]any{"count": n, "failed": false})
@@ -606,6 +622,10 @@ const (
 	RepausedSentence       = "Drydock had unpaused the workspace's container to stop its session server; it is paused again, as it was."
 	RepausedClosedSentence = "Drydock had unpaused the workspace's container to stop its session server; it is paused again, with its GitHub access closed."
 	RepauseFailedSentence  = "Drydock had unpaused the workspace's container to stop its session server and could not pause it again: it is running, with its GitHub access closed."
+	// RestoreAccessHint follows either closed-access sentence on a stop,
+	// whose workspace stays running: a start's or a rebuild's step 5 is
+	// what opens the socket again.
+	RestoreAccessHint = "To restore its GitHub access, stop the workspace and start it again, or rebuild it."
 )
 
 func (p *Provisioner) emit(ctx context.Context, id string, level events.Level, kind, msg string, data map[string]any) {

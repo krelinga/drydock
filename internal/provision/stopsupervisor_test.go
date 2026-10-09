@@ -304,9 +304,15 @@ func TestAnUnpausedContainerIsPausedAgainWhenTheActionStopsShort(t *testing.T) {
 	for _, c := range []tc{
 		{"stop: the session server's stop failed", ActStop, false},
 		{"stop: cut off by shutdown", "shutdown", false},
+		// The stop's re-pause runs with the workspace already deleting: it
+		// must not reopen GitHub access for a workspace on its way out. The
+		// delete then unpauses again, its own session server stop fails,
+		// and it pauses again too.
+		{"stop: cut off by a delete", "stopdelete", false},
 		{"delete: the session server's stop failed", ActDelete, false},
 		{"rebuild: step 3 could not stop the container", "rebuild", false},
 		{"stop: the re-pause failed", ActStop, true},
+		{"stop: reopening GitHub access failed", "stopopenfails", false},
 	} {
 		for _, paused := range []bool{true, false} {
 			t.Run(fmt.Sprintf("%s/paused=%v", c.name, paused), func(t *testing.T) {
@@ -315,8 +321,17 @@ func TestAnUnpausedContainerIsPausedAgainWhenTheActionStopsShort(t *testing.T) {
 				v := e.running(t, alpha)
 				dockerFails := errors.New("docker exec: Cannot connect to the Docker daemon")
 				entered := make(chan struct{})
+				calls := 0
 				e.p.StopSupervisor = func(ctx context.Context, w workspace.Workspace) error {
+					calls++
 					switch c.action {
+					case "stopdelete":
+						if calls > 1 {
+							return dockerFails // the delete's
+						}
+						close(entered)
+						<-ctx.Done()
+						return ctx.Err()
 					case "shutdown":
 						close(entered)
 						<-ctx.Done()
@@ -334,7 +349,25 @@ func TestAnUnpausedContainerIsPausedAgainWhenTheActionStopsShort(t *testing.T) {
 				if paused {
 					e.setStatus(t, v.ID, "paused")
 				}
+				e.broker.mu.Lock()
+				opensBefore := len(e.broker.opened)
+				if c.action == "stopopenfails" {
+					e.broker.err = errors.New("broker: the socket could not be bound")
+				}
+				e.broker.mu.Unlock()
 				switch c.action {
+				case "stopopenfails":
+					if err := e.p.Stop(ctx, v.ID); err != nil {
+						t.Fatal(err)
+					}
+				case "stopdelete":
+					if err := e.p.Stop(ctx, v.ID); err != nil {
+						t.Fatal(err)
+					}
+					<-entered
+					if err := e.p.Delete(ctx, v.ID, "krelinga/alpha"); err != nil {
+						t.Fatal(err)
+					}
 				case ActStop:
 					if err := e.p.Stop(ctx, v.ID); err != nil {
 						t.Fatal(err)
@@ -379,17 +412,39 @@ func TestAnUnpausedContainerIsPausedAgainWhenTheActionStopsShort(t *testing.T) {
 					}
 					return
 				}
-				if pauses != 1 {
-					t.Errorf("%d pauses, want 1", pauses)
+				wantPauses := 1
+				if c.action == "stopdelete" {
+					wantPauses = 2 // the stop's re-pause, then the delete's
+				}
+				if pauses != wantPauses {
+					t.Errorf("%d pauses, want %d", pauses, wantPauses)
+				}
+				e.broker.mu.Lock()
+				reopened := len(e.broker.opened) - opensBefore
+				e.broker.mu.Unlock()
+				if want := map[bool]int{true: 1, false: 0}[c.action == ActStop || c.action == "shutdown" || c.action == "stopopenfails"]; !c.failPause && reopened != want {
+					t.Errorf("GitHub access reopened %d times, want %d", reopened, want)
 				}
 				if c.failPause {
 					if status != "running" || e.broker.isOpen(v.ID) {
 						t.Errorf("a failed re-pause: container %s, access open %v; want running, closed", status, e.broker.isOpen(v.ID))
 					}
-					if !strings.Contains(detail, RepauseFailedSentence) {
-						t.Errorf("the detail does not say the re-pause failed: %q", detail)
+					if !strings.Contains(detail, RepauseFailedSentence+" "+RestoreAccessHint) {
+						t.Errorf("the detail does not say the re-pause failed and how to restore access: %q", detail)
 					}
 					return
+				}
+				if c.action == "stopopenfails" {
+					if status != "paused" || e.broker.isOpen(v.ID) {
+						t.Errorf("a failed reopen: container %s, access open %v; want paused, closed", status, e.broker.isOpen(v.ID))
+					}
+					if !strings.Contains(detail, RepausedClosedSentence+" "+RestoreAccessHint) {
+						t.Errorf("the detail does not say access is closed and how to restore it: %q", detail)
+					}
+					return
+				}
+				if strings.Contains(detail, RestoreAccessHint) && c.action != ActStop {
+					t.Errorf("a %s's detail offers to restore access: %q", c.action, detail)
 				}
 				if status != "paused" {
 					t.Errorf("the container is %s after the %s stopped short, want paused again", status, c.action)
@@ -412,7 +467,7 @@ func TestAnUnpausedContainerIsPausedAgainWhenTheActionStopsShort(t *testing.T) {
 					if !strings.Contains(detail, RepausedSentence) {
 						t.Errorf("the stop's detail does not say the container is paused again: %q", detail)
 					}
-				case ActDelete:
+				case ActDelete, "stopdelete":
 					if !strings.Contains(detail, RepausedClosedSentence) {
 						t.Errorf("the delete's detail does not say the container is paused again: %q", detail)
 					}

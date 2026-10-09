@@ -99,8 +99,8 @@
 // delete — after unpausing the workspace's container if it is paused
 // (container.Unpause), since each of those ends the container anyway and a
 // server ended with its container never deregisters (Spike 02). The broker
-// socket is closed before the unpause, so nothing the unpause resumes runs
-// with GitHub access; a pause that lands after the unpause is unpaused and
+// socket is closed before the unpause, so nothing the unpause resumes can
+// fetch a new token or secret; a pause that lands after the unpause is unpaused and
 // the stop asked once more, and one that stays paused carries on to the
 // container step with PausedNote. An action that then stops short of ending
 // the container — a halted or cancelled stop or delete, a rebuild failing
