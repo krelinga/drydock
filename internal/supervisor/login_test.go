@@ -100,7 +100,11 @@ func TestASuccessfulHandshakeResumesAWaitingSupervisor(t *testing.T) {
 	os.MkdirAll(cfgDir, 0o700)
 	lm := &login.Manager{Launcher: &logintest.Launcher{Fake: lf, ConfigDir: cfgDir}, Events: r.log,
 		Clock: sys.RealClock{}, Identity: w, Settle: 2 * time.Second}
-	defer lm.Shutdown(10 * time.Second)
+	lg := life.NewGroup(ctx)
+	if err := lm.Start(lg); err != nil {
+		t.Fatal(err)
+	}
+	defer lg.Wait(time.After(10 * time.Second))
 	sub := r.log.Subscribe()
 	defer r.log.Cancel(sub)
 	phase := func(want login.Phase) {

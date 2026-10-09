@@ -19,7 +19,10 @@ import (
 	"time"
 
 	"github.com/krelinga/drydock/internal/claudetest"
+	"github.com/krelinga/drydock/internal/events"
+	"github.com/krelinga/drydock/internal/login"
 	"github.com/krelinga/drydock/internal/login/logintest"
+	"github.com/krelinga/drydock/internal/store"
 	"github.com/krelinga/drydock/internal/sys"
 )
 
@@ -290,5 +293,152 @@ func TestLoginHandshakeEndToEnd(t *testing.T) {
 	where := strings.Join(sinks(begun.LoginID), "\n")
 	if !strings.Contains(where, "what the server sent") || !strings.Contains(where, "drydock.db") {
 		t.Errorf("control: the sweep found the login id only in %q", where)
+	}
+}
+
+// loginRig is a server whose login runs fakeclaude, which waits at the
+// prompt for a code it is never given.
+func loginRig(t *testing.T) (r *running, launcher *logintest.Launcher, cookie string, cancel context.CancelFunc, done chan error) {
+	t.Helper()
+	dir := t.TempDir()
+	cfg := testConfig(t, dir)
+	srv, err := New(context.Background(), cfg, sys.Production())
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv.Identity.Source = okSource{}
+	fake := claudetest.Install(t, claudetest.Script{
+		StateDir: filepath.Join(dir, "fake-state"),
+		Login:    &claudetest.Login{Mode: claudetest.LoginTimeout},
+	})
+	cfgDir := filepath.Join(dir, "claude-config")
+	os.MkdirAll(cfgDir, 0o700)
+	launcher = &logintest.Launcher{Fake: fake, ConfigDir: cfgDir}
+	srv.Login.Launcher = launcher
+	ctx, cancel := context.WithCancel(context.Background())
+	done = make(chan error, 1)
+	go func() { done <- srv.Serve(ctx) }()
+	r = &running{cfg: cfg, srv: srv, client: unixClient(cfg.APISocket)}
+	return r, launcher, r.signIn(t), cancel, done
+}
+
+// beginLogin starts a login through the route and waits for its prompt.
+func beginLogin(t *testing.T, r *running, cookie string) string {
+	t.Helper()
+	resp := r.do(t, req{method: "POST", path: "/api/auth/claude/login", cookie: cookie, origin: uiOrigin})
+	var begun struct {
+		LoginID string `json:"login_id"`
+	}
+	json.NewDecoder(resp.Body).Decode(&begun)
+	if resp.StatusCode != http.StatusAccepted || begun.LoginID == "" {
+		t.Fatalf("control: POST /api/auth/claude/login = %d", resp.StatusCode)
+	}
+	for deadline := time.Now().Add(15 * time.Second); ; time.Sleep(20 * time.Millisecond) {
+		if v := r.srv.Login.Current(); v != nil && v.ID == begun.LoginID && v.Phase == login.AwaitingCode {
+			return begun.LoginID
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the login never reached its prompt: %+v", r.srv.Login.Current())
+		}
+	}
+}
+
+// TestShutdownEndsALoginInFlight is the login's half of #83: a login in
+// progress runs in Serve's work, which shutdown stops and waits for before
+// the database closes. So by the time Serve returns the login's process is
+// killed, its container removed — under a live context, with the database
+// still open, and slowly, so a shutdown that did not wait would close the
+// database under it — and its end announced, failed for the shutdown, in the
+// database Serve closed. The control is the 202 and the prompt before.
+func TestShutdownEndsALoginInFlight(t *testing.T) {
+	r, launcher, cookie, cancel, done := loginRig(t)
+	defer cancel()
+	type atRemove struct {
+		ctxErr error
+		dbErr  error
+	}
+	seen := make(chan atRemove, 1)
+	launcher.OnRemove = func(ctx context.Context, _ string, _ bool) {
+		time.Sleep(300 * time.Millisecond)
+		seen <- atRemove{ctx.Err(), r.srv.DB.DB.PingContext(context.Background())}
+	}
+	id := beginLogin(t, r, cookie)
+	p, err := launcher.Proc(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Serve: %v", err)
+		}
+	case <-time.After(60 * time.Second):
+		t.Fatal("Serve did not return")
+	}
+	select {
+	case <-p.Exited():
+	default:
+		t.Error("Serve returned with the login's process running")
+	}
+	select {
+	case at := <-seen:
+		if at.ctxErr != nil {
+			t.Errorf("the login's container was removed under an ended context: %v", at.ctxErr)
+		}
+		if at.dbErr != nil {
+			t.Errorf("the database was closed while the login's container was being removed: %v", at.dbErr)
+		}
+	default:
+		t.Fatal("Serve returned before the login's container was removed")
+	}
+
+	db, err := store.Open(context.Background(), r.cfg.DatabasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	evs, err := events.New(db.DB, sys.RealClock{}).Since(context.Background(), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var phases []string
+	for _, ev := range evs {
+		var d struct{ Login login.View }
+		if ev.Kind == login.KindLogin && json.Unmarshal(ev.Data, &d) == nil && d.Login.ID == id {
+			phases = append(phases, string(d.Login.Phase))
+			if d.Login.Phase == login.Failed && (d.Login.Problem == nil || *d.Login.Problem != login.ProblemShutdown) {
+				t.Errorf("the login ended failed for %v; want shutdown", d.Login.Problem)
+			}
+		}
+	}
+	if got := strings.Join(phases, ","); got != "starting,awaiting_code,failed" {
+		t.Errorf("the login's events in the database: %s; want it started, prompted and ended failed", got)
+	}
+}
+
+// TestLoginBeginRefusedOnceStopped: once the login's group in Serve's work is
+// stopping, POST /api/auth/claude/login starts nothing and is refused 503
+// unavailable, as it is while Drydock shuts down, rather than answered 202
+// for a login nothing would ever end. The control is the 202 before, whose
+// login the stop ends.
+func TestLoginBeginRefusedOnceStopped(t *testing.T) {
+	r, launcher, cookie, cancel, done := loginRig(t)
+	t.Cleanup(func() { cancel(); <-done })
+	id := beginLogin(t, r, cookie)
+	if late := r.srv.loginWork.Load().Wait(time.After(10 * time.Second)); late != nil {
+		t.Fatalf("the login's group did not stop: %v", late)
+	}
+	if v := r.srv.Login.Current(); v == nil || v.ID != id || v.Phase != login.Failed {
+		t.Errorf("the stop left the login %+v; want it failed", v)
+	}
+	resp := r.do(t, req{method: "POST", path: "/api/auth/claude/login", cookie: cookie, origin: uiOrigin})
+	b, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusServiceUnavailable || !strings.Contains(string(b), `"unavailable"`) {
+		t.Errorf("begin after the stop = %d %s; want 503 unavailable", resp.StatusCode, b)
+	}
+	if n := len(launcher.Launched()); n != 1 {
+		t.Errorf("%d launches; begin after the stop must start none", n)
 	}
 }

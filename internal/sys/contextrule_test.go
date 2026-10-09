@@ -101,12 +101,10 @@ const (
 var allowed = []allowance{
 	// Component roots: the context every background job of the component
 	// runs under, ended by its Shutdown.
-	{use{"internal/login/login.go", "Manager.init", "context.Background"}, 0, whyRoot},
 	{use{"internal/provision/provision.go", "Provisioner.launch", "context.Background"}, 0, whyRoot},
 	{use{"internal/supervisor/supervisor.go", "Manager.launchLocked", "context.Background"}, 0, whyRoot},
 
 	// Shutdown: bounds that start once the component's context has ended.
-	{use{"internal/login/login.go", "Manager.Shutdown", "time.After"}, 0, whyShutWin},
 	{use{"internal/provision/provision.go", "Provisioner.Shutdown", "time.After"}, 0, whyShutWin},
 	{use{"internal/server/server.go", "Server.Serve", "context.Background"}, 0,
 		"R1 debt: the HTTP servers' graceful-shutdown bound starts after the serving context has ended"},
@@ -115,24 +113,13 @@ var allowed = []allowance{
 
 	// Processes whose lifetime is not a context's.
 	{use{"internal/login/login.go", "StartProc", "context.Background"}, 0,
-		"a login process is ended by the session (kill), never by a context SIGTERMing it"},
+		"a login process is ended by its session (kill, then the container's removal), never by a context SIGTERMing it; the session runs in the login's life.Group, so shutdown still ends it"},
 	{use{"internal/supervisor/run.go", "sup.runOnce", "context.Background"}, 0,
 		"the session server's process: Drydock's shutdown must leave it running, and a stop signals it in the container"},
-	{use{"internal/login/login.go", "Proc.kill", "time.After"}, 0,
-		"R1 debt: the wait after SIGKILL for a real process to be reaped, on the wall clock"},
 
 	// Bookkeeping and cleanup owed after a cancellation: rule 3's cases from
 	// before sys.Cleanup. The unbounded ones write to the local database; the
-	// rest are in code #96 is changing (provision, supervisor), or would put
-	// a timer on a fake clock whose Waiting a test counts.
-	{use{"internal/login/login.go", "session.finish", "context.Background"}, 2,
-		"R1 debt: removing the login container and announcing the end, owed after the session's context ended (a fake-clock bound would join the login tests' Waiting)"},
-	{use{"internal/login/login.go", "session.finish", "context.WithTimeout"}, 0,
-		"R1 debt: the removal's one-minute bound, on the wall clock"},
-	{use{"internal/login/login.go", "Manager.emit", "context.Background"}, 0,
-		"an announcement owed after its context ended; the event log ends with the store"},
-	{use{"internal/login/login.go", "session.succeed", "time.After"}, 0,
-		"R1 debt: Settle, the wall-clock grace for the real process to exit by itself after a success"},
+	// rest are in code #96 is changing (provision, supervisor).
 	{use{"internal/provision/provision.go", "Provisioner.run", "context.WithoutCancel"}, 0,
 		"book: a run's step events and its move to failed, owed after cancellation"},
 	{use{"internal/provision/provision.go", "Provisioner.run", "context.WithTimeout"}, 0,
@@ -165,10 +152,6 @@ var allowed = []allowance{
 		"the ring outlives a run, so a flush after a cancelled run must still be masked"},
 	{use{"internal/supervisor/supervisor.go", "Manager.redactValues", "context.WithTimeout"}, 0,
 		"R1 debt: that read's 5 s bound, on the wall clock"},
-	{use{"internal/login/docker.go", "DockerLauncher.Remove", "time.Now"}, 2,
-		"R1 debt: RemoveSettle's deadline for a container the real daemon is still creating, on the wall clock"},
-	{use{"internal/login/docker.go", "DockerLauncher.Remove", "time.After"}, 0,
-		"R1 debt: RemoveSettle's poll interval against the real daemon, on the wall clock"},
 
 	// Per-connection bounds where no request context exists.
 	{use{"internal/broker/broker.go", "Broker.handle", "context.Background"}, 0,

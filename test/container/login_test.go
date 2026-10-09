@@ -22,6 +22,7 @@ import (
 	"github.com/krelinga/drydock/internal/claudetest"
 	"github.com/krelinga/drydock/internal/config"
 	"github.com/krelinga/drydock/internal/events"
+	"github.com/krelinga/drydock/internal/life"
 	"github.com/krelinga/drydock/internal/login"
 	"github.com/krelinga/drydock/internal/store"
 	"github.com/krelinga/drydock/internal/subproc"
@@ -75,6 +76,21 @@ func loginCode() string {
 	rand.Read(a)
 	rand.Read(b)
 	return "cnryC" + hex.EncodeToString(a) + "#cnryS" + hex.EncodeToString(b)
+}
+
+// startLogins runs m's logins in a group of their own, as Serve's
+// work.Child("login") runs them, stopped and waited for at the test's end.
+func startLogins(t *testing.T, m *login.Manager) {
+	t.Helper()
+	g := life.NewGroup(context.Background())
+	if err := m.Start(g); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if late := g.Wait(time.After(30 * time.Second)); late != nil {
+			t.Errorf("the logins' group did not end: %v", late)
+		}
+	})
 }
 
 func newLoginID() string {
@@ -294,7 +310,7 @@ func TestLoginManagerAgainstRealDocker(t *testing.T) {
 	defer log.Cancel(sub)
 	ids := &loggedIn{}
 	m := &login.Manager{Launcher: d, Events: log, Clock: sys.RealClock{}, Identity: ids, Settle: 10 * time.Second}
-	t.Cleanup(func() { m.Shutdown(30 * time.Second) })
+	startLogins(t, m)
 	next := func(want login.Phase) login.View {
 		t.Helper()
 		deadline := time.After(90 * time.Second)
@@ -540,9 +556,11 @@ func TestLoginCancelDuringCreate(t *testing.T) {
 	// Far past the late create, which lands about a second after the
 	// cancel, so a slow daemon's `docker create` cannot outlast it. Remove
 	// stops waiting once the container lists, so a passing run pays nothing.
-	d.RemoveSettle = 30 * time.Second
+	// Under the manager's own bound on a removal (15 s), which a longer
+	// settle would only run into.
+	d.RemoveSettle = 12 * time.Second
 	m := &login.Manager{Launcher: d, Events: log, Clock: sys.RealClock{}, Identity: &loggedIn{}, Settle: 10 * time.Second}
-	t.Cleanup(func() { m.Shutdown(30 * time.Second) })
+	startLogins(t, m)
 	v, err := m.Begin(ctx)
 	if err != nil {
 		t.Fatal(err)
@@ -564,7 +582,7 @@ func TestLoginCancelDuringCreate(t *testing.T) {
 	// new login's own container stays.
 	stray := docker(t, "create", "--label", p+"."+login.LabelLogin+"="+newLoginID(), config.DefaultCleanupImage, "true")
 	m2 := &login.Manager{Launcher: dockerLauncher(p, vol, extra), Events: log, Clock: sys.RealClock{}, Identity: &loggedIn{}, Settle: 10 * time.Second}
-	t.Cleanup(func() { m2.Shutdown(30 * time.Second) })
+	startLogins(t, m2)
 	v2, err := m2.Begin(ctx)
 	if err != nil {
 		t.Fatal(err)

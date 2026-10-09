@@ -15,6 +15,7 @@ import (
 	"github.com/krelinga/drydock/internal/config"
 	"github.com/krelinga/drydock/internal/container"
 	"github.com/krelinga/drydock/internal/subproc"
+	"github.com/krelinga/drydock/internal/sys"
 )
 
 // LabelLogin is the label a login container carries, valued with its login
@@ -90,6 +91,9 @@ type DockerLauncher struct {
 	// RemoveSettle bounds Remove's wait for a killed CLI's container; zero
 	// is DefaultRemoveSettle.
 	RemoveSettle time.Duration
+	// Clock is what RemoveSettle and its relisting are measured on; nil is
+	// the real clock.
+	Clock sys.Clock
 }
 
 // Launch implements Launcher.
@@ -205,20 +209,33 @@ func (d DockerLauncher) Remove(ctx context.Context, id string, killed bool) erro
 	if settle <= 0 {
 		settle = DefaultRemoveSettle
 	}
-	deadline := time.Now().Add(settle)
+	clock := d.Clock
+	if clock == nil {
+		clock = sys.RealClock{}
+	}
+	settled, stopSettle := sys.NewTimer(clock, settle)
+	defer stopSettle()
+	over := false
 	for {
 		ids, err := d.list(ctx, d.label(id))
 		if err != nil {
 			return err
 		}
-		if len(ids) > 0 || !killed || !time.Now().Before(deadline) {
+		if len(ids) > 0 || !killed || over {
 			return d.rm(ctx, ids)
 		}
+		poll, stopPoll := sys.NewTimer(clock, removePoll)
 		select {
 		case <-ctx.Done():
+			stopPoll()
 			return ctx.Err()
-		case <-time.After(removePoll):
+		case <-settled:
+			// One last look, then give up: what lands later goes at the
+			// next login's sweep.
+			over = true
+		case <-poll:
 		}
+		stopPoll()
 	}
 }
 

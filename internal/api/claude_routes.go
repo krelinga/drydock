@@ -94,7 +94,9 @@ func (cr ClaudeRoutes) begin(w http.ResponseWriter, r *http.Request) {
 	case errors.Is(err, login.ErrInProgress):
 		WriteError(w, http.StatusConflict, CodeInProgress, "A Claude login is already in progress.", "")
 		return
-	case errors.Is(err, login.ErrShutdown):
+	case errors.Is(err, login.ErrShutdown), errors.Is(err, login.ErrNotStarted):
+		// Its group stopping (or, before Serve starts it, never begun):
+		// nothing would run the login, so nothing is accepted.
 		WriteError(w, http.StatusServiceUnavailable, CodeUnavailable, "Drydock is shutting down.", "")
 		return
 	case err != nil:

@@ -24,6 +24,7 @@ import (
 	"github.com/krelinga/drydock/internal/classify"
 	"github.com/krelinga/drydock/internal/claudetest"
 	"github.com/krelinga/drydock/internal/events"
+	"github.com/krelinga/drydock/internal/life"
 	"github.com/krelinga/drydock/internal/login"
 	"github.com/krelinga/drydock/internal/login/logintest"
 	"github.com/krelinga/drydock/internal/store"
@@ -67,6 +68,7 @@ type env struct {
 	fake     *claudetest.Fake
 	launcher *logintest.Launcher
 	m        *login.Manager
+	g        *life.Group
 	ids      *recorder
 	logged   *bytes.Buffer
 	logMu    *sync.Mutex
@@ -98,8 +100,18 @@ func newEnv(t *testing.T, script claudetest.Script, clock sys.Clock) *env {
 	ids := &recorder{}
 	m := &login.Manager{Launcher: l, Events: log, Clock: clock, Identity: ids, Settle: 5 * time.Second,
 		Logf: func(f string, a ...any) { mu.Lock(); fmt.Fprintf(&buf, f+"\n", a...); mu.Unlock() }}
-	t.Cleanup(func() { m.Shutdown(10 * time.Second) })
-	return &env{root: root, db: db, log: log, sub: sub, fake: fake, launcher: l, m: m, ids: ids, logged: &buf, logMu: &mu}
+	// The manager's group, as Serve's work.Child("login") is: stopped and
+	// waited for before the database closes (cleanups run last first).
+	g := life.NewGroup(context.Background())
+	if err := m.Start(g); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if late := g.Wait(time.After(10 * time.Second)); late != nil {
+			t.Errorf("the login's group did not end: %v", late)
+		}
+	})
+	return &env{root: root, db: db, log: log, sub: sub, fake: fake, launcher: l, m: m, g: g, ids: ids, logged: &buf, logMu: &mu}
 }
 
 // next waits for the auth.login event whose phase satisfies ok.
@@ -530,24 +542,102 @@ func TestLaunchFailureNamesItsProblem(t *testing.T) {
 	}
 }
 
-// TestShutdownEndsTheLogin: Drydock stopping mid-login fails it, saying so,
-// and leaves nothing running.
+// announcedEnd reports whether the log holds an auth.login event ending id.
+func (e *env) announcedEnd(t *testing.T, id string) bool {
+	t.Helper()
+	evs, err := e.log.Since(context.Background(), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, ev := range evs {
+		var d struct{ Login login.View }
+		if ev.Kind == login.KindLogin && json.Unmarshal(ev.Data, &d) == nil && d.Login.ID == id && d.Login.Phase.Ended() {
+			return true
+		}
+	}
+	return false
+}
+
+// TestShutdownEndsTheLogin: the manager's group stopping mid-login — Serve's
+// shutdown — fails it, saying so, and its Wait returns only once the process
+// is killed, its container removed and its end announced, in that order. The
+// removal runs under a live context although the session's has ended (rule
+// 3 of the context rule: a removal under the ended one would refuse to
+// start), and before the end is in the log or the view.
 func TestShutdownEndsTheLogin(t *testing.T) {
 	e := newEnv(t, accept("x#y"), sys.RealClock{})
+	type atRemove struct {
+		ctxErr    error
+		announced bool
+		phase     login.Phase
+	}
+	seen := make(chan atRemove, 1)
+	e.launcher.OnRemove = func(ctx context.Context, id string, _ bool) {
+		cur := e.m.Current()
+		seen <- atRemove{ctx.Err(), e.announcedEnd(t, id), cur.Phase}
+	}
 	v, _ := e.m.Begin(context.Background())
 	e.next(t, phase(login.AwaitingCode))
 	p, _ := e.launcher.Proc(v.ID)
-	e.m.Shutdown(10 * time.Second)
+	if late := e.g.Wait(time.After(10 * time.Second)); late != nil {
+		t.Fatalf("the group's Wait ran out with %v still running", late)
+	}
 	select {
 	case <-p.Exited():
 	default:
-		t.Fatal("shutdown returned with the process running")
+		t.Fatal("the group's Wait returned with the process running")
+	}
+	if !contains(e.launcher.Removed(), v.ID) {
+		t.Fatal("the group's Wait returned before the container was removed")
+	}
+	at := <-seen
+	if at.ctxErr != nil {
+		t.Errorf("the container was removed under an ended context: %v", at.ctxErr)
+	}
+	if at.announced || at.phase.Ended() {
+		t.Errorf("the end was announced (%v) or shown (%s) before the container was removed", at.announced, at.phase)
+	}
+	if !e.announcedEnd(t, v.ID) {
+		t.Error("the group's Wait returned before the end was announced")
 	}
 	if cur := e.m.Current(); cur == nil || cur.Phase != login.Failed || *cur.Problem != login.ProblemShutdown {
 		t.Errorf("after shutdown: %+v", cur)
 	}
+}
+
+// TestBeginAfterStopIsRefused: once the manager's group is stopping, Begin
+// starts nothing — no session, no launch, no event — and says Drydock is
+// shutting down, which the route answers 503. Before Start it is refused
+// too. The control is the same manager's Begin while its group runs.
+func TestBeginAfterStopIsRefused(t *testing.T) {
+	e := newEnv(t, accept("x#y"), sys.RealClock{})
+	unstarted := &login.Manager{Launcher: e.launcher, Events: e.log, Clock: sys.RealClock{}}
+	if _, err := unstarted.Begin(context.Background()); !errors.Is(err, login.ErrNotStarted) {
+		t.Errorf("Begin before Start: %v; want ErrNotStarted", err)
+	}
+
+	v, err := e.m.Begin(context.Background())
+	if err != nil {
+		t.Fatalf("control: Begin while the group runs: %v", err)
+	}
+	e.next(t, phase(login.AwaitingCode))
+	e.g.Stop()
+	e.ended(t, v.ID)
+	before, err := e.log.Latest(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
 	if _, err := e.m.Begin(context.Background()); !errors.Is(err, login.ErrShutdown) {
-		t.Errorf("begin after shutdown: %v", err)
+		t.Errorf("Begin after Stop: %v; want ErrShutdown", err)
+	}
+	if n := len(e.launcher.Launched()); n != 1 {
+		t.Errorf("%d launches; Begin after Stop must start none", n)
+	}
+	if cur := e.m.Current(); cur == nil || cur.ID != v.ID {
+		t.Errorf("Begin after Stop made a login current: %+v", cur)
+	}
+	if after, _ := e.log.Latest(context.Background()); after != before {
+		t.Errorf("Begin after Stop wrote events %d..%d", before+1, after)
 	}
 }
 
@@ -674,7 +764,7 @@ func TestClassifierDecides(t *testing.T) {
 }
 
 // TestShutdownEndsThePostLoginCheck: the check a successful login asks the
-// watch for runs under the manager's own context, so a shutdown ends it
+// watch for is waited for under the manager's group's context, so a shutdown ends it
 // rather than leaving it running past the database it writes to (#37's
 // review: it ran on context.Background()). The control is that the check was
 // asked for at all, with the verdict's moment.
@@ -695,9 +785,11 @@ func TestShutdownEndsThePostLoginCheck(t *testing.T) {
 	waitFor(t, func() bool { return len(e.ids.calls()) == 1 })
 
 	start := time.Now()
-	e.m.Shutdown(10 * time.Second)
+	if late := e.g.Wait(time.After(10 * time.Second)); late != nil {
+		t.Errorf("the group's Wait ran out with %v", late)
+	}
 	if took := time.Since(start); took > 5*time.Second {
-		t.Errorf("Shutdown waited %v on the post-login check", took)
+		t.Errorf("the group's Wait waited %v on the post-login check", took)
 	}
 	select {
 	case err := <-e.ids.ended:
