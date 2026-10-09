@@ -7,6 +7,7 @@ import (
 
 	"github.com/krelinga/drydock/internal/events"
 	"github.com/krelinga/drydock/internal/github/githubtest"
+	"github.com/krelinga/drydock/internal/life"
 	"github.com/krelinga/drydock/internal/store"
 	"github.com/krelinga/drydock/internal/sys"
 )
@@ -24,6 +25,11 @@ func TestContractRefresh(t *testing.T) {
 	}
 	defer db.Close()
 	cat := &Catalog{DB: db.DB, GitHub: b.Client, Clock: sys.RealClock{}, Events: events.New(db.DB, sys.RealClock{})}
+	group := life.NewGroup(ctx)
+	defer group.Wait(nil) // before db.Close: deferred later, runs first
+	if err := cat.start(group, false); err != nil {
+		t.Fatal(err)
+	}
 
 	res, err := cat.Refresh(ctx)
 	if err != nil {

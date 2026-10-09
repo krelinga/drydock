@@ -23,13 +23,7 @@ func WithTimeout(parent context.Context, c Clock, d time.Duration) (context.Cont
 	if d <= 0 {
 		return ctx, func() { cancel(context.Canceled) }
 	}
-	var fired <-chan time.Time
-	stop := func() {}
-	if t, ok := c.(timerClock); ok {
-		fired, stop = t.Timer(d)
-	} else {
-		fired = c.After(d)
-	}
+	fired, stop := NewTimer(c, d)
 	go func() {
 		select {
 		case <-fired:
@@ -47,6 +41,17 @@ func WithTimeout(parent context.Context, c Clock, d time.Duration) (context.Cont
 // one it no longer needs.
 type timerClock interface {
 	Timer(d time.Duration) (<-chan time.Time, func())
+}
+
+// NewTimer is c.After(d) with a stop, on the injected clock: the returned
+// func removes the timer if it has not fired, so a bound or a period that
+// was not needed is neither left running nor counted by a FakeClock's
+// Waiting. A Clock without stoppable timers gets After and a no-op stop.
+func NewTimer(c Clock, d time.Duration) (<-chan time.Time, func()) {
+	if t, ok := c.(timerClock); ok {
+		return t.Timer(d)
+	}
+	return c.After(d), func() {}
 }
 
 // Timer implements timerClock.

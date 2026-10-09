@@ -101,14 +101,12 @@ const (
 var allowed = []allowance{
 	// Component roots: the context every background job of the component
 	// runs under, ended by its Shutdown.
-	{use{"internal/catalog/catalog.go", "Catalog.init", "context.Background"}, 0, whyRoot},
 	{use{"internal/identity/watch.go", "Watch.init", "context.Background"}, 0, whyRoot},
 	{use{"internal/login/login.go", "Manager.init", "context.Background"}, 0, whyRoot},
 	{use{"internal/provision/provision.go", "Provisioner.launch", "context.Background"}, 0, whyRoot},
 	{use{"internal/supervisor/supervisor.go", "Manager.launchLocked", "context.Background"}, 0, whyRoot},
 
 	// Shutdown: bounds that start once the component's context has ended.
-	{use{"internal/catalog/catalog.go", "Catalog.Shutdown", "time.After"}, 0, whyShutWin},
 	{use{"internal/identity/watch.go", "Watch.Shutdown", "time.After"}, 0, whyShutWin},
 	{use{"internal/login/login.go", "Manager.Shutdown", "time.After"}, 0, whyShutWin},
 	{use{"internal/provision/provision.go", "Provisioner.Shutdown", "time.After"}, 0, whyShutWin},

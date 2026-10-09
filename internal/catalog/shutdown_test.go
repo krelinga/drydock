@@ -3,6 +3,7 @@ package catalog
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -12,6 +13,8 @@ import (
 
 	"github.com/krelinga/drydock/internal/events"
 	"github.com/krelinga/drydock/internal/github/githubtest"
+	"github.com/krelinga/drydock/internal/life"
+	"github.com/krelinga/drydock/internal/sys"
 )
 
 // holdingTransport holds the next request it is armed for — the first whose
@@ -54,12 +57,6 @@ func holding(e *env) *holdingTransport {
 	h := &holdingTransport{}
 	e.cat.GitHub.HTTP = &http.Client{Transport: h}
 	return h
-}
-
-func (e *env) busy() bool {
-	e.cat.mu.Lock()
-	defer e.cat.mu.Unlock()
-	return e.cat.running
 }
 
 func (e *env) eventKinds(t *testing.T) []string {
@@ -119,15 +116,26 @@ func refreshed(t *testing.T, sub *events.Sub, n int) []int {
 	return counts
 }
 
+// trigger is Trigger with its ticket, through the worker, for a test that
+// waits on the answer.
+func (e *env) trigger(t *testing.T) life.Ticket {
+	t.Helper()
+	tk, err := e.cat.w.Trigger()
+	if err != nil {
+		t.Fatalf("Trigger: %v", err)
+	}
+	return tk
+}
+
 // TestATriggeredRefreshCompletes is the positive control for the shutdown
 // tests below: a triggered refresh, with nothing shutting down, lists,
 // writes the cache and says so on the stream.
 func TestATriggeredRefreshCompletes(t *testing.T) {
 	e := newEnv(t)
-	if got := e.cat.trigger(); got != started {
-		t.Fatalf("a Trigger before Shutdown: %v; want started", got)
+	e.cat.Trigger()
+	if _, err := e.cat.w.Await(context.Background(), 1); err != nil {
+		t.Fatalf("the triggered refresh: %v", err)
 	}
-	e.cat.triggers.Wait()
 	if n := len(e.list(t)); n != 5 {
 		t.Errorf("the triggered refresh cached %d repositories; want 5", n)
 	}
@@ -137,8 +145,8 @@ func TestATriggeredRefreshCompletes(t *testing.T) {
 }
 
 // TestTriggersDuringARefreshQueueOneMore: Triggers while a refresh runs —
-// triggered or Run's — start nothing then, and together queue exactly one
-// refresh after it, which emits an event of its own.
+// triggered or the periodic one — start nothing then, and together get
+// exactly one refresh after it, which emits an event of its own.
 func TestTriggersDuringARefreshQueueOneMore(t *testing.T) {
 	e := newEnv(t)
 	h := holding(e)
@@ -146,70 +154,78 @@ func TestTriggersDuringARefreshQueueOneMore(t *testing.T) {
 	defer e.log.Cancel(sub)
 	release := make(chan struct{})
 	entered := h.arm("/app/installations", func(*http.Request) { <-release })
-	if got := e.cat.trigger(); got != started {
-		t.Fatalf("control: the first Trigger: %v; want started", got)
-	}
+	e.trigger(t)
 	<-entered
+	var last life.Ticket
 	for i := 0; i < 2; i++ {
-		if got := e.cat.trigger(); got != queued {
-			t.Errorf("a Trigger during a triggered refresh: %v; want queued", got)
-		}
+		last = e.trigger(t)
+	}
+	if n := e.fake.Count("GET /app/installations"); n != 0 {
+		t.Errorf("control: %d listings reached GitHub while the first was held", n)
 	}
 	close(release)
 	refreshed(t, sub, 2)
-	e.cat.triggers.Wait()
+	if _, err := e.cat.w.Await(context.Background(), last); err != nil {
+		t.Fatal(err)
+	}
 	if n := e.fake.Count("GET /app/installations"); n != 2 {
 		t.Errorf("%d refreshes ran; want the first and one queued after it", n)
 	}
 
-	// Run's refresh queues one the same way.
+	// The periodic refresh gets one more the same way.
 	release = make(chan struct{})
 	entered = h.arm("/app/installations", func(*http.Request) { <-release })
-	ctx, cancel := context.WithCancel(context.Background())
-	ran := make(chan struct{})
-	go func() { e.cat.Run(ctx, nil); close(ran) }()
+	waitTimer(t, e)
+	e.clock.Advance(DefaultInterval)
 	<-entered
-	if got := e.cat.trigger(); got != queued {
-		t.Errorf("a Trigger during Run's refresh: %v; want queued", got)
-	}
+	last = e.trigger(t)
 	close(release)
 	refreshed(t, sub, 2)
-	e.cat.triggers.Wait()
-	cancel()
-	<-ran
-	if n := e.fake.Count("GET /app/installations"); n != 4 {
-		t.Errorf("%d refreshes ran; want Run's and one queued after it, so 4", n)
+	if _, err := e.cat.w.Await(context.Background(), last); err != nil {
+		t.Fatal(err)
 	}
-	if e.busy() {
-		t.Error("a refresh is still running after every one ended")
+	if n := e.fake.Count("GET /app/installations"); n != 4 {
+		t.Errorf("%d refreshes ran; want the periodic one and one queued after it, so 4", n)
+	}
+}
+
+// waitTimer waits until the worker has set its periodic timer, so an
+// Advance lands after it.
+func waitTimer(t *testing.T, e *env) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for e.clock.Waiting() == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("the worker never set its periodic timer")
+		}
+		time.Sleep(time.Millisecond)
 	}
 }
 
 // TestATriggerAsARefreshEndsIsNotLost: a Trigger after the running refresh
-// has emitted its event but before it lets go of running would, joining it,
-// be answered by an event the client saw before it asked, and its button
-// would never settle. It queues a refresh, which emits its own.
+// has emitted its event but before the worker records what it answered
+// would, answered by it, be settled by an event the client saw before it
+// asked, and its button would never settle. It gets a refresh of its own.
 func TestATriggerAsARefreshEndsIsNotLost(t *testing.T) {
 	e := newEnv(t)
 	sub := e.log.Subscribe()
 	defer e.log.Cancel(sub)
 	var once sync.Once
-	var late triggered = -1
+	late := make(chan life.Ticket, 1)
+	e.cat.mu.Lock()
 	e.cat.ending = func() {
 		once.Do(func() {
 			if got := e.eventKinds(t); len(got) != 1 {
 				t.Errorf("control: events %v as the first refresh ends; want its one", got)
 			}
-			late = e.cat.trigger()
+			late <- e.trigger(t)
 		})
 	}
-	if got := e.cat.trigger(); got != started {
-		t.Fatalf("control: the first Trigger: %v; want started", got)
-	}
+	e.cat.mu.Unlock()
+	e.trigger(t)
 	refreshed(t, sub, 2)
-	e.cat.triggers.Wait()
-	if late != queued {
-		t.Errorf("a Trigger as the refresh ended: %v; want queued", late)
+	if _, err := e.cat.w.Await(context.Background(), <-late); err != nil {
+		t.Fatal(err)
 	}
 	if n := e.fake.Count("GET /app/installations"); n != 2 {
 		t.Errorf("%d refreshes ran; want 2", n)
@@ -229,113 +245,131 @@ func TestATriggerAfterTheListingListsAgain(t *testing.T) {
 	// The probes come after the listing: holding the first holds a refresh
 	// that has already listed.
 	entered := h.arm("/repos/", func(*http.Request) { <-release })
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	ran := make(chan struct{})
-	go func() { e.cat.Run(ctx, nil); close(ran) }()
+	waitTimer(t, e)
+	e.clock.Advance(DefaultInterval)
 	<-entered
 
 	e.fake.Mu.Lock()
 	e.fake.Installations[0].Repos = append(e.fake.Installations[0].Repos,
 		githubtest.Repo{ID: 6, FullName: "krelinga/added", DefaultBranch: "main", PushedAt: t0})
 	e.fake.Mu.Unlock()
-	if got := e.cat.trigger(); got != queued {
-		t.Errorf("a Trigger during Run's refresh: %v; want queued", got)
-	}
+	tk := e.trigger(t)
 	close(release)
 	counts := refreshed(t, sub, 2)
-	e.cat.triggers.Wait()
+	res, err := e.cat.w.Await(context.Background(), tk)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if counts[0] != 5 {
 		t.Errorf("control: the refresh that listed before the repository was added counted %d; want 5", counts[0])
 	}
-	if counts[1] != 6 {
-		t.Errorf("the refresh a Trigger asked for counted %d; want 6, with the repository added before it", counts[1])
+	if counts[1] != 6 || res.Count != 6 {
+		t.Errorf("the refresh a Trigger asked for counted %d (answered %d); want 6, with the repository added before it", counts[1], res.Count)
 	}
 	if _, ok := e.list(t)["krelinga/added"]; !ok {
 		t.Error("the refresh a Trigger asked for does not cache the repository added before it")
 	}
-	cancel()
-	<-ran
 }
 
-// TestShutdownEndsATriggeredRefresh: Shutdown cancels a triggered refresh and
-// does not return until it has ended, so nothing it does — a GitHub call, a
-// database write — comes after, and the refresh a Trigger queued meanwhile
-// never starts. The listing it is in ends a moment after its context does,
-// the way a slow step would; were Shutdown to return without waiting, the
-// listing would hold until the test has looked.
+// TestShutdownEndsATriggeredRefresh: stopping the catalog's group cancels a
+// triggered refresh, and its Wait does not return until it has ended, so
+// nothing it does — a GitHub call, a database write — comes after, and the
+// refresh a Trigger asked for meanwhile never starts: its ticket is refused.
+// The listing it is in ends a moment after its context does, the way a slow
+// step would; were Wait to return without waiting, the listing would hold
+// until the test has looked.
 func TestShutdownEndsATriggeredRefresh(t *testing.T) {
 	e := newEnv(t)
 	h := holding(e)
 	var log logged
 	e.cat.Logf = log.logf
-	shutdown, looked := make(chan struct{}), make(chan struct{})
+	stopped, looked := make(chan struct{}), make(chan struct{})
 	entered := h.arm("/app/installations", func(req *http.Request) {
 		<-req.Context().Done()
 		select {
-		case <-shutdown:
+		case <-stopped:
 			<-looked
 		case <-time.After(200 * time.Millisecond):
 		}
 	})
-	if got := e.cat.trigger(); got != started {
-		t.Fatalf("control: Trigger: %v; want started", got)
-	}
+	first := e.trigger(t)
 	<-entered
-	if got := e.cat.trigger(); got != queued {
-		t.Errorf("control: a Trigger during the refresh: %v; want queued", got)
-	}
-	go func() { e.cat.Shutdown(time.Minute); close(shutdown) }()
+	queued := e.trigger(t)
+	var late []string
+	go func() { late = e.group.Wait(nil); close(stopped) }()
 	select {
-	case <-shutdown:
+	case <-stopped:
 	case <-time.After(30 * time.Second):
-		t.Fatal("Shutdown did not end a triggered refresh")
+		t.Fatal("the group's Wait did not end a triggered refresh")
 	}
-	if e.busy() {
-		t.Error("Shutdown returned with the triggered refresh still running")
+	if late != nil {
+		t.Errorf("stragglers %v after a Wait with no deadline", late)
 	}
 	close(looked)
-	e.cat.triggers.Wait()
+	// The running refresh answered its ticket, cut off; the one asked for
+	// during it never began, and is refused.
+	if _, err := e.cat.w.Await(context.Background(), first); !errors.Is(err, context.Canceled) {
+		t.Errorf("the refresh shutdown cut off answered %v; want its context's end", err)
+	}
+	if _, err := e.cat.w.Await(context.Background(), queued); !errors.Is(err, life.ErrStopping) {
+		t.Errorf("a refresh asked for during the one shutdown cut off: %v; want ErrStopping", err)
+	}
 	if n := e.fake.Count(""); n != 0 {
-		t.Errorf("GitHub saw %d requests from refreshes Shutdown ended", n)
+		t.Errorf("GitHub saw %d requests from refreshes shutdown ended", n)
 	}
 	if n := len(e.list(t)); n != 0 {
-		t.Errorf("a refresh Shutdown ended cached %d repositories", n)
+		t.Errorf("a refresh shutdown ended cached %d repositories", n)
 	}
 	if got := e.eventKinds(t); len(got) != 0 {
-		t.Errorf("a refresh Shutdown ended wrote events %v", got)
+		t.Errorf("a refresh shutdown ended wrote events %v", got)
 	}
 	if got := log.get(); len(got) != 0 {
-		t.Errorf("a Shutdown that waited the refresh out logged %q", got)
+		t.Errorf("a refresh shutdown ended logged %q", got)
 	}
 
-	// After Shutdown a Trigger starts nothing, and the catalog stays idle.
-	if got := e.cat.trigger(); got != refused {
-		t.Errorf("a Trigger after Shutdown: %v; want refused", got)
+	// After shutdown a Trigger starts nothing, and Refresh says why.
+	if _, err := e.cat.w.Trigger(); !errors.Is(err, life.ErrStopping) {
+		t.Errorf("a Trigger after shutdown: %v; want ErrStopping", err)
 	}
-	if e.busy() {
-		t.Error("a Trigger after Shutdown left a refresh running")
+	if _, err := e.cat.Refresh(context.Background()); !errors.Is(err, life.ErrStopping) {
+		t.Errorf("a Refresh after shutdown: %v; want ErrStopping", err)
+	}
+	if n := e.fake.Count(""); n != 0 {
+		t.Errorf("GitHub saw %d requests after shutdown", n)
 	}
 }
 
-// TestShutdownSaysWhenItsWaitRunsOut: a refresh that outlasts Shutdown's
-// bound — which is the database closing under it — is written to the
-// service log, once. TestShutdownEndsATriggeredRefresh is the control: a
-// wait that does not run out logs nothing.
-func TestShutdownSaysWhenItsWaitRunsOut(t *testing.T) {
+// TestShutdownNamesARefreshThatOutlivesItsWait: a refresh that outlasts the
+// bound on the wait — which is the database closing under it — is named by
+// the group's Wait, prefixed by the child Serve gives the catalog, for Serve
+// to write to the service log. TestShutdownEndsATriggeredRefresh is the
+// control: a wait that does not run out names nothing.
+func TestShutdownNamesARefreshThatOutlivesItsWait(t *testing.T) {
 	e := newEnv(t)
 	h := holding(e)
-	var log logged
-	e.cat.Logf = log.logf
+	// A catalog started as Serve starts it, under a child named "catalog".
+	root := life.NewGroup(context.Background())
+	cat := &Catalog{DB: e.cat.DB, Events: e.cat.Events, Clock: e.clock, GitHub: e.cat.GitHub}
+	if err := cat.start(root.Child("catalog"), false); err != nil {
+		t.Fatal(err)
+	}
 	release := make(chan struct{})
 	entered := h.arm("/app/installations", func(*http.Request) { <-release })
-	e.cat.trigger()
+	if _, err := cat.w.Trigger(); err != nil {
+		t.Fatal(err)
+	}
 	<-entered
-	e.cat.Shutdown(time.Millisecond)
-	got := log.get()
+	deadline, stop := sys.NewTimer(e.clock, time.Second)
+	defer stop()
+	waited := make(chan []string)
+	go func() { waited <- root.Wait(deadline) }()
+	e.clock.Advance(time.Second)
+	got := <-waited
 	close(release)
-	e.cat.triggers.Wait()
-	if len(got) != 1 || !strings.Contains(got[0], "did not stop within 1ms") {
-		t.Errorf("logged %q; want one line saying the refresh did not stop", got)
+	if len(got) != 1 || got[0] != "catalog/refresh" {
+		t.Errorf("Wait named %q; want the catalog's refresh", got)
+	}
+	if late := root.Wait(nil); late != nil {
+		t.Errorf("control: once released, Wait named %q", late)
 	}
 }
