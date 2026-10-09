@@ -166,7 +166,7 @@ which in CI is a silent pass); `npm run check`; `test/install/run.sh`; the Featu
 - Releases are amd64 only, by choice.
 
 **The nightly stress job** (`.github/workflows/stress.yml`, with `.github/stress/stress.sh`) hunts flaky
-tests. It is not part of `ci.yml`, not a required check, and uses only the workflow's `GITHUB_TOKEN`
+tests, nightly at 4 am America/Chicago (DST-aware: two UTC crons and a gate job). It is not part of `ci.yml`, not a required check, and uses only the workflow's `GITHUB_TOKEN`
 (`issues: write`). Within a 60-minute job (a 40-minute loop by default) it runs `go test -race
 -count=1 -shuffle=on` repeatedly in a time-boxed loop: three quarters of the loop on the timer- and
 goroutine-heavy packages (`preview`, `supervisor`, `provision`, `identity`, `login`, `events`, `life`,

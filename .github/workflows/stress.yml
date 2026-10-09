@@ -12,7 +12,11 @@ name: stress
 
 on:
   schedule:
-    - cron: "23 3 * * *"
+    # 4 am America/Chicago. Cron is UTC-only and Chicago observes DST (CDT is
+    # UTC-5, CST is UTC-6), so both candidate hours are scheduled and the
+    # `gate` job lets only the one that is 04:00 in Chicago go on.
+    - cron: "3 9 * * *"
+    - cron: "3 10 * * *"
   workflow_dispatch:
     inputs:
       packages:
@@ -38,7 +42,25 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # Cheap: a skipped stress job shows as skipped, never failed.
+  gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    outputs:
+      run: ${{ steps.hour.outputs.run }}
+    steps:
+      - id: hour
+        run: |
+          if [ "$GITHUB_EVENT_NAME" != schedule ] || [ "$(TZ=America/Chicago date +%H)" = 04 ]; then
+            echo run=true >>"$GITHUB_OUTPUT"
+          else
+            echo run=false >>"$GITHUB_OUTPUT"
+            echo "Not 04:xx in America/Chicago; the other schedule runs the stress job."
+          fi
+
   stress:
+    needs: gate
+    if: needs.gate.outputs.run == 'true'
     runs-on: ubuntu-latest
     # 60 minutes in all: ~5 for tools and compilation, the loop (40 by
     # default, plus at most one 8-minute iteration over), ~1 for the issues.
