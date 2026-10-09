@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"database/sql"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -14,19 +15,27 @@ import (
 	"github.com/krelinga/drydock/internal/sys"
 )
 
-// slowListing holds the next GitHub listing it is armed for, in the client:
-// past the moment its context ends, the way a slow step would, for a little
-// while — or, if Serve returns first, until the test has looked. So a Serve
-// that waits for the refresh returns after the listing has ended, and one
-// that does not returns with it still held.
+// slowListing holds the next GitHub listing it is armed for, in the client,
+// and watches the database while it holds: until its context has been over
+// for heldAfterCancel, the way a slow step outlasts its cancel, or until the
+// database closes under it. A Serve that waits for the refresh before closing
+// the database keeps it open throughout, because it is waiting on this very
+// listing; one that closes it first — the wait deleted, moved after the
+// close, or the refresh never cancelled — closes it while the listing is
+// still held.
 type slowListing struct {
+	db       *sql.DB
 	mu       sync.Mutex
 	armed    bool
 	entered  chan struct{}
-	served   chan struct{} // Serve has returned
-	looked   chan struct{} // the test has checked
-	finished atomic.Bool   // the held listing has returned
+	pings    atomic.Int64 // pings that found the database open while held
+	closed   atomic.Bool  // the database closed while the listing was held
+	finished atomic.Bool  // the held listing has returned
 }
+
+// heldAfterCancel is well inside catalogShutdownWait, so a correct Serve
+// waits it out rather than giving up on the refresh.
+const heldAfterCancel = 2 * time.Second
 
 func (s *slowListing) RoundTrip(req *http.Request) (*http.Response, error) {
 	s.mu.Lock()
@@ -38,15 +47,21 @@ func (s *slowListing) RoundTrip(req *http.Request) (*http.Response, error) {
 	}
 	defer s.finished.Store(true)
 	close(s.entered)
-	select {
-	case <-req.Context().Done():
-		select {
-		case <-s.served:
-			<-s.looked
-		case <-time.After(200 * time.Millisecond):
+	var cancelledAt time.Time
+	for limit := time.Now().Add(time.Minute); time.Now().Before(limit); time.Sleep(5 * time.Millisecond) {
+		if err := s.db.PingContext(context.Background()); err != nil {
+			s.closed.Store(true)
+			break
 		}
-	case <-s.served:
-		<-s.looked
+		s.pings.Add(1)
+		if req.Context().Err() != nil {
+			if cancelledAt.IsZero() {
+				cancelledAt = time.Now()
+			}
+			if time.Since(cancelledAt) >= heldAfterCancel {
+				break
+			}
+		}
 	}
 	if err := req.Context().Err(); err != nil {
 		return nil, err
@@ -59,10 +74,11 @@ func (s *slowListing) RoundTrip(req *http.Request) (*http.Response, error) {
 // closes, so it neither outlives Serve nor reaches GitHub or the database
 // after it. Before the fix it ran under context.Background(), and once its
 // GitHub call answered it went on to the database Serve had closed ("sql:
-// database is closed"). The listing it is held in ends a moment after its
-// context, in the client: a hold in the fake GitHub would see the client
-// give up at once, and pass a Serve that closed the database without
-// waiting for the refresh to end.
+// database is closed"). The listing it is held in outlasts its context, in
+// the client — a hold in the fake GitHub would see the client give up at
+// once — and watches the database meanwhile, so what is pinned is the order:
+// the refresh ends before the database closes, not merely before Serve
+// returns.
 func TestShutdownEndsATriggeredCatalogRefresh(t *testing.T) {
 	dir := t.TempDir()
 	cfg := testConfig(t, dir)
@@ -78,11 +94,8 @@ func TestShutdownEndsATriggeredCatalogRefresh(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	slow := &slowListing{entered: make(chan struct{}), served: make(chan struct{}), looked: make(chan struct{})}
+	slow := &slowListing{db: srv.DB.DB, entered: make(chan struct{})}
 	srv.Catalog.GitHub.HTTP = &http.Client{Transport: slow}
-	var looked sync.Once
-	look := func() { looked.Do(func() { close(slow.looked) }) }
-	t.Cleanup(look)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -132,19 +145,24 @@ func TestShutdownEndsATriggeredCatalogRefresh(t *testing.T) {
 	case <-time.After(60 * time.Second):
 		t.Fatal("Serve did not return")
 	}
-	close(slow.served)
-	if !slow.finished.Load() {
-		// The bug: Serve closed the database with the refresh still in its
-		// GitHub call, and once that returns its next step reads the closed
-		// database.
-		t.Error("Serve returned, and closed the database, with the triggered refresh still running")
+	if slow.closed.Load() {
+		// The bug: the database closed under the refresh, whose next step
+		// would read it ("sql: database is closed").
+		t.Error("Serve closed the database while the triggered refresh was still running")
 	}
-	before := f.Count("")
-	look()
 	if !slow.finished.Load() {
-		return
+		t.Error("Serve returned with the triggered refresh still running")
 	}
-	if n := f.Count(""); n != before {
-		t.Errorf("GitHub saw %d requests after Serve returned", n-before)
+	if slow.pings.Load() == 0 {
+		t.Error("control: the held listing never found the database open")
+	}
+	if !slow.closed.Load() && slow.finished.Load() {
+		before := f.Count("")
+		if err := srv.DB.PingContext(context.Background()); err == nil {
+			t.Error("control: the database is still open after Serve returned")
+		}
+		if n := f.Count(""); n != before {
+			t.Errorf("GitHub saw %d requests after Serve returned", n-before)
+		}
 	}
 }
