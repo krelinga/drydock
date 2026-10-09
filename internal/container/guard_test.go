@@ -156,10 +156,10 @@ func TestRecordedStartsPassWithTheirApproval(t *testing.T) {
 		var ids []struct{ Id string }
 		json.Unmarshal(b, &ids)
 		start := []string{ids[0].Id}
-		if d := dockerguard.CheckStarted(recordedPolicy(root, ha.Settings), start, b); d.Refused {
+		if d := dockerguard.CheckStarted(recordedPolicy(root, ha.Settings), start, b, nil); d.Refused {
 			t.Errorf("%s, its subset approved: %+v", name, d)
 		}
-		d := dockerguard.CheckStarted(recordedPolicy(root, nil), start, b)
+		d := dockerguard.CheckStarted(recordedPolicy(root, nil), start, b, nil)
 		if !reflect.DeepEqual(d.Settings, withheld) {
 			t.Errorf("%s, nothing approved: %v, want %v (%v)", name, d.Settings, withheld, d.Why)
 		}
@@ -234,6 +234,7 @@ EOF
 // privileged, and the same up runs docker with the argv unaltered.
 func TestUpRefusedByTheGuard(t *testing.T) {
 	m, dir := upThroughGuard(t, "--privileged")
+	m.CleanupImage = testCleanupImage
 	s := upSpec(t)
 	s.BrokerDir = filepath.Join(filepath.Dir(s.Folder), "sock")
 	s.ClaudeVolume = "drydock-claude-config"
@@ -249,8 +250,8 @@ func TestUpRefusedByTheGuard(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(guardDir, dockerguard.PolicyName)); err == nil {
 		t.Error("the policy outlived the up")
 	}
-	// What the guard was held to: this run's labels and mounts, and no
-	// approval.
+	// What the guard was held to: this run's labels and mounts, no
+	// approval, and the pinned image it probes the daemon's log default with.
 	b, err := os.ReadFile(filepath.Join(dir, "policy-seen.json"))
 	if err != nil {
 		t.Fatal(err)
@@ -258,7 +259,7 @@ func TestUpRefusedByTheGuard(t *testing.T) {
 	var seen dockerguard.Policy
 	json.Unmarshal(b, &seen)
 	if seen.Clone != s.Folder || seen.TempDir != s.TempDir || seen.IDLabels["drydock.test.workspace"] != wsID ||
-		len(seen.OwnMounts) != 2 || len(seen.Approved) != 0 {
+		len(seen.OwnMounts) != 2 || len(seen.Approved) != 0 || seen.ProbeImage != testCleanupImage {
 		t.Errorf("policy %+v", seen)
 	}
 

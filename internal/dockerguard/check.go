@@ -71,10 +71,18 @@
 // (an unknown one, set, is refused): precise for privileged, capabilities,
 // security options, MaskedPaths/ReadonlyPaths (where systempaths=unconfined
 // shows), mounts with bind propagation, and GPUs; namespaces,
-// DeviceCgroupRules, CgroupParent, Sysctls, a log driver other than
-// json-file/local or any log option (the daemon runs it on the host: gelf
-// reached the host's loopback), and the rest only runArgs sets, and published
-// ports, need that field approved at all. Anything but one result per full
+// DeviceCgroupRules, CgroupParent, Sysctls, a log configuration (the daemon
+// runs the driver on the host: gelf reached the host's loopback), and the
+// rest only runArgs sets, and published ports, need that field approved at
+// all. A log configuration passes without runArgs when it is a file driver
+// with no options or **equals the daemon's own default** — which Docker
+// writes into every container it creates with no log option, so a host whose
+// daemon.json sets journald or a max-size had every second start refused.
+// The default is read from the daemon, not daemon.json (DaemonLogConfig,
+// logprobe.go): a container created from the policy's pinned ProbeImage with
+// no log option and --network none, labelled <prefix>.log-probe, never
+// started, inspected and removed — asked only when a start needs it.
+// Anything but one result per full
 // 64-hex id, each with a HostConfig, is start_unread. Measured inspect output
 // is the fixtures docker-inspect-{image,dind,hostile}.json; a global option or
 // an unknown docker command is refused.
@@ -135,6 +143,11 @@ type Policy struct {
 	// Approved is the repository's current approval (§6), empty when none
 	// has been given.
 	Approved []Setting `json:"approved"`
+	// ProbeImage is config.CleanupImage, pinned by digest: the image of the
+	// container the guard creates, never starts, and removes to learn the
+	// daemon's default log configuration (DaemonLogConfig). Empty, a start
+	// is held to the file drivers alone.
+	ProbeImage string `json:"probe_image,omitempty"`
 }
 
 // PolicyVersion is the Policy shape this guard reads. Any other is refused
@@ -188,6 +201,9 @@ type checker struct {
 	p        *Policy
 	settings map[string]bool
 	why      []string
+	// daemonLog is the daemon's default log configuration, for a start
+	// (CheckStarted).
+	daemonLog func() (*LogConfig, error)
 }
 
 func (c *checker) refuse(setting, why string) {

@@ -102,6 +102,7 @@ func (m Manager) guardPolicy(s UpSpec) dockerguard.Policy {
 	p := dockerguard.Policy{
 		Clone: s.Folder, TempDir: s.TempDir, ConfigDir: s.ConfigDir,
 		LabelPrefix: m.LabelPrefix, IDLabels: map[string]string{},
+		ProbeImage: m.CleanupImage,
 	}
 	for _, kv := range m.idLabels(s) {
 		k, v, _ := strings.Cut(kv, "=")

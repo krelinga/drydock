@@ -3,6 +3,7 @@ package dockerguard
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"regexp"
 	"sort"
 	"strings"
@@ -132,8 +133,26 @@ type startedMount struct {
 // And it fails closed on what it did not expect: anything but exactly one
 // result for each id, each with its full id and a HostConfig, is
 // start_unread.
-func CheckStarted(p *Policy, ids []string, inspectJSON []byte) Decision {
+func CheckStarted(p *Policy, ids []string, inspectJSON []byte, daemonLog func() (*LogConfig, error)) Decision {
 	c := &checker{p: p}
+	var (
+		asked bool
+		dl    *LogConfig
+		dlErr error
+	)
+	// Asked at most once, and only for a container whose log configuration
+	// is not otherwise allowed.
+	c.daemonLog = func() (*LogConfig, error) {
+		if !asked {
+			asked = true
+			if daemonLog == nil {
+				dlErr = errors.New("no way to ask the daemon")
+			} else {
+				dl, dlErr = daemonLog()
+			}
+		}
+		return dl, dlErr
+	}
 	if p == nil {
 		c.refuse(SettingNoPolicy, "no policy for a command that starts a container")
 		return c.decision("start")
@@ -298,18 +317,29 @@ func (c *checker) hostConfig(hc map[string]json.RawMessage) {
 	// to a UDP listener on the daemon host's loopback, from the default
 	// bridge — review of #78, round 3), fluentd and syslog reach host unix
 	// sockets, splunk posts from the host, awslogs and gcplogs use the
-	// daemon's credentials. Only the file drivers, with no options, are the
-	// container's own; anything else only runArgs (--log-driver, --log-opt)
-	// can set.
-	var logCfg struct {
-		Type   string
-		Config map[string]json.RawMessage
-	}
+	// daemon's credentials. So a container's log configuration needs runArgs
+	// (--log-driver, --log-opt) approved unless it is one no configuration
+	// chose: a file driver with no options, or exactly what the daemon gives
+	// a container whose argv names no log option — the operator's own
+	// default, which Docker writes into every container it creates and which
+	// the first create, checked by run's rules, already got (logprobe.go).
+	var logCfg LogConfig
 	if !zero(hc["LogConfig"]) && json.Unmarshal(hc["LogConfig"], &logCfg) != nil {
 		c.refuse(SettingStartUnread, "LogConfig is not a log configuration")
 	}
-	if (logCfg.Type != "" && logCfg.Type != "json-file" && logCfg.Type != "local") || len(logCfg.Config) > 0 {
-		needRunArgs("LogConfig", "a log driver "+logCfg.Type+" or log options")
+	fileDriver := (logCfg.Type == "" || logCfg.Type == "json-file" || logCfg.Type == "local") && len(logCfg.Config) == 0
+	if !fileDriver && !runArgs {
+		switch def, err := c.daemonLog(); {
+		case err != nil:
+			c.refuse(SettingRunArgs, "a container created with LogConfig "+logCfg.String()+
+				", and the daemon's default could not be read: "+err.Error())
+		case def == nil || !logCfg.equal(*def):
+			why := "a container created with LogConfig " + logCfg.String() + ", not the daemon's default"
+			if def != nil {
+				why += " (" + def.String() + ")"
+			}
+			c.refuse(SettingRunArgs, why)
+		}
 	}
 	var restart struct{ Name string }
 	json.Unmarshal(hc["RestartPolicy"], &restart)

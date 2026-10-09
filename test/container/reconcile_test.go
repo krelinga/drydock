@@ -55,7 +55,7 @@ func prefix(t *testing.T) string {
 	t.Cleanup(func() {
 		// Workspace containers, and any cleanup helper or login container
 		// a failed test left.
-		for _, k := range []string{".workspace", ".cleanup", ".login"} {
+		for _, k := range []string{".workspace", ".cleanup", ".login", "." + dockerguard.LabelLogProbe} {
 			out, _ := exec.Command("docker", "ps", "-aq", "--filter", "label="+p+k).Output()
 			if ids := strings.Fields(string(out)); len(ids) > 0 {
 				exec.Command("docker", append([]string{"rm", "-f"}, ids...)...).Run()
