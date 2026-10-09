@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.7.2](https://github.com/krelinga/drydock/compare/v0.7.1...v0.7.2) (2026-10-09)
+
+
+### Bug Fixes
+
+* remove a cut-off volume-owner helper, by running every helper through one package ([#111](https://github.com/krelinga/drydock/issues/111)) ([f127ce4](https://github.com/krelinga/drydock/commit/f127ce4c712610c8e30eafec523a2f3531754f52))
+* run the session supervisors on life.Group, and record starting as a start is asked ([#108](https://github.com/krelinga/drydock/issues/108)) ([6124a29](https://github.com/krelinga/drydock/commit/6124a29f689d7e99dde7de56541a5f2af29c46cd))
+* write each row and its event in one commit, for the supervisor and secrets ([#110](https://github.com/krelinga/drydock/issues/110)) ([f0784ba](https://github.com/krelinga/drydock/commit/f0784ba045e02fb9000199982543c5379e69769a))
+
 ## [0.7.1](https://github.com/krelinga/drydock/compare/v0.7.0...v0.7.1) (2026-10-09)
 
 
