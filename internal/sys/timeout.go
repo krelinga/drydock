@@ -59,3 +59,22 @@ func (RealClock) Timer(d time.Duration) (<-chan time.Time, func()) {
 func TimedOut(ctx context.Context) bool {
 	return ctx.Err() != nil && errors.Is(context.Cause(ctx), ErrTimedOut)
 }
+
+// Cleanup is the one way to get a context for bookkeeping or cleanup that
+// must still run after parent has ended: context.WithoutCancel(parent) — its
+// values, never its cancellation — bounded by d on the injected clock, as
+// WithTimeout bounds it. A record of what happened, a helper container's
+// removal, a sweep after a cut-off check: each is owed whether or not the
+// work that led to it was cancelled, and each must still end.
+//
+// It is rule 3 of the context rule (CLAUDE.md, *Working conventions*), and the only
+// place outside this package context.WithoutCancel may appear unlisted: a
+// meta-test (contextrule_test.go) holds every other one to an allowlist.
+// Unlike WithTimeout, d <= 0 is not "no timeout" — cleanup that cannot end is
+// the bug this exists to prevent — so it panics.
+func Cleanup(parent context.Context, c Clock, d time.Duration) (context.Context, context.CancelFunc) {
+	if d <= 0 {
+		panic("sys.Cleanup: a cleanup needs a positive bound")
+	}
+	return WithTimeout(context.WithoutCancel(parent), c, d)
+}

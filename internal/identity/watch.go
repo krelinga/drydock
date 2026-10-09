@@ -507,7 +507,7 @@ func (w *Watch) sweep(ctx context.Context, why string) {
 	if !ok {
 		return
 	}
-	sctx, cancel := sys.WithTimeout(context.WithoutCancel(ctx), w.Clock, sweepTimeout)
+	sctx, cancel := sys.Cleanup(ctx, w.Clock, sweepTimeout)
 	defer cancel()
 	n, err := s.Sweep(sctx)
 	switch {
