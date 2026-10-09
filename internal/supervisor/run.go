@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"slices"
 	"strings"
 	"sync"
@@ -19,18 +20,19 @@ import (
 )
 
 // sup is one workspace's supervisor: a loop that starts the server, reads its
-// terminal, and decides what an exit means.
+// terminal, and decides what an exit means — and the one goroutine its server
+// is ever signalled from (own.go).
 type sup struct {
 	m      *Manager
 	ws     string
 	row    string
 	log    *Ring
-	cancel context.CancelFunc
-	done   chan struct{} // closed when the loop returns
-	// detached is the manager's group's context ending — shutdown — on
-	// which a run closes its terminal even when its context was already
-	// cancelled by a stop. Nil for one with no loop.
-	detached <-chan struct{}
+	cancel context.CancelFunc // the loop's context; nil for a sup with no loop
+	done   chan struct{}      // closed when the supervision loop returns; at once for a sup with none
+	// supervise: the owner runs the supervision loop. False for a sup born
+	// stopped (Stop's, for a server no running loop holds), whose owner only
+	// answers what it is asked.
+	supervise bool
 
 	// loginSeen and parked are m.mu's, not mu's: they are how a sign-in
 	// (Manager.Resume) and the loop's decision to park in awaiting_login
@@ -40,6 +42,10 @@ type sup struct {
 	// replaces it rather than telling it.
 	loginSeen bool
 	parked    bool
+
+	// serverGone is the owner goroutine's alone: it stopped the server and
+	// has launched none since, so a stop asked now has nothing to send.
+	serverGone bool
 
 	// wmu serialises this sup's state writes (write), from the check for a
 	// change to the memory update after the commit. Taken before mu, and
@@ -51,14 +57,40 @@ type sup struct {
 	detail   string
 	restarts int
 	crashes  []time.Time
+	// stopping: a stop was asked (submit). Nothing is launched after it.
 	stopping bool
-	// stopOver is closed when the latest stop's terminate has returned,
-	// worked or not: until then shutdown leaves the terminal to the stop,
-	// whose wait for the server may be on it.
-	stopOver chan struct{}
-	proc     subproc.Process
-	procDone chan struct{}
 	lastBeat time.Time
+
+	// The owner's queue (own.go), under mu. intake: requests are taken,
+	// until the owner has ended. retired: replaced, so it takes no new
+	// request and its loop stops nothing of its own accord. busy counts the
+	// requests taken and not yet answered, and the loop's own stop under
+	// way. quiet is closed once the sup will never signal again; its
+	// successor waits for it.
+	pending     []*stopReq
+	wake        chan struct{} // a request was queued; buffered 1
+	intake      bool
+	retired     bool
+	ownerDone   bool
+	busy        int
+	quiet       chan struct{}
+	quietClosed bool
+}
+
+// newSup is a sup whose owner is yet to run: it takes requests from now.
+func (m *Manager) newSup(workspaceID, row string, restarts int, log *Ring) *sup {
+	return &sup{m: m, ws: workspaceID, row: row, restarts: restarts, log: log,
+		done: make(chan struct{}), wake: make(chan struct{}, 1), quiet: make(chan struct{}), intake: true}
+}
+
+// recordOnly is a sup that only records a state — Park's, answer's — and has
+// no owner: it takes no request and never signals.
+func (m *Manager) recordOnly(workspaceID, row string, restarts int, log *Ring) *sup {
+	s := m.newSup(workspaceID, row, restarts, log)
+	s.intake, s.ownerDone, s.quietClosed = false, true, true
+	close(s.done)
+	close(s.quiet)
+	return s
 }
 
 func (s *sup) running() bool {
@@ -118,8 +150,23 @@ func (s *sup) loop(ctx context.Context) {
 		// A server an earlier process (or an earlier run) left behind still
 		// holds the folder, and every start would be refused as already
 		// served until it exits. Stop it, SIGTERM first, so its sessions
-		// reconnect to the new one (Spike 02).
-		if _, err := m.terminate(ctx, s.ws, nil, nil); err != nil && ctx.Err() == nil {
+		// reconnect to the new one (Spike 02). Here, in the loop: a Stop
+		// asked meanwhile waits for it and is answered after it, with
+		// nothing more to send if it worked.
+		if !s.beginOwn() {
+			return
+		}
+		_, err := m.terminate(ctx, s.ws, nil, nil)
+		s.endOwn()
+		if err == nil {
+			s.serverGone = true
+		}
+		if ctx.Err() != nil {
+			// Cut off by shutdown: launch nothing and record nothing. The
+			// next boot's start stops that server first, as this one was.
+			return
+		}
+		if err != nil {
 			m.logf("drydock: workspace %s: stopping a session server left running: %v", s.ws, err)
 			if errors.Is(err, container.ErrSessionSurvivedKill) {
 				// It outlived SIGKILL and still holds the folder: a new
@@ -222,10 +269,13 @@ func (s *sup) isStopping() bool {
 	return s.stopping
 }
 
-// sleep waits d on the injected clock, or until the loop is cancelled.
+// sleep waits d on the injected clock, or until the loop is cancelled or
+// asked to stop: a stop is answered as the loop ends (drain).
 func (s *sup) sleep(ctx context.Context, d time.Duration) bool {
 	select {
 	case <-ctx.Done():
+		return false
+	case <-s.wake:
 		return false
 	case <-s.m.clock().After(d):
 		return !s.isStopping()
@@ -235,8 +285,9 @@ func (s *sup) sleep(ctx context.Context, d time.Duration) bool {
 // discovered is what one run's output has announced so far, and how much of
 // it is recorded. The announced half (env, capUsed/capTotal) decides
 // serving; the recorded half moves only when recordDiscovery commits, so a
-// write that fails is tried again on the next window rather than lost for
-// the server's lifetime.
+// write that fails is tried again — on the next window, and on the next
+// heartbeat tick for a server that has gone quiet — rather than lost for the
+// server's lifetime.
 type discovered struct {
 	env               string
 	capUsed, capTotal int
@@ -246,6 +297,10 @@ type discovered struct {
 	pending     []string        // announced, not yet recorded, in order
 	capRecUsed  int
 	capRecTotal int
+
+	// logged: a failed write has been logged this run. A database that keeps
+	// failing is said once, not on every chunk a chatty server prints.
+	logged bool
 }
 
 const (
@@ -261,157 +316,125 @@ func (s *sup) runOnce(ctx context.Context) outcome {
 	m, p := s.m, s.m.policy()
 	spec, err := m.Spec(ctx, s.ws)
 	if err != nil {
+		if ctx.Err() != nil {
+			return outcome{kind: outDetached}
+		}
 		m.logf("drydock: workspace %s: session server spec: %v", s.ws, err)
 		return outcome{kind: outCrash, detail: "could not be started: Drydock could not read the workspace's configuration"}
 	}
 	spec.Capacity = p.Capacity
 	spec.PidFile = m.PidFile
 
-	s.mu.Lock()
-	if s.stopping {
-		s.mu.Unlock()
+	// The last look before the exec: a stop asked meanwhile launches
+	// nothing (it is answered as the loop ends), and neither does shutdown,
+	// whose leave would abandon a server just started.
+	if s.isStopping() {
 		return outcome{kind: outStopped}
+	}
+	if ctx.Err() != nil {
+		return outcome{kind: outDetached}
 	}
 	// The process is not tied to the loop's context: cancelling that is
 	// Drydock shutting down, which must leave the server running, and a stop
 	// ends the process by signalling it in the container first.
 	procCtx, procCancel := context.WithCancel(context.Background())
+	defer procCancel()
 	proc, master, err := m.Runtime.Start(procCtx, spec, p.Cols, p.Rows)
 	if err != nil {
-		s.mu.Unlock()
-		procCancel()
 		m.logf("drydock: workspace %s: starting the session server: %v", s.ws, err)
 		return outcome{kind: outCrash, detail: "could not be started"}
 	}
-	procDone := make(chan struct{})
-	s.proc, s.procDone = proc, procDone
-	s.mu.Unlock()
-	defer func() {
-		s.mu.Lock()
-		s.proc, s.procDone = nil, nil
-		s.mu.Unlock()
-		procCancel()
-		close(procDone)
-	}()
+	s.serverGone = false
+	// waited is Drydock's end of the server ending: `devcontainer exec`
+	// exits when the server does. One waiter, since a process is waited for
+	// once.
+	waited := make(chan struct{})
+	go func() { proc.Wait(); close(waited) }()
 	// A retry while the previous server's registration lapses stays a wait
 	// on the card: it is the same wait, asked again, not a new start.
 	if s.current() != WaitingRegistration {
-		s.set(ctx, Starting, ReasonLaunching, "Starting the session server.", proc.Pid())
+		s.set(ctx, Starting, ReasonLaunching, launchingSentence, proc.Pid())
 	}
 
-	chunks := make(chan []byte, 64)
-	go func() {
-		defer close(chunks)
-		buf := make([]byte, 8192)
-		for {
-			n, err := master.Read(buf)
-			if n > 0 {
-				chunks <- bytes.Clone(buf[:n])
-			}
-			if err != nil {
-				if !pty.IsEOF(err) {
-					m.logf("drydock: workspace %s: reading the session server's terminal: %v", s.ws, err)
-				}
-				return
-			}
+	// rctx is what the run's reading records under — the heartbeat, what
+	// the server announces, serving — and it ends as a stop is taken: a run
+	// being stopped records nothing more, even once a Start has replaced
+	// its sup.
+	rctx, rcancel := context.WithCancel(ctx)
+	defer rcancel()
+	rd := s.read(rctx, master)
+
+	// stopped are the stops that ended this run's server, answered once its
+	// terminal is read to the end, so the log holds its last words first.
+	var stopped []*stopReq
+	defer func() {
+		for _, req := range stopped {
+			s.settle(req, nil)
 		}
 	}()
-
-	d := &discovered{sessions: map[string]bool{}}
-	var window, tail []byte
 	gate := m.clock().After(p.GateTimeout)
-	cancelled := ctx.Done()
-	// leave is shutdown: close the terminal and leave the server serving.
-	// Only Drydock's own end is ended — the local `devcontainer exec`,
-	// which does not reach the server (measured); nothing is signalled in
-	// the container.
-	leave := func() outcome {
-		master.Close()
-		for range chunks {
-		}
-		waited := make(chan struct{})
-		go func() { proc.Wait(); close(waited) }()
-		proc.Signal(subproc.SignalTerm)
-		select {
-		case <-waited:
-		case <-m.clock().After(p.KillWait):
-			proc.Signal(subproc.SignalKill)
-			<-waited
-		}
-		return outcome{kind: outDetached}
-	}
-	detach := s.detached
-	var stopDecided chan struct{}
+	served := rd.served
 	var hang Reason
-	serving := false
 	for open := true; open; {
 		select {
-		case b, ok := <-chunks:
-			if !ok {
-				open = false
-				break
-			}
-			s.log.Write(m.clock().Now(), b)
-			tail = keepTail(append(tail, b...), refusalTail)
-			window = keepTail(append(window, b...), discoveryWindow)
-			s.heartbeat(ctx)
-			if s.discover(ctx, d, window) && !serving {
-				serving = true
-				gate = nil
-				s.set(ctx, Serving, ReasonServing, "", 0)
-			}
+		case <-rd.done:
+			open = false
+		case <-served:
+			served, gate = nil, nil
 		case <-gate:
 			gate = nil
+			if rd.serving() {
+				break
+			}
 			// No environment within the deadline. A hang has no message
 			// (two of the three gates wait at a prompt rather than fail), so
 			// the timeout is the verdict; the prompt's text only names the
-			// key. Stop it — SIGTERM first — and keep reading until it ends.
-			hang = hangReason(visible(tail))
+			// key. Stop it — SIGTERM first — and read on until it ends.
+			hang = hangReason(visible(rd.tail()))
 			// The prompt has no line end; put it in the log now, so the log
 			// shows what the server is waiting at.
 			s.log.Flush(m.clock().Now())
-			// In the group, not under this run's context: a stop of the
-			// supervisor cancels that and does its own terminate, and this
-			// one must carry on until the server ends, which ends the read.
-			// Shutdown cuts it off like any other of the group's (no
-			// SIGKILL under a cancelled context), and waits for it; once the
-			// group is stopping it is not started, and the cancel below
-			// leaves the server where it is.
-			m.g.Go("gate stop "+s.ws, func(gctx context.Context) {
-				m.terminate(gctx, s.ws, proc, procDone)
-			})
-		case <-cancelled:
-			cancelled = nil
-			if !s.isStopping() {
-				return leave()
+			// Here, in the loop, under its context: a Stop asked meanwhile
+			// waits for this one and finds nothing more to send if it
+			// worked, and shutdown cuts it off like any of the loop's own
+			// (no SIGKILL under a cancelled context) — leaving the server at
+			// its prompt for the next boot's start to stop first.
+			if s.beginOwn() {
+				_, err := m.terminate(ctx, s.ws, proc, waited)
+				s.endOwn()
+				if err == nil {
+					s.serverGone = true
+				}
 			}
-			// A stop cancelled it: the stop ends the server, and this run
-			// reads on until it does. If the stop failed with the terminal
-			// kept (a paused container), only shutdown ends the read.
-		case <-detach:
-			// A run that is not stopping leaves on the cancel, which shutdown
-			// sends under the same lock; this case is for one a stop
-			// cancelled already. A stop under way may be waiting for the
-			// server on this very terminal (`devcontainer exec` exits when
-			// the server does), and closing it now would read to that stop
-			// as the server ending: leave once it has decided — at once for
-			// one that already failed. It is bounded by its own timeouts.
-			detach = nil
-			s.mu.Lock()
-			stopDecided = s.stopOver // set with stopping; nil for a run not stopping
-			s.mu.Unlock()
-		case <-stopDecided:
-			return leave()
+		case <-ctx.Done():
+			// Shutdown, or the workspace forgotten: close the terminal and
+			// leave the server serving. A stop under way here has already
+			// decided — it ran in this goroutine — and a run still reading
+			// after a stop that failed (a paused container's, its terminal
+			// kept) is ended too, at once.
+			return s.leave(master, proc, waited, rd)
+		case <-s.wake:
+			// A stop. What the run records ends here, whether it works or
+			// not: a stop that fails keeps the terminal, and what the server
+			// says on it after that is no longer this run's to record.
+			rcancel()
+			for req := s.next(); req != nil; req = s.next() {
+				if err := s.stopFor(req, proc, waited); err != nil {
+					s.settle(req, err)
+					continue
+				}
+				stopped = append(stopped, req)
+			}
 		}
 	}
-	proc.Wait()
+	<-waited
 	master.Close()
 	s.log.Flush(m.clock().Now())
 
-	if s.isStopping() {
+	if len(stopped) > 0 || s.isStopping() {
 		return outcome{kind: outStopped}
 	}
-	text := visible(tail)
+	text := visible(rd.tail())
 	switch hang {
 	case ReasonHangRemoteDialog:
 		return outcome{kind: outFatal, reason: hang, detail: fmt.Sprintf(
@@ -425,6 +448,7 @@ func (s *sup) runOnce(ctx context.Context) outcome {
 	default:
 		return outcome{kind: outCrash, detail: fmt.Sprintf("announced no environment within %s", durationText(p.GateTimeout))}
 	}
+	tail := rd.tail()
 	ref, _ := classify.ClassifyRefusal(tail)
 	switch ref {
 	case classify.RefusalWaitRegistration:
@@ -443,6 +467,130 @@ func (s *sup) runOnce(ctx context.Context) outcome {
 		return outcome{kind: outCrash, detail: "could not fetch the workspace's secrets before starting"}
 	}
 	return outcome{kind: outCrash, detail: "exited"}
+}
+
+// stopFor stops the server for one request, reporting what came of it and
+// settling nothing: with the run's process and its end when the loop holds a
+// terminal for it, through the pid file otherwise. A server this owner has
+// already stopped, with nothing launched since, is gone, and nothing is
+// sent; nor is anything under a context that has ended.
+func (s *sup) stopFor(req *stopReq, proc subproc.Process, waited <-chan struct{}) error {
+	if s.serverGone {
+		return nil
+	}
+	if err := req.ctx.Err(); err != nil {
+		return err
+	}
+	_, err := s.m.terminate(req.ctx, s.ws, proc, waited)
+	if err == nil {
+		s.serverGone = true
+	}
+	return err
+}
+
+// leave is shutdown's end of a run: close the terminal and leave the server
+// serving. Only Drydock's own end is ended — the local `devcontainer exec`,
+// which does not reach the server (measured); nothing is signalled in the
+// container.
+func (s *sup) leave(master *os.File, proc subproc.Process, waited <-chan struct{}, rd *reading) outcome {
+	master.Close()
+	<-rd.done
+	proc.Signal(subproc.SignalTerm)
+	select {
+	case <-waited:
+	case <-s.m.clock().After(s.m.policy().KillWait):
+		proc.Signal(subproc.SignalKill)
+		<-waited
+	}
+	return outcome{kind: outDetached}
+}
+
+// reading is one run's terminal being read, by goroutines of its own so that
+// it is drained whatever the loop is doing — stopping the server included,
+// whose last output must be read for it to exit.
+type reading struct {
+	done   chan struct{} // closed once the terminal is read to its end and all of it handled
+	served chan struct{} // closed once the server is serving
+	mu     sync.Mutex
+	last   []byte // the run's last refusalTail bytes
+}
+
+func (r *reading) tail() []byte {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return bytes.Clone(r.last)
+}
+
+func (r *reading) serving() bool {
+	select {
+	case <-r.served:
+		return true
+	default:
+		return false
+	}
+}
+
+// read reads the run's terminal: every chunk into the log and the tail, and,
+// while ctx lasts, the heartbeat and what the server announces (discover),
+// recorded under ctx. A discovery write that failed is tried again on the
+// next chunk and on the next heartbeat tick, so a server that has gone quiet
+// still heals.
+func (s *sup) read(ctx context.Context, master *os.File) *reading {
+	m, p := s.m, s.m.policy()
+	rd := &reading{done: make(chan struct{}), served: make(chan struct{})}
+	chunks := make(chan []byte, 64)
+	go func() {
+		defer close(chunks)
+		buf := make([]byte, 8192)
+		for {
+			n, err := master.Read(buf)
+			if n > 0 {
+				chunks <- bytes.Clone(buf[:n])
+			}
+			if err != nil {
+				if !pty.IsEOF(err) {
+					m.logf("drydock: workspace %s: reading the session server's terminal: %v", s.ws, err)
+				}
+				return
+			}
+		}
+	}()
+	go func() {
+		defer close(rd.done)
+		d := &discovered{sessions: map[string]bool{}}
+		var window []byte
+		look := func() {
+			if ctx.Err() != nil || len(window) == 0 {
+				return
+			}
+			if s.discover(ctx, d, window) && !rd.serving() {
+				close(rd.served)
+				s.set(ctx, Serving, ReasonServing, "", 0)
+			}
+		}
+		tick := m.clock().After(p.HeartbeatEvery)
+		for {
+			select {
+			case b, ok := <-chunks:
+				if !ok {
+					return
+				}
+				s.log.Write(m.clock().Now(), b)
+				rd.mu.Lock()
+				rd.last = keepTail(append(rd.last, b...), refusalTail)
+				rd.mu.Unlock()
+				window = keepTail(append(window, b...), discoveryWindow)
+				if ctx.Err() == nil {
+					s.heartbeat(ctx)
+				}
+				look()
+			case <-tick:
+				tick = m.clock().After(p.HeartbeatEvery)
+				look()
+			}
+		}
+	}()
+	return rd
 }
 
 // hangReason names which gate a server is waiting at, from what it printed.
@@ -506,46 +654,12 @@ func (s *sup) discover(ctx context.Context, d *discovered, window []byte) bool {
 	return d.env != "" && d.capTotal > 0
 }
 
-// stop ends the supervisor: the server is signalled in its container,
-// SIGTERM then SIGKILL on timeout, and the loop is waited for.
-func (s *sup) stop(ctx context.Context) error {
-	s.mu.Lock()
-	s.stopping = true
-	over := make(chan struct{})
-	s.stopOver = over
-	proc, procDone := s.proc, s.procDone
-	s.mu.Unlock()
-	_, err := s.m.terminate(ctx, s.ws, proc, procDone)
-	close(over)
-	if s.cancel != nil { // nil for one with no loop (detachedLocked)
-		s.cancel()
-	}
-	// After a failed stop the loop may be reading a terminal whose server
-	// did not end — in a paused container, say, where Drydock's end is kept. It
-	// ends when the terminal closes, and the stop does not wait on it for
-	// good. It writes nothing meanwhile, even once a Start has replaced it:
-	// stopping is set, so it sets no state, and the context just cancelled
-	// is the one every write it would make (the heartbeat, rc_session, the
-	// session events) runs under, so none lands.
-	var bound <-chan time.Time
-	if err != nil {
-		bound = s.m.clock().After(s.m.policy().KillWait)
-	}
-	select {
-	case <-s.done:
-	case <-bound:
-	case <-ctx.Done():
-		return errors.Join(err, ctx.Err())
-	}
-	return err
-}
-
 // terminate stops the workspace's server: SIGTERM inside the container, then
 // a wait of Policy.StopTimeout, and only then SIGKILL. With a local process
 // (proc, done), the wait is for it to end — `devcontainer exec` exits when
 // the server does; without one — a server an earlier Drydock left — it polls
 // the container. It reports whether a server was found.
-func (m *Manager) terminate(ctx context.Context, ws string, proc subproc.Process, done chan struct{}) (bool, error) {
+func (m *Manager) terminate(ctx context.Context, ws string, proc subproc.Process, done <-chan struct{}) (bool, error) {
 	p := m.policy()
 	found, err := m.Runtime.Signal(ctx, ws, container.SessionTerm, m.PidFile)
 	if err != nil {
