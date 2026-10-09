@@ -52,7 +52,7 @@ func TestACreateCutOffInsideAStepIsClosedAtBoot(t *testing.T) {
 			release := filepath.Join(e.cli.dir, "up-release")
 			e.cli.up = `if [ -e '` + hang + `' ]; then
   : > '` + upEntered + `'
-  while [ ! -e '` + release + `' ]; do sleep 0.05; done
+  while [ -d '` + e.cli.dir + `' ] && [ ! -e '` + release + `' ]; do sleep 0.05; done
   exit 1
 fi
 ` + registeringUp(e.cli.dir)
