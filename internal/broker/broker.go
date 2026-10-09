@@ -43,12 +43,20 @@ type Broker struct {
 
 	mu        sync.Mutex
 	listeners map[string]net.Listener
+	// closed is set by CloseAll: from then on Open opens nothing.
+	closed bool
 	// recordMu guards minted: workspace|scope → the expiry of the token
 	// whose token_grant row is written.
 	recordMu sync.Mutex
 	minted   map[string]time.Time
 	wg       sync.WaitGroup
 }
+
+// ErrClosed is Open after CloseAll: Drydock is shutting down, and a socket
+// opened now would outlive the process that serves it — a container given
+// GitHub access by a job still ending after shutdown's wait gave up on it.
+// Every caller reads it as "not opened", which is what it is.
+var ErrClosed = errors.New("broker: shut down; no socket is opened")
 
 // requestTimeout bounds a connection: a client that connects and says
 // nothing must not hold a goroutine forever.
@@ -143,6 +151,11 @@ func (b *Broker) Open(ctx context.Context, wsID string) error {
 
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	// Before anything else, an open socket included: after CloseAll nothing
+	// is served, and nothing may be added to the WaitGroup it waits on.
+	if b.closed {
+		return ErrClosed
+	}
 	if _, open := b.listeners[wsID]; open {
 		return nil
 	}
@@ -266,9 +279,13 @@ func (b *Broker) Serving(wsID string) bool {
 	return ok
 }
 
-// CloseAll stops every socket and waits for in-flight requests.
+// CloseAll stops every socket and waits for in-flight requests. It is
+// final: every Open after it is ErrClosed, so a job that outlived shutdown's
+// wait — a stop's re-pause reopening access, a run's step 5 — cannot leave a
+// socket behind, nor add to the WaitGroup CloseAll is waiting on.
 func (b *Broker) CloseAll() {
 	b.mu.Lock()
+	b.closed = true
 	ids := make([]string, 0, len(b.listeners))
 	for id := range b.listeners {
 		ids = append(ids, id)

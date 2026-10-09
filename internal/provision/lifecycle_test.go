@@ -56,6 +56,12 @@ ps)
   done
   awk -v ws="$ws" -v s="$status" '(ws=="" || $2==ws) && (s=="" || $3==s) {print $1}' "$st" ;;
 pause)
+  # docker-hold-pause holds a pause until the test removes it, saying so
+  # in in-pause: a re-pause still running when shutdown's wait gives up.
+  if [ -e "$dir/docker-hold-pause" ]; then
+    touch "$dir/in-pause"
+    while [ -e "$dir/docker-hold-pause" ]; do sleep 0.05; done
+  fi
   while [ "$1" != -- ]; do shift; done; shift
   for id; do
     awk -v id="$id" '$1==id && $3=="running" {f=1} END {exit !f}' "$st" || { echo "Container $id is not running" >&2; exit 1; }

@@ -567,9 +567,18 @@ func (p *Provisioner) unpauseAndStopSupervisor(ctx context.Context, w workspace.
 	return err
 }
 
-// repauseTimeout bounds a re-pause, which runs under sys.Cleanup of the
+// RepauseTimeout bounds a re-pause, which runs under sys.Cleanup of the
 // action's context: that may be the very thing that was cancelled.
-const repauseTimeout = 30 * time.Second
+//
+// It must finish inside shutdown's wait for the jobs: a stop cut off by
+// shutdown after unpausing first winds its cut-off subprocess down
+// (subproc.DefaultWaitDelay), then re-pauses, whose last docker command the
+// bound may cut off in turn (another DefaultWaitDelay). A re-pause killed
+// with the process leaves an operator-paused container running, and the
+// next boot would hand it a socket and a session server. So the server
+// asserts, at compile time, that this and two wind-downs fit in its
+// workShutdownWait.
+const RepauseTimeout = 20 * time.Second
 
 // repause pauses again what an action unpaused and then did not end — a stop
 // or delete that halted or was cancelled before its container step, a
@@ -589,7 +598,7 @@ func (p *Provisioner) repause(parent context.Context, w workspace.Workspace, un 
 	if un == nil || len(un.ids) == 0 {
 		return ""
 	}
-	ctx, cancel := sys.Cleanup(parent, p.clock(), repauseTimeout)
+	ctx, cancel := sys.Cleanup(parent, p.clock(), RepauseTimeout)
 	defer cancel()
 	n, err := p.Containers.Repause(ctx, w.ID, un.ids)
 	if n == 0 && err == nil {

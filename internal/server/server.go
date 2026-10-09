@@ -512,12 +512,14 @@ func apiSocketHandler(gate api.Gate, apiMux *http.ServeMux, ui http.Handler) htt
 //     which it writes the step's failure, its move to failed and its
 //     workspace.job end to the local database — about 5 s. A job that had
 //     unpaused a paused container also pauses it again, under provision's
-//     30 s repauseTimeout; one that uses all of that outlasts this wait and
-//     is named in the log. Its step's failure is written before the
-//     re-pause, so what is lost is the re-pause and what follows it (a stop's
-//     or delete's annotation, the job's end); a job cut off before writing
-//     its step's failure is boot reconciliation's, which closes the dangling
-//     step;
+//     RepauseTimeout (20 s), whose own last docker command may need one more
+//     wind-down: 5 + 20 + 5 = 30 s at worst, which repauseFits below holds
+//     inside this wait, so an operator's pause is never left undone by a
+//     shutdown. A job still running at the deadline anyway (a database write
+//     that hangs) is named in the log, and whatever it opens after that is
+//     refused by the broker, which CloseAll has closed for good; a job cut
+//     off before writing its step's failure is boot reconciliation's, which
+//     closes the dangling step;
 //   - the catalog's refresh, whose GitHub calls and transaction end with its
 //     context;
 //   - the identity watch's check, which ends with it too but then removes a
@@ -536,6 +538,13 @@ func apiSocketHandler(gate api.Gate, apiMux *http.ServeMux, ui http.Handler) htt
 // others — supervisorDetachWait, then the HTTP servers' 10 s, 20 s in all —
 // so the most shutdown waits is the longer of the two: 35 s.
 const workShutdownWait = 35 * time.Second
+
+// repauseFits does not compile when a stop cut off by shutdown — its
+// subprocess's wind-down, the re-pause's bound, the re-pause's own last
+// wind-down — could outlast workShutdownWait: a negative constant does not
+// convert to uint64. Lengthen RepauseTimeout or shorten this wait and the
+// build says so, rather than a comment no one re-reads.
+const repauseFits = uint64(workShutdownWait - provision.RepauseTimeout - 2*subproc.DefaultWaitDelay)
 
 // supervisorDetachWait bounds how long shutdown waits for the supervisors to
 // let go of their terminals.
@@ -798,8 +807,10 @@ func (s *Server) Serve(ctx context.Context) error {
 	// under the provisioner's lock right now, so the sockets close after.
 	<-reconciled
 	// After every job and boot's follow-ups: a run's step 5, or a stop's
-	// re-pause, opens a socket, and one closed under it would be opened
-	// again behind CloseAll.
+	// re-pause, opens a socket, and a job still ending inside the wait must
+	// be able to (TestTheBrokerOutlivesEveryJob). CloseAll is final, so a
+	// job the wait gave up on that opens one afterwards is refused
+	// (broker.ErrClosed) rather than leaving a socket nobody serves.
 	if s.Broker != nil {
 		s.Broker.CloseAll()
 	}

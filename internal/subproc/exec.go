@@ -9,6 +9,11 @@ import (
 	"time"
 )
 
+// DefaultWaitDelay is Exec's WaitDelay when it sets none: how long a
+// cancelled subprocess is given to wind down after its SIGTERM. Shutdown's
+// budget counts it (internal/server's workShutdownWait).
+const DefaultWaitDelay = 5 * time.Second
+
 // Exec is the production Runner: os/exec, with the program resolved by the
 // Resolver rather than by exec.Command's own PATH lookup, so a test's fake is
 // what runs.
@@ -39,7 +44,7 @@ func (e Exec) command(ctx context.Context, c Cmd) (*exec.Cmd, error) {
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = c.Stdin, c.Stdout, c.Stderr
 	cmd.WaitDelay = e.WaitDelay
 	if cmd.WaitDelay == 0 {
-		cmd.WaitDelay = 5 * time.Second
+		cmd.WaitDelay = DefaultWaitDelay
 	}
 	// SIGTERM, not SIGKILL, when the context ends: the devcontainer CLI and
 	// git both clean up on TERM, and §8's supervisor rule is the same.

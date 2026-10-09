@@ -725,3 +725,31 @@ func TestOpenRefusesAPathNoClientCouldReach(t *testing.T) {
 	}
 	conn.Close()
 }
+
+// TestOpenAfterCloseAllOpensNothing: CloseAll is final. A job still ending
+// after shutdown's wait gave up on it — a stop's re-pause giving access
+// back, a run's step 5 — asks Open, and gets ErrClosed with no socket on
+// disk and nothing served, for a workspace whose socket CloseAll just closed
+// and for one that never had one. The control is the same Open before
+// CloseAll, which serves.
+func TestOpenAfterCloseAllOpensNothing(t *testing.T) {
+	ctx := context.Background()
+	e := newEnv(t)
+	if got := e.ask(t, wsA, "PING"); got != "OK" {
+		t.Fatalf("control: before CloseAll, PING = %q", got)
+	}
+	e.b.CloseAll()
+	const never = "01JCCCCCCCCCCCCCCCCCCCCCCC"
+	for _, ws := range []string{wsA, never} {
+		if err := e.b.Open(ctx, ws); !errors.Is(err, ErrClosed) {
+			t.Errorf("Open(%s) after CloseAll = %v, want ErrClosed", ws, err)
+		}
+		if _, err := os.Lstat(e.b.SocketPath(ws)); !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("a socket for %s exists after CloseAll: %v", ws, err)
+		}
+		if e.b.Serving(ws) {
+			t.Errorf("%s is served after CloseAll", ws)
+		}
+	}
+	e.b.CloseAll() // a second is harmless
+}

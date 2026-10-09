@@ -77,7 +77,7 @@ func (p *Provisioner) ReopenSockets(ctx context.Context) error {
 	}
 	var errs []error
 	for _, w := range all {
-		if w.State != workspace.Running {
+		if w.State != workspace.Running || p.pausedNow(ctx, w.ID, "opening its GitHub access") {
 			continue
 		}
 		p.mu.Lock()
@@ -89,6 +89,29 @@ func (p *Provisioner) ReopenSockets(ctx context.Context) error {
 		p.mu.Unlock()
 	}
 	return errors.Join(errs...)
+}
+
+// pausedNow reports whether the workspace's container is paused, for boot's
+// follow-ups, which then leave it as it is: no socket, no session server. A
+// paused running workspace is the operator's brake, and boot can meet one
+// after a stop cut off by shutdown — its re-pause done, its reopen refused —
+// or after the operator paused it by hand. Either way access follows
+// Drydock's state (§9.1), and handing the container a socket or a server
+// would undo what the pause is for. A stop and a start, or a rebuild, gives
+// both back. A failed look acts as before: Docker answered reconciliation's
+// listing a moment ago, and a hiccup here should not leave every workspace
+// without access.
+func (p *Provisioner) pausedNow(ctx context.Context, id, what string) bool {
+	ids, err := p.Containers.Paused(ctx, id)
+	if err != nil {
+		p.logf("drydock: workspace %s: asking whether its container is paused: %v", id, err)
+		return false
+	}
+	if len(ids) > 0 {
+		p.logf("drydock: workspace %s: its container is paused; not %s", id, what)
+		return true
+	}
+	return false
 }
 
 // ResumeSupervisors is boot adoption's half of §6's first reconciliation row
@@ -116,6 +139,9 @@ func (p *Provisioner) ResumeSupervisors(ctx context.Context) error {
 		// launch. Say so, once, with the fix — never a restart loop — and
 		// leave whatever is running there alone. A failed look starts it as
 		// before: the check is a courtesy, not a gate.
+		if p.pausedNow(ctx, w.ID, "starting its session server") {
+			continue
+		}
 		legacy := false
 		if p.ParkSupervisor != nil && p.Broker != nil {
 			var lerr error
