@@ -138,6 +138,9 @@ type Server struct {
 	// loginWork is the login handshake's group in Serve's work, stored
 	// likewise: a test stops it to see the begin route refuse.
 	loginWork atomic.Pointer[life.Group]
+	// supervisorWork is the session supervisors' group in Serve's work,
+	// stored for tests that wait for it.
+	supervisorWork atomic.Pointer[life.Group]
 	// provisionWork is the provisioner's group in Serve's work, stored
 	// likewise: a test stops it to see the workspace routes refuse.
 	provisionWork atomic.Pointer[life.Group]
@@ -520,10 +523,13 @@ func apiSocketHandler(gate api.Gate, apiMux *http.ServeMux, ui http.Handler) htt
 //     refused by the broker, which CloseAll has closed for good; a job cut
 //     off before writing its step's failure is boot reconciliation's, which
 //     closes the dangling step;
+//
 //   - the catalog's refresh, whose GitHub calls and transaction end with its
 //     context;
+//
 //   - the identity watch's check, which ends with it too but then removes a
 //     cut-off read's helper container under its own 30-second bound;
+//
 //   - a login in progress, which kills its process, removes its container and
 //     announces its end in about 30 s at worst: one 5 s kill (or an abandoned
 //     launch's docker command winding down within subproc's 5 s WaitDelay),
@@ -531,12 +537,19 @@ func apiSocketHandler(gate api.Gate, apiMux *http.ServeMux, ui http.Handler) htt
 //     and the 5 s announcement — counted beside login's killWait,
 //     removeTimeout and emitTimeout.
 //
+//   - each session supervisor's loop, which closes its terminal at once and
+//     signals no server — its own `devcontainer exec` is SIGTERMed and given
+//     KillWait (5 s) — after a docker call it was in winds down within
+//     subproc's 5 s WaitDelay; a stop under way keeps the terminal until it
+//     has decided, and that stop is a job's, cancelled with it: about 10 s;
+//     and a stop of a server hung at a gate, cut off the same way.
+//
 // So this is the longest of those and a little more.
 //
 // Shutdown's whole budget must stay inside systemd's 90-second stop timeout,
 // so the service is never SIGKILLed for waiting. This wait runs beside the
-// others — supervisorDetachWait, then the HTTP servers' 10 s, 20 s in all —
-// so the most shutdown waits is the longer of the two: 35 s.
+// HTTP servers' 10 s drain, so the most shutdown waits is the longer of the
+// two: 35 s.
 const workShutdownWait = 35 * time.Second
 
 // repauseFits does not compile when a stop cut off by shutdown — its
@@ -545,10 +558,6 @@ const workShutdownWait = 35 * time.Second
 // convert to uint64. Lengthen RepauseTimeout or shorten this wait and the
 // build says so, rather than a comment no one re-reads.
 const repauseFits = uint64(workShutdownWait - provision.RepauseTimeout - 2*subproc.DefaultWaitDelay)
-
-// supervisorDetachWait bounds how long shutdown waits for the supervisors to
-// let go of their terminals.
-const supervisorDetachWait = 10 * time.Second
 
 // secretValues are the values of the secrets a workspace's repository is
 // granted, for its session server's log to mask. Asked on every terminal
@@ -635,9 +644,9 @@ func (s *Server) Serve(ctx context.Context) error {
 	defer stop()
 	// work owns the goroutines of the components that have moved onto
 	// life.Group: shutdown stops it and waits for it before the database
-	// closes. Today that is the provisioner's jobs, the catalog, the
-	// identity watch and the login handshake; the rest still end on ctx and
-	// their own Shutdown.
+	// closes. Today that is the provisioner's jobs, the session
+	// supervisors, the catalog, the identity watch and the login handshake;
+	// the rest still end on ctx.
 	work := life.NewGroup(ctx)
 	defer work.Stop()
 	// Every workspace job — a run, a stop, a delete, a session server
@@ -647,6 +656,15 @@ func (s *Server) Serve(ctx context.Context) error {
 	s.provisionWork.Store(provisionWork)
 	if err := s.Provisioner.RunIn(provisionWork); err != nil {
 		fmt.Fprintf(os.Stderr, "drydock: provision: %v\n", err)
+	}
+	// Every session supervisor's loop, in work, before a job's step 8 or
+	// boot's adoption can start one. Its group stopping is the detach: every
+	// terminal closed, no server signalled (Spike 02: sessions survive a
+	// restart and reconnect).
+	supervisorWork := work.Child("supervisor")
+	s.supervisorWork.Store(supervisorWork)
+	if err := s.Supervisor.RunIn(supervisorWork); err != nil {
+		fmt.Fprintf(os.Stderr, "drydock: supervisor: %v\n", err)
 	}
 	// Reconcile once at boot, beside serving rather than before it: a slow
 	// daemon must not keep the sign-in page down. A failure changes nothing
@@ -714,11 +732,7 @@ func (s *Server) Serve(ctx context.Context) error {
 	if err := s.Identity.Start(identityWork); err != nil {
 		fmt.Fprintf(os.Stderr, "drydock: identity: %v\n", err)
 	}
-	supervising := make(chan struct{})
-	go func() {
-		defer close(supervising)
-		s.Supervisor.Watch(ctx)
-	}()
+	supervisorWork.Go("watch", s.Supervisor.Watch)
 	// The login handshake (§7.2): each login, and everything it starts, in
 	// work. A login container an earlier process left — killed mid-login,
 	// or a crash — is removed by its label first, as reconciliation's sweep
@@ -772,7 +786,9 @@ func (s *Server) Serve(ctx context.Context) error {
 	// its container removed. Nothing asked of them from here on starts — a
 	// route asking for a job answers 503 — and a login's last act, asking
 	// the watch for a check, is refused at once, since the watch is
-	// stopping too.
+	// stopping too. The session supervisors detach: every terminal closes
+	// and no server is signalled, so the servers keep serving for the next
+	// process to adopt.
 	work.Stop()
 	workStopped := make(chan struct{})
 	go func() {
@@ -785,17 +801,17 @@ func (s *Server) Serve(ctx context.Context) error {
 				workShutdownWait, strings.Join(late, ", "))
 		}
 	}()
-	// Session servers keep serving while Drydock is down (Spike 02: a plain
-	// restart reconnects them); only Drydock's terminals close. This runs
-	// beside work's wait, while provision's jobs may still be ending, which
-	// is safe because every job's context was cancelled by work.Stop above,
-	// before this began: a job's StopSupervisor after that signals nothing
-	// (docker exec is not started under a cancelled context, and a stop cut
-	// off records nothing), and its StartSupervisor (step 8, or a restart's
-	// second half) is ordered against Detach by the supervisor's own lock —
-	// one that got in first is detached with the rest, and one after is
-	// ErrClosed, which the cancelled step reports as Drydock shutting down.
-	s.Supervisor.Detach(supervisorDetachWait)
+	// The supervisors' loops end beside the jobs, and that is safe in
+	// either order: stop() above cancelled ctx, and with it every job's
+	// context and the supervisor group's, in one call, before anything here
+	// waits. A job's StopSupervisor after that signals nothing (docker exec
+	// is not started under a cancelled context, and a stop cut off records
+	// nothing). Its StartSupervisor (step 8, or a restart's second half) is
+	// ordered against the detach by the group itself: launchLocked takes the
+	// loop's goroutine with TryGo, under the mutex Stop takes, so one that
+	// got in first has a context that is already cancelled — its loop leaves
+	// before launching, or closes its terminal — and one after is ErrClosed,
+	// which the cancelled step reports as Drydock shutting down.
 	// Streams never go idle, so Shutdown would wait out its whole timeout on
 	// every open browser; ending the subscriptions ends the streams first.
 	// A job still ending writes its last events after this: they are rows
@@ -820,7 +836,6 @@ func (s *Server) Serve(ctx context.Context) error {
 	if s.Broker != nil {
 		s.Broker.CloseAll()
 	}
-	<-supervising
 	<-sampling
 	s.DB.Close()
 	if errors.Is(serveErr, http.ErrServerClosed) {

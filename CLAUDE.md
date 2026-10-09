@@ -386,7 +386,7 @@ These come from §2 (Claude Code constraints) and §13.5 (non-negotiables). Most
   `loggedIn:false` for both and only the credential file separates them (§7.3).
 - **The context rule.** #83, #85 and #94's probe cleanup each ran under a context from the wrong
   parent. (1) A request's context is for the synchronous part of a handler only. (2) Background work
-  runs under its component's context (a `life.Group`'s, or, until R1 reaches it, the component's `base`). (3) Bookkeeping or cleanup
+  runs under its component's context (a `life.Group`'s). (3) Bookkeeping or cleanup
   owed after a cancellation uses `sys.Cleanup(parent, clock, d)`: `WithoutCancel` plus a bound on the
   injected clock. (4) Shared, joinable work never runs under a caller's context. `TestContextRule`
   (`internal/sys/contextrule_test.go`) parses every non-test file and fails, by file and function, on

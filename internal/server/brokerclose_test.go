@@ -52,7 +52,7 @@ func stragglingRun(t *testing.T, srv *Server, serve func() *running, after func(
 // within the wait — here a cut-off run that gives the workspace its socket
 // back, as a stop's re-pause does — opens it, and CloseAll then closes it,
 // so no socket is left once Serve returns. With CloseAll anywhere earlier
-// (before Detach, before the wait) the job's Open would find the broker
+// (before the wait) the job's Open would find the broker
 // closed: that is what the Open's own success asserts.
 func TestTheBrokerOutlivesEveryJob(t *testing.T) {
 	srv, serve := appServer(t, t.TempDir())

@@ -15,14 +15,14 @@ import (
 	"github.com/krelinga/drydock/internal/container"
 )
 
-// Shutdown (Detach) closes every supervisor's terminal promptly and signals
-// no server, including a supervisor whose restart failed because the
-// container is paused: that stop kept Drydock's end of the frozen server's
-// terminal and cancelled the run's context itself, so Detach's cancel was
-// news to no one and the loop read on until Detach's bound ran out — the
-// whole of it, after which Detach stopped waiting for every other
-// supervisor too. The control is a serving supervisor, which Detach has
-// always ended at once. In both, the server — apart from Drydock, as under
+// Shutdown (the supervisor's group stopping: the detach) closes every
+// supervisor's terminal promptly and signals no server, including a
+// supervisor whose restart failed because the container is paused: that
+// stop kept Drydock's end of the frozen server's terminal and cancelled the
+// run's context itself, so shutdown's cancel was news to no one and the
+// loop read on until the bound ran out — the whole of it, after which
+// shutdown stopped waiting for every other supervisor too. The control is a
+// serving supervisor, which shutdown has always ended at once. In both, the server — apart from Drydock, as under
 // real Docker ("exec-detaches") — is still running afterwards.
 func TestDetachClosesEveryTerminalAndSignalsNobody(t *testing.T) {
 	for _, stuck := range []bool{false, true} {
@@ -46,20 +46,20 @@ func TestDetachClosesEveryTerminalAndSignalsNobody(t *testing.T) {
 				}
 				time.Sleep(200 * time.Millisecond)
 				if !s.running() {
-					t.Fatal("the loop ended after the failed stop: nothing is left for Detach to close")
+					t.Fatal("the loop ended after the failed stop: nothing is left for shutdown to close")
 				}
 			}
 			const bound = 10 * time.Second
 			began := time.Now()
-			r.m.Detach(bound)
+			late := r.detach(bound)
 			if took := time.Since(began); took > 3*time.Second {
-				t.Errorf("Detach took %v of its %v bound", took, bound)
+				t.Errorf("shutdown took %v of its %v bound", took, bound)
 			}
-			if s.running() {
-				t.Error("the supervisor's loop is still running after Detach")
+			if late != nil || s.running() {
+				t.Errorf("still running after shutdown: %v (loop running %v)", late, s.running())
 			}
 			if !alive(server) || r.pid() != server {
-				t.Errorf("the server: alive %v, pid file %d (was %d); Detach must signal no server", alive(server), r.pid(), server)
+				t.Errorf("the server: alive %v, pid file %d (was %d); shutdown must signal no server", alive(server), r.pid(), server)
 			}
 		})
 	}
@@ -123,7 +123,7 @@ func TestAPauseDuringTheStopEndsTheWait(t *testing.T) {
 // that terminal (`devcontainer exec` exits when the server does), so closing
 // it under the stop would read as the server ending, and "The session server
 // was stopped." would be written over a server still running. The server
-// here ignores SIGTERM, and Detach comes during the grace period. Either the
+// here ignores SIGTERM, and shutdown comes during the grace period. Either the
 // stop says it stopped and the server is gone (SIGKILL, after the grace
 // period), or it says it did not; never stopped with the server alive. The
 // control is the same stop with no shutdown.
@@ -142,7 +142,7 @@ func TestDetachDuringAStopLetsTheStopDecide(t *testing.T) {
 			go func() { stopped <- r.m.Stop(context.Background(), wsID) }()
 			if detach {
 				time.Sleep(300 * time.Millisecond)
-				r.m.Detach(10 * time.Second)
+				r.detach(10 * time.Second)
 			}
 			err := <-stopped
 			if err == nil && alive(server) {

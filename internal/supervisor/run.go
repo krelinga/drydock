@@ -26,15 +26,10 @@ type sup struct {
 	log    *Ring
 	cancel context.CancelFunc
 	done   chan struct{} // closed when the loop returns
-	// detached is the manager's: closed by Detach, on which a run closes
-	// its terminal even when its context was already cancelled by a stop.
-	// Nil for one with no loop.
-	detached chan struct{}
-	// said is closed once the loop has said its first state — written, or
-	// found already standing — so a restart can return when the new server
-	// has said what it became (Restart). Nil for a sup with no loop.
-	said     chan struct{}
-	saidOnce sync.Once
+	// detached is the manager's group's context ending — shutdown — on
+	// which a run closes its terminal even when its context was already
+	// cancelled by a stop. Nil for one with no loop.
+	detached <-chan struct{}
 
 	mu       sync.Mutex
 	state    State
@@ -317,7 +312,16 @@ func (s *sup) runOnce(ctx context.Context) outcome {
 			// The prompt has no line end; put it in the log now, so the log
 			// shows what the server is waiting at.
 			s.log.Flush(m.clock().Now())
-			go m.terminate(context.WithoutCancel(ctx), s.ws, proc, procDone)
+			// In the group, not under this run's context: a stop of the
+			// supervisor cancels that and does its own terminate, and this
+			// one must carry on until the server ends, which ends the read.
+			// Shutdown cuts it off like any other of the group's (no
+			// SIGKILL under a cancelled context), and waits for it; once the
+			// group is stopping it is not started, and the cancel below
+			// leaves the server where it is.
+			m.g.Go("gate stop "+s.ws, func(gctx context.Context) {
+				m.terminate(gctx, s.ws, proc, procDone)
+			})
 		case <-cancelled:
 			cancelled = nil
 			if !s.isStopping() {
@@ -327,7 +331,7 @@ func (s *sup) runOnce(ctx context.Context) outcome {
 			// reads on until it does. If the stop failed with the terminal
 			// kept (a paused container), only shutdown ends the read.
 		case <-detach:
-			// A run that is not stopping leaves on the cancel, which Detach
+			// A run that is not stopping leaves on the cancel, which shutdown
 			// sends under the same lock; this case is for one a stop
 			// cancelled already. A stop under way may be waiting for the
 			// server on this very terminal (`devcontainer exec` exits when

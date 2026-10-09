@@ -16,6 +16,7 @@ import (
 	"github.com/krelinga/drydock/internal/claudetest"
 	"github.com/krelinga/drydock/internal/container"
 	"github.com/krelinga/drydock/internal/events"
+	"github.com/krelinga/drydock/internal/life"
 	"github.com/krelinga/drydock/internal/store"
 	"github.com/krelinga/drydock/internal/subproc"
 	"github.com/krelinga/drydock/internal/sys"
@@ -38,6 +39,7 @@ const (
 type rig struct {
 	t      *testing.T
 	m      *Manager
+	g      *life.Group // the manager's: Serve's work.Child("supervisor")
 	db     *store.DB
 	log    *events.Log
 	dir    string
@@ -144,11 +146,22 @@ exit 99
 				RemoteEnv: map[string]string{"CLAUDE_REMOTE_CONTROL_SESSION_NAME_PREFIX": "repo"}}, nil
 		},
 		PidFile: filepath.Join(dir, "rc.pid"), Policy: p, Logf: t.Logf}
+	r.g = life.NewGroup(context.Background())
+	if err := r.m.RunIn(r.g); err != nil {
+		t.Fatal(err)
+	}
 	t.Cleanup(func() {
 		r.m.Stop(context.Background(), wsID)
-		r.m.Detach(5 * time.Second)
+		r.detach(5 * time.Second)
 	})
 	return r
+}
+
+// detach is Drydock's shutdown as Serve does it: the supervisor's group
+// stopped and waited for, until bound. It returns what was still running
+// then, by the group's names.
+func (r *rig) detach(bound time.Duration) []string {
+	return r.g.Wait(time.After(bound))
 }
 
 func writeExec(t *testing.T, path, body string) {

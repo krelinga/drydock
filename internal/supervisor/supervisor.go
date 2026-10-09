@@ -46,12 +46,17 @@
 // constant script that signals the recorded pid only if it is a
 // remote-control, SIGTERM, SIGKILL after StopTimeout. Every start first stops
 // any server the pid file names, which is how boot adoption replaces the
-// server an earlier Drydock left serving; Detach (shutdown) closes terminals
-// and signals nobody — every run's terminal, promptly, including a run still
-// reading after a failed stop (a paused container's, whose context that stop
-// already cancelled), so no supervisor holds shutdown to its bound; a stop
-// under way keeps its terminal until it has decided, since closing it would
-// read to the stop as the server ending.
+// server an earlier Drydock left serving; shutdown — the manager's
+// life.Group stopping (RunIn) — closes terminals and signals nobody — every
+// run's terminal, promptly, including a run still reading after a failed
+// stop (a paused container's, whose context that stop already cancelled), so
+// no supervisor holds shutdown to its bound; a stop under way keeps its
+// terminal until it has decided, since closing it would read to the stop as
+// the server ending. Every goroutine is the group's — each loop, and the
+// stop of a server hung at a gate — so shutdown waits for all of them, and
+// none starts after it. A start records starting (or awaiting_login) before
+// it returns, so a parked state is never left on the card while the loop
+// gets going.
 //
 // Retries: the registration wait is waiting_registration on a flat retry and
 // never charged to the budget (2 s→60 s, 6 in 10 min, then degraded); the
@@ -136,6 +141,7 @@ import (
 	"github.com/krelinga/drydock/internal/container"
 	"github.com/krelinga/drydock/internal/events"
 	"github.com/krelinga/drydock/internal/identity"
+	"github.com/krelinga/drydock/internal/life"
 	"github.com/krelinga/drydock/internal/subproc"
 	"github.com/krelinga/drydock/internal/sys"
 	"github.com/krelinga/drydock/internal/workspace"
@@ -299,36 +305,71 @@ type Manager struct {
 	// and its start: the window a delete or a broken row can land in.
 	afterStop func()
 
-	mu     sync.Mutex
-	sups   map[string]*sup
-	logs   map[string]*Ring
-	closed bool
-	base   context.Context
-	cancel context.CancelFunc
-	// detached is closed by Detach. Every run closes its terminal on it,
-	// including one whose stop failed and which is still reading — whose
-	// context its stop already cancelled, so the cancel alone says nothing
-	// to it.
-	detached chan struct{}
+	mu   sync.Mutex
+	sups map[string]*sup
+	logs map[string]*Ring
+	// g is the group every loop runs in, and the gate-hang stop each loop
+	// may start (RunIn). Its context ending is shutdown: every run's
+	// terminal closes on it (sup.detached), and nothing starts after it.
+	g *life.Group
 }
 
-// detachedCh is the channel Detach closes. m.mu held.
-func (m *Manager) detachedCh() chan struct{} {
-	if m.detached == nil {
-		m.detached = make(chan struct{})
+// RunIn gives the manager the group its goroutines run in: a child of
+// Serve's work, which shutdown stops and waits for. Before RunIn, and once
+// the group is stopping, Start and Park are ErrClosed.
+//
+// The group stopping is Drydock's shutdown, and it is a detach: every
+// terminal is closed and every loop ended, but no server is signalled. A
+// Drydock restart must not end the sessions it was supervising — Spike 02:
+// a plain restart reconnects the same environment and sessions — so the
+// servers keep serving while Drydock is down, and boot adoption replaces
+// each with one Drydock has a terminal for. Every run's terminal is closed,
+// whatever it is doing: one whose stop failed and which is still reading —
+// a paused container's frozen server, whose terminal the stop kept — is
+// told by the group's context (sup.detached), since its own context was
+// cancelled by that stop and the cancel is news to no one. A stop under way
+// keeps its terminal until it has decided (stopOver). What is still running
+// at the group's deadline is named by its Wait.
+func (m *Manager) RunIn(g *life.Group) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.g != nil {
+		return errors.New("supervisor: already started")
 	}
-	return m.detached
+	m.g = g
+	return nil
 }
 
-// redactValues is a workspace's log ring's source of values to mask.
-func (m *Manager) redactValues(workspaceID string) func() []string {
+// stoppingLocked reports (m.mu held) whether nothing may start: before
+// RunIn, or once the group is stopping.
+func (m *Manager) stoppingLocked() bool { return m.g == nil || m.g.Ctx().Err() != nil }
+
+// ringLocked is the workspace's log ring, made the first time (m.mu held).
+// Only once RunIn has given the manager its group: every caller has checked
+// stoppingLocked, or follows a Start that did.
+func (m *Manager) ringLocked(workspaceID string) *Ring {
+	if m.logs == nil {
+		m.logs = map[string]*Ring{}
+	}
+	ring := m.logs[workspaceID]
+	if ring == nil {
+		ring = NewRing(m.policy().LogBytes, m.redactValues(m.g, workspaceID))
+		m.logs[workspaceID] = ring
+	}
+	return ring
+}
+
+// redactValues is a workspace's log ring's source of values to mask. Not
+// under the loop's context: the ring outlives a run, and a flush after a
+// cancelled run — or after shutdown has cancelled the group — must still be
+// masked, so the read is a cleanup of the group's, bounded on its own.
+func (m *Manager) redactValues(g *life.Group, workspaceID string) func() []string {
+	parent := g.Ctx() // never nil: a ring is made only once RunIn has
 	return func() []string {
 		if m.Redact == nil {
 			return nil
 		}
-		// Not the loop's context: the ring outlives a run, and a flush
-		// after a cancelled run must still be masked.
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		ctx, cancel := sys.Cleanup(parent, m.clock(), 5*time.Second)
 		defer cancel()
 		return m.Redact(ctx, workspaceID)
 	}
@@ -399,7 +440,7 @@ func (m *Manager) clock() sys.Clock {
 func (m *Manager) Start(ctx context.Context, workspaceID string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if m.closed {
+	if m.stoppingLocked() {
 		return ErrClosed
 	}
 	// One kept after a failed stop is not left alone: it is stopping, and
@@ -418,11 +459,11 @@ func (m *Manager) Start(ctx context.Context, workspaceID string) error {
 // the first lives — and Stop has recorded it (degraded, stop_failed or
 // survived_kill), so the press that asked is answered either way.
 //
-// A start returns once the new server's loop has said its first state
-// (starting, awaiting login, degraded…), or ended, or ctx has: the restart is
-// a provisioner job whose end is what ends the press (workspace.job), and
-// ending it on the stop's `exited` would show the card a stopped server
-// for as long as the new loop takes to say anything.
+// The start has recorded the new server's first state (starting, or
+// awaiting login) when it returns (launchLocked): the restart is a
+// provisioner job whose end is what ends the press (workspace.job), and
+// ending it on the stop's `exited` would show the card a stopped server for
+// as long as the new loop takes to say anything.
 func (m *Manager) Restart(ctx context.Context, workspaceID string) error {
 	if err := m.Stop(ctx, workspaceID); err != nil {
 		return err
@@ -443,21 +484,7 @@ func (m *Manager) Restart(ctx context.Context, workspaceID string) error {
 		m.logf("drydock: workspace %s: starting the session server after a restart's stop: %v", workspaceID, err)
 		m.answer(context.WithoutCancel(ctx), workspaceID, Degraded, ReasonStartFailed, startFailedSentence)
 	}
-	if err != nil {
-		return err
-	}
-	m.mu.Lock()
-	s := m.sups[workspaceID]
-	m.mu.Unlock()
-	if s != nil && s.said != nil {
-		select {
-		case <-s.said:
-		case <-s.done:
-		case <-ctx.Done():
-			return ctx.Err()
-		}
-	}
-	return nil
+	return err
 }
 
 // answer announces a state for a workspace whose supervisor may not be in
@@ -467,14 +494,7 @@ func (m *Manager) answer(ctx context.Context, workspaceID string, st State, r Re
 	m.mu.Lock()
 	s := m.sups[workspaceID]
 	if s == nil {
-		if m.logs == nil {
-			m.logs = map[string]*Ring{}
-		}
-		ring := m.logs[workspaceID]
-		if ring == nil {
-			ring = NewRing(m.policy().LogBytes, m.redactValues(workspaceID))
-			m.logs[workspaceID] = ring
-		}
+		ring := m.ringLocked(workspaceID)
 		var row string
 		m.DB.QueryRowContext(ctx, `SELECT id FROM supervisor WHERE workspace_id = ?
 			ORDER BY started_at DESC LIMIT 1`, workspaceID).Scan(&row)
@@ -497,7 +517,7 @@ func (m *Manager) answer(ctx context.Context, workspaceID string, st State, r Re
 func (m *Manager) Park(ctx context.Context, workspaceID string, r Reason, detail string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if m.closed {
+	if m.stoppingLocked() {
 		return ErrClosed
 	}
 	if s := m.sups[workspaceID]; s != nil && s.running() {
@@ -514,9 +534,6 @@ func (m *Manager) Park(ctx context.Context, workspaceID string, r Reason, detail
 // detachedLocked is a supervisor with no loop, to record a state on: its row
 // (made if need be), its log, and the state the row holds. m.mu held.
 func (m *Manager) detachedLocked(ctx context.Context, workspaceID string) (*sup, error) {
-	if m.logs == nil {
-		m.logs = map[string]*Ring{}
-	}
 	// A row made just now holds ensureRow's placeholder state, which no
 	// server ever had: the first event then comes from nothing ("").
 	var existed bool
@@ -525,12 +542,7 @@ func (m *Manager) detachedLocked(ctx context.Context, workspaceID string) (*sup,
 	if err != nil {
 		return nil, err
 	}
-	ring := m.logs[workspaceID]
-	if ring == nil {
-		ring = NewRing(m.policy().LogBytes, m.redactValues(workspaceID))
-		m.logs[workspaceID] = ring
-	}
-	s := &sup{m: m, ws: workspaceID, row: row, restarts: restarts, log: ring, done: make(chan struct{})}
+	s := &sup{m: m, ws: workspaceID, row: row, restarts: restarts, log: m.ringLocked(workspaceID), done: make(chan struct{})}
 	if existed {
 		s.state, _, _ = m.storedState(ctx, row)
 	}
@@ -538,39 +550,60 @@ func (m *Manager) detachedLocked(ctx context.Context, workspaceID string) (*sup,
 	return s, nil
 }
 
-func (m *Manager) launchLocked(ctx context.Context, workspaceID string) error { // m.mu held
-	if m.base == nil {
-		m.base, m.cancel = context.WithCancel(context.Background())
+// launchLocked starts the workspace's supervisor loop in the group (m.mu
+// held), replacing one still stopping, and records its first state before
+// returning: starting, or awaiting_login when the stored identity already
+// says no server can run. So whatever the row said before — a parked
+// container_paused or stale_broker_mount, a stop's exited, a stop_failed —
+// is replaced as the start is asked for, not when the loop first gets as far
+// as writing, which is after an identity read and a docker exec.
+//
+// The loop's goroutine is taken from the group first, so a start the group
+// refuses (shutdown) writes nothing; it runs the loop only once the first
+// state is written, so the loop's own writes come after it.
+func (m *Manager) launchLocked(ctx context.Context, workspaceID string) error {
+	if m.stoppingLocked() {
+		return ErrClosed
 	}
+	body := make(chan func(), 1)
+	if err := m.g.TryGo("session server "+workspaceID, func(context.Context) {
+		if run := <-body; run != nil {
+			run()
+		}
+	}); err != nil {
+		return ErrClosed
+	}
+	var run func() // nil, and the goroutine ends, unless the launch is complete
+	defer func() { body <- run }()
 	if m.sups == nil {
 		m.sups = map[string]*sup{}
-	}
-	if m.logs == nil { // Park or a failed stop may have made it first
-		m.logs = map[string]*Ring{}
 	}
 	row, restarts, err := m.ensureRow(ctx, workspaceID)
 	if err != nil {
 		return err
 	}
-	ring := m.logs[workspaceID]
-	if ring == nil {
-		ring = NewRing(m.policy().LogBytes, m.redactValues(workspaceID))
-		m.logs[workspaceID] = ring
-	}
 	prev := m.sups[workspaceID]
-	s := &sup{m: m, ws: workspaceID, row: row, restarts: restarts, log: ring, done: make(chan struct{}),
-		detached: m.detachedCh(), said: make(chan struct{})}
+	s := &sup{m: m, ws: workspaceID, row: row, restarts: restarts, log: m.ringLocked(workspaceID), done: make(chan struct{}),
+		detached: m.g.Ctx().Done()}
 	if prev != nil {
 		s.state, s.reason, s.detail = prev.state, prev.reason, prev.detail
 	} else {
 		s.state, s.reason, s.detail = m.storedState(ctx, row)
 	}
-	loopCtx, cancel := context.WithCancel(m.base)
+	loopCtx, cancel := context.WithCancel(m.g.Ctx())
 	s.cancel = cancel
 	m.sups[workspaceID] = s
-	go s.loop(loopCtx)
+	st, r, detail := Starting, ReasonLaunching, launchingSentence
+	if id, known := m.identity(ctx); known && signedOut(id) {
+		st, r, detail = AwaitingLogin, ReasonSignedOut, signedOutSentence(id)
+	}
+	s.set(ctx, st, r, detail, 0)
+	run = func() { s.loop(loopCtx) }
 	return nil
 }
+
+// launchingSentence is starting's sentence as a server is launched.
+const launchingSentence = "Starting the session server."
 
 // Stop stops the workspace's server with SIGTERM, escalating to SIGKILL only
 // after Policy.StopTimeout, and waits for it: the provisioner's
@@ -609,7 +642,7 @@ func (m *Manager) Stop(ctx context.Context, workspaceID string) error {
 	}
 	m.logf("drydock: workspace %s: stopping the session server: %v", workspaceID, err)
 	m.mu.Lock()
-	if s == nil && ctx.Err() == nil && !m.closed {
+	if s == nil && ctx.Err() == nil && !m.stoppingLocked() {
 		ns, nerr := m.detachedLocked(book, workspaceID)
 		if nerr != nil {
 			m.mu.Unlock()
@@ -688,50 +721,6 @@ func (m *Manager) Logs(workspaceID string, n int) (lines []Line, truncated, ok b
 	}
 	lines, truncated = r.Tail(n)
 	return lines, truncated, true
-}
-
-// Detach is Drydock's shutdown: every terminal is closed and every loop
-// ended, but no server is signalled. A Drydock restart must not end the
-// sessions it was supervising — Spike 02: a plain restart reconnects the same
-// environment and sessions — so the servers keep serving while Drydock is
-// down, and boot adoption replaces each with one Drydock has a terminal for.
-//
-// Every run's terminal is closed, whatever it is doing: one whose stop failed
-// and which is still reading — a paused container's frozen server, whose
-// terminal the stop kept — is told by the detached channel, since its
-// context was cancelled by that stop and the cancel here is news to no one.
-// So no supervisor holds shutdown to its bound; wait is only for a loop held
-// up elsewhere (a docker call), and the ones still running when it passes
-// are named in the log rather than waited for one at a time.
-func (m *Manager) Detach(wait time.Duration) {
-	m.mu.Lock()
-	if !m.closed {
-		close(m.detachedCh())
-	}
-	m.closed = true
-	if m.cancel != nil {
-		m.cancel()
-	}
-	var all []*sup
-	for _, s := range m.sups {
-		all = append(all, s)
-	}
-	m.mu.Unlock()
-	deadline := m.clock().After(wait)
-	expired := false
-	for _, s := range all {
-		if !expired {
-			select {
-			case <-s.done:
-				continue
-			case <-deadline:
-				expired = true
-			}
-		}
-		if s.running() {
-			m.logf("drydock: workspace %s: the session supervisor had not ended %s into shutdown; leaving it", s.ws, durationText(wait))
-		}
-	}
 }
 
 // Watch follows the event log until ctx ends, and starts every supervisor
