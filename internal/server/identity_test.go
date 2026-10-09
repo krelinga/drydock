@@ -2,12 +2,14 @@ package server
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"io"
 	"net/http"
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -150,8 +152,124 @@ func TestClaudeIdentityEndToEnd(t *testing.T) {
 	}
 	// Once the watch has shut down nothing would answer a check, so the
 	// route refuses it rather than accepting it; the 202 above is the control.
-	srv.Identity.Shutdown(5 * time.Second)
+	if late := srv.identityWork.Load().Wait(time.After(5 * time.Second)); late != nil {
+		t.Fatalf("the watch did not stop: %v", late)
+	}
 	if resp := r.do(t, req{method: "POST", path: "/api/auth/claude/check", cookie: cookie, origin: uiOrigin}); resp.StatusCode != http.StatusServiceUnavailable {
 		t.Errorf("check after the watch shut down = %d; want 503", resp.StatusCode)
+	}
+}
+
+// slowCredentials holds the next credential read it is armed for, as a
+// helper container a cancelled `docker run` client leaves behind outlasts
+// its context, and watches the database while it holds — until its context
+// has been over for heldAfterCancel, or until the database closes under it.
+// Unarmed it answers "no file": absent.
+type slowCredentials struct {
+	db       *sql.DB
+	mu       sync.Mutex
+	armed    bool
+	entered  chan struct{}
+	pings    atomic.Int64
+	closed   atomic.Bool
+	finished atomic.Bool
+}
+
+func (s *slowCredentials) Credentials(ctx context.Context) ([]byte, error) {
+	s.mu.Lock()
+	held := s.armed
+	s.armed = false
+	s.mu.Unlock()
+	if !held {
+		return nil, nil
+	}
+	defer s.finished.Store(true)
+	close(s.entered)
+	var cancelledAt time.Time
+	for limit := time.Now().Add(time.Minute); time.Now().Before(limit); time.Sleep(5 * time.Millisecond) {
+		if err := s.db.PingContext(context.Background()); err != nil {
+			s.closed.Store(true)
+			break
+		}
+		s.pings.Add(1)
+		if ctx.Err() != nil {
+			if cancelledAt.IsZero() {
+				cancelledAt = time.Now()
+			}
+			if time.Since(cancelledAt) >= heldAfterCancel {
+				break
+			}
+		}
+	}
+	return nil, &identity.ReadError{Problem: identity.ProblemDocker, Detail: "held"}
+}
+
+func (s *slowCredentials) AuthStatus(context.Context) ([]byte, error) {
+	return []byte(`{"loggedIn":false}`), nil
+}
+
+// TestShutdownEndsATriggeredIdentityCheck is the identity watch's half of
+// #83: a check POST /api/auth/claude/check asked for runs in Serve's work,
+// which shutdown stops and waits for before the database closes, so the
+// check neither outlives Serve nor touches the database after it. The read
+// it is held in outlasts its context and watches the database meanwhile, so
+// what is pinned is the order: the check ends before the database closes.
+// The control is the boot check, which stored absent with the database open.
+func TestShutdownEndsATriggeredIdentityCheck(t *testing.T) {
+	cfg := testConfig(t, t.TempDir())
+	srv, err := New(context.Background(), cfg, sys.Production())
+	if err != nil {
+		t.Fatal(err)
+	}
+	slow := &slowCredentials{db: srv.DB.DB, entered: make(chan struct{})}
+	srv.Identity.Source = slow
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- srv.Serve(ctx) }()
+	r := &running{cfg: cfg, srv: srv, client: unixClient(cfg.APISocket)}
+
+	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(time.Millisecond) {
+		if v, err := srv.Identity.Read(context.Background()); err == nil && v.State != nil {
+			if *v.State != identity.Absent {
+				t.Fatalf("control: the boot check stored %s; want absent", *v.State)
+			}
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("control: the boot check stored nothing")
+		}
+	}
+
+	cookie := r.signIn(t)
+	slow.mu.Lock()
+	slow.armed = true
+	slow.mu.Unlock()
+	if resp := r.do(t, req{method: "POST", path: "/api/auth/claude/check", cookie: cookie, origin: uiOrigin}); resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("POST /api/auth/claude/check = %d; want 202", resp.StatusCode)
+	}
+	select {
+	case <-slow.entered:
+	case <-time.After(10 * time.Second):
+		t.Fatal("control: the triggered check never read the volume")
+	}
+
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Serve: %v", err)
+		}
+	case <-time.After(60 * time.Second):
+		t.Fatal("Serve did not return")
+	}
+	if slow.closed.Load() {
+		t.Error("Serve closed the database while the triggered check was still running")
+	}
+	if !slow.finished.Load() {
+		t.Error("Serve returned with the triggered check still running")
+	}
+	if slow.pings.Load() == 0 {
+		t.Error("control: the held read never found the database open")
 	}
 }

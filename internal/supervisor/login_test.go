@@ -14,6 +14,7 @@ import (
 
 	"github.com/krelinga/drydock/internal/claudetest"
 	"github.com/krelinga/drydock/internal/identity"
+	"github.com/krelinga/drydock/internal/life"
 	"github.com/krelinga/drydock/internal/login"
 	"github.com/krelinga/drydock/internal/login/logintest"
 	"github.com/krelinga/drydock/internal/sys"
@@ -81,6 +82,7 @@ func TestASuccessfulHandshakeResumesAWaitingSupervisor(t *testing.T) {
 	clock := sys.NewFakeClock(time.Date(2026, 10, 4, 6, 14, 37, 0, time.UTC))
 	w := &identity.Watch{DB: r.db.DB, Events: r.log, Clock: clock, Volume: "drydock-claude-config",
 		Window: 72 * time.Hour, Source: volumeOfLogin{t: t, login: lf, creds: creds}}
+	startWatch(t, w)
 	// As the server wires it: the supervisor reads the watch's stored verdict.
 	r.m.Identity = func(ctx context.Context) (string, bool) {
 		v, err := w.Read(ctx)
@@ -224,6 +226,7 @@ func TestAnExpiredAccessTokenStillStarts(t *testing.T) {
 			clock := sys.NewFakeClock(time.Date(2026, 10, 4, 6, 14, 37, 0, time.UTC))
 			w := &identity.Watch{DB: r.db.DB, Events: r.log, Clock: clock, Volume: "drydock-claude-config",
 				Window: 72 * time.Hour, Source: fixedVolume{creds: read(c.fixture)}}
+			startWatch(t, w)
 			v, err := w.Check(context.Background())
 			if err != nil || v.State == nil || *v.State != c.want {
 				t.Fatalf("the watch stored %v (%v); want %s", v.State, err, c.want)
@@ -252,5 +255,17 @@ func TestAnExpiredAccessTokenStillStarts(t *testing.T) {
 				t.Errorf("restart_count %d under %s", n, c.want)
 			}
 		})
+	}
+}
+
+// startWatch starts w as Serve does, boot check included, under a group
+// stopped and waited for before the database closes (cleanups run
+// last-registered first).
+func startWatch(t *testing.T, w *identity.Watch) {
+	t.Helper()
+	g := life.NewGroup(context.Background())
+	t.Cleanup(func() { g.Wait(nil) })
+	if err := w.Start(g); err != nil {
+		t.Fatal(err)
 	}
 }

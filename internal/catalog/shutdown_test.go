@@ -133,7 +133,7 @@ func (e *env) trigger(t *testing.T) life.Ticket {
 func TestATriggeredRefreshCompletes(t *testing.T) {
 	e := newEnv(t)
 	e.cat.Trigger()
-	if _, err := e.cat.w.Await(context.Background(), 1); err != nil {
+	if _, err := e.cat.w.Await(waitCtx(t), 1); err != nil {
 		t.Fatalf("the triggered refresh: %v", err)
 	}
 	if n := len(e.list(t)); n != 5 {
@@ -165,7 +165,7 @@ func TestTriggersDuringARefreshQueueOneMore(t *testing.T) {
 	}
 	close(release)
 	refreshed(t, sub, 2)
-	if _, err := e.cat.w.Await(context.Background(), last); err != nil {
+	if _, err := e.cat.w.Await(waitCtx(t), last); err != nil {
 		t.Fatal(err)
 	}
 	if n := e.fake.Count("GET /app/installations"); n != 2 {
@@ -181,7 +181,7 @@ func TestTriggersDuringARefreshQueueOneMore(t *testing.T) {
 	last = e.trigger(t)
 	close(release)
 	refreshed(t, sub, 2)
-	if _, err := e.cat.w.Await(context.Background(), last); err != nil {
+	if _, err := e.cat.w.Await(waitCtx(t), last); err != nil {
 		t.Fatal(err)
 	}
 	if n := e.fake.Count("GET /app/installations"); n != 4 {
@@ -224,7 +224,7 @@ func TestATriggerAsARefreshEndsIsNotLost(t *testing.T) {
 	e.cat.mu.Unlock()
 	e.trigger(t)
 	refreshed(t, sub, 2)
-	if _, err := e.cat.w.Await(context.Background(), <-late); err != nil {
+	if _, err := e.cat.w.Await(waitCtx(t), <-late); err != nil {
 		t.Fatal(err)
 	}
 	if n := e.fake.Count("GET /app/installations"); n != 2 {
@@ -256,7 +256,7 @@ func TestATriggerAfterTheListingListsAgain(t *testing.T) {
 	tk := e.trigger(t)
 	close(release)
 	counts := refreshed(t, sub, 2)
-	res, err := e.cat.w.Await(context.Background(), tk)
+	res, err := e.cat.w.Await(waitCtx(t), tk)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -308,10 +308,10 @@ func TestShutdownEndsATriggeredRefresh(t *testing.T) {
 	close(looked)
 	// The running refresh answered its ticket, cut off; the one asked for
 	// during it never began, and is refused.
-	if _, err := e.cat.w.Await(context.Background(), first); !errors.Is(err, context.Canceled) {
+	if _, err := e.cat.w.Await(waitCtx(t), first); !errors.Is(err, context.Canceled) {
 		t.Errorf("the refresh shutdown cut off answered %v; want its context's end", err)
 	}
-	if _, err := e.cat.w.Await(context.Background(), queued); !errors.Is(err, life.ErrStopping) {
+	if _, err := e.cat.w.Await(waitCtx(t), queued); !errors.Is(err, life.ErrStopping) {
 		t.Errorf("a refresh asked for during the one shutdown cut off: %v; want ErrStopping", err)
 	}
 	if n := e.fake.Count(""); n != 0 {
@@ -331,7 +331,7 @@ func TestShutdownEndsATriggeredRefresh(t *testing.T) {
 	if _, err := e.cat.w.Trigger(); !errors.Is(err, life.ErrStopping) {
 		t.Errorf("a Trigger after shutdown: %v; want ErrStopping", err)
 	}
-	if _, err := e.cat.Refresh(context.Background()); !errors.Is(err, life.ErrStopping) {
+	if _, err := e.cat.Refresh(waitCtx(t)); !errors.Is(err, life.ErrStopping) {
 		t.Errorf("a Refresh after shutdown: %v; want ErrStopping", err)
 	}
 	if n := e.fake.Count(""); n != 0 {

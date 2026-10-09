@@ -33,7 +33,7 @@ printf "%s\n" "$PW" | ./drydock passwd --db x.db  # set the operator password (n
 |---|---|
 | `internal/api` | The route table as **data**, both muxes, the gate, the error envelope, the preview front door; meta-tests walk the table. |
 | `internal/sys` | `Clock`, `DiskUsage`, `Random`, and `Cleanup` (the context rule's rule 3). Never call `time.Now()` directly; `TestContextRule` enforces it. |
-| `internal/life` | `Group` (goroutines stopped and waited for as one: nothing starts after `Stop`, `Wait` names stragglers on an injected-clock deadline) and `Coalescer` (periodic + on demand on one worker; a ticket is answered only by a run begun after it). Not exempt from the context rule. |
+| `internal/life` | `Group` (goroutines stopped and waited for as one: nothing starts after `Stop`, `Wait` names stragglers on an injected-clock deadline) and `Coalescer` (periodic + on demand on one worker; a ticket is answered only by a run begun after it, and its payload, if `TriggerWith` gave one, reaches that run alone; `Await` of ticket 0 is `ErrNoTicket`). A `Child` is released once its own `Wait` finds it ended, so a child per job must be waited for. Not exempt from the context rule. |
 | `internal/subproc` | Invocations as data, resolved by `PATH` or a `Resolver`. No shell anywhere; `Env` replaces rather than inherits; `StartPTY` is the one PTY start. |
 | `internal/config` | Settings that must not be constants (`LabelPrefix` first); `Validate` refuses configs that silently undo a design property (`CrossSite`, lowercase origins). |
 | `internal/store` | SQLite in WAL mode, the single-instance lock, §4's schema with enums as `CHECK`s. Every transaction opens `IMMEDIATE`; a golden snapshot pins the schema. |
@@ -53,7 +53,7 @@ printf "%s\n" "$PW" | ./drydock passwd --db x.db  # set the operator password (n
 | `internal/reconcile` | Boot reconciliation: a pure `Plan` plus `Run`. Adopt, never kill; never auto-start; a failed listing changes nothing. |
 | `internal/github` | The App client, and `githubtest`, the fake GitHub the contract tests also run against. A `Token` formats as `[redacted]` and refuses to marshal. |
 | `internal/catalog` | The repository list, refreshed by a `life.Coalescer` under `Serve`'s `life.Group`, stopped and waited for before the database closes. Grants deleted outside `internal/secrets` must call `secrets.Store.Invalidate`. |
-| `internal/identity` | The expiry watch (§7.3). The credential's bytes reach nothing but the classifier; every check ends, and every requested check is answered. |
+| `internal/identity` | The expiry watch (§7.3), its checks on a `life.Coalescer` under `Serve`'s `life.Group`, never under a caller's context (`LoggedIn` is a request carrying the handshake's moment). The credential's bytes reach nothing but the classifier; every check ends, and every requested check is answered. |
 | `internal/claudeimage` | The one image Drydock runs Claude Code in itself, at exactly `classify.ClaudeCodeVersion`. |
 | `internal/login` | The login handshake (§7.2) on a PTY Drydock owns. The code is never stored or copied into a string; every end removes the container by label first. |
 | `internal/broker` | The token broker (§9). The socket's directory is what a container mounts and must outlive the process; a refusal never falls back to anything broader. |

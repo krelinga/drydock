@@ -88,9 +88,18 @@ func (e *env) list(t *testing.T) map[string]RepoView {
 	return out
 }
 
+// waitCtx bounds a test's wait on the catalog's worker, so a coalescer that
+// never runs a refresh fails the test by name instead of hanging the package
+// until go test's own timeout names a goroutine (#102's review).
+func waitCtx(t *testing.T) context.Context {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	t.Cleanup(cancel)
+	return ctx
+}
+
 func (e *env) refresh(t *testing.T) Result {
 	t.Helper()
-	res, err := e.cat.Refresh(context.Background())
+	res, err := e.cat.Refresh(waitCtx(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -240,7 +249,7 @@ func TestRemovedRepositoryTakesItsSecretGrants(t *testing.T) {
 	e.fake.Mu.Lock()
 	e.fake.Installations[0].Repos = e.fake.Installations[0].Repos[2:] // drops rootfile (2)
 	e.fake.Mu.Unlock()
-	if _, err := e.cat.Refresh(ctx); err != nil {
+	if _, err := e.cat.Refresh(waitCtx(t)); err != nil {
 		t.Fatalf("a refresh dropping a granted repository failed: %v", err)
 	}
 	if _, ok := e.list(t)["krelinga/rootfile"]; ok {
@@ -369,7 +378,7 @@ func TestFailedRefreshKeepsTheCache(t *testing.T) {
 		return 0, ""
 	}
 	e.fake.Mu.Unlock()
-	if _, err := e.cat.Refresh(context.Background()); err == nil {
+	if _, err := e.cat.Refresh(waitCtx(t)); err == nil {
 		t.Fatal("a failed refresh reported success")
 	}
 	if n := len(e.list(t)); n != 5 {
@@ -452,12 +461,12 @@ func TestConcurrentRefreshesNeverOverlap(t *testing.T) {
 	release := make(chan struct{})
 	entered := h.arm("/app/installations", func(*http.Request) { <-release })
 	first := make(chan error, 1)
-	go func() { _, err := e.cat.Refresh(context.Background()); first <- err }()
+	go func() { _, err := e.cat.Refresh(waitCtx(t)); first <- err }()
 	<-entered
 	later := make(chan Result, 2)
 	for i := 0; i < 2; i++ {
 		go func() {
-			res, err := e.cat.Refresh(context.Background())
+			res, err := e.cat.Refresh(waitCtx(t))
 			if err != nil {
 				t.Error(err)
 			}
@@ -525,7 +534,7 @@ func TestNoTokenReachesTheDatabase(t *testing.T) {
 	e := newEnv(t)
 	e.refresh(t)
 	e.fake.Fail = func(r *http.Request) (int, string) { return 500, "boom" }
-	e.cat.Refresh(context.Background()) // a failure path writes an event too
+	e.cat.Refresh(waitCtx(t)) // a failure path writes an event too
 	e.cat.DB.ExecContext(context.Background(), "PRAGMA wal_checkpoint(TRUNCATE)")
 	var raw []byte
 	for _, p := range []string{e.dbPath, e.dbPath + "-wal"} {

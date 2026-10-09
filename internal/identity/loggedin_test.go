@@ -1,7 +1,7 @@
 package identity
 
 import (
-	"context"
+	"encoding/json"
 	"testing"
 	"time"
 )
@@ -14,7 +14,7 @@ import (
 // a handshake over a volume that still has no login records nothing and
 // leaves no moment for a later login to take.
 func TestLoggedInRecordsTheHandshakesMoment(t *testing.T) {
-	ctx := context.Background()
+	ctx := waitCtx(t)
 	h := newHarness(t)
 	h.src.set(fixture(t, "credentials", "ok.json"), fixture(t, "authstatus", "valid.json"), nil, nil)
 	first, err := h.w.Check(ctx)
@@ -59,5 +59,47 @@ func TestLoggedInRecordsTheHandshakesMoment(t *testing.T) {
 	later, _ := h.w.Check(ctx)
 	if !later.LoggedInAt.Equal(h.clock.Now()) {
 		t.Errorf("logged_in_at = %v; want first-seen %v, not a stale handshake's", later.LoggedInAt, h.clock.Now())
+	}
+}
+
+// TestLoggedInWaitsOutARunningCheck: a check already running when the
+// handshake reports read the volume before the login, so it must not take
+// the handshake's moment; the check LoggedIn asked for, after it, does. Seen
+// on the stream: the held check announces the login first-seen, and the
+// handshake's check then re-dates it. Were the moment handed to the running
+// check, it would announce the handshake's moment itself and the check after
+// would find nothing to say.
+func TestLoggedInWaitsOutARunningCheck(t *testing.T) {
+	ctx := waitCtx(t)
+	h := newHarness(t)
+	h.src.set(fixture(t, "credentials", "ok.json"), fixture(t, "authstatus", "valid.json"), nil, nil)
+	src := &gatedSource{fakeSource: h.src, in: make(chan struct{}), gate: make(chan struct{})}
+	h.w.Source = src
+	at := h.clock.Now().Add(-10 * time.Second)
+
+	held := make(chan error, 1)
+	go func() { _, err := h.w.Check(ctx); held <- err }()
+	receive(t, src.in, "the running check did not start its read")
+	done := make(chan error, 1)
+	go func() { done <- h.w.LoggedIn(ctx, at) }()
+	waitFor(t, func() bool { return h.w.c.Asked() == 2 })
+	close(src.gate)
+	receive(t, held, "the running check did not end")
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+
+	evs := h.events(t)
+	if len(evs) != 2 {
+		t.Fatalf("events %v; want the running check's and the handshake's", h.kinds(t))
+	}
+	for i, want := range []time.Time{h.clock.Now(), at} {
+		var data struct{ Identity View }
+		if err := json.Unmarshal(evs[i].Data, &data); err != nil {
+			t.Fatal(err)
+		}
+		if got := data.Identity.LoggedInAt; evs[i].Kind != KindIdentity || got == nil || !got.Equal(want) {
+			t.Errorf("event %d: %s, logged_in_at %v; want %s with %v", i, evs[i].Kind, got, KindIdentity, want)
+		}
 	}
 }

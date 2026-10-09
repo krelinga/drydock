@@ -49,7 +49,8 @@
 // measures zero allocations) — types the trimmed code and one \r, and zeroes
 // its copy. Five minutes from the URL on the injected clock is timed_out; a
 // ten-minute start timeout covers the image's first build. A success is
-// announced at once, then IdentityRecorder.LoggedIn(at) (the watch), under the
+// announced at once, then IdentityRecorder.LoggedIn(at) (the watch), which runs
+// the check on the watch's own worker and is only waited for under the
 // manager's own context, which Shutdown ends.
 //
 // DockerLauncher is production: EnsureClaudeVolume first — §6 step 4's own
@@ -874,12 +875,12 @@ func (s *session) finish(p *Proc, buf []byte, out outcome) {
 		return
 	}
 	if m.Identity != nil {
-		// Under the manager's own context, which Shutdown ends: the check
-		// must not outlive the database it writes to. The watch bounds its
-		// own reads, so this is only a backstop.
-		ictx, cancel := context.WithTimeout(m.base, 5*time.Minute)
-		defer cancel()
-		if err := m.Identity.LoggedIn(ictx, *v.EndedAt); err != nil {
+		// The check runs on the watch's own worker, under the watch's
+		// group; m.base, which Shutdown ends, bounds only this wait. A
+		// check always ends (the watch bounds its reads on its clock), and
+		// once the watch's group stops the request is refused or answered
+		// at once, so no backstop of our own is needed.
+		if err := m.Identity.LoggedIn(m.base, *v.EndedAt); err != nil {
 			m.logf("drydock: login %s: the check after the login failed: %v", v.ID, err)
 		}
 	}

@@ -203,3 +203,61 @@ func TestWaitReturnsOnlyWhenEverythingAcceptedHasEnded(t *testing.T) {
 		}
 	}
 }
+
+func (g *Group) childCount() int {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return len(g.children)
+}
+
+// TestAWaitedChildIsReleased: a child per job, made, used and Waited for,
+// leaves nothing behind in its parent — so a thousand of them cost what one
+// does. One whose Wait ran out with a straggler stays, so the parent's Wait
+// still names it, and is released by its own next Wait once it ends. The
+// control: a child never waited for is held.
+func TestAWaitedChildIsReleased(t *testing.T) {
+	clock := sys.NewFakeClock(time.Date(2026, 10, 9, 0, 0, 0, 0, time.UTC))
+	g := NewGroup(context.Background())
+	held := g.Child("component")
+	for i := 0; i < 1000; i++ {
+		job := g.Child("job")
+		job.Go("work", func(ctx context.Context) {})
+		if late := job.Wait(nil); late != nil {
+			t.Fatalf("job %d: stragglers %v", i, late)
+		}
+	}
+	if n := g.childCount(); n != 1 {
+		t.Fatalf("%d children after 1000 waited jobs; want the component's alone", n)
+	}
+
+	release := make(chan struct{})
+	stuck := g.Child("stuck")
+	stuck.Go("work", func(context.Context) { <-release })
+	// The fake clock's channel is buffered: advancing before Wait selects
+	// still fires it.
+	deadline, stop := sys.NewTimer(clock, time.Second)
+	defer stop()
+	clock.Advance(time.Second)
+	if late := stuck.Wait(deadline); !reflect.DeepEqual(late, []string{"stuck/work"}) {
+		t.Fatalf("the stuck child's Wait: %q", late)
+	}
+	if n := g.childCount(); n != 2 {
+		t.Fatalf("%d children; want the component's and the stuck one's", n)
+	}
+	deadline, stop = sys.NewTimer(clock, time.Second)
+	defer stop()
+	clock.Advance(time.Second)
+	if late := g.Wait(deadline); !reflect.DeepEqual(late, []string{"stuck/work"}) {
+		t.Errorf("the parent's Wait named %q; want the stuck child's straggler", late)
+	}
+	close(release)
+	if late := stuck.Wait(nil); late != nil {
+		t.Fatalf("once released: %v", late)
+	}
+	if n := g.childCount(); n != 1 {
+		t.Errorf("%d children once the stuck one ended and was waited for; want the component's", n)
+	}
+	if late := held.Wait(nil); late != nil || g.childCount() != 0 {
+		t.Errorf("the component's child: stragglers %v, %d children left", late, g.childCount())
+	}
+}

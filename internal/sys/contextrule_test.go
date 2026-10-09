@@ -101,13 +101,11 @@ const (
 var allowed = []allowance{
 	// Component roots: the context every background job of the component
 	// runs under, ended by its Shutdown.
-	{use{"internal/identity/watch.go", "Watch.init", "context.Background"}, 0, whyRoot},
 	{use{"internal/login/login.go", "Manager.init", "context.Background"}, 0, whyRoot},
 	{use{"internal/provision/provision.go", "Provisioner.launch", "context.Background"}, 0, whyRoot},
 	{use{"internal/supervisor/supervisor.go", "Manager.launchLocked", "context.Background"}, 0, whyRoot},
 
 	// Shutdown: bounds that start once the component's context has ended.
-	{use{"internal/identity/watch.go", "Watch.Shutdown", "time.After"}, 0, whyShutWin},
 	{use{"internal/login/login.go", "Manager.Shutdown", "time.After"}, 0, whyShutWin},
 	{use{"internal/provision/provision.go", "Provisioner.Shutdown", "time.After"}, 0, whyShutWin},
 	{use{"internal/server/server.go", "Server.Serve", "context.Background"}, 0,
@@ -129,14 +127,12 @@ var allowed = []allowance{
 	// a timer on a fake clock whose Waiting a test counts.
 	{use{"internal/login/login.go", "session.finish", "context.Background"}, 2,
 		"R1 debt: removing the login container and announcing the end, owed after the session's context ended (a fake-clock bound would join the login tests' Waiting)"},
-	{use{"internal/login/login.go", "session.finish", "context.WithTimeout"}, 2,
-		"R1 debt: the removal's one-minute bound, and the 5-minute backstop on the identity check after a login (under m.base), both on the wall clock"},
+	{use{"internal/login/login.go", "session.finish", "context.WithTimeout"}, 0,
+		"R1 debt: the removal's one-minute bound, on the wall clock"},
 	{use{"internal/login/login.go", "Manager.emit", "context.Background"}, 0,
 		"an announcement owed after its context ended; the event log ends with the store"},
 	{use{"internal/login/login.go", "session.succeed", "time.After"}, 0,
 		"R1 debt: Settle, the wall-clock grace for the real process to exit by itself after a success"},
-	{use{"internal/identity/watch.go", "Watch.end", "context.WithoutCancel"}, 0,
-		"answers to a finished check, written whoever stopped waiting; a local event write"},
 	{use{"internal/provision/provision.go", "Provisioner.run", "context.WithoutCancel"}, 0,
 		"book: a run's step events and its move to failed, owed after cancellation"},
 	{use{"internal/provision/provision.go", "Provisioner.run", "context.WithTimeout"}, 0,

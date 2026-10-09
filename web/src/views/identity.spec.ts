@@ -361,7 +361,9 @@ describe('the Claude section in Settings', () => {
     expect(wrapper.find('[data-test="claude-state"]').exists()).toBe(true)
   })
 
-  it('a press that joins a running check settles when that check ends', async () => {
+  it('a press during a running check settles on the check after it', async () => {
+    // As the watch does: the running check may have read the volume before
+    // the press, so it does not answer it; the check queued behind it does.
     const b = fleet('ok')
     b.identityCheckMode = 'manual'
     const { wrapper, pinia } = await mountApp('/settings')
@@ -369,15 +371,39 @@ describe('the Claude section in Settings', () => {
     const stream = useStreamStore(pinia)
 
     startIdentityCheck(b, false) // the interval's, running
-    await press(wrapper) // joins it: no second check
+    await press(wrapper)
     expect(b.identityChecks).toBe(1)
     expect(CHECK_KEY in stream.inFlight).toBe(true)
 
     const before = b.events.length
-    finishIdentityCheck(b) // unchanged
+    finishIdentityCheck(b) // the interval's, unchanged: silent
+    await settle()
+    expect(b.events.length).toBe(before)
+    expect(CHECK_KEY in stream.inFlight).toBe(true)
+
+    finishIdentityCheck(b) // the press's own, unchanged
     await settle()
     expect(b.events.slice(before).map((e) => e.kind)).toEqual(['auth.identity_checked'])
     expect(CHECK_KEY in stream.inFlight).toBe(false)
+  })
+
+  it('a press during a running check that changes the verdict settles on its auth.identity', async () => {
+    // Any auth.identity newer than the press settles it (settlesCheck), so
+    // the unasked check's announcement ends the mark before the press's own
+    // check runs; that check then answers too, which is harmless.
+    const b = fleet('ok')
+    b.identityCheckMode = 'manual'
+    const { wrapper, pinia } = await mountApp('/settings')
+    FakeEventSource.latest().open().pipe(b)
+    const stream = useStreamStore(pinia)
+
+    startIdentityCheck(b, false)
+    await press(wrapper)
+    expect(CHECK_KEY in stream.inFlight).toBe(true)
+    finishIdentityCheck(b, identityView('blanked'))
+    await settle()
+    expect(CHECK_KEY in stream.inFlight).toBe(false)
+    expect(b.identityCheck).not.toBeNull() // the press's own check, queued, now running
   })
 
   it('a check refused while Drydock shuts down ends the press and says so', async () => {
