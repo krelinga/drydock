@@ -96,12 +96,17 @@
 // Drydock's state; a failed postCreateCommand's container is still up, but not
 // handed over), and start or rebuild reopens it at step 5. StopSupervisor is
 // the supervisor's Stop, run *before* the container in a stop, a rebuild and a
-// delete. ResumeDelete is reconciliation's. A failed stop annotates the
-// still-running row (StopFailedDetail), so a list snapshot says it as the live
-// events did; a stop asked again, and a resumed delete, clear their annotation
-// under the lock before the job's first event. SweepHelpers is the boot sweep:
-// after reconciliation, cleanup helpers and docker guard log probes by this
-// instance's labels, skipping any
+// delete — after unpausing the workspace's container if it is paused
+// (container.Unpause), since each of those ends the container anyway and a
+// server ended with its container never deregisters (Spike 02); a pause that
+// lands after the unpause is unpaused and the stop asked once more, and one
+// that stays paused carries on to the container step with PausedNote. The
+// supervisor's own restart never unpauses. ResumeDelete is reconciliation's.
+// A failed stop annotates the still-running row (StopFailedDetail), so a list
+// snapshot says it as the live events did; a stop asked again, and a resumed
+// delete, clear their annotation under the lock before the job's first event.
+// SweepHelpers is the boot sweep: after reconciliation, cleanup helpers and
+// docker guard log probes by this instance's labels, skipping any
 // workspace with a job in flight, under the lock.
 //
 // Crash-tested by cutting a delete off after every sub-step and resuming in a
@@ -585,8 +590,11 @@ func (p *Provisioner) restartWith(ctx context.Context, id string, rebuild bool, 
 	}
 	p.launch(id, "run", func(ctx context.Context) error {
 		if wasRunning && p.StopSupervisor != nil {
-			// Phase 5: the server goes before its container does.
-			if err := p.StopSupervisor(ctx, w); err != nil {
+			// Phase 5: the server goes before its container does — unpaused
+			// first if it is paused, since the rebuild replaces the
+			// container anyway, and a server ended with it would hold the
+			// folder against the new one's start for minutes.
+			if _, err := p.unpauseAndStopSupervisor(ctx, w); err != nil {
 				p.logf("drydock: workspace %s: stopping the session server before a rebuild: %v", id, err)
 			}
 		}

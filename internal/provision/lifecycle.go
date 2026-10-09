@@ -419,7 +419,8 @@ func (p *Provisioner) stopSupervisor(ctx context.Context, w workspace.Workspace)
 	if p.StopSupervisor == nil {
 		return workspace.Note("Nothing to do yet: the Claude Code session server arrives with Claude support.")
 	}
-	if err := p.StopSupervisor(ctx, w); err != nil {
+	unpaused, err := p.unpauseAndStopSupervisor(ctx, w)
+	if err != nil {
 		if errors.Is(err, container.ErrSessionSurvivedKill) {
 			// SIGTERM first exists so the server deregisters (Spike 02); one
 			// that outlived SIGKILL will not, and asking again cannot end
@@ -431,17 +432,64 @@ func (p *Provisioner) stopSupervisor(ctx context.Context, w workspace.Workspace)
 			return workspace.Note("The session server was still running after SIGKILL, so it ends with the container, in the next step.")
 		}
 		if errors.Is(err, container.ErrSessionContainerPaused) {
-			// Frozen, not gone, and Docker will not exec into it to signal
-			// the server; but docker stop and docker rm --force do end a
-			// paused container (measured), so the next sub-step ends it, as
-			// for a server that outlived SIGKILL. Stopping here would leave
-			// a delete stuck until someone unpaused the container by hand.
-			p.logf("drydock: workspace %s: the container is paused, so the session server could not be signalled; the container step ends it: %v", w.ID, err)
-			return workspace.Note("The workspace's container is paused, so the session server could not be signalled; it ends with the container, in the next step.")
+			// Still paused: Docker would not unpause it, or it was paused
+			// again. Frozen, not gone, and Docker will not exec into it to
+			// signal the server; but docker stop and docker rm --force do
+			// end a paused container (measured), so the next sub-step ends
+			// it, as for a server that outlived SIGKILL. Stopping here would
+			// leave a delete stuck until someone unpaused the container by
+			// hand. The cost is the one the unpause exists to avoid: killed
+			// with its container, the server never deregisters (Spike 02).
+			p.logf("drydock: workspace %s: the container is paused and could not be unpaused, so the session server could not be signalled; the container step ends it: %v", w.ID, err)
+			return workspace.Note(PausedNote)
 		}
 		return workspace.Public("Drydock could not stop the session server.", err)
 	}
+	if unpaused {
+		return workspace.Note("The workspace's container was paused, so Drydock unpaused it to stop the session server, SIGTERM first, so its environment is kept for the next start.")
+	}
 	return workspace.Note("Stopped the session server, SIGTERM first, so its environment is kept for the next start.")
+}
+
+// PausedNote is the session_server sub-step's note when the container is
+// paused and stays paused: the server is ended with the container — docker
+// stop thaws a paused container to signal PID 1 alone, and PID 1's exit
+// SIGKILLs the rest (measured, test/container) — so it does not release its
+// environment, and the next start waits for the registration to lapse
+// (Spike 02: one to three minutes, shown as waiting_registration, a wait and
+// not a failure).
+const PausedNote = "The workspace's container is paused and Drydock could not unpause it, so the session server could not be signalled; it ends with the container, in the next step. " +
+	"Ended that way it does not release its environment, so the next start may wait a few minutes for it."
+
+// unpauseAndStopSupervisor is how a workspace stop, rebuild or delete stops
+// the session server: the workspace's container is unpaused first, and then
+// the server is stopped as always, SIGTERM first. Each of those ends the
+// container anyway, but a server ended with its container — docker stop
+// signals PID 1 alone, even of a paused container, which it thaws to do so,
+// and docker rm --force kills — is SIGKILLed without deregistering, which
+// holds the folder against the next start for minutes (Spike 02); unpaused,
+// it gets its SIGTERM. A
+// pause that lands after the unpause (the stop then fails with
+// container.ErrSessionContainerPaused) is unpaused once more and the stop
+// asked again. A session server restart alone never comes here: it must not
+// change the container's state. unpaused reports whether any container was.
+func (p *Provisioner) unpauseAndStopSupervisor(ctx context.Context, w workspace.Workspace) (unpaused bool, err error) {
+	unpause := func() bool {
+		n, uerr := p.Containers.Unpause(ctx, w.ID)
+		if uerr != nil {
+			// The stop says what that means for the server.
+			p.logf("drydock: workspace %s: unpausing the container before stopping the session server: %v", w.ID, uerr)
+			return false
+		}
+		unpaused = unpaused || n > 0
+		return n > 0
+	}
+	unpause()
+	err = p.StopSupervisor(ctx, w)
+	if errors.Is(err, container.ErrSessionContainerPaused) && ctx.Err() == nil && unpause() {
+		err = p.StopSupervisor(ctx, w)
+	}
+	return unpaused, err
 }
 
 func (p *Provisioner) closeSocket(id string) error {

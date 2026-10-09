@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -96,10 +98,11 @@ func TestASessionServerThatWillNotStopSettlesEachAction(t *testing.T) {
 // delete (docker rm --force). So both carry on, the session_server sub-step
 // done with a note saying why, and both finish against the fault that never
 // clears: a stop that failed there would offer Stop for good, and a delete
-// stuck there has no way out at all. A paused container
-// (container.ErrSessionContainerPaused) is the same: its server cannot be
-// signalled until someone unpauses it, and docker stop and docker rm --force
-// end a paused container (measured). The control is the same fault without
+// stuck there has no way out at all. A container that stays paused
+// (container.ErrSessionContainerPaused, and Drydock's unpause found nothing
+// it could unpause — TestAPausedContainerIsUnpausedForTheStop is the one it
+// can) is the same: its server cannot be signalled, and docker stop and
+// docker rm --force end a paused container (measured). The control is the same fault without
 // the sentinel — the Docker failure above — which still stops each at that
 // sub-step.
 func TestASessionServerThatSurvivedKillGoesWithItsContainer(t *testing.T) {
@@ -110,8 +113,7 @@ func TestASessionServerThatSurvivedKillGoesWithItsContainer(t *testing.T) {
 	}{
 		{"survived SIGKILL", container.ErrSessionSurvivedKill,
 			"The session server was still running after SIGKILL, so it ends with the container, in the next step."},
-		{"container paused", container.ErrSessionContainerPaused,
-			"The workspace's container is paused, so the session server could not be signalled; it ends with the container, in the next step."},
+		{"container paused", container.ErrSessionContainerPaused, PausedNote},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			ctx := context.Background()
@@ -148,5 +150,117 @@ func TestASessionServerThatSurvivedKillGoesWithItsContainer(t *testing.T) {
 				t.Errorf("%d containers left after the delete", n)
 			}
 		})
+	}
+}
+
+// setStatus sets every container of the workspace to status in the fake
+// docker's world.
+func (e *env) setStatus(t *testing.T, ws, status string) {
+	t.Helper()
+	p := filepath.Join(e.cli.dir, "containers")
+	b, err := os.ReadFile(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(b)), "\n")
+	for i, l := range lines {
+		if f := strings.Fields(l); len(f) >= 3 && f[1] == ws {
+			f[2] = status
+			lines[i] = strings.Join(f, " ")
+		}
+	}
+	if err := os.WriteFile(p, []byte(strings.Join(lines, "\n")+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A workspace stop, rebuild or delete of a paused container unpauses it
+// before stopping the session server, so the server gets its SIGTERM and
+// deregisters. Ended frozen with its container instead — docker stop's
+// SIGKILL after the grace period, or docker rm --force — it never
+// deregisters, and the next start waits minutes on the folder's registration
+// (Spike 02). Each ends the container anyway, so the unpause gives nothing
+// away. "between" is a pause landing after the unpause, before the server's
+// stop reaches the container: the stop says paused, and the container is
+// unpaused and the stop asked once more. The control is a container that is
+// not paused: no unpause, and the stop as always.
+func TestAPausedContainerIsUnpausedForTheStop(t *testing.T) {
+	for _, action := range []string{ActStop, ActDelete, "rebuild"} {
+		for _, pause := range []string{"none", "before", "between"} {
+			t.Run(action+"/"+pause, func(t *testing.T) {
+				ctx := context.Background()
+				e := lifecycleEnv(t)
+				v := e.running(t, alpha)
+				var calls, stopped int
+				e.p.StopSupervisor = func(_ context.Context, w workspace.Workspace) error {
+					calls++
+					for _, st := range e.containers(t, w.ID) {
+						if st == "paused" {
+							return fmt.Errorf("stop: %w", container.ErrSessionContainerPaused)
+						}
+					}
+					if pause == "between" && calls == 1 {
+						e.setStatus(t, w.ID, "paused")
+						return fmt.Errorf("stop: %w", container.ErrSessionContainerPaused)
+					}
+					stopped++
+					return nil
+				}
+				if pause == "before" {
+					e.setStatus(t, v.ID, "paused")
+				}
+				switch action {
+				case ActStop:
+					if err := e.p.Stop(ctx, v.ID); err != nil {
+						t.Fatal(err)
+					}
+				case ActDelete:
+					if err := e.p.Delete(ctx, v.ID, "krelinga/alpha"); err != nil {
+						t.Fatal(err)
+					}
+				case "rebuild":
+					if err := e.p.Rebuild(ctx, v.ID); err != nil {
+						t.Fatal(err)
+					}
+				}
+				e.p.wg.Wait()
+
+				if stopped != 1 {
+					t.Errorf("the session server was stopped in a running container %d times, want once (%d asks)", stopped, calls)
+				}
+				unpauses := 0
+				for _, a := range e.cli.callsTo(t, "docker") {
+					if len(a) > 1 && a[1] == "unpause" {
+						unpauses++
+					}
+				}
+				if want := map[string]int{"none": 0, "before": 1, "between": 1}[pause]; unpauses != want {
+					t.Errorf("%d unpauses, want %d", unpauses, want)
+				}
+				if action != "rebuild" {
+					want := "Stopped the session server, SIGTERM first, so its environment is kept for the next start."
+					if pause != "none" {
+						want = "The workspace's container was paused, so Drydock unpaused it to stop the session server, SIGTERM first, so its environment is kept for the next start."
+					}
+					if got := e.actionDetail(t, v.ID, action, SubSessionServer); got != want {
+						t.Errorf("the session_server sub-step said %q, want %q", got, want)
+					}
+				}
+				switch action {
+				case ActStop:
+					if s := e.view(t, v.ID); s.State != workspace.Stopped {
+						t.Errorf("after the stop: %s; actions %v", s.State, e.actions(t, v.ID))
+					}
+				case ActDelete:
+					if _, err := e.p.Workspaces.Get(ctx, v.ID); !errors.Is(err, workspace.ErrNotFound) {
+						t.Errorf("the delete did not finish: %v", err)
+					}
+				case "rebuild":
+					if s := e.view(t, v.ID); s.State != workspace.Running {
+						t.Errorf("after the rebuild: %s", s.State)
+					}
+				}
+			})
+		}
 	}
 }

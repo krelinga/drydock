@@ -26,6 +26,10 @@ type sup struct {
 	log    *Ring
 	cancel context.CancelFunc
 	done   chan struct{} // closed when the loop returns
+	// detached is the manager's: closed by Detach, on which a run closes
+	// its terminal even when its context was already cancelled by a stop.
+	// Nil for one with no loop.
+	detached chan struct{}
 
 	mu       sync.Mutex
 	state    State
@@ -34,6 +38,10 @@ type sup struct {
 	restarts int
 	crashes  []time.Time
 	stopping bool
+	// stopOver is closed when the latest stop's terminate has returned,
+	// worked or not: until then shutdown leaves the terminal to the stop,
+	// whose wait for the server may be on it.
+	stopOver chan struct{}
 	proc     subproc.Process
 	procDone chan struct{}
 	lastBeat time.Time
@@ -255,6 +263,27 @@ func (s *sup) runOnce(ctx context.Context) outcome {
 	var window, tail []byte
 	gate := m.clock().After(p.GateTimeout)
 	cancelled := ctx.Done()
+	// leave is shutdown: close the terminal and leave the server serving.
+	// Only Drydock's own end is ended — the local `devcontainer exec`,
+	// which does not reach the server (measured); nothing is signalled in
+	// the container.
+	leave := func() outcome {
+		master.Close()
+		for range chunks {
+		}
+		waited := make(chan struct{})
+		go func() { proc.Wait(); close(waited) }()
+		proc.Signal(subproc.SignalTerm)
+		select {
+		case <-waited:
+		case <-m.clock().After(p.KillWait):
+			proc.Signal(subproc.SignalKill)
+			<-waited
+		}
+		return outcome{kind: outDetached}
+	}
+	detach := s.detached
+	var stopDecided chan struct{}
 	var hang Reason
 	serving := false
 	for open := true; open; {
@@ -287,21 +316,26 @@ func (s *sup) runOnce(ctx context.Context) outcome {
 		case <-cancelled:
 			cancelled = nil
 			if !s.isStopping() {
-				// Shutdown: close the terminal and leave the server serving.
-				master.Close()
-				for range chunks {
-				}
-				waited := make(chan struct{})
-				go func() { proc.Wait(); close(waited) }()
-				proc.Signal(subproc.SignalTerm)
-				select {
-				case <-waited:
-				case <-m.clock().After(p.KillWait):
-					proc.Signal(subproc.SignalKill)
-					<-waited
-				}
-				return outcome{kind: outDetached}
+				return leave()
 			}
+			// A stop cancelled it: the stop ends the server, and this run
+			// reads on until it does. If the stop failed with the terminal
+			// kept (a paused container), only shutdown ends the read.
+		case <-detach:
+			detach = nil
+			s.mu.Lock()
+			stopping, over := s.stopping, s.stopOver
+			s.mu.Unlock()
+			if !stopping {
+				return leave()
+			}
+			// A stop under way may be waiting for the server on this very
+			// terminal (`devcontainer exec` exits when the server does), and
+			// closing it now would read to that stop as the server ending.
+			// Leave once it has decided; it is bounded by its own timeouts.
+			stopDecided = over
+		case <-stopDecided:
+			return leave()
 		}
 	}
 	proc.Wait()
@@ -409,9 +443,12 @@ func (s *sup) discover(ctx context.Context, d *discovered, window []byte) bool {
 func (s *sup) stop(ctx context.Context) error {
 	s.mu.Lock()
 	s.stopping = true
+	over := make(chan struct{})
+	s.stopOver = over
 	proc, procDone := s.proc, s.procDone
 	s.mu.Unlock()
 	_, err := s.m.terminate(ctx, s.ws, proc, procDone)
+	close(over)
 	if s.cancel != nil { // nil for one with no loop (detachedLocked)
 		s.cancel()
 	}
@@ -487,6 +524,9 @@ func (m *Manager) terminate(ctx context.Context, ws string, proc subproc.Process
 			if aerr == nil && !alive {
 				return true
 			}
+			if errors.Is(aerr, container.ErrSessionContainerPaused) {
+				return false // paused meanwhile: nothing more can be asked
+			}
 			select {
 			case <-deadline:
 				return false
@@ -505,6 +545,11 @@ func (m *Manager) terminate(ctx context.Context, ws string, proc subproc.Process
 	if gone(p.StopTimeout) {
 		return true, nil
 	}
+	// Paused while it was being waited for: as for SIGTERM finding it
+	// paused, nothing more can be sent or asked.
+	if errors.Is(lookErr, container.ErrSessionContainerPaused) {
+		return true, errors.Join(err, lookErr)
+	}
 	if cerr := ctx.Err(); cerr != nil {
 		// The wait was cut short, not timed out: no SIGKILL, which is only
 		// for a server that outlived its grace period (and a docker exec on
@@ -522,6 +567,9 @@ func (m *Manager) terminate(ctx context.Context, ws string, proc subproc.Process
 	_, kerr := m.Runtime.Signal(ctx, ws, container.SessionKill, m.PidFile)
 	if kerr != nil {
 		err = errors.Join(err, kerr)
+	}
+	if errors.Is(kerr, container.ErrSessionContainerPaused) {
+		return true, err
 	}
 	if gone(p.KillWait) {
 		return true, nil

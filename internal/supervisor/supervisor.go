@@ -47,7 +47,11 @@
 // remote-control, SIGTERM, SIGKILL after StopTimeout. Every start first stops
 // any server the pid file names, which is how boot adoption replaces the
 // server an earlier Drydock left serving; Detach (shutdown) closes terminals
-// and signals nobody.
+// and signals nobody — every run's terminal, promptly, including a run still
+// reading after a failed stop (a paused container's, whose context that stop
+// already cancelled), so no supervisor holds shutdown to its bound; a stop
+// under way keeps its terminal until it has decided, since closing it would
+// read to the stop as the server ending.
 //
 // Retries: the registration wait is waiting_registration on a flat retry and
 // never charged to the budget (2 s→60 s, 6 in 10 min, then degraded); the
@@ -95,12 +99,17 @@
 // server**: its processes are frozen and Docker will not exec into it, so
 // the signal is container.ErrSessionContainerPaused — stop_failed with its
 // own sentence (unpause and ask again), nothing sent, Drydock's terminal
-// kept. Every start's own stop of a leftover server records survived_kill,
-// or that paused stop_failed, and starts nothing, rather than a second server
-// over the pid file or a launch into a paused container. A workspace stop or
-// delete whose server outlived SIGKILL, or whose container is paused (both
-// sentinels through the StopSupervisor seam), carries on to its container
-// step, which ends it. A run whose stop failed with its terminal still open
+// kept — and so is one paused between the listing and the exec, or while the
+// stop waits for the server to exit (SignalSession lists again after a
+// refused exec; the wait ends at once). Every start's own stop of a leftover
+// server records survived_kill, or that paused stop_failed, and starts
+// nothing, rather than a second server over the pid file or a launch into a
+// paused container. A restart never unpauses: it must not change the
+// container's state. A workspace stop, rebuild or delete does
+// (internal/provision unpauses before calling Stop, so the server has its
+// SIGTERM and deregisters); one whose server outlived SIGKILL, or whose
+// container stays paused (both sentinels through the StopSupervisor seam),
+// carries on to its container step, which ends it. A run whose stop failed with its terminal still open
 // writes nothing more, even once a Start replaces it: the stop cancelled the
 // context every write of the run's is made under. The supervisor stays registered
 // after a failed stop, so a retry reaches the same server; Start replaces one
@@ -289,6 +298,19 @@ type Manager struct {
 	closed bool
 	base   context.Context
 	cancel context.CancelFunc
+	// detached is closed by Detach. Every run closes its terminal on it,
+	// including one whose stop failed and which is still reading — whose
+	// context its stop already cancelled, so the cancel alone says nothing
+	// to it.
+	detached chan struct{}
+}
+
+// detachedCh is the channel Detach closes. m.mu held.
+func (m *Manager) detachedCh() chan struct{} {
+	if m.detached == nil {
+		m.detached = make(chan struct{})
+	}
+	return m.detached
 }
 
 // redactValues is a workspace's log ring's source of values to mask.
@@ -509,7 +531,8 @@ func (m *Manager) launchLocked(ctx context.Context, workspaceID string) error { 
 		m.logs[workspaceID] = ring
 	}
 	prev := m.sups[workspaceID]
-	s := &sup{m: m, ws: workspaceID, row: row, restarts: restarts, log: ring, done: make(chan struct{})}
+	s := &sup{m: m, ws: workspaceID, row: row, restarts: restarts, log: ring, done: make(chan struct{}),
+		detached: m.detachedCh()}
 	if prev != nil {
 		s.state, s.reason, s.detail = prev.state, prev.reason, prev.detail
 	} else {
@@ -645,8 +668,19 @@ func (m *Manager) Logs(workspaceID string, n int) (lines []Line, truncated, ok b
 // sessions it was supervising — Spike 02: a plain restart reconnects the same
 // environment and sessions — so the servers keep serving while Drydock is
 // down, and boot adoption replaces each with one Drydock has a terminal for.
+//
+// Every run's terminal is closed, whatever it is doing: one whose stop failed
+// and which is still reading — a paused container's frozen server, whose
+// terminal the stop kept — is told by the detached channel, since its
+// context was cancelled by that stop and the cancel here is news to no one.
+// So no supervisor holds shutdown to its bound; wait is only for a loop held
+// up elsewhere (a docker call), and the ones still running when it passes
+// are named in the log rather than waited for one at a time.
 func (m *Manager) Detach(wait time.Duration) {
 	m.mu.Lock()
+	if !m.closed {
+		close(m.detachedCh())
+	}
 	m.closed = true
 	if m.cancel != nil {
 		m.cancel()
@@ -657,11 +691,18 @@ func (m *Manager) Detach(wait time.Duration) {
 	}
 	m.mu.Unlock()
 	deadline := m.clock().After(wait)
+	expired := false
 	for _, s := range all {
-		select {
-		case <-s.done:
-		case <-deadline:
-			return
+		if !expired {
+			select {
+			case <-s.done:
+				continue
+			case <-deadline:
+				expired = true
+			}
+		}
+		if s.running() {
+			m.logf("drydock: workspace %s: the session supervisor had not ended %s into shutdown; leaving it", s.ws, durationText(wait))
 		}
 	}
 }
