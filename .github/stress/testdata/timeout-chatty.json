@@ -1,0 +1,163 @@
+{"Time":"2026-10-09T18:38:49.76773581Z","Action":"start","Package":"fx/hang"}
+{"Time":"2026-10-09T18:38:49.768777821Z","Action":"output","Package":"fx/hang","Output":"-test.shuffle 1791571129768748215\n"}
+{"Time":"2026-10-09T18:38:49.768816684Z","Action":"run","Package":"fx/hang","Test":"TestOk"}
+{"Time":"2026-10-09T18:38:49.768818156Z","Action":"output","Package":"fx/hang","Test":"TestOk","Output":"=== RUN   TestOk\n","OutputType":"frame"}
+{"Time":"2026-10-09T18:38:49.768822455Z","Action":"output","Package":"fx/hang","Test":"TestOk","Output":"--- PASS: TestOk (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-10-09T18:38:49.768825681Z","Action":"pass","Package":"fx/hang","Test":"TestOk","Elapsed":0}
+{"Time":"2026-10-09T18:38:49.768829568Z","Action":"run","Package":"fx/hang","Test":"TestHung"}
+{"Time":"2026-10-09T18:38:49.7688305Z","Action":"output","Package":"fx/hang","Test":"TestHung","Output":"=== RUN   TestHung\n","OutputType":"frame"}
+{"Time":"2026-10-09T18:38:51.77208327Z","Action":"output","Package":"fx/hang","Test":"TestHung","Output":"chatty line 0\n"}
+{"Time":"2026-10-09T18:38:51.77208327Z","Action":"output","Package":"fx/hang","Test":"TestHung","Output":"chatty line 1\n"}
+{"Time":"2026-10-09T18:38:51.77208327Z","Action":"output","Package":"fx/hang","Test":"TestHung","Output":"chatty line 2\n"}
+{"Time":"2026-10-09T18:38:51.77208327Z","Action":"output","Package":"fx/hang","Test":"TestHung","Output":"chatty line 3\n"}
+{"Time":"2026-10-09T18:38:51.77208327Z","Action":"output","Package":"fx/hang","Test":"TestHung","Output":"chatty line 4\n"}
+{"Time":"2026-10-09T18:38:51.77208327Z","Action":"output","Package":"fx/hang","Test":"TestHung","Output":"chatty line 5\n"}
+{"Time":"2026-10-09T18:38:51.77208327Z","Action":"output","Package":"fx/hang","Test":"TestHung","Output":"chatty line 6\n"}
+{"Time":"2026-10-09T18:38:51.77208327Z","Action":"output","Package":"fx/hang","Test":"TestHung","Output":"chatty line 7\n"}
+{"Time":"2026-10-09T18:38:51.77208327Z","Action":"output","Package":"fx/hang","Test":"TestHung","Output":"chatty line 8\n"}
+{"Time":"2026-10-09T18:38:51.77208327Z","Action":"output","Package":"fx/hang","Test":"TestHung","Output":"chatty line 9\n"}
+{"Time":"2026-10-09T18:38:51.77208327Z","Action":"output","Package":"fx/hang","Test":"TestHung","Output":"chatty line 10\n"}
+{"Time":"2026-10-09T18:38:51.77208327Z","Action":"output","Package":"fx/hang","Test":"TestHung","Output":"chatty line 11\n"}
+{"Time":"2026-10-09T18:38:51.77208327Z","Action":"output","Package":"fx/hang","Test":"TestHung","Output":"chatty line 12\n"}
+{"Time":"2026-10-09T18:38:51.77208327Z","Action":"output","Package":"fx/hang","Test":"TestHung","Output":"chatty line 13\n"}
+{"Time":"2026-10-09T18:38:51.77208327Z","Action":"output","Package":"fx/hang","Test":"TestHung","Output":"chatty line 14\n"}
+{"Time":"2026-10-09T18:38:51.77208327Z","Action":"output","Package":"fx/hang","Test":"TestHung","Output":"chatty line 15\n"}
+{"Time":"2026-10-09T18:38:51.77208327Z","Action":"output","Package":"fx/hang","Test":"TestHung","Output":"chatty line 16\n"}
+{"Time":"2026-10-09T18:38:51.77208327Z","Action":"output","Package":"fx/hang","Test":"TestHung","Output":"chatty line 17\n"}
+{"Time":"2026-10-09T18:38:51.77208327Z","Action":"output","Package":"fx/hang","Test":"TestHung","Output":"chatty line 18\n"}
+{"Time":"2026-10-09T18:38:51.77208327Z","Action":"output","Package":"fx/hang","Test":"TestHung","Output":"chatty line 19\n"}
+{"Time":"2026-10-09T18:38:51.77208327Z","Action":"output","Package":"fx/hang","Test":"TestHung","Output":"chatty line 20\n"}
+{"Time":"2026-10-09T18:38:51.77208327Z","Action":"output","Package":"fx/hang","Test":"TestHung","Output":"chatty line 21\n"}
+{"Time":"2026-10-09T18:38:51.77208327Z","Action":"output","Package":"fx/hang","Test":"TestHung","Output":"chatty line 22\n"}
+{"Time":"2026-10-09T18:38:51.77208327Z","Action":"output","Package":"fx/hang","Test":"TestHung","Output":"chatty line 23\n"}
+{"Time":"2026-10-09T18:38:51.77208327Z","Action":"output","Package":"fx/hang","Test":"TestHung","Output":"chatty line 24\n"}
+{"Time":"2026-10-09T18:38:51.77208327Z","Action":"output","Package":"fx/hang","Test":"TestHung","Output":"chatty line 25\n"}
+{"Time":"2026-10-09T18:38:51.77208327Z","Action":"output","Package":"fx/hang","Test":"TestHung","Output":"chatty line 26\n"}
+{"Time":"2026-10-09T18:38:51.77208327Z","Action":"output","Package":"fx/hang","Test":"TestHung","Output":"chatty line 27\n"}
+{"Time":"2026-10-09T18:38:51.77208327Z","Action":"output","Package":"fx/hang","Test":"TestHung","Output":"chatty line 28\n"}
+{"Time":"2026-10-09T18:38:51.77208327Z","Action":"output","Package":"fx/hang","Test":"TestHung","Output":"chatty line 29\n"}
+{"Time":"2026-10-09T18:38:51.77208327Z","Action":"output","Package":"fx/hang","Test":"TestHung","Output":"chatty line 30\n"}
+{"Time":"2026-10-09T18:38:51.77208327Z","Action":"output","Package":"fx/hang","Test":"TestHung","Output":"chatty line 31\n"}
+{"Time":"2026-10-09T18:38:51.77208327Z","Action":"output","Package":"fx/hang","Test":"TestHung","Output":"chatty line 32\n"}
+{"Time":"2026-10-09T18:38:51.77208327Z","Action":"output","Package":"fx/hang","Test":"TestHung","Output":"chatty line 33\n"}
+{"Time":"2026-10-09T18:38:51.77208327Z","Action":"output","Package":"fx/hang","Test":"TestHung","Output":"chatty line 34\n"}
+{"Time":"2026-10-09T18:38:51.77208327Z","Action":"output","Package":"fx/hang","Test":"TestHung","Output":"chatty line 35\n"}
+{"Time":"2026-10-09T18:38:51.77208327Z","Action":"output","Package":"fx/hang","Test":"TestHung","Output":"chatty line 36\n"}
+{"Time":"2026-10-09T18:38:51.77208327Z","Action":"output","Package":"fx/hang","Test":"TestHung","Output":"chatty line 37\n"}
+{"Time":"2026-10-09T18:38:51.77208327Z","Action":"output","Package":"fx/hang","Test":"TestHung","Output":"chatty line 38\n"}
+{"Time":"2026-10-09T18:38:51.77208327Z","Action":"output","Package":"fx/hang","Test":"TestHung","Output":"chatty line 39\n"}
+{"Time":"2026-10-09T18:38:51.77208327Z","Action":"output","Package":"fx/hang","Test":"TestHung","Output":"chatty line 40\n"}
+{"Time":"2026-10-09T18:38:51.77208327Z","Action":"output","Package":"fx/hang","Test":"TestHung","Output":"chatty line 41\n"}
+{"Time":"2026-10-09T18:38:51.77208327Z","Action":"output","Package":"fx/hang","Test":"TestHung","Output":"chatty line 42\n"}
+{"Time":"2026-10-09T18:38:51.77208327Z","Action":"output","Package":"fx/hang","Test":"TestHung","Output":"chatty line 43\n"}
+{"Time":"2026-10-09T18:38:51.77208327Z","Action":"output","Package":"fx/hang","Test":"TestHung","Output":"chatty line 44\n"}
+{"Time":"2026-10-09T18:38:51.77208327Z","Action":"output","Package":"fx/hang","Test":"TestHung","Output":"chatty line 45\n"}
+{"Time":"2026-10-09T18:38:51.77208327Z","Action":"output","Package":"fx/hang","Test":"TestHung","Output":"chatty line 46\n"}
+{"Time":"2026-10-09T18:38:51.77208327Z","Action":"output","Package":"fx/hang","Test":"TestHung","Output":"chatty line 47\n"}
+{"Time":"2026-10-09T18:38:51.77208327Z","Action":"output","Package":"fx/hang","Test":"TestHung","Output":"chatty line 48\n"}
+{"Time":"2026-10-09T18:38:51.77208327Z","Action":"output","Package":"fx/hang","Test":"TestHung","Output":"chatty line 49\n"}
+{"Time":"2026-10-09T18:38:51.77208327Z","Action":"output","Package":"fx/hang","Test":"TestHung","Output":"chatty line 50\n"}
+{"Time":"2026-10-09T18:38:51.77208327Z","Action":"output","Package":"fx/hang","Test":"TestHung","Output":"chatty line 51\n"}
+{"Time":"2026-10-09T18:38:51.77208327Z","Action":"output","Package":"fx/hang","Test":"TestHung","Output":"chatty line 52\n"}
+{"Time":"2026-10-09T18:38:51.77208327Z","Action":"output","Package":"fx/hang","Test":"TestHung","Output":"chatty line 53\n"}
+{"Time":"2026-10-09T18:38:51.77208327Z","Action":"output","Package":"fx/hang","Test":"TestHung","Output":"chatty line 54\n"}
+{"Time":"2026-10-09T18:38:51.77208327Z","Action":"output","Package":"fx/hang","Test":"TestHung","Output":"chatty line 55\n"}
+{"Time":"2026-10-09T18:38:51.77208327Z","Action":"output","Package":"fx/hang","Test":"TestHung","Output":"chatty line 56\n"}
+{"Time":"2026-10-09T18:38:51.77208327Z","Action":"output","Package":"fx/hang","Test":"TestHung","Output":"chatty line 57\n"}
+{"Time":"2026-10-09T18:38:51.77208327Z","Action":"output","Package":"fx/hang","Test":"TestHung","Output":"chatty line 58\n"}
+{"Time":"2026-10-09T18:38:51.77208327Z","Action":"output","Package":"fx/hang","Test":"TestHung","Output":"chatty line 59\n"}
+{"Time":"2026-10-09T18:38:51.77208327Z","Action":"output","Package":"fx/hang","Test":"TestHung","Output":"chatty line 60\n"}
+{"Time":"2026-10-09T18:38:51.77208327Z","Action":"output","Package":"fx/hang","Test":"TestHung","Output":"chatty line 61\n"}
+{"Time":"2026-10-09T18:38:51.77208327Z","Action":"output","Package":"fx/hang","Test":"TestHung","Output":"chatty line 62\n"}
+{"Time":"2026-10-09T18:38:51.77208327Z","Action":"output","Package":"fx/hang","Test":"TestHung","Output":"chatty line 63\n"}
+{"Time":"2026-10-09T18:38:51.77208327Z","Action":"output","Package":"fx/hang","Test":"TestHung","Output":"chatty line 64\n"}
+{"Time":"2026-10-09T18:38:51.77208327Z","Action":"output","Package":"fx/hang","Test":"TestHung","Output":"chatty line 65\n"}
+{"Time":"2026-10-09T18:38:51.77208327Z","Action":"output","Package":"fx/hang","Test":"TestHung","Output":"chatty line 66\n"}
+{"Time":"2026-10-09T18:38:51.77208327Z","Action":"output","Package":"fx/hang","Test":"TestHung","Output":"chatty line 67\n"}
+{"Time":"2026-10-09T18:38:51.77208327Z","Action":"output","Package":"fx/hang","Test":"TestHung","Output":"chatty line 68\n"}
+{"Time":"2026-10-09T18:38:51.77208327Z","Action":"output","Package":"fx/hang","Test":"TestHung","Output":"chatty line 69\n"}
+{"Time":"2026-10-09T18:38:51.77208327Z","Action":"output","Package":"fx/hang","Test":"TestHung","Output":"chatty line 70\n"}
+{"Time":"2026-10-09T18:38:51.77208327Z","Action":"output","Package":"fx/hang","Test":"TestHung","Output":"chatty line 71\n"}
+{"Time":"2026-10-09T18:38:51.77208327Z","Action":"output","Package":"fx/hang","Test":"TestHung","Output":"chatty line 72\n"}
+{"Time":"2026-10-09T18:38:51.77208327Z","Action":"output","Package":"fx/hang","Test":"TestHung","Output":"chatty line 73\n"}
+{"Time":"2026-10-09T18:38:51.77208327Z","Action":"output","Package":"fx/hang","Test":"TestHung","Output":"chatty line 74\n"}
+{"Time":"2026-10-09T18:38:51.77208327Z","Action":"output","Package":"fx/hang","Test":"TestHung","Output":"chatty line 75\n"}
+{"Time":"2026-10-09T18:38:51.77208327Z","Action":"output","Package":"fx/hang","Test":"TestHung","Output":"chatty line 76\n"}
+{"Time":"2026-10-09T18:38:51.77208327Z","Action":"output","Package":"fx/hang","Test":"TestHung","Output":"chatty line 77\n"}
+{"Time":"2026-10-09T18:38:51.77208327Z","Action":"output","Package":"fx/hang","Test":"TestHung","Output":"chatty line 78\n"}
+{"Time":"2026-10-09T18:38:51.77208327Z","Action":"output","Package":"fx/hang","Test":"TestHung","Output":"chatty line 79\n"}
+{"Time":"2026-10-09T18:38:51.77208327Z","Action":"output","Package":"fx/hang","Test":"TestHung","Output":"chatty line 80\n"}
+{"Time":"2026-10-09T18:38:51.77208327Z","Action":"output","Package":"fx/hang","Test":"TestHung","Output":"chatty line 81\n"}
+{"Time":"2026-10-09T18:38:51.77208327Z","Action":"output","Package":"fx/hang","Test":"TestHung","Output":"chatty line 82\n"}
+{"Time":"2026-10-09T18:38:51.77208327Z","Action":"output","Package":"fx/hang","Test":"TestHung","Output":"chatty line 83\n"}
+{"Time":"2026-10-09T18:38:51.77208327Z","Action":"output","Package":"fx/hang","Test":"TestHung","Output":"chatty line 84\n"}
+{"Time":"2026-10-09T18:38:51.77208327Z","Action":"output","Package":"fx/hang","Test":"TestHung","Output":"chatty line 85\n"}
+{"Time":"2026-10-09T18:38:51.77208327Z","Action":"output","Package":"fx/hang","Test":"TestHung","Output":"chatty line 86\n"}
+{"Time":"2026-10-09T18:38:51.77208327Z","Action":"output","Package":"fx/hang","Test":"TestHung","Output":"chatty line 87\n"}
+{"Time":"2026-10-09T18:38:51.77208327Z","Action":"output","Package":"fx/hang","Test":"TestHung","Output":"chatty line 88\n"}
+{"Time":"2026-10-09T18:38:51.77208327Z","Action":"output","Package":"fx/hang","Test":"TestHung","Output":"chatty line 89\n"}
+{"Time":"2026-10-09T18:38:51.77208327Z","Action":"output","Package":"fx/hang","Test":"TestHung","Output":"chatty line 90\n"}
+{"Time":"2026-10-09T18:38:51.77208327Z","Action":"output","Package":"fx/hang","Test":"TestHung","Output":"chatty line 91\n"}
+{"Time":"2026-10-09T18:38:51.77208327Z","Action":"output","Package":"fx/hang","Test":"TestHung","Output":"chatty line 92\n"}
+{"Time":"2026-10-09T18:38:51.77208327Z","Action":"output","Package":"fx/hang","Test":"TestHung","Output":"chatty line 93\n"}
+{"Time":"2026-10-09T18:38:51.77208327Z","Action":"output","Package":"fx/hang","Test":"TestHung","Output":"chatty line 94\n"}
+{"Time":"2026-10-09T18:38:51.77208327Z","Action":"output","Package":"fx/hang","Test":"TestHung","Output":"chatty line 95\n"}
+{"Time":"2026-10-09T18:38:51.77208327Z","Action":"output","Package":"fx/hang","Test":"TestHung","Output":"chatty line 96\n"}
+{"Time":"2026-10-09T18:38:51.77208327Z","Action":"output","Package":"fx/hang","Test":"TestHung","Output":"chatty line 97\n"}
+{"Time":"2026-10-09T18:38:51.77208327Z","Action":"output","Package":"fx/hang","Test":"TestHung","Output":"chatty line 98\n"}
+{"Time":"2026-10-09T18:38:51.77208327Z","Action":"output","Package":"fx/hang","Test":"TestHung","Output":"chatty line 99\n"}
+{"Time":"2026-10-09T18:38:51.77208327Z","Action":"output","Package":"fx/hang","Test":"TestHung","Output":"chatty line 100\n"}
+{"Time":"2026-10-09T18:38:51.77208327Z","Action":"output","Package":"fx/hang","Test":"TestHung","Output":"chatty line 101\n"}
+{"Time":"2026-10-09T18:38:51.77208327Z","Action":"output","Package":"fx/hang","Test":"TestHung","Output":"chatty line 102\n"}
+{"Time":"2026-10-09T18:38:51.77208327Z","Action":"output","Package":"fx/hang","Test":"TestHung","Output":"chatty line 103\n"}
+{"Time":"2026-10-09T18:38:51.77208327Z","Action":"output","Package":"fx/hang","Test":"TestHung","Output":"chatty line 104\n"}
+{"Time":"2026-10-09T18:38:51.77208327Z","Action":"output","Package":"fx/hang","Test":"TestHung","Output":"chatty line 105\n"}
+{"Time":"2026-10-09T18:38:51.77208327Z","Action":"output","Package":"fx/hang","Test":"TestHung","Output":"chatty line 106\n"}
+{"Time":"2026-10-09T18:38:51.77208327Z","Action":"output","Package":"fx/hang","Test":"TestHung","Output":"chatty line 107\n"}
+{"Time":"2026-10-09T18:38:51.77208327Z","Action":"output","Package":"fx/hang","Test":"TestHung","Output":"chatty line 108\n"}
+{"Time":"2026-10-09T18:38:51.77208327Z","Action":"output","Package":"fx/hang","Test":"TestHung","Output":"chatty line 109\n"}
+{"Time":"2026-10-09T18:38:51.77208327Z","Action":"output","Package":"fx/hang","Test":"TestHung","Output":"chatty line 110\n"}
+{"Time":"2026-10-09T18:38:51.77208327Z","Action":"output","Package":"fx/hang","Test":"TestHung","Output":"chatty line 111\n"}
+{"Time":"2026-10-09T18:38:51.77208327Z","Action":"output","Package":"fx/hang","Test":"TestHung","Output":"chatty line 112\n"}
+{"Time":"2026-10-09T18:38:51.77208327Z","Action":"output","Package":"fx/hang","Test":"TestHung","Output":"chatty line 113\n"}
+{"Time":"2026-10-09T18:38:51.77208327Z","Action":"output","Package":"fx/hang","Test":"TestHung","Output":"chatty line 114\n"}
+{"Time":"2026-10-09T18:38:51.77208327Z","Action":"output","Package":"fx/hang","Test":"TestHung","Output":"chatty line 115\n"}
+{"Time":"2026-10-09T18:38:51.77208327Z","Action":"output","Package":"fx/hang","Test":"TestHung","Output":"chatty line 116\n"}
+{"Time":"2026-10-09T18:38:51.77208327Z","Action":"output","Package":"fx/hang","Test":"TestHung","Output":"chatty line 117\n"}
+{"Time":"2026-10-09T18:38:51.77208327Z","Action":"output","Package":"fx/hang","Test":"TestHung","Output":"chatty line 118\n"}
+{"Time":"2026-10-09T18:38:51.77208327Z","Action":"output","Package":"fx/hang","Test":"TestHung","Output":"chatty line 119\n"}
+{"Time":"2026-10-09T18:38:51.77208327Z","Action":"output","Package":"fx/hang","Test":"TestHung","Output":"panic: test timed out after 2s\n"}
+{"Time":"2026-10-09T18:38:51.772140568Z","Action":"output","Package":"fx/hang","Test":"TestHung","Output":"\trunning tests:\n"}
+{"Time":"2026-10-09T18:38:51.772143102Z","Action":"output","Package":"fx/hang","Test":"TestHung","Output":"\t\tTestHung (2s)\n"}
+{"Time":"2026-10-09T18:38:51.772144896Z","Action":"output","Package":"fx/hang","Test":"TestHung","Output":"\n"}
+{"Time":"2026-10-09T18:38:51.772148983Z","Action":"output","Package":"fx/hang","Test":"TestHung","Output":"goroutine 17 [running]:\n"}
+{"Time":"2026-10-09T18:38:51.772150556Z","Action":"output","Package":"fx/hang","Test":"TestHung","Output":"testing.(*M).startAlarm.func1()\n"}
+{"Time":"2026-10-09T18:38:51.772151969Z","Action":"output","Package":"fx/hang","Test":"TestHung","Output":"\t/usr/local/go/src/testing/testing.go:2959 +0x34a\n"}
+{"Time":"2026-10-09T18:38:51.772156568Z","Action":"output","Package":"fx/hang","Test":"TestHung","Output":"created by time.goFunc\n"}
+{"Time":"2026-10-09T18:38:51.772158441Z","Action":"output","Package":"fx/hang","Test":"TestHung","Output":"\t/usr/local/go/src/time/sleep.go:182 +0x2d\n"}
+{"Time":"2026-10-09T18:38:51.772160826Z","Action":"output","Package":"fx/hang","Test":"TestHung","Output":"\n"}
+{"Time":"2026-10-09T18:38:51.772161828Z","Action":"output","Package":"fx/hang","Test":"TestHung","Output":"goroutine 1 [chan receive]:\n"}
+{"Time":"2026-10-09T18:38:51.772163511Z","Action":"output","Package":"fx/hang","Test":"TestHung","Output":"testing.(*T).Run(0x9e898ab6008, {0x554bd1?, 0x9e8989f6aa0?}, 0x6d4768)\n"}
+{"Time":"2026-10-09T18:38:51.772166306Z","Action":"output","Package":"fx/hang","Test":"TestHung","Output":"\t/usr/local/go/src/testing/testing.go:2266 +0x4f2\n"}
+{"Time":"2026-10-09T18:38:51.772167669Z","Action":"output","Package":"fx/hang","Test":"TestHung","Output":"testing.runTests.func1(0x9e898ab6008)\n"}
+{"Time":"2026-10-09T18:38:51.772169131Z","Action":"output","Package":"fx/hang","Test":"TestHung","Output":"\t/usr/local/go/src/testing/testing.go:2742 +0x37\n"}
+{"Time":"2026-10-09T18:38:51.772171476Z","Action":"output","Package":"fx/hang","Test":"TestHung","Output":"testing.tRunner(0x9e898ab6008, 0x9e8989f6bc8)\n"}
+{"Time":"2026-10-09T18:38:51.772172928Z","Action":"output","Package":"fx/hang","Test":"TestHung","Output":"\t/usr/local/go/src/testing/testing.go:2193 +0xea\n"}
+{"Time":"2026-10-09T18:38:51.772174241Z","Action":"output","Package":"fx/hang","Test":"TestHung","Output":"testing.runTests({0x554014, 0x2}, {0x554827, 0x7}, 0x9e8989442e8, {0x6f0ad0, 0x2, 0x2}, {0xc2aa6b0eedd2a279, 0x7736fe03, ...})\n"}
+{"Time":"2026-10-09T18:38:51.772176465Z","Action":"output","Package":"fx/hang","Test":"TestHung","Output":"\t/usr/local/go/src/testing/testing.go:2740 +0x510\n"}
+{"Time":"2026-10-09T18:38:51.772177948Z","Action":"output","Package":"fx/hang","Test":"TestHung","Output":"testing.(*M).Run(0x9e8989fc6e0)\n"}
+{"Time":"2026-10-09T18:38:51.772179831Z","Action":"output","Package":"fx/hang","Test":"TestHung","Output":"\t/usr/local/go/src/testing/testing.go:2600 +0x6af\n"}
+{"Time":"2026-10-09T18:38:51.772186634Z","Action":"output","Package":"fx/hang","Test":"TestHung","Output":"main.main()\n"}
+{"Time":"2026-10-09T18:38:51.772188117Z","Action":"output","Package":"fx/hang","Test":"TestHung","Output":"\t_testmain.go:48 +0x9b\n"}
+{"Time":"2026-10-09T18:38:51.77219487Z","Action":"output","Package":"fx/hang","Test":"TestHung","Output":"\n"}
+{"Time":"2026-10-09T18:38:51.772195932Z","Action":"output","Package":"fx/hang","Test":"TestHung","Output":"goroutine 7 [sleep]:\n"}
+{"Time":"2026-10-09T18:38:51.772197384Z","Action":"output","Package":"fx/hang","Test":"TestHung","Output":"time.Sleep(0xdf8475800)\n"}
+{"Time":"2026-10-09T18:38:51.772198426Z","Action":"output","Package":"fx/hang","Test":"TestHung","Output":"\t/usr/local/go/src/runtime/time.go:368 +0x165\n"}
+{"Time":"2026-10-09T18:38:51.772199789Z","Action":"output","Package":"fx/hang","Test":"TestHung","Output":"fx/hang.TestHung(0x9e898ab6488?)\n"}
+{"Time":"2026-10-09T18:38:51.772200931Z","Action":"output","Package":"fx/hang","Test":"TestHung","Output":"\t/tmp/claude-1000/-workspaces-drydock/268587f7-7f82-4710-b391-c99806c7443d/scratchpad/fx/hang/h_test.go:9 +0x1d\n"}
+{"Time":"2026-10-09T18:38:51.772206822Z","Action":"output","Package":"fx/hang","Test":"TestHung","Output":"testing.tRunner(0x9e898ab6488, 0x6d4768)\n"}
+{"Time":"2026-10-09T18:38:51.772207894Z","Action":"output","Package":"fx/hang","Test":"TestHung","Output":"\t/usr/local/go/src/testing/testing.go:2193 +0xea\n"}
+{"Time":"2026-10-09T18:38:51.772209327Z","Action":"output","Package":"fx/hang","Test":"TestHung","Output":"created by testing.(*T).Run in goroutine 1\n"}
+{"Time":"2026-10-09T18:38:51.772211611Z","Action":"output","Package":"fx/hang","Test":"TestHung","Output":"\t/usr/local/go/src/testing/testing.go:2258 +0x4d4\n"}
+{"Time":"2026-10-09T18:38:51.772400667Z","Action":"output","Package":"fx/hang","Output":"FAIL\tfx/hang\t2.004s\n","OutputType":"frame"}
+{"Time":"2026-10-09T18:38:51.772415766Z","Action":"fail","Package":"fx/hang","Elapsed":2.005}

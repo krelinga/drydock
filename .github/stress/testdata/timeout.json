@@ -1,0 +1,43 @@
+{"Time":"2026-10-09T18:38:49.76773581Z","Action":"start","Package":"fx/hang"}
+{"Time":"2026-10-09T18:38:49.768777821Z","Action":"output","Package":"fx/hang","Output":"-test.shuffle 1791571129768748215\n"}
+{"Time":"2026-10-09T18:38:49.768816684Z","Action":"run","Package":"fx/hang","Test":"TestOk"}
+{"Time":"2026-10-09T18:38:49.768818156Z","Action":"output","Package":"fx/hang","Test":"TestOk","Output":"=== RUN   TestOk\n","OutputType":"frame"}
+{"Time":"2026-10-09T18:38:49.768822455Z","Action":"output","Package":"fx/hang","Test":"TestOk","Output":"--- PASS: TestOk (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-10-09T18:38:49.768825681Z","Action":"pass","Package":"fx/hang","Test":"TestOk","Elapsed":0}
+{"Time":"2026-10-09T18:38:49.768829568Z","Action":"run","Package":"fx/hang","Test":"TestHung"}
+{"Time":"2026-10-09T18:38:49.7688305Z","Action":"output","Package":"fx/hang","Test":"TestHung","Output":"=== RUN   TestHung\n","OutputType":"frame"}
+{"Time":"2026-10-09T18:38:51.77208327Z","Action":"output","Package":"fx/hang","Test":"TestHung","Output":"panic: test timed out after 2s\n"}
+{"Time":"2026-10-09T18:38:51.772140568Z","Action":"output","Package":"fx/hang","Test":"TestHung","Output":"\trunning tests:\n"}
+{"Time":"2026-10-09T18:38:51.772143102Z","Action":"output","Package":"fx/hang","Test":"TestHung","Output":"\t\tTestHung (2s)\n"}
+{"Time":"2026-10-09T18:38:51.772144896Z","Action":"output","Package":"fx/hang","Test":"TestHung","Output":"\n"}
+{"Time":"2026-10-09T18:38:51.772148983Z","Action":"output","Package":"fx/hang","Test":"TestHung","Output":"goroutine 17 [running]:\n"}
+{"Time":"2026-10-09T18:38:51.772150556Z","Action":"output","Package":"fx/hang","Test":"TestHung","Output":"testing.(*M).startAlarm.func1()\n"}
+{"Time":"2026-10-09T18:38:51.772151969Z","Action":"output","Package":"fx/hang","Test":"TestHung","Output":"\t/usr/local/go/src/testing/testing.go:2959 +0x34a\n"}
+{"Time":"2026-10-09T18:38:51.772156568Z","Action":"output","Package":"fx/hang","Test":"TestHung","Output":"created by time.goFunc\n"}
+{"Time":"2026-10-09T18:38:51.772158441Z","Action":"output","Package":"fx/hang","Test":"TestHung","Output":"\t/usr/local/go/src/time/sleep.go:182 +0x2d\n"}
+{"Time":"2026-10-09T18:38:51.772160826Z","Action":"output","Package":"fx/hang","Test":"TestHung","Output":"\n"}
+{"Time":"2026-10-09T18:38:51.772161828Z","Action":"output","Package":"fx/hang","Test":"TestHung","Output":"goroutine 1 [chan receive]:\n"}
+{"Time":"2026-10-09T18:38:51.772163511Z","Action":"output","Package":"fx/hang","Test":"TestHung","Output":"testing.(*T).Run(0x9e898ab6008, {0x554bd1?, 0x9e8989f6aa0?}, 0x6d4768)\n"}
+{"Time":"2026-10-09T18:38:51.772166306Z","Action":"output","Package":"fx/hang","Test":"TestHung","Output":"\t/usr/local/go/src/testing/testing.go:2266 +0x4f2\n"}
+{"Time":"2026-10-09T18:38:51.772167669Z","Action":"output","Package":"fx/hang","Test":"TestHung","Output":"testing.runTests.func1(0x9e898ab6008)\n"}
+{"Time":"2026-10-09T18:38:51.772169131Z","Action":"output","Package":"fx/hang","Test":"TestHung","Output":"\t/usr/local/go/src/testing/testing.go:2742 +0x37\n"}
+{"Time":"2026-10-09T18:38:51.772171476Z","Action":"output","Package":"fx/hang","Test":"TestHung","Output":"testing.tRunner(0x9e898ab6008, 0x9e8989f6bc8)\n"}
+{"Time":"2026-10-09T18:38:51.772172928Z","Action":"output","Package":"fx/hang","Test":"TestHung","Output":"\t/usr/local/go/src/testing/testing.go:2193 +0xea\n"}
+{"Time":"2026-10-09T18:38:51.772174241Z","Action":"output","Package":"fx/hang","Test":"TestHung","Output":"testing.runTests({0x554014, 0x2}, {0x554827, 0x7}, 0x9e8989442e8, {0x6f0ad0, 0x2, 0x2}, {0xc2aa6b0eedd2a279, 0x7736fe03, ...})\n"}
+{"Time":"2026-10-09T18:38:51.772176465Z","Action":"output","Package":"fx/hang","Test":"TestHung","Output":"\t/usr/local/go/src/testing/testing.go:2740 +0x510\n"}
+{"Time":"2026-10-09T18:38:51.772177948Z","Action":"output","Package":"fx/hang","Test":"TestHung","Output":"testing.(*M).Run(0x9e8989fc6e0)\n"}
+{"Time":"2026-10-09T18:38:51.772179831Z","Action":"output","Package":"fx/hang","Test":"TestHung","Output":"\t/usr/local/go/src/testing/testing.go:2600 +0x6af\n"}
+{"Time":"2026-10-09T18:38:51.772186634Z","Action":"output","Package":"fx/hang","Test":"TestHung","Output":"main.main()\n"}
+{"Time":"2026-10-09T18:38:51.772188117Z","Action":"output","Package":"fx/hang","Test":"TestHung","Output":"\t_testmain.go:48 +0x9b\n"}
+{"Time":"2026-10-09T18:38:51.77219487Z","Action":"output","Package":"fx/hang","Test":"TestHung","Output":"\n"}
+{"Time":"2026-10-09T18:38:51.772195932Z","Action":"output","Package":"fx/hang","Test":"TestHung","Output":"goroutine 7 [sleep]:\n"}
+{"Time":"2026-10-09T18:38:51.772197384Z","Action":"output","Package":"fx/hang","Test":"TestHung","Output":"time.Sleep(0xdf8475800)\n"}
+{"Time":"2026-10-09T18:38:51.772198426Z","Action":"output","Package":"fx/hang","Test":"TestHung","Output":"\t/usr/local/go/src/runtime/time.go:368 +0x165\n"}
+{"Time":"2026-10-09T18:38:51.772199789Z","Action":"output","Package":"fx/hang","Test":"TestHung","Output":"fx/hang.TestHung(0x9e898ab6488?)\n"}
+{"Time":"2026-10-09T18:38:51.772200931Z","Action":"output","Package":"fx/hang","Test":"TestHung","Output":"\t/tmp/claude-1000/-workspaces-drydock/268587f7-7f82-4710-b391-c99806c7443d/scratchpad/fx/hang/h_test.go:9 +0x1d\n"}
+{"Time":"2026-10-09T18:38:51.772206822Z","Action":"output","Package":"fx/hang","Test":"TestHung","Output":"testing.tRunner(0x9e898ab6488, 0x6d4768)\n"}
+{"Time":"2026-10-09T18:38:51.772207894Z","Action":"output","Package":"fx/hang","Test":"TestHung","Output":"\t/usr/local/go/src/testing/testing.go:2193 +0xea\n"}
+{"Time":"2026-10-09T18:38:51.772209327Z","Action":"output","Package":"fx/hang","Test":"TestHung","Output":"created by testing.(*T).Run in goroutine 1\n"}
+{"Time":"2026-10-09T18:38:51.772211611Z","Action":"output","Package":"fx/hang","Test":"TestHung","Output":"\t/usr/local/go/src/testing/testing.go:2258 +0x4d4\n"}
+{"Time":"2026-10-09T18:38:51.772400667Z","Action":"output","Package":"fx/hang","Output":"FAIL\tfx/hang\t2.004s\n","OutputType":"frame"}
+{"Time":"2026-10-09T18:38:51.772415766Z","Action":"fail","Package":"fx/hang","Elapsed":2.005}

@@ -1,0 +1,85 @@
+# A nightly hunt for flaky tests: the timer- and goroutine-heavy packages run
+# repeatedly under -race and -shuffle, in a time-boxed loop, and each distinct
+# test that failed gets an assigned `flake` issue (or a comment on the open
+# one). Not part of ci.yml, not a required check, no secrets beyond the
+# workflow's own GITHUB_TOKEN. The live GitHub contract tests stay in
+# github-live.yml: without DRYDOCK_REQUIRE_GITHUB_LIVE, TestContract* runs
+# against the fake.
+#
+# A setup failure fails the workflow, and GitHub emails the owner about a
+# failed scheduled workflow (subject to their Actions notification settings).
+name: stress
+
+on:
+  schedule:
+    # 08:23 UTC, which is 03:23 CDT or 02:23 CST: between 2 and 4 am in
+    # Chicago all year, with no DST handling.
+    - cron: "23 8 * * *"
+  workflow_dispatch:
+    inputs:
+      packages:
+        description: "Space-separated Go packages to stress (e.g. ./internal/events ./internal/life). Empty: the priority list, then the rest of ./internal/..."
+        default: ""
+      minutes:
+        description: "Minutes for the test loop, setup excluded. The job limit is 60 minutes from the job's start, so this is clamped to 1-40."
+        default: "40"
+      container_runs:
+        description: "Runs of test/container at the end, if the budget has room (0 skips it)"
+        default: "2"
+      fake_failure:
+        description: "Test the issue filing: record one invented failure, titled with a [test] prefix"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: stress
+  cancel-in-progress: false
+
+jobs:
+  stress:
+    runs-on: ubuntu-latest
+    # 60 minutes from the job's start. The tests stop for good at minute 52
+    # (stress.sh), whatever the inputs say, so the filing step always has room.
+    timeout-minutes: 60
+    steps:
+      - name: Note the start
+        run: |
+          echo "JOB_START=$(date +%s)" >>"$GITHUB_ENV"
+          echo "STRESS_DIR=$RUNNER_TEMP/stress" >>"$GITHUB_ENV"
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      # The tools only; the loop below is the tests.
+      - uses: ./.github/actions/go-suite
+        with:
+          run-suite: "false"
+      - name: Check the failure parser
+        run: .github/stress/selftest.sh
+      - name: Stress
+        # A backstop behind stress.sh's own deadline (minute 52).
+        timeout-minutes: 54
+        env:
+          PACKAGES: ${{ inputs.packages }}
+          MINUTES: ${{ inputs.minutes || '40' }}
+          CONTAINER_RUNS: ${{ inputs.container_runs || '2' }}
+          FAKE_FAILURE: ${{ inputs.fake_failure && '1' || '' }}
+          # As in CI: a missing tool is a failure here, never a skip.
+          DRYDOCK_REQUIRE_CADDY: "1"
+          DRYDOCK_REQUIRE_DOCKER: "1"
+          DRYDOCK_REQUIRE_TRANSPORTS: "1"
+        run: .github/stress/stress.sh
+      # Even when the loop failed, was cancelled or hit the job limit: whatever
+      # it recorded is filed.
+      - name: File issues
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          COMMIT: ${{ github.sha }}
+        run: .github/stress/file-issues.sh

@@ -25,6 +25,9 @@ inputs:
   pr-title:
     description: "A pull request's title: the squash commit release-please will read, for test/docs's check that the deploy docs name only real or pending releases. Empty outside a PR."
     default: ""
+  run-suite:
+    description: "'false' installs the tools and stops: no gofmt, vet or go test. The nightly stress workflow runs the tests itself, in a loop."
+    default: "true"
 
 runs:
   using: composite
@@ -50,10 +53,12 @@ runs:
       run: sudo apt-get update -q && sudo apt-get install -y -q --no-install-recommends socat netcat-openbsd
 
     - name: gofmt
+      if: inputs.run-suite == 'true'
       shell: bash
       run: test -z "$(gofmt -l . | tee /dev/stderr)"
 
     - name: go vet
+      if: inputs.run-suite == 'true'
       shell: bash
       run: go vet ./...
 
@@ -63,6 +68,7 @@ runs:
     # release that test/docs reads (the checkout needs fetch-depth: 0), and
     # socat and nc, without which the broker's argv sweep is skipped.
     - name: go test
+      if: inputs.run-suite == 'true'
       shell: bash
       env:
         DRYDOCK_REQUIRE_CADDY: "1"

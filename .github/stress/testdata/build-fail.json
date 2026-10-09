@@ -1,0 +1,7 @@
+{"ImportPath":"fx/bad [fx/bad.test]","Action":"build-output","Output":"# fx/bad [fx/bad.test]\n"}
+{"ImportPath":"fx/bad [fx/bad.test]","Action":"build-output","Output":"bad/b_test.go:5:32: declared and not used: x\n"}
+{"ImportPath":"fx/bad [fx/bad.test]","Action":"build-output","Output":"bad/b_test.go:5:40: cannot use \"s\" (untyped string constant) as int value in variable declaration\n"}
+{"ImportPath":"fx/bad [fx/bad.test]","Action":"build-fail"}
+{"Time":"2026-10-09T18:38:51.81318963Z","Action":"start","Package":"fx/bad"}
+{"Time":"2026-10-09T18:38:51.81323183Z","Action":"output","Package":"fx/bad","Output":"FAIL\tfx/bad [build failed]\n","OutputType":"frame"}
+{"Time":"2026-10-09T18:38:51.81323762Z","Action":"fail","Package":"fx/bad","Elapsed":0,"FailedBuild":"fx/bad [fx/bad.test]"}

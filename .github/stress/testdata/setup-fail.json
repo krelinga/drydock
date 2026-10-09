@@ -1,0 +1,6 @@
+{"ImportPath":"fx/syn.test","Action":"build-output","Output":"# fx/syn\n"}
+{"ImportPath":"fx/syn.test","Action":"build-output","Output":"syn/s_test.go:3:8: expected ')', found '{'\n"}
+{"ImportPath":"fx/syn.test","Action":"build-fail"}
+{"Time":"2026-10-09T18:50:01.125243827Z","Action":"start","Package":"fx/syn"}
+{"Time":"2026-10-09T18:50:01.125270026Z","Action":"output","Package":"fx/syn","Output":"FAIL\tfx/syn [setup failed]\n","OutputType":"frame"}
+{"Time":"2026-10-09T18:50:01.125282259Z","Action":"fail","Package":"fx/syn","Elapsed":0,"FailedBuild":"fx/syn.test"}
