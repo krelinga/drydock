@@ -34,7 +34,18 @@ import (
 //     no address — only what it has seen, by port.
 //   - **A restarting server does not churn the list.** A port appears after
 //     AppearAfter consecutive scans see it at the same bind address, and goes
-//     after Grace with no scan seeing it.
+//     after Grace with no scan seeing it. A row discovery alone holds is
+//     marked gone then, and retired only after RetireAfter more, so a server
+//     that comes back keeps its row and its slug.
+//   - **Nothing a container does grows the log without bound.** Each
+//     workspace has two token buckets: every row discovery writes spends a
+//     change (ChangeBurst, then one per ChangeEvery), and a new row a mint
+//     as well (MintBurst, then one per MintEvery). A change past its budget
+//     waits for the next scan that can afford it; nothing is lost, because
+//     each scan derives what to change afresh from the rows.
+//   - **One workspace cannot stall the others.** Each read is bounded by
+//     Timeout on the injected clock; one cut off is that workspace's
+//     discovery unavailable for that round, and the round goes on.
 //
 // A retired row stays retired: the merge is onto live rows only, so a port
 // seen again after its row was retired is a new row with a new slug (PF §4).
@@ -77,6 +88,26 @@ const (
 	MaxObserved = 32
 	// maxTracked bounds the ports the scanner remembers per workspace.
 	maxTracked = 4 * MaxPorts
+	// RetireAfter is how long a row discovery alone holds stays listed,
+	// gone, before it is retired and its slug spent: a server that comes
+	// back within it gets the same row.
+	RetireAfter = 10 * time.Minute
+	// MintBurst and MintEvery are each workspace's budget of new rows:
+	// MintBurst at once, then one per MintEvery (twelve an hour), so a
+	// container cycling ports spends at most that many slugs.
+	MintBurst = 8
+	MintEvery = 5 * time.Minute
+	// ChangeBurst and ChangeEvery are each workspace's budget of discovery
+	// writes — every row change, so every event: ChangeBurst at once, then
+	// one per ChangeEvery (120 an hour, under 3,000 a day).
+	ChangeBurst = 64
+	ChangeEvery = 30 * time.Second
+	// DefaultScanTimeout bounds one workspace's read: its four docker calls
+	// and the table.
+	DefaultScanTimeout = 15 * time.Second
+	// IdleInterval is the most often a round nobody asked for runs while
+	// Watched says nobody is looking.
+	IdleInterval = time.Minute
 )
 
 // Listener is one listening socket in a workspace's container: its port and
@@ -122,26 +153,62 @@ type Scanner struct {
 	Interval time.Duration
 	// Grace is DefaultGrace when zero.
 	Grace time.Duration
+	// Timeout bounds one workspace's read, on Clock; zero is
+	// DefaultScanTimeout. A read cut off is discovery unavailable for that
+	// workspace and that round, and the round goes on to the next.
+	Timeout time.Duration
+	// Watched reports whether anyone is looking — the server's is "an SSE
+	// stream is open". While nobody is, a round nobody asked for runs at
+	// most every IdleInterval, so an unwatched server does not exec docker
+	// several times a second around the clock. Nil is always watched.
+	Watched func() bool
 	// Logf is the service log, told when a workspace's discovery becomes
-	// unavailable and when it recovers — never every scan. Nil is standard
-	// error.
+	// unavailable and when it recovers, and when its budget first holds a
+	// change back — never every scan. Nil is standard error.
 	Logf func(string, ...any)
 
 	w life.Coalescer[struct{}, string]
-	// tracks is what the scans have seen, by workspace then port. Only the
-	// worker touches it.
+	// tracks is what the scans have seen, by workspace then port, and each
+	// workspace's budgets. Only the worker touches it.
 	tracks map[string]*wsTrack
+	// lastFull is when the last round ran, for Watched's back-off.
+	lastFull time.Time
 }
 
 type wsTrack struct {
 	ports       map[int]*portTrack
 	unavailable string // the reason last logged; "" while discovery works
+	limited     bool   // a change was held back by a budget, and logged
+	mints       bucket // new rows (MintEvery, MintBurst)
+	changes     bucket // every row write (ChangeEvery, ChangeBurst)
 }
 
 type portTrack struct {
 	bind     netip.Addr // the bind address the streak is at
 	streak   int        // consecutive scans that saw it at bind
 	lastSeen time.Time  // the last scan that saw it
+}
+
+// bucket is a token bucket on the injected clock: full (burst) at first,
+// one token back every `every`.
+type bucket struct {
+	tokens float64
+	at     time.Time
+	init   bool
+}
+
+func (b *bucket) refill(now time.Time, every time.Duration, burst int) {
+	if !b.init {
+		b.tokens, b.at, b.init = float64(burst), now, true
+		return
+	}
+	if d := now.Sub(b.at); d > 0 {
+		b.tokens += float64(d) / float64(every)
+		if b.tokens > float64(burst) {
+			b.tokens = float64(burst)
+		}
+		b.at = now
+	}
 }
 
 // Start runs the scans under g until it stops: one now, then every Interval,
@@ -196,19 +263,46 @@ func (s *Scanner) grace() time.Duration {
 	return DefaultGrace
 }
 
-// target is one workspace a round scans.
+func (s *Scanner) timeout() time.Duration {
+	if s.Timeout > 0 {
+		return s.Timeout
+	}
+	return DefaultScanTimeout
+}
+
+// liveRow is what a round needs of one live forwarded_port row.
+type liveRow struct {
+	state        string // observed_state, "" when never seen
+	bind         string
+	observedOnly bool      // observed, and nothing else holds it (held)
+	lastSeen     time.Time // last_seen_at; zero when unset
+}
+
+// target is one workspace a round scans, with its live rows by port.
 type target struct {
 	id, state string
-	listening map[int]string // live rows the registry says are listening, at which bind
+	rows      map[int]liveRow
+}
+
+// pending reports whether a row waits on discovery without a running
+// container: still listening (to go), or discovery's own and gone (to be
+// retired after RetireAfter).
+func (r liveRow) pending() bool {
+	return r.state == StateListening || r.observedOnly && r.state == StateGone
 }
 
 // run is one round: every running workspace, every workspace with a row
-// still listening (a stopped one is scanned as empty, so its rows go), and
-// every one asked about.
+// still waiting on discovery (a stopped one is scanned as empty, so its rows
+// go), and every one asked about.
 func (s *Scanner) run(ctx context.Context, asks []string) (struct{}, error) {
 	if s.tracks == nil {
 		s.tracks = map[string]*wsTrack{}
 	}
+	now := s.Clock.Now()
+	if len(asks) == 0 && s.Watched != nil && !s.Watched() && !s.lastFull.IsZero() && now.Sub(s.lastFull) < IdleInterval {
+		return struct{}{}, nil // nobody is looking: the next round is soon enough
+	}
+	s.lastFull = now
 	asked := map[string]bool{}
 	for _, id := range asks {
 		asked[id] = true
@@ -245,7 +339,17 @@ func (s *Scanner) scanOne(ctx context.Context, t target, asked bool) {
 	var ls []Listener
 	var err error
 	if t.state == "running" {
-		ls, err = s.Source.Listeners(ctx, t.id)
+		// Bounded per workspace, so a docker call that hangs for one
+		// workspace costs that workspace this round and no other.
+		rctx, cancel := sys.WithTimeout(ctx, s.Clock, s.timeout())
+		ls, err = s.Source.Listeners(rctx, t.id)
+		cutOff := rctx.Err() != nil && ctx.Err() == nil
+		cancel()
+		if cutOff {
+			// Whatever the source made of its cancelled context — even a
+			// table read just before — a read past its bound is no read.
+			ls, err = nil, fmt.Errorf("reading the socket table took longer than %s", s.timeout())
+		}
 	} else {
 		err = ErrNotRunning
 	}
@@ -261,7 +365,11 @@ func (s *Scanner) scanOne(ctx context.Context, t target, asked bool) {
 	case errors.Is(err, ErrNotRunning):
 		ls = nil // scanned as empty: its rows go after their grace
 	case errors.Is(err, ErrScanRaced):
-		// Nothing learned; the next round reads again.
+		// Nothing learned, so nothing read: a rescan is not told "ok".
+		// The next round reads again.
+		if note != nil {
+			note.Discovery = DiscoveryUnavailable
+		}
 		s.observe(ctx, t.id, nil, note)
 		return
 	default:
@@ -279,7 +387,7 @@ func (s *Scanner) scanOne(ctx context.Context, t target, asked bool) {
 		s.logf("drydock: port discovery for workspace %s works again", t.id)
 		tr.unavailable = ""
 	}
-	sightings := s.debounce(tr, t, ls)
+	sightings := s.budget(tr, t.id, s.debounce(tr, t, ls))
 	if len(sightings) > 0 || note != nil {
 		s.observe(ctx, t.id, sightings, note)
 	}
@@ -294,10 +402,46 @@ func (s *Scanner) observe(ctx context.Context, id string, ss []Sighting, note *S
 	}
 }
 
+// budget lets through, in port order, the changes the workspace's budgets
+// allow: every change spends a ChangeEvery token, and a new row a MintEvery
+// token as well. A change held back is not lost — the next scan derives it
+// again from what the registry says — so a budget delays, it never forgets.
+// The first hold is logged; so is the end of a spell of holding.
+func (s *Scanner) budget(tr *wsTrack, id string, ss []Sighting) []Sighting {
+	now := s.Clock.Now()
+	tr.mints.refill(now, MintEvery, MintBurst)
+	tr.changes.refill(now, ChangeEvery, ChangeBurst)
+	var out []Sighting
+	held := 0
+	for _, o := range ss {
+		if tr.changes.tokens < 1 || o.Mint && tr.mints.tokens < 1 {
+			held++
+			continue
+		}
+		tr.changes.tokens--
+		if o.Mint {
+			tr.mints.tokens--
+		}
+		out = append(out, o)
+	}
+	switch {
+	case held > 0 && !tr.limited:
+		s.logf("drydock: port discovery for workspace %s is holding back %d port changes: its ports change faster than discovery records them", id, held)
+		tr.limited = true
+	case held == 0 && tr.limited:
+		s.logf("drydock: port discovery for workspace %s is recording every change again", id)
+		tr.limited = false
+	}
+	return out
+}
+
 // debounce folds one scan into the workspace's track and returns what the
-// registry should change: a port seen AppearAfter scans running at one bind
-// address that the registry does not already list as listening there, and a
-// listening port no scan has seen for Grace.
+// registry should change, by port: a port seen AppearAfter scans running at
+// one bind address that the registry does not already list as listening
+// there (on its row, or on a new one — Mint — within MaxPorts and
+// MaxObserved, decided here so a workspace at the cap costs no transaction);
+// a listening port no scan has seen for Grace; and a row only discovery
+// holds that has been gone for RetireAfter and is not being seen again.
 func (s *Scanner) debounce(tr *wsTrack, t target, ls []Listener) []Sighting {
 	now := s.Clock.Now()
 	seen := bindsByPort(ls)
@@ -319,33 +463,65 @@ func (s *Scanner) debounce(tr *wsTrack, t target, ls []Listener) []Sighting {
 	}
 	// A row the registry says is listening that no scan here has seen —
 	// a restart of Drydock forgot its track — is given its grace from now.
-	for port := range t.listening {
-		if _, ok := tr.ports[port]; !ok {
+	live, observedOnly := len(t.rows), 0
+	for port, r := range t.rows {
+		if r.observedOnly {
+			observedOnly++
+		}
+		if _, ok := tr.ports[port]; !ok && r.state == StateListening {
 			tr.ports[port] = &portTrack{lastSeen: now}
 		}
 	}
+	ports := make([]int, 0, len(tr.ports))
+	for port := range tr.ports {
+		ports = append(ports, port)
+	}
+	sort.Ints(ports)
 	var out []Sighting
-	for port, pt := range tr.ports {
-		_, isSeen := seen[port]
-		bind, listed := t.listening[port]
-		switch {
-		case isSeen:
-			if pt.streak >= AppearAfter && (!listed || bind != pt.bind.String()) {
-				out = append(out, Sighting{Port: port, Listening: true, Bind: pt.bind.String(), At: now})
-			}
-		default:
-			pt.streak = 0
-			if !listed {
-				// Nothing listed and nothing seen: nothing pending.
-				delete(tr.ports, port)
+	for _, port := range ports {
+		pt := tr.ports[port]
+		r, listed := t.rows[port]
+		if _, isSeen := seen[port]; isSeen {
+			bind := pt.bind.String()
+			if pt.streak < AppearAfter || listed && r.state == StateListening && r.bind == bind {
 				continue
 			}
-			if now.Sub(pt.lastSeen) >= s.grace() {
-				out = append(out, Sighting{Port: port, Listening: false, At: pt.lastSeen})
+			if !listed {
+				if live >= MaxPorts || observedOnly >= MaxObserved {
+					continue
+				}
+				live++
+				observedOnly++
 			}
+			out = append(out, Sighting{Port: port, Kind: SightListening, Bind: bind, At: now, Mint: !listed})
+			continue
+		}
+		pt.streak = 0
+		if !listed || r.state != StateListening {
+			delete(tr.ports, port) // nothing seen and nothing listed listening: nothing pending
+			continue
+		}
+		if now.Sub(pt.lastSeen) >= s.grace() {
+			out = append(out, Sighting{Port: port, Kind: SightGone, At: pt.lastSeen})
 		}
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].Port < out[j].Port })
+	// Discovery's own rows, gone for RetireAfter, unless a scan is seeing
+	// the port again: a server that comes back within it gets its row back,
+	// slug and all, rather than a new one.
+	var retire []int
+	for port, r := range t.rows {
+		if _, isSeen := seen[port]; isSeen || !r.observedOnly || r.state != StateGone || r.lastSeen.IsZero() {
+			continue
+		}
+		if now.Sub(r.lastSeen) >= RetireAfter {
+			retire = append(retire, port)
+		}
+	}
+	sort.Ints(retire)
+	for _, port := range retire {
+		out = append(out, Sighting{Port: port, Kind: SightRetire, At: now})
+	}
+	sort.SliceStable(out, func(i, j int) bool { return out[i].Port < out[j].Port })
 	return out
 }
 
@@ -378,14 +554,27 @@ func bindsByPort(ls []Listener) map[int]netip.Addr {
 	return out
 }
 
+// SightKind is what a sighting asks of a row.
+type SightKind int
+
+// The three verdicts.
+const (
+	// SightListening: seen at Bind, AppearAfter scans running; At is now.
+	SightListening SightKind = iota
+	// SightGone: unseen for the grace period; At is the last scan that saw it.
+	SightGone
+	// SightRetire: a row only discovery holds, gone for RetireAfter.
+	SightRetire
+)
+
 // Sighting is the debounced scan's verdict on one port of a workspace.
 type Sighting struct {
 	Port int
-	// Listening: seen at Bind, AppearAfter scans running. Otherwise gone:
-	// unseen for the grace period, At being the last scan that saw it.
-	Listening bool
-	Bind      string
-	At        time.Time
+	Kind SightKind
+	Bind string
+	At   time.Time
+	// Mint: no live row names the port, so listing it makes one.
+	Mint bool
 }
 
 // ScanNote is what a rescan is owed: port.scanned, with the verdict.
@@ -393,13 +582,14 @@ type ScanNote struct {
 	Discovery string
 }
 
-// scanTargets is the round's workspaces: every running one, every one with a
-// live row still listening, and every one asked about — never one being
-// deleted, whose rows are about to be retired with it.
+// scanTargets is the round's workspaces, each with its live rows: every
+// running one, every one with a row still waiting on discovery (pending),
+// and every one asked about — never one being deleted, whose rows are about
+// to be retired with it.
 func (s *Service) scanTargets(ctx context.Context, asked map[string]bool) ([]target, error) {
-	rows, err := s.DB.QueryContext(ctx, `SELECT w.id, w.state, p.container_port, p.bind_addr
-		FROM workspace w LEFT JOIN forwarded_port p
-		  ON p.workspace_id = w.id AND p.retired_at IS NULL AND p.observed_state = 'listening'
+	rows, err := s.DB.QueryContext(ctx, `SELECT w.id, w.state, p.container_port, p.observed_state, p.bind_addr,
+		  p.observed, p.enabled, p.manual, p.declared, p.hidden, p.last_seen_at
+		FROM workspace w LEFT JOIN forwarded_port p ON p.workspace_id = w.id AND p.retired_at IS NULL
 		WHERE w.state <> 'deleting' ORDER BY w.id`)
 	if err != nil {
 		return nil, err
@@ -410,18 +600,24 @@ func (s *Service) scanTargets(ctx context.Context, asked map[string]bool) ([]tar
 	for rows.Next() {
 		var id, state string
 		var port sql.NullInt64
-		var bind sql.NullString
-		if err := rows.Scan(&id, &state, &port, &bind); err != nil {
+		var ostate, bind, seen sql.NullString
+		var observed, enabled, manual, declared, hidden sql.NullBool
+		if err := rows.Scan(&id, &state, &port, &ostate, &bind, &observed, &enabled, &manual, &declared, &hidden, &seen); err != nil {
 			return nil, err
 		}
 		t := byID[id]
 		if t == nil {
-			t = &target{id: id, state: state, listening: map[int]string{}}
+			t = &target{id: id, state: state, rows: map[int]liveRow{}}
 			byID[id] = t
 			order = append(order, id)
 		}
 		if port.Valid {
-			t.listening[int(port.Int64)] = bind.String
+			r := liveRow{state: ostate.String, bind: bind.String,
+				observedOnly: observed.Bool && !(enabled.Bool || manual.Bool || declared.Bool || hidden.Bool)}
+			if at, err := parseTS(seen.String); seen.Valid && err == nil {
+				r.lastSeen = at
+			}
+			t.rows[int(port.Int64)] = r
 		}
 	}
 	if err := rows.Err(); err != nil {
@@ -430,7 +626,11 @@ func (s *Service) scanTargets(ctx context.Context, asked map[string]bool) ([]tar
 	var out []target
 	for _, id := range order {
 		t := byID[id]
-		if t.state == "running" || len(t.listening) > 0 || asked[id] {
+		pending := false
+		for _, r := range t.rows {
+			pending = pending || r.pending()
+		}
+		if t.state == "running" || pending || asked[id] {
 			out = append(out, *t)
 		}
 	}
@@ -451,9 +651,10 @@ func held(p Port) bool { return p.Enabled || p.Manual || p.Declared || p.Hidden 
 //   - A port listening that no live row names: a new row, observed and
 //     **disabled**, with a freshly minted slug (port.added) — within
 //     MaxPorts and MaxObserved, past which it is left unlisted.
-//   - A port gone: a row something else holds (held) is marked gone
-//     (port.updated); one only discovery held is retired, its slug spent
-//     (port.retired), so the port seen again is a new row.
+//   - A port gone: its row is marked gone (port.updated).
+//   - A row to retire (RetireAfter gone, and only discovery holds it): it is
+//     retired, its slug spent (port.retired), so the port seen again later
+//     is a new row.
 //
 // Every event carries `data.source: "discovery"`. A note adds port.scanned.
 // It never writes `enabled`. A workspace being deleted, or gone, is left
@@ -509,7 +710,7 @@ func (s *Service) Observe(ctx context.Context, workspaceID string, ss []Sighting
 				continue
 			}
 			cur, ok := live[o.Port]
-			if o.Listening {
+			if o.Kind == SightListening {
 				if ok && cur.Observed && cur.ObservedState != nil && *cur.ObservedState == StateListening &&
 					cur.BindAddr != nil && *cur.BindAddr == o.Bind {
 					continue
@@ -538,10 +739,13 @@ func (s *Service) Observe(ctx context.Context, workspaceID string, ss []Sighting
 				}
 				continue
 			}
-			if !ok || cur.ObservedState == nil || *cur.ObservedState != StateListening {
+			if !ok || cur.ObservedState == nil {
 				continue
 			}
-			if held(cur) {
+			if o.Kind == SightGone {
+				if *cur.ObservedState != StateListening {
+					continue
+				}
 				if _, err := tx.ExecContext(ctx, `UPDATE forwarded_port SET observed_state = ?, last_seen_at = ? WHERE id = ?`,
 					StateGone, ts(o.At), cur.ID); err != nil {
 					return nil, err
@@ -551,12 +755,16 @@ func (s *Service) Observe(ctx context.Context, workspaceID string, ss []Sighting
 				}
 				continue
 			}
+			// SightRetire, checked again against the row as it is now.
+			if *cur.ObservedState != StateGone || !cur.Observed || held(cur) {
+				continue
+			}
 			if err := retire(ctx, tx, cur.ID, s.Clock.Now()); err != nil {
 				return nil, err
 			}
 			revoked = append(revoked, cur.ID)
 			e, err := events.NewEvent(workspaceID, events.Info, KindPortRetired,
-				fmt.Sprintf("Port %d stopped listening.", o.Port),
+				fmt.Sprintf("Port %d removed from the ports list: nothing has listened on it for a while.", o.Port),
 				map[string]any{"port_id": cur.ID, "container_port": cur.ContainerPort, "source": SourceDiscovery})
 			if err != nil {
 				return nil, err

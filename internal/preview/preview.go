@@ -90,13 +90,20 @@
 // listening (a stopped one is read as empty). It remembers ports, never a PID
 // or an address. Debounced: a port is listed after AppearAfter (2) scans at
 // one bind address and goes after Grace (15 s) unseen; a bind change takes
-// two scans too. Service.Observe merges by container_port onto live rows only
+// two scans too. Each workspace's read is bounded by Timeout (15 s, injected
+// clock): one cut off is unavailable for that round and the round goes on.
+// While Watched says no SSE stream is open, unasked rounds run at most every
+// IdleInterval. Two token buckets per workspace bound discovery's churn —
+// every row write a change (ChangeBurst, ChangeEvery), every new row a mint
+// as well (MintBurst, MintEvery); a change held back is derived again next
+// scan. Service.Observe merges by container_port onto live rows only
 // (a retired row stays retired; the port seen again is a new row and a new
 // slug), in one Commit with its events — port.added, port.updated,
 // port.retired, each with data.source "discovery", at info level: discovery
 // is ambient, never a notice. It never writes `enabled`. A stopped port is
-// kept, gone, while enabled, hand-added, declared or hidden holds it, and
-// retired otherwise; MaxObserved (32) bounds discovery's own rows. Port.Loopback
+// marked gone; a row only discovery holds is retired RetireAfter (10 min)
+// after it was last seen unless the port is seen again, so a server that
+// comes back keeps its row and slug; MaxObserved (32) bounds discovery's own rows. Port.Loopback
 // is the classification of bind_addr. DeclarePorts' retire rule counts
 // "listening now" and "hidden" as holders. An unreadable table changes
 // nothing (ErrScanRaced, or any error but ErrNotRunning) and is logged once

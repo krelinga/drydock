@@ -8,7 +8,7 @@
 import { describe, expect, it } from 'vitest'
 import { FakeEventSource } from '../test/fakeEventSource'
 import { freshBackend, mountApp, settle, useMockApi } from '../test/setup'
-import { scanPorts, seedPorts, WS_RUNNING } from '../mocks/backend'
+import { scanPorts, SCAN_RETIRE_SCANS, seedPorts, WS_RUNNING } from '../mocks/backend'
 import { useStreamStore } from '../stores/stream'
 import { portRescanKey } from '../stores/ports'
 
@@ -74,7 +74,7 @@ describe('port discovery', () => {
     expect(wrapper.find('[data-test="port-count"]').text()).toContain('3 listening')
   })
 
-  it('a server that stops is said to have stopped, and one only discovery listed goes', async () => {
+  it('a server that stops is said to have stopped, and one only discovery listed goes ten minutes later', async () => {
     const b = freshBackend({ signedIn: true })
     seedPorts(b)
     b.sockets[WS_RUNNING] = [{ port: 5173, bind: '0.0.0.0' }, { port: 8080, bind: '0.0.0.0' }]
@@ -91,8 +91,12 @@ describe('port discovery', () => {
     expect(row(wrapper, 8080).exists()).toBe(true) // inside the grace
     scanPorts(b)
     await settle()
-    expect(row(wrapper, 8080).exists()).toBe(false)
     expect(row(wrapper, 5173).find('[data-test="port-observed"]').text()).toBe('Not listening now.')
+    expect(row(wrapper, 8080).find('[data-test="port-observed"]').text()).toBe('Not listening now.')
+    for (let i = 3; i < SCAN_RETIRE_SCANS; i++) scanPorts(b)
+    await settle()
+    expect(row(wrapper, 8080).exists()).toBe(false)
+    expect(row(wrapper, 5173).exists()).toBe(true) // declared: kept
   })
 
   it('a rescan is in flight until its port.scanned, not its 202', async () => {

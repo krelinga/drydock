@@ -1377,6 +1377,14 @@ export function seedPorts(b: MockBackend): void {
  */
 export const SCAN_APPEAR_AFTER = 2
 export const SCAN_GRACE_SCANS = 3
+/**
+ * A row only discovery holds stays listed, gone, for RetireAfter (ten
+ * minutes: 120 scans here) before it is retired, so a server that comes back
+ * keeps its row and slug. The server's per-workspace budgets on new rows and
+ * on changes (internal/preview MintBurst, ChangeBurst) are not mocked: they
+ * bound a container churning ports, which no spec plays.
+ */
+export const SCAN_RETIRE_SCANS = 120
 const MAX_OBSERVED = 32
 
 /** What a workspace's container is listening on, as discovery reads it. */
@@ -1396,17 +1404,20 @@ const heldPort = (p: MockPort) => p.enabled || p.manual || p.declared || p.hidde
 /**
  * One discovery round, as preview.Scanner runs it (internal/preview
  * discover.go): every running workspace, every one with a row still
- * listening (a stopped one is read as empty), and every one in `asked`,
- * which each get a port.scanned. Debounced: listed after SCAN_APPEAR_AFTER
- * scans at one bind, gone after SCAN_GRACE_SCANS without one. Merged onto
+ * waiting on discovery (a stopped one is read as empty), and every one in
+ * `asked`, which each get a port.scanned. Debounced: listed after
+ * SCAN_APPEAR_AFTER scans at one bind, gone after SCAN_GRACE_SCANS without
+ * one, and discovery's own retired SCAN_RETIRE_SCANS after it was last seen. Merged onto
  * live rows by port, never a retired one; a new row is born off. Every event
  * carries `source: 'discovery'`. It never writes `enabled`.
  */
 export function scanPorts(b: MockBackend, asked: string[] = []): void {
-  const listening = (id: string) => Object.values(b.ports)
-    .filter((p) => p.workspace_id === id && !p.retired && p.observed_state === 'listening')
+  const liveRows = (id: string) => Object.values(b.ports).filter((p) => p.workspace_id === id && !p.retired)
+  const observedOnly = (p: MockPort) => p.observed && !heldPort(p)
+  // A row still waiting on discovery: listening (to go), or discovery's own and gone (to be retired).
+  const pending = (p: MockPort) => p.observed_state === 'listening' || (observedOnly(p) && p.observed_state === 'gone')
   const targets = Object.values(b.workspaces)
-    .filter((w) => w.state !== 'deleting' && (w.state === 'running' || listening(w.id).length > 0 || asked.includes(w.id)))
+    .filter((w) => w.state !== 'deleting' && (w.state === 'running' || liveRows(w.id).some(pending) || asked.includes(w.id)))
     .sort((x, y) => (x.id < y.id ? -1 : x.id > y.id ? 1 : 0))
   for (const w of targets) {
     const note = asked.includes(w.id)
@@ -1426,24 +1437,23 @@ export function scanPorts(b: MockBackend, asked: string[] = []): void {
       else tracks[port] = { bind, streak: 1, missed: 0 }
       tracks[port]!.missed = 0
     }
-    const listed = new Map(listening(w.id).map((p) => [p.container_port, p]))
-    for (const port of listed.keys()) if (tracks[port] === undefined) tracks[port] = { bind: '', streak: 0, missed: 0 }
+    const live = new Map(liveRows(w.id).map((p) => [p.container_port, p]))
+    for (const [port, p] of live) if (tracks[port] === undefined && pending(p)) tracks[port] = { bind: '', streak: 0, missed: 0 }
     const ports = Object.keys(tracks).map(Number).sort((x, y) => x - y)
     for (const port of ports) {
       const t = tracks[port]!
-      const row = listed.get(port)
+      const row = live.get(port)
       if (seen.has(port)) {
-        if (t.streak < SCAN_APPEAR_AFTER || (row !== undefined && row.bind_addr === t.bind)) continue
-        const live = Object.values(b.ports).filter((p) => p.workspace_id === w.id && !p.retired)
-        const cur = live.find((p) => p.container_port === port)
+        if (t.streak < SCAN_APPEAR_AFTER || (row?.observed_state === 'listening' && row.bind_addr === t.bind)) continue
         const now = new Date().toISOString()
-        if (cur !== undefined) {
-          const next: MockPort = { ...cur, observed: true, observed_state: 'listening', bind_addr: t.bind, last_seen_at: now }
-          b.ports[cur.id] = next
+        if (row !== undefined) {
+          const next: MockPort = { ...row, observed: true, observed_state: 'listening', bind_addr: t.bind, last_seen_at: now }
+          b.ports[row.id] = next
           emit(b, 'port.updated', { workspace_id: w.id, message: `Port ${port} is listening.`, data: { port: portView(b, next), source: 'discovery' } })
           continue
         }
-        if (live.length >= 64 || live.filter((p) => p.observed && !heldPort(p)).length >= MAX_OBSERVED) continue
+        const all = liveRows(w.id)
+        if (all.length >= 64 || all.filter(observedOnly).length >= MAX_OBSERVED) continue
         const id = `01JP${String(++b.portSeq).padStart(22, '0')}`
         const fresh: MockPort = {
           id, workspace_id: w.id, container_port: port, slug: mintSlug(b, w.id, port), host: null, url: null,
@@ -1456,23 +1466,26 @@ export function scanPorts(b: MockBackend, asked: string[] = []): void {
         continue
       }
       t.streak = 0
-      if (row === undefined) {
-        delete tracks[port]
+      if (row === undefined || !pending(row)) {
+        delete tracks[port] // nothing seen and nothing waiting: nothing pending
         continue
       }
       t.missed++
-      if (t.missed < SCAN_GRACE_SCANS) continue
-      if (heldPort(row)) {
+      if (row.observed_state === 'listening') {
+        if (t.missed < SCAN_GRACE_SCANS) continue
         const next: MockPort = { ...row, observed_state: 'gone' }
         b.ports[row.id] = next
         emit(b, 'port.updated', { workspace_id: w.id, message: `Port ${port} stopped listening.`, data: { port: portView(b, next), source: 'discovery' } })
-      } else {
-        b.ports[row.id] = { ...row, retired: true, enabled: false }
-        emit(b, 'port.retired', {
-          workspace_id: w.id, message: `Port ${port} stopped listening.`,
-          data: { port_id: row.id, container_port: port, source: 'discovery' },
-        })
+        continue
       }
+      // Discovery's own, gone: retired once nothing has listened for RetireAfter.
+      if (t.missed < SCAN_RETIRE_SCANS) continue
+      b.ports[row.id] = { ...row, retired: true, enabled: false }
+      delete tracks[port]
+      emit(b, 'port.retired', {
+        workspace_id: w.id, message: `Port ${port} removed from the ports list: nothing has listened on it for a while.`,
+        data: { port_id: row.id, container_port: port, source: 'discovery' },
+      })
     }
     if (note) emit(b, 'port.scanned', { workspace_id: w.id, message: 'Ports scanned.', data: { discovery: 'ok', source: 'discovery' } })
   }

@@ -167,7 +167,9 @@ with the `all_repos` confirm, the two-kinds rotate result, delete.
   `listening` is what a probe finds answering, and `previewDomain: null` is previews off.
 - `scanPorts` is one discovery round as `preview.Scanner` runs it, over `sockets` (each port's bind
   address; absent, `listening` on 0.0.0.0): listed after two scans, gone after three
-  (`SCAN_GRACE_SCANS`, the server's 15 s at its 5 s cadence). `mocks/discovery.spec.ts` replays the
+  (`SCAN_GRACE_SCANS`, the server's 15 s at its 5 s cadence), and a row only discovery holds
+  retired 120 scans after it was last seen (`SCAN_RETIRE_SCANS`, ten minutes). The server's churn
+  budgets are not mocked. `mocks/discovery.spec.ts` replays the
   server's golden scenario (`internal/preview/testdata/discovery-events.json`, written by
   `TestDiscoveryEventsGolden`) and demands the same events at the same scans, so the two cannot
   drift. `scanMode: 'manual'` leaves a rescan's scan to the spec; dev:mock scans every 5 s, and

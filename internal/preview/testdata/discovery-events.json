@@ -81,6 +81,29 @@
   },
   {
     "scan": 6,
+    "kind": "port.updated",
+    "level": "info",
+    "data_keys": [
+      "port",
+      "source"
+    ],
+    "port": {
+      "bind_addr": "127.0.0.1",
+      "container_port": 8080,
+      "declared": false,
+      "enabled": false,
+      "hidden": false,
+      "label": null,
+      "loopback": true,
+      "manual": false,
+      "observed": true,
+      "observed_state": "gone",
+      "url": null
+    },
+    "source": "discovery"
+  },
+  {
+    "scan": 123,
     "kind": "port.retired",
     "level": "info",
     "data_keys": [

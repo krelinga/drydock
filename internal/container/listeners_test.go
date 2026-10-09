@@ -216,9 +216,16 @@ func TestListenersThrowAwayARaceWithARestart(t *testing.T) {
 	if ls, err := m.Listeners(ctx, wsID); !errors.Is(err, ErrMoved) || ls != nil {
 		t.Errorf("PID changed under the read: %v, %v; want ErrMoved and nothing", ls, err)
 	}
-	setPids(t, state, 400) // no /proc/400: the process is gone
+	setPids(t, state, 400, 500) // no /proc/400, and Docker says it restarted: gone
 	if ls, err := m.Listeners(ctx, wsID); !errors.Is(err, ErrMoved) || ls != nil {
 		t.Errorf("process gone: %v, %v; want ErrMoved", ls, err)
+	}
+	// No /proc/400 while Docker says 400 is still running: this process
+	// cannot see it (hidepid, ProtectProc), which lasts — an error, so
+	// discovery is unavailable and said to be, never a silent race.
+	setPids(t, state, 400)
+	if ls, err := m.Listeners(ctx, wsID); err == nil || errors.Is(err, ErrMoved) || ls != nil {
+		t.Errorf("process hidden: %v, %v; want an error that is not ErrMoved", ls, err)
 	}
 }
 

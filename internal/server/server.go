@@ -265,8 +265,12 @@ func New(ctx context.Context, cfg config.Config, env sys.Env) (*Server, error) {
 	// Discovery reads each running container's socket table through the
 	// container manager, which resolves the container — and its PID, from
 	// the same inspect as the proxy's address — by label on every scan.
+	// While no SSE stream is open nobody can see a port appear, so the
+	// scans nobody asked for slow to one a minute (preview.IdleInterval);
+	// a rescan, and the next interval after a stream opens, scan at once.
 	s.Discovery = &preview.Scanner{Registry: previews, Source: discoverySource{containers}, Clock: env.Clock,
-		Logf: func(f string, a ...any) { fmt.Fprintf(os.Stderr, f+"\n", a...) }}
+		Watched: func() bool { return s.Events.Subscribers() > 0 },
+		Logf:    func(f string, a ...any) { fmt.Fprintf(os.Stderr, f+"\n", a...) }}
 	// Step 3's declared ports become the registry's declared rows: listed,
 	// never enabled by it (PF §13 step 4).
 	s.Provisioner.DeclarePorts = func(ctx context.Context, id string, ports []container.DeclaredPort) error {

@@ -163,9 +163,10 @@ func TestDiscoveryListsAPortOffAndNeverEnablesIt(t *testing.T) {
 // TestDiscoveryIsDebounced: one scan is not enough for a row (PF §8.2: two
 // consecutive), a server restarting inside the grace period changes nothing
 // and writes nothing, a bind address that changes takes two scans too, and a
-// port unseen for the grace period goes — retired when discovery alone held
-// it. Mutation-checked: AppearAfter 1 lists the port after one scan; a grace
-// of zero (gone at the first scan that misses it) churns the restart.
+// port unseen for the grace period goes — marked gone, and retired only
+// RetireAfter later when discovery alone held it. Mutation-checked:
+// AppearAfter 1 lists the port after one scan; a grace of zero (gone at the
+// first scan that misses it) churns the restart.
 func TestDiscoveryIsDebounced(t *testing.T) {
 	d := newDiscovery(t)
 	d.src.listen("w1", "0.0.0.0:5173")
@@ -209,11 +210,211 @@ func TestDiscoveryIsDebounced(t *testing.T) {
 		}
 	}
 	d.scan()
-	if _, ok := d.rows(t, "w1")[5173]; ok {
-		t.Error("still listed after the grace; want retired, as only discovery held it")
+	if p := d.rows(t, "w1")[5173]; p.ID != first.ID || state(p) != "gone" {
+		t.Errorf("after the grace: %+v; want the row kept, gone", p)
 	}
-	if got := strings.Join(d.kinds(t), " "); got != "port.added:5173 port.updated:5173 port.retired:5173" {
+	d.clock.Advance(preview.RetireAfter)
+	d.scan()
+	if _, ok := d.rows(t, "w1")[5173]; ok {
+		t.Error("still listed RetireAfter after it went; want retired, as only discovery held it")
+	}
+	if got := strings.Join(d.kinds(t), " "); got != "port.added:5173 port.updated:5173 port.updated:5173 port.retired:5173" {
 		t.Errorf("events = %s", got)
+	}
+}
+
+// TestAServerThatComesBackKeepsItsRow: a port that stops for longer than the
+// grace and listens again inside RetireAfter is the same row and the same
+// slug — a dev server stopped for a coffee, or a test suite cycling one port,
+// spends no slugs and adds no rows. Mutation-checked: RetireAfter zero (retire
+// at the grace, as before) mints a row per cycle.
+func TestAServerThatComesBackKeepsItsRow(t *testing.T) {
+	d := newDiscovery(t)
+	d.src.listen("w1", "0.0.0.0:5173")
+	d.scan()
+	d.scan()
+	first := d.rows(t, "w1")[5173]
+	for cycle := 0; cycle < 5; cycle++ {
+		d.src.listen("w1")
+		for i := 0; i < 4; i++ {
+			d.scan() // past the grace: gone
+		}
+		if p := d.rows(t, "w1")[5173]; p.ID != first.ID || state(p) != "gone" {
+			t.Fatalf("cycle %d, stopped: %+v; want the same row, gone", cycle, p)
+		}
+		d.src.listen("w1", "0.0.0.0:5173")
+		d.scan()
+		d.scan()
+		if p := d.rows(t, "w1")[5173]; p.ID != first.ID || p.Slug != first.Slug || state(p) != "listening" {
+			t.Fatalf("cycle %d, back: %+v; want the same row and slug, listening", cycle, p)
+		}
+	}
+	var n int
+	d.db.QueryRow(`SELECT count(*) FROM forwarded_port`).Scan(&n)
+	if n != 1 {
+		t.Errorf("%d rows, retired ones included; want one", n)
+	}
+}
+
+// TestDiscoveryChurnIsBudgeted: a container that opens 32 fresh ports, closes
+// them past the grace and does it again — the review's worst case, and any
+// test suite on ephemeral ports — for two simulated hours, against a control
+// with the same budget idle. New rows stay within MintBurst plus one per
+// MintEvery, events within ChangeBurst plus one per ChangeEvery, and the
+// journal hears of it once. Mutation-checked: budget passing every change
+// through mints a row per port per cycle.
+func TestDiscoveryChurnIsBudgeted(t *testing.T) {
+	d := newDiscovery(t)
+	const span = 2 * time.Hour
+	scans := int(span / preview.DefaultScanInterval)
+	base := 20000
+	for i := 0; i < scans; i++ {
+		if i%6 < 2 { // up for two scans, then down for four (past the grace)
+			var socks []string
+			for p := 0; p < 32; p++ {
+				socks = append(socks, fmt.Sprintf("0.0.0.0:%d", base+p))
+			}
+			d.src.listen("w1", socks...)
+		} else {
+			if i%6 == 2 {
+				base += 32 // the next cycle's ports are new ones
+			}
+			d.src.listen("w1")
+		}
+		d.scan()
+	}
+	var rows int
+	d.db.QueryRow(`SELECT count(*) FROM forwarded_port`).Scan(&rows)
+	maxRows := preview.MintBurst + int(span/preview.MintEvery) + 1
+	if rows == 0 || rows > maxRows {
+		t.Errorf("%d rows minted in %s; want some, and at most %d", rows, span, maxRows)
+	}
+	es, _ := d.log.Since(context.Background(), 0)
+	maxEvents := preview.ChangeBurst + int(span/preview.ChangeEvery) + 1
+	if len(es) > maxEvents {
+		t.Errorf("%d events in %s; want at most %d", len(es), span, maxEvents)
+	}
+	n := 0
+	for _, l := range d.logs {
+		if strings.Contains(l, "holding back") {
+			n++
+		}
+	}
+	if n == 0 || n > scans/6 {
+		t.Errorf("journal said it was holding back %d times; want it said, not every scan", n)
+	}
+	// The control: a workspace within its budget is never held back — its
+	// first ports are listed at once.
+	c := newDiscovery(t)
+	c.src.listen("w1", "0.0.0.0:3000", "0.0.0.0:3001")
+	c.scan()
+	c.scan()
+	if len(c.rows(t, "w1")) != 2 || len(c.logs) != 0 {
+		t.Errorf("within budget: %d rows, journal %q", len(c.rows(t, "w1")), c.logs)
+	}
+}
+
+// blockingSource is a source whose read for one workspace never ends until
+// its context does — a docker call hung on a wedged daemon — and answers the
+// rest from inner.
+type blockingSource struct {
+	inner  *fakeSource
+	block  string
+	inside chan struct{}
+}
+
+func (b *blockingSource) Listeners(ctx context.Context, id string) ([]preview.Listener, error) {
+	if id == b.block {
+		close(b.inside)
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+	return b.inner.Listeners(ctx, id)
+}
+
+// TestAHungReadCostsOneWorkspace: one workspace's read hangs; the round
+// waits for it only DefaultScanTimeout on the injected clock, answers its
+// rescan "unavailable", and goes on to scan the next workspace, whose rescan
+// is answered "ok" and whose port is seen. Mutation-checked: the read under
+// the round's own context hangs the round until shutdown.
+func TestAHungReadCostsOneWorkspace(t *testing.T) {
+	d := newDiscovery(t)
+	d.src.listen("w2", "0.0.0.0:8080")
+	src := &blockingSource{inner: d.src, block: "w1", inside: make(chan struct{})}
+	d.sc.Source = src
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		d.sc.Round(context.Background(), "w1", "w2")
+	}()
+	<-src.inside
+	deadline := time.Now().Add(10 * time.Second)
+	for d.clock.Waiting() == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("the hung read set no timer on the injected clock")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	d.clock.Advance(preview.DefaultScanTimeout)
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the round is still waiting on the hung read")
+	}
+	es, _ := d.log.Since(context.Background(), 0)
+	verdict := map[string]string{}
+	for _, e := range es {
+		if e.Kind == preview.KindPortScanned {
+			var v struct{ Discovery string }
+			json.Unmarshal(e.Data, &v)
+			verdict[e.WorkspaceID] = v.Discovery
+		}
+	}
+	if verdict["w1"] != "unavailable" || verdict["w2"] != "ok" {
+		t.Errorf("rescans answered %v; want w1 unavailable, w2 ok", verdict)
+	}
+	if d.src.calls["w2"] != 1 {
+		t.Errorf("w2 was read %d times; want once, after w1's read was cut off", d.src.calls["w2"])
+	}
+	if len(d.logs) != 1 || !strings.Contains(d.logs[0], "longer than") {
+		t.Errorf("journal = %q; want the cut-off said once", d.logs)
+	}
+}
+
+// TestDiscoveryBacksOffWhileNobodyWatches: with no SSE stream open, a round
+// nobody asked for runs at most every IdleInterval; a rescan runs at once;
+// and the moment someone watches, every interval scans again.
+func TestDiscoveryBacksOffWhileNobodyWatches(t *testing.T) {
+	d := newDiscovery(t)
+	watched := false
+	d.sc.Watched = func() bool { return watched }
+	d.src.listen("w1", "0.0.0.0:8080")
+	reads := func() int { d.src.mu.Lock(); defer d.src.mu.Unlock(); return d.src.calls["w1"] }
+	d.scan() // the first round always runs
+	if reads() != 1 {
+		t.Fatalf("control: %d reads", reads())
+	}
+	for i := 0; i < 5; i++ {
+		d.scan() // 25 s, unwatched
+	}
+	if reads() != 1 {
+		t.Errorf("unwatched, %d reads in 25 s; want none past the first", reads())
+	}
+	d.scan("w1")
+	if reads() != 2 {
+		t.Errorf("a rescan read %d times; want it at once", reads()-1)
+	}
+	for i := 0; i < int(preview.IdleInterval/preview.DefaultScanInterval); i++ {
+		d.scan()
+	}
+	if reads() != 3 {
+		t.Errorf("after an idle interval: %d reads; want one more", reads())
+	}
+	watched = true
+	d.scan()
+	d.scan()
+	if reads() != 5 {
+		t.Errorf("watched: %d reads; want every interval", reads())
 	}
 }
 
@@ -332,6 +533,8 @@ func TestWhatHoldsADiscoveredRow(t *testing.T) {
 	d.src.listen("w1")
 	d.clock.Advance(preview.DefaultGrace)
 	d.scan()
+	d.clock.Advance(preview.RetireAfter)
+	d.scan()
 	rows = d.rows(t, "w1")
 	for _, port := range []int{4000, 5000, 6000} {
 		if state(rows[port]) != "gone" {
@@ -339,7 +542,7 @@ func TestWhatHoldsADiscoveredRow(t *testing.T) {
 		}
 	}
 	if _, ok := rows[7000]; ok {
-		t.Error("port 7000, held by discovery alone, is still listed")
+		t.Error("port 7000, held by discovery alone, is still listed RetireAfter after it went")
 	}
 	if !rows[5000].Enabled {
 		t.Error("the gone port was switched off by the scan")
@@ -352,8 +555,10 @@ func TestWhatHoldsADiscoveredRow(t *testing.T) {
 		socks = append(socks, fmt.Sprintf("0.0.0.0:%d", p))
 	}
 	d2.src.listen("w1", socks...)
-	d2.scan()
-	d2.scan()
+	for i := 0; i < 2+preview.MaxObserved; i++ {
+		d2.clock.Advance(preview.MintEvery) // the mint budget is not what this tests
+		d2.sc.Round(context.Background())
+	}
 	if n := len(d2.rows(t, "w1")); n != preview.MaxObserved {
 		t.Errorf("%d rows from forty listeners; want %d", n, preview.MaxObserved)
 	}
@@ -381,8 +586,17 @@ func TestDiscoveryScansWhatIsNotRunningAsEmpty(t *testing.T) {
 	d.src.mu.Unlock()
 	d.clock.Advance(preview.DefaultGrace)
 	d.scan()
+	for _, ws := range []string{"w1", "w2"} {
+		for _, p := range d.rows(t, ws) {
+			if state(p) != "gone" {
+				t.Errorf("%s: %+v left listening", ws, p)
+			}
+		}
+	}
+	d.clock.Advance(preview.RetireAfter)
+	d.scan()
 	if len(d.rows(t, "w1")) != 0 || len(d.rows(t, "w2")) != 0 {
-		t.Errorf("rows left listening: %v %v", d.rows(t, "w1"), d.rows(t, "w2"))
+		t.Errorf("rows left: %v %v", d.rows(t, "w1"), d.rows(t, "w2"))
 	}
 	if d.src.calls["w2"] != before {
 		t.Error("a stopped workspace was asked of its container")
@@ -426,8 +640,8 @@ func TestDiscoveryUnavailableChangesNothing(t *testing.T) {
 			verdicts = append(verdicts, v.Discovery)
 		}
 	}
-	if strings.Join(verdicts, " ") != "unavailable ok" {
-		t.Errorf("rescans answered %v; want unavailable, then ok for the raced read", verdicts)
+	if strings.Join(verdicts, " ") != "unavailable unavailable" {
+		t.Errorf("rescans answered %v; want unavailable both times — a raced read read nothing", verdicts)
 	}
 	d.src.listen("w1", "0.0.0.0:5173")
 	d.scan()
@@ -511,7 +725,8 @@ var update = flag.Bool("update", false, "rewrite testdata/discovery-events.json"
 // replays (web/src/mocks/discovery.spec.ts), one scan per interval: w1
 // declares 5173; a server listens on it at 0.0.0.0 and another on
 // 127.0.0.1:8080 (scans 1 and 2); a rescan (3); then both stop (4, 5 and 6,
-// the grace ending at the third scan that misses them). It returns the
+// the grace ending at the third scan that misses them), and 8080, discovery's
+// own, is retired RetireAfter after it was last seen (scan 123). It returns the
 // newest event id after each scan, so the golden file says which scan wrote
 // each event.
 func playGolden(t *testing.T, d *discovery) []int64 {
@@ -533,9 +748,9 @@ func playGolden(t *testing.T, d *discovery) []int64 {
 	scan()
 	scan("w1")
 	d.src.listen("w1")
-	scan()
-	scan()
-	scan()
+	for i := 0; i < 3+int(preview.RetireAfter/preview.DefaultScanInterval); i++ {
+		scan()
+	}
 	return after
 }
 

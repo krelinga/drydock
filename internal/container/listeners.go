@@ -181,9 +181,18 @@ func (m Manager) Listeners(ctx context.Context, workspaceID string) ([]Listener,
 		ls, err := readTable(filepath.Join(dir, "net", name))
 		if errors.Is(err, fs.ErrNotExist) {
 			if _, serr := os.Stat(dir); serr != nil {
-				// The process is gone: the container stopped under the
-				// read, and there is nothing of its to read.
-				return nil, ErrMoved
+				// No /proc/<pid>: the container stopped under the read —
+				// or, if it is still running under that PID, this process
+				// cannot see it (hidepid, ProtectProc, another PID
+				// namespace), which lasts and is an error, never a race.
+				c, ierr := m.inspectOne(ctx, workspaceID, a.ContainerID)
+				if errors.Is(ierr, ErrNotRunning) || ierr == nil && (!c.State.Running || c.State.Pid != a.Pid) {
+					return nil, ErrMoved
+				}
+				if ierr != nil {
+					return nil, ierr
+				}
+				return nil, fmt.Errorf("container: the container's process %d is running but %s cannot be seen from here", a.Pid, dir)
 			}
 			if name == "tcp6" {
 				continue // a kernel without IPv6

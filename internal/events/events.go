@@ -108,6 +108,15 @@ type Log struct {
 	closed bool
 }
 
+// Subscribers is how many live subscriptions there are — in Drydock, open
+// SSE streams. Port discovery reads it to slow down while nobody watches;
+// it subscribes to nothing itself.
+func (l *Log) Subscribers() int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return len(l.subs)
+}
+
 // New returns a Log over db.
 func New(db *sql.DB, clock sys.Clock) *Log {
 	return &Log{DB: db, Clock: clock}
