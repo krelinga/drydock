@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -31,6 +32,10 @@ type sup struct {
 	// cancelled by a stop. Nil for one with no loop.
 	detached <-chan struct{}
 
+	// wmu serialises this sup's state writes (write), from the check for a
+	// change to the memory update after the commit. Taken before mu, and
+	// held across the commit, which mu never is.
+	wmu      sync.Mutex
 	mu       sync.Mutex
 	state    State
 	reason   Reason
@@ -183,11 +188,20 @@ func (s *sup) sleep(ctx context.Context, d time.Duration) bool {
 	}
 }
 
-// discovered is what one run's output has announced so far.
+// discovered is what one run's output has announced so far, and how much of
+// it is recorded. The announced half (env, capUsed/capTotal) decides
+// serving; the recorded half moves only when recordDiscovery commits, so a
+// write that fails is tried again on the next window rather than lost for
+// the server's lifetime.
 type discovered struct {
 	env               string
-	sessions          map[string]bool
 	capUsed, capTotal int
+
+	envRecorded bool
+	sessions    map[string]bool // recorded
+	pending     []string        // announced, not yet recorded, in order
+	capRecUsed  int
+	capRecTotal int
 }
 
 const (
@@ -413,35 +427,37 @@ func keepTail(b []byte, n int) []byte {
 // `Connected`).
 func (s *sup) discover(ctx context.Context, d *discovered, window []byte) bool {
 	got, _ := classify.ClassifyDiscovery(window)
-	var what []string
+	// What the process announced is latched whether or not the record below
+	// commits: it decides serving, which the announcement does.
 	if d.env == "" && got.EnvironmentID != "" {
 		// The first id a process announces is its own (classify's rule);
 		// it cannot change within one process, so it is latched.
 		d.env = got.EnvironmentID
-		if s.recordEnvironment(ctx, d.env) {
-			what = append(what, "The session server's environment is "+d.env+".")
-		} else {
-			what = append(what, "The session server reconnected to environment "+d.env+".")
-		}
 	}
-	sessions := -1
 	for _, id := range got.SessionIDs {
-		if d.sessions[id] {
-			continue
+		if !d.sessions[id] && !slices.Contains(d.pending, id) {
+			d.pending = append(d.pending, id)
 		}
-		d.sessions[id] = true
-		sessions = s.recordSession(ctx, id)
-		what = append(what, "Session "+id+" is being served.")
 	}
-	if got.CapacityTotal > 0 && (got.CapacityUsed != d.capUsed || got.CapacityTotal != d.capTotal) {
+	if got.CapacityTotal > 0 {
 		d.capUsed, d.capTotal = got.CapacityUsed, got.CapacityTotal
-		what = append(what, fmt.Sprintf("Capacity %d/%d.", d.capUsed, d.capTotal))
 	}
-	if len(what) > 0 {
-		if sessions < 0 {
-			sessions = s.sessionCount(ctx)
+	// What is recorded moves only once the record commits: a failed write
+	// leaves it all pending, for the next window to try again.
+	var env string
+	if d.env != "" && !d.envRecorded {
+		env = d.env
+	}
+	capChanged := d.capTotal > 0 && (d.capUsed != d.capRecUsed || d.capTotal != d.capRecTotal)
+	if env != "" || len(d.pending) > 0 || capChanged {
+		if s.recordDiscovery(ctx, d, env, d.pending, capChanged) {
+			d.envRecorded = d.env != ""
+			for _, id := range d.pending {
+				d.sessions[id] = true
+			}
+			d.pending = nil
+			d.capRecUsed, d.capRecTotal = d.capUsed, d.capTotal
 		}
-		s.emitSession(ctx, d, sessions, strings.Join(what, " "))
 	}
 	return d.env != "" && d.capTotal > 0
 }

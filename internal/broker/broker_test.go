@@ -366,12 +366,25 @@ func TestCacheAndGrants(t *testing.T) {
 	}
 }
 
-// TestATokenIsNeverServedUnrecorded: a token whose token_grant row cannot be
-// written is not served (unavailable), and is not marked recorded, so the
-// next request writes the row and serves the same cached token — one row, one
-// mint. The database fails by a trigger that refuses token_grant inserts and
-// nothing else; the control is the same request once it is dropped.
+// TestATokenIsNeverServedUnrecorded: a token whose token_grant row and
+// token.issued event cannot both be written is not served (unavailable), and
+// is not marked recorded, so the next request writes the pair and serves the
+// same cached token — one row, one event, one mint. The two are one commit,
+// so either failing writes neither: the database fails by a trigger that
+// refuses token_grant inserts, or one that refuses only the token.issued
+// event; the control is the same request once it is dropped.
 func TestATokenIsNeverServedUnrecorded(t *testing.T) {
+	for _, c := range []struct{ name, trigger string }{
+		{"the row fails", `CREATE TRIGGER refuse BEFORE INSERT ON token_grant
+			BEGIN SELECT RAISE(ABORT, 'disk on fire'); END`},
+		{"only the event fails", `CREATE TRIGGER refuse BEFORE INSERT ON event WHEN NEW.kind = 'token.issued'
+			BEGIN SELECT RAISE(ABORT, 'disk on fire'); END`},
+	} {
+		t.Run(c.name, func(t *testing.T) { neverServedUnrecorded(t, c.trigger) })
+	}
+}
+
+func neverServedUnrecorded(t *testing.T, trigger string) {
 	ctx := context.Background()
 	e := newEnv(t)
 	var logMu sync.Mutex
@@ -386,17 +399,39 @@ func TestATokenIsNeverServedUnrecorded(t *testing.T) {
 		e.db.QueryRowContext(ctx, `SELECT count(*) FROM token_grant WHERE workspace_id = ?`, wsA).Scan(&n)
 		return n
 	}
-	if _, err := e.db.ExecContext(ctx, `CREATE TRIGGER refuse_grants BEFORE INSERT ON token_grant
-		BEGIN SELECT RAISE(ABORT, 'disk on fire'); END`); err != nil {
+	issued := func() int {
+		var n int
+		e.db.QueryRowContext(ctx, `SELECT count(*) FROM event WHERE kind = 'token.issued'`).Scan(&n)
+		return n
+	}
+	sub := e.b.Events.Subscribe()
+	defer e.b.Events.Cancel(sub)
+	published := func() int {
+		n := 0
+		for {
+			select {
+			case ev := <-sub.C:
+				if ev.Kind == "token.issued" {
+					n++
+				}
+			default:
+				return n
+			}
+		}
+	}
+	if _, err := e.db.ExecContext(ctx, trigger); err != nil {
 		t.Fatal(err)
 	}
 	for i := 0; i < 2; i++ {
 		if got := e.ask(t, wsA, "GET-TOKEN scope=gh"); got != "ERR reason=unavailable" {
-			t.Fatalf("request %d with token_grant unwritable answered %q; want ERR reason=unavailable", i, got)
+			t.Fatalf("request %d with the record unwritable answered %q; want ERR reason=unavailable", i, got)
 		}
 	}
-	if n := grants(); n != 0 {
-		t.Fatalf("setup: %d rows written through the trigger", n)
+	if n, m := grants(), issued(); n != 0 || m != 0 {
+		t.Fatalf("%d rows and %d token.issued events written through the trigger; want neither", n, m)
+	}
+	if n := published(); n != 0 {
+		t.Errorf("%d token.issued published for a token never served", n)
 	}
 	logMu.Lock()
 	journal := strings.Join(logged, "\n")
@@ -408,7 +443,7 @@ func TestATokenIsNeverServedUnrecorded(t *testing.T) {
 		t.Errorf("%d mints; the refused requests should share one cached token", n)
 	}
 
-	if _, err := e.db.ExecContext(ctx, `DROP TRIGGER refuse_grants`); err != nil {
+	if _, err := e.db.ExecContext(ctx, `DROP TRIGGER refuse`); err != nil {
 		t.Fatal(err)
 	}
 	tok := tokenOf(t, e.ask(t, wsA, "GET-TOKEN scope=gh"))
@@ -417,11 +452,14 @@ func TestATokenIsNeverServedUnrecorded(t *testing.T) {
 		t.Errorf("the journal carries the token: %s", j)
 	}
 	logMu.Unlock()
-	if n := grants(); n != 1 {
-		t.Errorf("after the database recovered: %d token_grant rows; want the retried one", n)
+	if n, m := grants(), issued(); n != 1 || m != 1 {
+		t.Errorf("after the database recovered: %d token_grant rows and %d token.issued events; want the retried one of each", n, m)
 	}
-	if again := tokenOf(t, e.ask(t, wsA, "GET-TOKEN scope=gh")); again != tok || grants() != 1 {
-		t.Errorf("a cache hit after the retry: same token %v, %d rows; want one row", again == tok, grants())
+	if n := published(); n != 1 {
+		t.Errorf("%d token.issued published after the retry; want 1", n)
+	}
+	if again := tokenOf(t, e.ask(t, wsA, "GET-TOKEN scope=gh")); again != tok || grants() != 1 || issued() != 1 {
+		t.Errorf("a cache hit after the retry: same token %v, %d rows, %d events; want one of each", again == tok, grants(), issued())
 	}
 	if n := e.fake.Count("POST /app/installations/77/access_tokens"); n != 1 {
 		t.Errorf("%d mints in all; want 1", n)

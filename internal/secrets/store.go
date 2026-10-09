@@ -201,12 +201,23 @@ type Grant struct {
 
 // List returns every secret's metadata, by name.
 func (s *Store) List(ctx context.Context) ([]Meta, error) {
-	return s.meta(ctx, "")
+	return s.meta(ctx, s.DB, "")
 }
 
 // Get returns one secret's metadata.
 func (s *Store) Get(ctx context.Context, name string) (Meta, error) {
-	ms, err := s.meta(ctx, name)
+	return s.get(ctx, s.DB, name)
+}
+
+// querier is a *sql.DB or a *sql.Tx: a write reads the metadata its event
+// carries inside its own transaction.
+type querier interface {
+	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+}
+
+func (s *Store) get(ctx context.Context, db querier, name string) (Meta, error) {
+	ms, err := s.meta(ctx, db, name)
 	if err != nil {
 		return Meta{}, err
 	}
@@ -216,14 +227,14 @@ func (s *Store) Get(ctx context.Context, name string) (Meta, error) {
 	return ms[0], nil
 }
 
-func (s *Store) meta(ctx context.Context, only string) ([]Meta, error) {
+func (s *Store) meta(ctx context.Context, db querier, only string) ([]Meta, error) {
 	q := `SELECT id, name, reach, coalesce(description, ''), all_repos, created_at, rotated_at FROM secret`
 	var args []any
 	if only != "" {
 		q += ` WHERE name = ?`
 		args = append(args, only)
 	}
-	rows, err := s.DB.QueryContext(ctx, q+` ORDER BY name`, args...)
+	rows, err := db.QueryContext(ctx, q+` ORDER BY name`, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -247,7 +258,7 @@ func (s *Store) meta(ctx context.Context, only string) ([]Meta, error) {
 		return nil, err
 	}
 	for i, id := range ids {
-		g, err := s.DB.QueryContext(ctx, `
+		g, err := db.QueryContext(ctx, `
 			SELECT g.repository_id, coalesce(r.full_name, '') FROM secret_grant g
 			LEFT JOIN repository r ON r.id = g.repository_id
 			WHERE g.secret_id = ? ORDER BY r.full_name, g.repository_id`, id)
@@ -263,7 +274,7 @@ func (s *Store) meta(ctx context.Context, only string) ([]Meta, error) {
 			out[i].Grants = append(out[i].Grants, gr)
 		}
 		g.Close()
-		a, err := s.DB.QueryContext(ctx, `
+		a, err := db.QueryContext(ctx, `
 			SELECT workspace_id, max(at) FROM secret_access WHERE secret_id = ?
 			GROUP BY workspace_id ORDER BY max(at) DESC`, id)
 		if err != nil {
@@ -350,12 +361,37 @@ func (s *Store) put(ctx context.Context, name string, value *string, reach, desc
 		}
 	}
 	now := s.now()
-	tx, err := s.DB.BeginTx(ctx, nil)
+	var res PutResult
+	err := s.commit(ctx, func(tx *sql.Tx) ([]events.Event, error) {
+		var err error
+		res, err = s.putTx(ctx, tx, now, name, value, reach, description, createOnly)
+		if err != nil {
+			return nil, err
+		}
+		var e events.Event
+		switch {
+		case res.Created:
+			e, err = events.NewEvent("", events.Info, "secret.created", "Stored the secret "+name+". It is granted to nothing yet.", map[string]any{"secret": res.Secret})
+		case res.Rotated:
+			e, err = events.NewEvent("", events.Info, "secret.rotated", fmt.Sprintf("Rotated the secret %s; %d running workspaces hold it.",
+				name, len(res.Stale.NewCommands)+len(res.Stale.NeedsSupervisorRestart)),
+				map[string]any{"secret": res.Secret, "stale": res.Stale})
+		default:
+			e, err = events.NewEvent("", events.Info, "secret.updated", "Updated the reach and description of the secret "+name+"; its value is unchanged.", map[string]any{"secret": res.Secret})
+		}
+		return []events.Event{e}, err
+	})
 	if err != nil {
 		return PutResult{}, err
 	}
-	defer tx.Rollback()
+	s.Invalidate()
+	s.recheck(ctx)
+	return res, nil
+}
 
+// putTx is put's transaction: the row written, and the stale workspaces and
+// metadata its event carries, read in the same transaction.
+func (s *Store) putTx(ctx context.Context, tx *sql.Tx, now time.Time, name string, value *string, reach, description string, createOnly bool) (PutResult, error) {
 	var res PutResult
 	var id string
 	var oldCT, oldNonce []byte
@@ -408,40 +444,25 @@ func (s *Store) put(ctx context.Context, name string, value *string, reach, desc
 			return PutResult{}, err
 		}
 	}
-	if err := tx.Commit(); err != nil {
-		return PutResult{}, err
-	}
-	s.Invalidate()
-
 	res.Stale = Stale{NewCommands: []StaleWorkspace{}, NeedsSupervisorRestart: []StaleWorkspace{}}
+	var err error
 	if res.Rotated {
-		if res.Stale, err = s.stale(ctx, id); err != nil {
+		if res.Stale, err = s.stale(ctx, tx, id); err != nil {
 			return PutResult{}, err
 		}
 	}
-	if res.Secret, err = s.Get(ctx, name); err != nil {
+	if res.Secret, err = s.get(ctx, tx, name); err != nil {
 		return PutResult{}, err
 	}
-	switch {
-	case res.Created:
-		s.emit(ctx, "secret.created", "Stored the secret "+name+". It is granted to nothing yet.", map[string]any{"secret": res.Secret})
-	case res.Rotated:
-		s.emit(ctx, "secret.rotated", fmt.Sprintf("Rotated the secret %s; %d running workspaces hold it.",
-			name, len(res.Stale.NewCommands)+len(res.Stale.NeedsSupervisorRestart)),
-			map[string]any{"secret": res.Secret, "stale": res.Stale})
-	default:
-		s.emit(ctx, "secret.updated", "Updated the reach and description of the secret "+name+"; its value is unchanged.", map[string]any{"secret": res.Secret})
-	}
-	s.recheck(ctx)
 	return res, nil
 }
 
 // stale lists the running workspaces a secret reaches, by kind. Running only:
 // a stopped or building workspace has no command shell yet, and its next
 // start reads current values anyway.
-func (s *Store) stale(ctx context.Context, secretID string) (Stale, error) {
+func (s *Store) stale(ctx context.Context, db querier, secretID string) (Stale, error) {
 	out := Stale{NewCommands: []StaleWorkspace{}, NeedsSupervisorRestart: []StaleWorkspace{}}
-	rows, err := s.DB.QueryContext(ctx, `
+	rows, err := db.QueryContext(ctx, `
 		SELECT w.id, w.repository_id, r.full_name FROM workspace w JOIN repository r ON r.id = w.repository_id
 		WHERE w.state = 'running' AND (
 		  (SELECT all_repos FROM secret WHERE id = ?) = 1 OR
@@ -480,15 +501,21 @@ func (s *Store) stale(ctx context.Context, secretID string) (Stale, error) {
 // Delete removes a secret and, by the foreign key's cascade, every grant. Its
 // secret_access rows stay: "which workspaces ever held it" outlives it.
 func (s *Store) Delete(ctx context.Context, name string) error {
-	res, err := s.DB.ExecContext(ctx, `DELETE FROM secret WHERE name = ?`, name)
+	err := s.commit(ctx, func(tx *sql.Tx) ([]events.Event, error) {
+		res, err := tx.ExecContext(ctx, `DELETE FROM secret WHERE name = ?`, name)
+		if err != nil {
+			return nil, err
+		}
+		if n, _ := res.RowsAffected(); n == 0 {
+			return nil, ErrNotFound
+		}
+		e, err := events.NewEvent("", events.Info, "secret.deleted", "Deleted the secret "+name+".", map[string]any{"name": name})
+		return []events.Event{e}, err
+	})
 	if err != nil {
 		return err
 	}
-	if n, _ := res.RowsAffected(); n == 0 {
-		return ErrNotFound
-	}
 	s.Invalidate()
-	s.emit(ctx, "secret.deleted", "Deleted the secret "+name+".", map[string]any{"name": name})
 	s.recheck(ctx)
 	return nil
 }
@@ -502,11 +529,30 @@ func (s *Store) SetGrants(ctx context.Context, name string, repoIDs []int64, all
 	slices.Sort(want)
 	want = slices.Compact(want)
 	now := s.now()
-	tx, err := s.DB.BeginTx(ctx, nil)
+	var m Meta
+	err := s.commit(ctx, func(tx *sql.Tx) ([]events.Event, error) {
+		var err error
+		if m, err = s.setGrantsTx(ctx, tx, now, name, want, allRepos); err != nil {
+			return nil, err
+		}
+		msg := fmt.Sprintf("Granted the secret %s to %d repositories.", name, len(m.Grants))
+		if allRepos {
+			msg = "Granted the secret " + name + " to every repository."
+		}
+		e, err := events.NewEvent("", events.Info, "secret.grants", msg, map[string]any{"secret": m})
+		return []events.Event{e}, err
+	})
 	if err != nil {
 		return Meta{}, err
 	}
-	defer tx.Rollback()
+	s.Invalidate()
+	s.recheck(ctx)
+	return m, nil
+}
+
+// setGrantsTx is SetGrants' transaction, ending with the metadata its event
+// carries, read in the same transaction.
+func (s *Store) setGrantsTx(ctx context.Context, tx *sql.Tx, now time.Time, name string, want []int64, allRepos bool) (Meta, error) {
 	var id string
 	if err := tx.QueryRowContext(ctx, `SELECT id FROM secret WHERE name = ?`, name).Scan(&id); errors.Is(err, sql.ErrNoRows) {
 		return Meta{}, ErrNotFound
@@ -554,27 +600,27 @@ func (s *Store) SetGrants(ctx context.Context, name string, repoIDs []int64, all
 	if _, err := tx.ExecContext(ctx, `UPDATE secret SET all_repos = ? WHERE id = ?`, allRepos, id); err != nil {
 		return Meta{}, err
 	}
-	if err := tx.Commit(); err != nil {
-		return Meta{}, err
-	}
-	s.Invalidate()
-	m, err := s.Get(ctx, name)
-	if err != nil {
-		return Meta{}, err
-	}
-	msg := fmt.Sprintf("Granted the secret %s to %d repositories.", name, len(m.Grants))
-	if allRepos {
-		msg = "Granted the secret " + name + " to every repository."
-	}
-	s.emit(ctx, "secret.grants", msg, map[string]any{"secret": m})
-	s.recheck(ctx)
-	return m, nil
+	return s.get(ctx, tx, name)
 }
 
-func (s *Store) emit(ctx context.Context, kind, msg string, data any) {
+// commit runs a write and the event that describes it as one events.Commit:
+// the rows and the event are one fact, so two devices writing at once publish
+// in the order they committed (the events package's rule). With no event log
+// (tests) it is a bare transaction whose events go nowhere.
+func (s *Store) commit(ctx context.Context, fn func(tx *sql.Tx) ([]events.Event, error)) error {
 	if s.Events != nil {
-		s.Events.Emit(ctx, "", events.Info, kind, msg, data)
+		_, err := s.Events.Commit(ctx, fn)
+		return err
 	}
+	tx, err := s.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := fn(tx); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // ---- delivery -----------------------------------------------------------------

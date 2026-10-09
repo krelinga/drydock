@@ -476,19 +476,25 @@ func (b *Broker) record(ctx context.Context, wsID string, repoID int64, scope Sc
 		return err
 	}
 	perms, _ := json.Marshal(scope.Permissions())
-	if _, err := b.DB.ExecContext(ctx, `INSERT INTO token_grant (id, workspace_id, repository_id, permissions, issued_at, expires_at, requested_by)
-		VALUES (?, ?, ?, ?, ?, ?, ?)`, id, wsID, repoID, string(perms),
-		now.Format(time.RFC3339Nano), tok.ExpiresAt.UTC().Format(time.RFC3339Nano), scope.requestedBy()); err != nil {
+	// The row and token.issued are one fact, so one events.Commit: written
+	// together or not at all, and a token whose pair could not be written is
+	// not served.
+	if _, err := b.Events.Commit(ctx, func(tx *sql.Tx) ([]events.Event, error) {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO token_grant (id, workspace_id, repository_id, permissions, issued_at, expires_at, requested_by)
+			VALUES (?, ?, ?, ?, ?, ?, ?)`, id, wsID, repoID, string(perms),
+			now.Format(time.RFC3339Nano), tok.ExpiresAt.UTC().Format(time.RFC3339Nano), scope.requestedBy()); err != nil {
+			return nil, err
+		}
+		e, err := events.NewEvent(wsID, events.Info, "token.issued", fmt.Sprintf("Issued a %s token.", scope),
+			map[string]any{"scope": scope, "expires_at": tok.ExpiresAt.UTC()})
+		return []events.Event{e}, err
+	}); err != nil {
 		return err
 	}
 	if b.minted == nil {
 		b.minted = map[string]time.Time{}
 	}
 	b.minted[k] = tok.ExpiresAt
-	// The row is the record; the event is a courtesy to the live view, and
-	// a failure to publish it does not unrecord the token.
-	b.Events.Emit(ctx, wsID, events.Info, "token.issued", fmt.Sprintf("Issued a %s token.", scope),
-		map[string]any{"scope": scope, "expires_at": tok.ExpiresAt.UTC()})
 	return nil
 }
 

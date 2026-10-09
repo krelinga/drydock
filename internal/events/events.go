@@ -29,6 +29,12 @@
 // that same transaction, under the same lock, publishing only after the
 // commit: a row change and its event are one fact, so commit order is id order
 // is publish order for every writer.
+//
+// The row rule: an event that describes a row change goes through Commit, in
+// the transaction that changes the row. Emit and Append are the exception,
+// for events with no row (token.refused, the login's phases, a step, a
+// container fact). TestRowRule lists every bare call with the reason it has
+// no row, and fails on a new one.
 package events
 
 import (
@@ -275,7 +281,9 @@ func NewEvent(workspaceID string, level Level, kind, message string, v any) (Eve
 	return e, nil
 }
 
-// Emit is Append for callers that build Data from a Go value.
+// Emit is Append for callers that build Data from a Go value. Both are for
+// events with no row; one that describes a row change goes through Commit
+// (the row rule, in the package comment).
 func (l *Log) Emit(ctx context.Context, workspaceID string, level Level, kind, message string, data any) (Event, error) {
 	e, err := NewEvent(workspaceID, level, kind, message, data)
 	if err != nil {

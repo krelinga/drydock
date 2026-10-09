@@ -216,6 +216,22 @@ func (s *Store) SetContainer(ctx context.Context, id, containerID string) error 
 	return nil
 }
 
+// SetContainerSaying is SetContainer with the event that describes it — an
+// adoption's workspace.adopted — written in the same events.Commit.
+func (s *Store) SetContainerSaying(ctx context.Context, id, containerID string, e events.Event) error {
+	_, err := s.Events.Commit(ctx, func(tx *sql.Tx) ([]events.Event, error) {
+		res, err := tx.ExecContext(ctx, `UPDATE workspace SET container_id = ? WHERE id = ?`, nullable(containerID), id)
+		if err != nil {
+			return nil, err
+		}
+		if n, _ := res.RowsAffected(); n == 0 {
+			return nil, ErrNotFound
+		}
+		return []events.Event{e}, nil
+	})
+	return err
+}
+
 // Annotate sets the detail of a workspace without moving it, and writes a
 // workspace.state event carrying the same state and the new detail — so the
 // card says why a workspace is where it is when nothing moved it. Used for a
