@@ -136,7 +136,6 @@ fi
 TITLE_PREFIX=""
 if [ -n "${FAKE_FAILURE:-}" ]; then
   printf './internal/sys\tTestInventedFlake\n' >>"$FAILS"
-  printf './internal/sys\t3\n' >>"$RUNS"
   echo "invented failure output, to prove the issue is filed" >"$(outfile ./internal/sys TestInventedFlake)"
   TITLE_PREFIX="[test] "
 fi
