@@ -164,6 +164,17 @@ func (l *Log) Append(ctx context.Context, e Event) (Event, error) {
 // and publishes nothing. fn must not call Append, Emit or Commit (the lock is
 // held), and should be short: every other event waits on it.
 func (l *Log) Commit(ctx context.Context, fn func(tx *sql.Tx) ([]Event, error)) ([]Event, error) {
+	return l.CommitThen(ctx, fn, nil)
+}
+
+// CommitThen is Commit with committed run after the commit and before the
+// events are published, still under the log's lock, and only if the commit
+// succeeded. It is for state kept in memory beside a row: set there, it is
+// in place before anyone can see the event that announces it, so a reader
+// who has seen the event never reads the value from before it, and a commit
+// that fails sets nothing. committed is given the events as stored, and the
+// rules for fn hold for it too: no Append, Emit or Commit, and short.
+func (l *Log) CommitThen(ctx context.Context, fn func(tx *sql.Tx) ([]Event, error), committed func([]Event)) ([]Event, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	tx, err := l.DB.BeginTx(ctx, nil)
@@ -188,6 +199,9 @@ func (l *Log) Commit(ctx context.Context, fn func(tx *sql.Tx) ([]Event, error)) 
 	}
 	if err := tx.Commit(); err != nil {
 		return nil, err
+	}
+	if committed != nil {
+		committed(out)
 	}
 	for _, e := range out {
 		l.publish(e)

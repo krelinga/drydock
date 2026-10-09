@@ -857,3 +857,95 @@ func TestDiscoveryEventsGolden(t *testing.T) {
 		t.Errorf("events differ from %s:\n%s", path, b)
 	}
 }
+
+// TestTheReportedStateMovesWithItsEvent: the port list's discovery state
+// (Scanner.Discovery) is the one the newest port.scanned or port.discovery
+// says from the moment that event is published, never the one it replaced
+// (PR #122's review, nit 1). A list fetched in that window is tagged at or
+// past the event, so the reducer would let the older value overwrite the
+// event's, and it would stay until the next report. The hook reads the list
+// as soon as the round's write returns, when the event is already out.
+// Mutation-checked: setting the state after Registry.observe returns, as it
+// was, fails the two reads whose report changed the state.
+func TestTheReportedStateMovesWithItsEvent(t *testing.T) {
+	d := newDiscovery(t)
+	var reads []string
+	d.sc.SetAfterObserve(func() {
+		vs := discoveryVerdicts(t, d)
+		if len(vs) == 0 {
+			return
+		}
+		reads = append(reads, vs[len(vs)-1]+" list:"+d.sc.Discovery("w1"))
+	})
+	d.src.listen("w1", "0.0.0.0:5173")
+	d.scan()
+	d.scan()
+	d.src.fail("w1", errors.New("permission denied"))
+	d.scan() // port.discovery unavailable
+	d.src.listen("w1", "0.0.0.0:5173")
+	d.scan()     // port.discovery ok
+	d.scan("w1") // port.scanned ok
+	want := []string{
+		"port.discovery:unavailable list:unavailable",
+		"port.discovery:ok list:ok",
+		"port.scanned:ok list:ok",
+	}
+	if !reflect.DeepEqual(reads, want) {
+		t.Errorf("reads after each report = %q; want %q", reads, want)
+	}
+}
+
+// TestARacedRescanIsCorrectedWhateverTheBudget: a rescan whose read raced a
+// container restart is answered "unavailable", since nothing was read — but
+// a race is transient, so the first round that reads the table reports what
+// it finds even with the status budget spent, rather than leaving
+// "discovery unavailable" on the panel for up to StatusEvery (PR #122's
+// review, nit 2). The control: a real outage with the budget spent is not
+// reported, so the budget is spent and only the race goes past it.
+// Mutation-checked: without the raced exemption the recovery is held back.
+func TestARacedRescanIsCorrectedWhateverTheBudget(t *testing.T) {
+	d := newDiscovery(t)
+	d.src.listen("w1", "0.0.0.0:5173")
+	d.scan()
+	d.scan()
+	for i := 0; i < preview.StatusBurst/2; i++ { // spend the status budget
+		d.src.fail("w1", errors.New("permission denied"))
+		d.scan()
+		d.src.listen("w1", "0.0.0.0:5173")
+		d.scan()
+	}
+	spent := len(discoveryVerdicts(t, d))
+	if spent != preview.StatusBurst {
+		t.Fatalf("reports = %v; want the %d the budget allows", discoveryVerdicts(t, d), preview.StatusBurst)
+	}
+	// The control: a real outage now goes unreported, the budget spent.
+	d.src.fail("w1", errors.New("permission denied"))
+	d.scan()
+	if got := discoveryVerdicts(t, d); len(got) != spent || d.sc.Discovery("w1") != preview.DiscoveryOK {
+		t.Fatalf("reports = %v, list %q; want the outage held back by the spent budget", got, d.sc.Discovery("w1"))
+	}
+	d.src.listen("w1", "0.0.0.0:5173")
+	d.scan()
+
+	d.src.fail("w1", preview.ErrScanRaced)
+	d.scan("w1")
+	if got := d.sc.Discovery("w1"); got != preview.DiscoveryUnavailable {
+		t.Fatalf("after the raced rescan the list says %q; want unavailable, as its port.scanned did", got)
+	}
+	d.src.listen("w1", "0.0.0.0:5173")
+	d.scan()
+	vs := discoveryVerdicts(t, d)
+	if got := strings.Join(vs[spent:], " "); got != "port.scanned:unavailable port.discovery:ok" {
+		t.Errorf("reports after the budget was spent = %s; want the raced rescan's unavailable, then ok at the next read", got)
+	}
+	if got := d.sc.Discovery("w1"); got != preview.DiscoveryOK {
+		t.Errorf("after a round that read the table the list says %q; want ok", got)
+	}
+	// The correction cost nothing and owes nothing more: the next outage is
+	// still held by the budget.
+	d.src.fail("w1", errors.New("permission denied"))
+	d.scan()
+	if got := discoveryVerdicts(t, d); len(got) != spent+2 {
+		t.Errorf("reports = %v; want the budget still governing a real outage", got)
+	}
+}
