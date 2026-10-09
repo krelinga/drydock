@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.6.1](https://github.com/krelinga/drydock/compare/v0.6.0...v0.6.1) (2026-10-09)
+
+
+### Bug Fixes
+
+* accept the daemon's default log configuration on a guarded start ([#94](https://github.com/krelinga/drydock/issues/94)) ([4fa98cb](https://github.com/krelinga/drydock/commit/4fa98cba253259115d86fb53a13df53f1d466cfb))
+* make the CLI's empty build context before the docker guard checks it ([#91](https://github.com/krelinga/drydock/issues/91)) ([317f8e2](https://github.com/krelinga/drydock/commit/317f8e294e17c1da53d6c70d2ce71b82b4e5e470))
+* never call a paused container's session server stopped ([#93](https://github.com/krelinga/drydock/issues/93)) ([aa51a58](https://github.com/krelinga/drydock/commit/aa51a58391223673768996eebb31927b9974e489))
+
 ## [0.6.0](https://github.com/krelinga/drydock/compare/v0.5.0...v0.6.0) (2026-10-09)
 
 
