@@ -106,4 +106,19 @@ describe('the Claude identity', () => {
     expect(e.workspaces).toEqual({})
     expect(e.feeds).toEqual({})
   })
+
+  it('auth.identity_checked carries the same view with its check time moved, and is versioned like the rest', () => {
+    // A requested check that found nothing to announce (design §7.3): the
+    // stored view as it stands, last_checked_at moved.
+    const checked = (id: number, v: IdentityView) => ev(id, 'auth.identity_checked', { identity: v })
+    let e = play([
+      { type: 'event', event: identityEv(3, view('ok')) },
+      { type: 'event', event: checked(4, view('ok', { last_checked_at: at(4) })) },
+    ])
+    expect(e.identity).toMatchObject({ state: 'ok', lastCheckedAt: at(4) })
+    expect(e.identityAt).toBe(4)
+    // Control: an older one changes nothing.
+    e = reduce(e, { type: 'event', event: checked(2, view('ok', { last_checked_at: at(2) })) })
+    expect(e.identity?.lastCheckedAt).toBe(at(4))
+  })
 })

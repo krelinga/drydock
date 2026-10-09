@@ -71,6 +71,10 @@
 //                                           changed, or a failing check recovered
 //   auth.identity_check_failed {check_error: {at, problem, message}}
 //                                           the stored state stands
+//   auth.identity_checked {identity}        a check someone asked for found
+//                                           nothing to announce: the same
+//                                           view, last_checked_at moved. It
+//                                           is what settles "Check now" (§4.2)
 //   auth.login         {login}              internal/login: the handshake's
 //                                           every phase change, the whole view
 //
@@ -79,7 +83,7 @@
 // versioned on its own. It holds no code: there is no field for one.
 //
 // The Claude identity has its own snapshot, `identity` — a GET
-// /api/auth/claude body — and is written by it and the two auth.identity*
+// /api/auth/claude body — and is written by it and the three auth.identity*
 // events, versioned by one id like every field. It is one fleet-wide value,
 // not a per-workspace one: the banner and the card overlay read the same
 // field, which is the whole of frontend §6.6.
@@ -563,11 +567,15 @@ function applyLoginEvent(base: Entities, ev: StreamEvent): Entities {
   return login === null ? base : { ...base, login, loginAt: ev.id }
 }
 
-/** auth.identity replaces the identity; auth.identity_check_failed sets only its failure. */
+/**
+ * auth.identity and auth.identity_checked replace the identity — the second
+ * is the same view with its last_checked_at moved; auth.identity_check_failed
+ * sets only its failure.
+ */
 function applyIdentityEvent(base: Entities, ev: StreamEvent): Entities {
   if (ev.id <= base.identityAt) return base
   const data = ev.data ?? {}
-  if (ev.kind === 'auth.identity') {
+  if (ev.kind === 'auth.identity' || ev.kind === 'auth.identity_checked') {
     const identity = toIdentity(data.identity)
     return identity === null ? base : { ...base, identity, identityAt: ev.id }
   }

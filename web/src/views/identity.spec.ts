@@ -6,7 +6,10 @@
 
 import { describe, expect, it } from 'vitest'
 import type { IdentityState, RepoView } from '../api/types'
-import { failIdentityCheck, identityView, refreshed, setIdentity, type MockBackend, type MockWorkspace } from '../mocks/backend'
+import {
+  failIdentityCheck, finishIdentityCheck, identityView, intervalIdentityCheck, refreshed, setIdentity, startIdentityCheck,
+  type MockBackend, type MockWorkspace,
+} from '../mocks/backend'
 import { FakeEventSource } from '../test/fakeEventSource'
 import { freshBackend, mountApp, settle, useMockApi } from '../test/setup'
 import { CHECK_KEY } from '../stores/identity'
@@ -303,6 +306,98 @@ describe('the Claude section in Settings', () => {
     await settle()
     expect(CHECK_KEY in stream.inFlight).toBe(false)
     expect(wrapper.find('[data-test="claude-check-error"]').exists()).toBe(false)
+  })
+
+  // #81's review: the watch announces auth.identity only for a change, so the
+  // common healthy press — the same ok as before — used to write nothing and
+  // leave the button disabled until a reload. The mock answers as the server
+  // does now (finishIdentityCheck): auth.identity_checked for a requested
+  // check with nothing to announce, silence for the interval's.
+  const press = async (w: Awaited<ReturnType<typeof mountApp>>['wrapper']) => {
+    await w.find('[data-test="claude-check"]').trigger('click')
+    await settle()
+  }
+
+  it('check now settles when the login has not changed', async () => {
+    const b = fleet('ok')
+    b.identityCheckMode = 'manual'
+    const { wrapper, pinia } = await mountApp('/settings')
+    FakeEventSource.latest().open().pipe(b)
+    const stream = useStreamStore(pinia)
+    const before = b.events.length
+
+    await press(wrapper)
+    // Control: the check is still running, so the press is in flight.
+    expect(b.identityChecks).toBe(1)
+    expect(CHECK_KEY in stream.inFlight).toBe(true)
+    expect(wrapper.find('[data-test="claude-check"]').attributes('disabled')).toBeDefined()
+
+    finishIdentityCheck(b) // the same ok
+    await settle()
+    expect(b.events.slice(before).map((e) => e.kind)).toEqual(['auth.identity_checked'])
+    expect(CHECK_KEY in stream.inFlight).toBe(false)
+    expect(wrapper.find('[data-test="claude-check"]').attributes('disabled')).toBeUndefined()
+    expect(wrapper.find('[data-test="claude-state"]').text()).toBe('Signed in as operator@example.invalid.')
+  })
+
+  it('the interval says nothing unless something changed, as the watch does', async () => {
+    // The mock's realism, which the specs above lean on: a check nobody
+    // asked for writes no event when nothing changed — so an unchanged
+    // check's answer to a press can only be auth.identity_checked — and does
+    // write auth.identity when something did. A mock that announced every
+    // check would hide a client waiting on auth.identity alone.
+    const b = fleet('ok')
+    const { wrapper } = await mountApp('/settings')
+    FakeEventSource.latest().open().pipe(b)
+
+    const quiet = b.events.length
+    intervalIdentityCheck(b)
+    await settle()
+    expect(b.events.length).toBe(quiet)
+
+    intervalIdentityCheck(b, identityView('blanked'))
+    await settle()
+    expect(b.events.slice(quiet).map((e) => e.kind)).toEqual(['auth.identity'])
+    expect(wrapper.find('[data-test="claude-state"]').exists()).toBe(true)
+  })
+
+  it('a press that joins a running check settles when that check ends', async () => {
+    const b = fleet('ok')
+    b.identityCheckMode = 'manual'
+    const { wrapper, pinia } = await mountApp('/settings')
+    FakeEventSource.latest().open().pipe(b)
+    const stream = useStreamStore(pinia)
+
+    startIdentityCheck(b, false) // the interval's, running
+    await press(wrapper) // joins it: no second check
+    expect(b.identityChecks).toBe(1)
+    expect(CHECK_KEY in stream.inFlight).toBe(true)
+
+    const before = b.events.length
+    finishIdentityCheck(b) // unchanged
+    await settle()
+    expect(b.events.slice(before).map((e) => e.kind)).toEqual(['auth.identity_checked'])
+    expect(CHECK_KEY in stream.inFlight).toBe(false)
+  })
+
+  it('a check refused while Drydock shuts down ends the press and says so', async () => {
+    // Nothing would answer a check after the watch has stopped, so the
+    // server refuses it (503 unavailable) rather than accepting a request
+    // that would spin until a reload. The control is the same press accepted.
+    for (const stopped of [false, true]) {
+      const b = fleet('ok')
+      b.identityCheckMode = 'manual'
+      b.identityWatchStopped = stopped
+      const { wrapper, pinia } = await mountApp('/settings')
+      FakeEventSource.latest().open().pipe(b)
+      const stream = useStreamStore(pinia)
+      await press(wrapper)
+      expect(CHECK_KEY in stream.inFlight).toBe(!stopped)
+      const refused = wrapper.find('[data-test="claude-check-refused"]')
+      expect(refused.exists()).toBe(stopped)
+      if (stopped) expect(refused.text()).toContain('shutting down')
+      wrapper.unmount()
+    }
   })
 
   it('a failed check keeps the stored state and says why', async () => {

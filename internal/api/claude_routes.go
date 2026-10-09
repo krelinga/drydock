@@ -17,7 +17,7 @@ import (
 // internal/identity.
 type IdentityWatch interface {
 	Read(ctx context.Context) (identity.View, error)
-	Trigger()
+	Trigger() error
 }
 
 // LoginManager is what the handshake routes need from internal/login.
@@ -72,10 +72,17 @@ func (cr ClaudeRoutes) read(w http.ResponseWriter, r *http.Request) {
 }
 
 // check is the async shape: start a check — or join the one running — and
-// answer 202. The verdict arrives as auth.identity, a failure as
-// auth.identity_check_failed.
+// answer 202. The verdict arrives as auth.identity when it changed, a failure
+// as auth.identity_check_failed, and an unchanged verdict as
+// auth.identity_checked: every request is answered by one of the three, which
+// is what "Check now" settles on (frontend §4.2). After the watch has shut
+// down nothing would answer, so the request is refused, 503 unavailable,
+// rather than accepted.
 func (cr ClaudeRoutes) check(w http.ResponseWriter, r *http.Request) {
-	cr.Watch.Trigger()
+	if err := cr.Watch.Trigger(); err != nil {
+		WriteError(w, http.StatusServiceUnavailable, CodeUnavailable, "Drydock is shutting down.", "")
+		return
+	}
 	writeJSON(w, http.StatusAccepted, struct{}{})
 }
 
