@@ -8,6 +8,7 @@ import (
 	"net/netip"
 	"os"
 	"sort"
+	"sync"
 	"time"
 
 	"github.com/krelinga/drydock/internal/events"
@@ -17,7 +18,7 @@ import (
 
 // Discovery (PF §8.2, §13 step 5): what each running workspace's container is
 // listening on, read from the host every few seconds, debounced, and merged
-// onto the workspace's forwarded_port rows. Four rules, each with its test:
+// onto the workspace's forwarded_port rows. The rules, each with its test:
 //
 //   - **Discovery never enables anything.** The scan writes `observed`,
 //     `bind_addr`, `observed_state` and the two timestamps — on a row it
@@ -40,9 +41,17 @@ import (
 //   - **Nothing a container does grows the log without bound.** Each
 //     workspace has two token buckets: every row discovery writes spends a
 //     change (ChangeBurst, then one per ChangeEvery), and a new row a mint
-//     as well (MintBurst, then one per MintEvery). A change past its budget
-//     waits for the next scan that can afford it; nothing is lost, because
-//     each scan derives what to change afresh from the rows.
+//     as well (MintBurst, then one per MintEvery), the last few of each
+//     (MintReserve, ChangeReserve) only for ports below EphemeralFrom. A
+//     change past its budget waits for the next scan that can afford it;
+//     nothing is lost, because each scan derives what to change afresh from
+//     the rows.
+//   - **A broken or held-back scanner fails visibly** (PF §11, §13 step 6).
+//     An empty list and an unreadable table must not look alike, nor a port
+//     listening and one withheld by a budget: each workspace's state — ok,
+//     unavailable, limited — is reported by port.scanned to a rescan and by
+//     port.discovery unasked when it changes, and Discovery is the last
+//     report, which the port list carries.
 //   - **One workspace cannot stall the others.** Each read is bounded by
 //     Timeout on the injected clock; one cut off is that workspace's
 //     discovery unavailable for that round, and the round goes on.
@@ -52,18 +61,32 @@ import (
 
 // KindPortScanned answers a rescan (POST …/ports/rescan): one per workspace
 // asked about, after the scan that began after the request, carrying
-// `data.discovery` — "ok", or "unavailable" when the socket table could not be
-// read. It describes no row change and moves nothing into reach.
+// `data.discovery` — "ok"; "unavailable" when the socket table could not be
+// read; "limited" when a budget held back a change the scan found (PF §11).
+// It describes no row change and moves nothing into reach.
 const KindPortScanned = "port.scanned"
 
+// KindPortDiscovery says a workspace's discovery changed between ok,
+// unavailable and limited without anyone asking — `data.discovery` as
+// port.scanned carries it — so an open ports panel says so (PF §11's
+// *discovery unavailable*, and a budget holding changes back). Both kinds are
+// reports of one per-workspace state, and the port list carries its latest
+// value as `discovery`. At most StatusBurst, then one per StatusEvery, per
+// workspace: a Docker that fails every other round cannot flood the log.
+const KindPortDiscovery = "port.discovery"
+
 // SourceDiscovery is the `data.source` of every event the scan writes.
-const SourceDiscovery = "discovery"
+const SourceDiscovery = events.SourceDiscovery
 
 // Discovery's verdicts on a workspace's socket table, as port.scanned carries
 // them.
 const (
 	DiscoveryOK          = "ok"
 	DiscoveryUnavailable = "unavailable"
+	// DiscoveryLimited: the socket table was read, and a budget held back
+	// at least one change it called for — a port listening but not listed
+	// yet, or one gone but not marked so.
+	DiscoveryLimited = "limited"
 )
 
 // Observed states (forwarded_port.observed_state).
@@ -94,14 +117,33 @@ const (
 	RetireAfter = 10 * time.Minute
 	// MintBurst and MintEvery are each workspace's budget of new rows:
 	// MintBurst at once, then one per MintEvery (twelve an hour), so a
-	// container cycling ports spends at most that many slugs.
-	MintBurst = 8
+	// container cycling ports spends at most that many slugs — about 300 a
+	// day, as before PF §13 step 6 raised the burst from 8.
+	MintBurst = 12
 	MintEvery = 5 * time.Minute
+	// MintReserve of those tokens only a port below EphemeralFrom may
+	// spend. A server a test binds to port 0 gets an ephemeral port, and a
+	// dev server a fixed low one (3000, 5173, 8000, 8080), so a test run
+	// that lists eight short-lived servers leaves four mints for the dev
+	// server started after it, which appears at once rather than up to
+	// MintEvery later (#120's review, round 2).
+	MintReserve = 4
 	// ChangeBurst and ChangeEvery are each workspace's budget of discovery
 	// writes — every row change, so every event: ChangeBurst at once, then
 	// one per ChangeEvery (120 an hour, under 3,000 a day).
 	ChangeBurst = 64
 	ChangeEvery = 30 * time.Second
+	// ChangeReserve of those only a port below EphemeralFrom may spend, for
+	// the same reason as MintReserve.
+	ChangeReserve = 8
+	// EphemeralFrom is the bottom of Linux's default ip_local_port_range,
+	// where a server that binds port 0 is put.
+	EphemeralFrom = 32768
+	// StatusBurst and StatusEvery bound KindPortDiscovery per workspace. A
+	// change of state past the budget is reported when it allows, as the
+	// state is then.
+	StatusBurst = 4
+	StatusEvery = 5 * time.Minute
 	// DefaultScanTimeout bounds one workspace's read: its four docker calls
 	// and the table.
 	DefaultScanTimeout = 15 * time.Second
@@ -173,6 +215,33 @@ type Scanner struct {
 	tracks map[string]*wsTrack
 	// lastFull is when the last round ran, for Watched's back-off.
 	lastFull time.Time
+
+	// mu guards reports, which the port list reads (Discovery) while the
+	// worker writes it.
+	mu sync.Mutex
+	// reports is each workspace's discovery state as last reported — by a
+	// port.scanned or a port.discovery — and the budget of the latter. It
+	// outlives a workspace's track (a stopped workspace keeps what was last
+	// said of it, so a start that finds discovery working says so) and goes
+	// only with the workspace.
+	reports map[string]*report
+}
+
+type report struct {
+	state  string // DiscoveryOK, DiscoveryUnavailable or DiscoveryLimited
+	budget bucket // StatusEvery, StatusBurst
+}
+
+// Discovery is a workspace's discovery state as the events last reported it:
+// DiscoveryOK until something else has been said. The port list carries it,
+// so a panel opened after the event says the same as one open before it.
+func (s *Scanner) Discovery(workspaceID string) string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if r := s.reports[workspaceID]; r != nil {
+		return r.state
+	}
+	return DiscoveryOK
 }
 
 type wsTrack struct {
@@ -307,13 +376,20 @@ func (s *Scanner) run(ctx context.Context, asks []string) (struct{}, error) {
 	for _, id := range asks {
 		asked[id] = true
 	}
-	targets, err := s.Registry.scanTargets(ctx, asked)
+	targets, exist, err := s.Registry.scanTargets(ctx, asked)
 	if err != nil {
 		if ctx.Err() == nil {
 			s.logf("drydock: port discovery: listing workspaces: %v", err)
 		}
 		return struct{}{}, err
 	}
+	s.mu.Lock()
+	for id := range s.reports {
+		if !exist[id] {
+			delete(s.reports, id)
+		}
+	}
+	s.mu.Unlock()
 	keep := map[string]bool{}
 	for _, t := range targets {
 		if ctx.Err() != nil {
@@ -356,65 +432,102 @@ func (s *Scanner) scanOne(ctx context.Context, t target, asked bool) {
 	if ctx.Err() != nil {
 		return
 	}
-	var note *ScanNote
-	if asked {
-		note = &ScanNote{Discovery: DiscoveryOK}
-	}
 	switch {
 	case err == nil:
 	case errors.Is(err, ErrNotRunning):
 		ls = nil // scanned as empty: its rows go after their grace
 	case errors.Is(err, ErrScanRaced):
-		// Nothing learned, so nothing read: a rescan is not told "ok".
-		// The next round reads again.
-		if note != nil {
-			note.Discovery = DiscoveryUnavailable
-		}
-		s.observe(ctx, t.id, nil, note)
+		// Nothing learned, so nothing read: a rescan is not told "ok",
+		// and nobody else is told anything. The next round reads again.
+		s.observe(ctx, t.id, nil, DiscoveryUnavailable, asked, false)
 		return
 	default:
 		if tr.unavailable != err.Error() {
 			s.logf("drydock: port discovery for workspace %s is unavailable: %v", t.id, err)
 			tr.unavailable = err.Error()
 		}
-		if note != nil {
-			note.Discovery = DiscoveryUnavailable
-		}
-		s.observe(ctx, t.id, nil, note)
+		s.observe(ctx, t.id, nil, DiscoveryUnavailable, asked, true)
 		return
 	}
 	if tr.unavailable != "" {
 		s.logf("drydock: port discovery for workspace %s works again", t.id)
 		tr.unavailable = ""
 	}
-	sightings := s.budget(tr, t.id, s.debounce(tr, t, ls))
-	if len(sightings) > 0 || note != nil {
-		s.observe(ctx, t.id, sightings, note)
+	sightings, held := s.budget(tr, t.id, s.debounce(tr, t, ls))
+	verdict := DiscoveryOK
+	if held > 0 {
+		verdict = DiscoveryLimited
 	}
+	s.observe(ctx, t.id, sightings, verdict, asked, true)
 }
 
-func (s *Scanner) observe(ctx context.Context, id string, ss []Sighting, note *ScanNote) {
+// observe writes one workspace's round: its sightings, and the report its
+// discovery state is owed — port.scanned when it was asked about, which
+// carries the verdict whatever it is; otherwise port.discovery when the
+// verdict differs from what was last reported and its budget allows
+// (`settles`: false for a raced read, which teaches nothing to anyone who did
+// not ask). What was reported is remembered only once it is committed.
+func (s *Scanner) observe(ctx context.Context, id string, ss []Sighting, verdict string, asked, settles bool) {
+	now := s.Clock.Now()
+	s.mu.Lock()
+	if s.reports == nil {
+		s.reports = map[string]*report{}
+	}
+	r := s.reports[id]
+	if r == nil {
+		r = &report{state: DiscoveryOK}
+		s.reports[id] = r
+	}
+	last := r.state
+	r.budget.refill(now, StatusEvery, StatusBurst)
+	var note *ScanNote
+	switch {
+	case asked:
+		note = &ScanNote{Discovery: verdict}
+	case settles && verdict != last && r.budget.tokens >= 1:
+		note = &ScanNote{Status: verdict}
+	}
+	s.mu.Unlock()
 	if len(ss) == 0 && note == nil {
 		return
 	}
-	if err := s.Registry.Observe(ctx, id, ss, note); err != nil && ctx.Err() == nil {
-		s.logf("drydock: port discovery: recording what workspace %s listens on: %v", id, err)
+	if err := s.Registry.Observe(ctx, id, ss, note); err != nil {
+		if ctx.Err() == nil {
+			s.logf("drydock: port discovery: recording what workspace %s listens on: %v", id, err)
+		}
+		return
 	}
+	if note == nil {
+		return
+	}
+	s.mu.Lock()
+	if note.Status != "" {
+		r.budget.tokens--
+	}
+	r.state = verdict
+	s.mu.Unlock()
 }
 
 // budget lets through, in port order, the changes the workspace's budgets
 // allow: every change spends a ChangeEvery token, and a new row a MintEvery
-// token as well. A change held back is not lost — the next scan derives it
-// again from what the registry says — so a budget delays, it never forgets.
-// The first hold is logged; so is the end of a spell of holding.
-func (s *Scanner) budget(tr *wsTrack, id string, ss []Sighting) []Sighting {
+// token as well — an ephemeral port's only while more than the reserve is
+// left (MintReserve, ChangeReserve). A change held back is not lost — the next
+// scan derives it again from what the registry says — so a budget delays, it
+// never forgets. It returns what it let through and how many it held, which
+// makes the round's verdict DiscoveryLimited. The first hold is logged; so is
+// the end of a spell of holding.
+func (s *Scanner) budget(tr *wsTrack, id string, ss []Sighting) ([]Sighting, int) {
 	now := s.Clock.Now()
 	tr.mints.refill(now, MintEvery, MintBurst)
 	tr.changes.refill(now, ChangeEvery, ChangeBurst)
 	var out []Sighting
 	held := 0
 	for _, o := range ss {
-		if tr.changes.tokens < 1 || o.Mint && tr.mints.tokens < 1 {
+		needChange, needMint := 1.0, 1.0
+		if o.Port >= EphemeralFrom {
+			needChange, needMint = 1+ChangeReserve, 1+MintReserve
+		}
+		if tr.changes.tokens < needChange || o.Mint && tr.mints.tokens < needMint {
 			held++
 			continue
 		}
@@ -432,7 +545,7 @@ func (s *Scanner) budget(tr *wsTrack, id string, ss []Sighting) []Sighting {
 		s.logf("drydock: port discovery for workspace %s is recording every change again", id)
 		tr.limited = false
 	}
-	return out
+	return out, held
 }
 
 // debounce folds one scan into the workspace's track and returns what the
@@ -577,22 +690,36 @@ type Sighting struct {
 	Mint bool
 }
 
-// ScanNote is what a rescan is owed: port.scanned, with the verdict.
+// discoveryMessage is the event's sentence for a discovery state. The UI says
+// its own, keyed by `data.discovery`; this is the log's.
+func discoveryMessage(state string) string {
+	switch state {
+	case DiscoveryUnavailable:
+		return "Could not read what this workspace's container is listening on."
+	case DiscoveryLimited:
+		return "This workspace's ports are changing faster than discovery records them; some changes are held back."
+	}
+	return "Port discovery records what this workspace's container listens on."
+}
+
+// ScanNote is the report a round owes: port.scanned with the verdict, for a
+// rescan (Discovery), or port.discovery with a changed state (Status).
 type ScanNote struct {
 	Discovery string
+	Status    string
 }
 
 // scanTargets is the round's workspaces, each with its live rows: every
 // running one, every one with a row still waiting on discovery (pending),
 // and every one asked about — never one being deleted, whose rows are about
-// to be retired with it.
-func (s *Service) scanTargets(ctx context.Context, asked map[string]bool) ([]target, error) {
+// to be retired with it. exist names every workspace not being deleted.
+func (s *Service) scanTargets(ctx context.Context, asked map[string]bool) (out []target, exist map[string]bool, err error) {
 	rows, err := s.DB.QueryContext(ctx, `SELECT w.id, w.state, p.container_port, p.observed_state, p.bind_addr,
 		  p.observed, p.enabled, p.manual, p.declared, p.hidden, p.last_seen_at
 		FROM workspace w LEFT JOIN forwarded_port p ON p.workspace_id = w.id AND p.retired_at IS NULL
 		WHERE w.state <> 'deleting' ORDER BY w.id`)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	defer rows.Close()
 	byID := map[string]*target{}
@@ -603,7 +730,7 @@ func (s *Service) scanTargets(ctx context.Context, asked map[string]bool) ([]tar
 		var ostate, bind, seen sql.NullString
 		var observed, enabled, manual, declared, hidden sql.NullBool
 		if err := rows.Scan(&id, &state, &port, &ostate, &bind, &observed, &enabled, &manual, &declared, &hidden, &seen); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		t := byID[id]
 		if t == nil {
@@ -621,9 +748,12 @@ func (s *Service) scanTargets(ctx context.Context, asked map[string]bool) ([]tar
 		}
 	}
 	if err := rows.Err(); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	var out []target
+	exist = map[string]bool{}
+	for _, id := range order {
+		exist[id] = true
+	}
 	for _, id := range order {
 		t := byID[id]
 		pending := false
@@ -634,7 +764,7 @@ func (s *Service) scanTargets(ctx context.Context, asked map[string]bool) ([]tar
 			out = append(out, *t)
 		}
 	}
-	return out, nil
+	return out, exist, nil
 }
 
 // held reports whether something besides discovery keeps a row listed: the
@@ -771,10 +901,18 @@ func (s *Service) Observe(ctx context.Context, workspaceID string, ss []Sighting
 			}
 			es = append(es, e)
 		}
-		if note != nil {
+		if note != nil && note.Status != "" {
+			e, err := events.NewEvent(workspaceID, events.Info, KindPortDiscovery, discoveryMessage(note.Status),
+				map[string]any{"discovery": note.Status, "source": SourceDiscovery})
+			if err != nil {
+				return nil, err
+			}
+			es = append(es, e)
+		}
+		if note != nil && note.Discovery != "" {
 			msg := "Ports scanned."
-			if note.Discovery == DiscoveryUnavailable {
-				msg = "Could not read what this workspace's container is listening on."
+			if note.Discovery != DiscoveryOK {
+				msg = "Ports scanned. " + discoveryMessage(note.Discovery)
 			}
 			e, err := events.NewEvent(workspaceID, events.Info, KindPortScanned, msg,
 				map[string]any{"discovery": note.Discovery, "source": SourceDiscovery})

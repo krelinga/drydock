@@ -24,7 +24,9 @@ npm run dev:mock            # the app against mocks/backend.ts
   its silence proves nothing. A detail `404` for a workspace the entities hold asks the list, which
   drops it.
 - Each workspace has a step timeline versioned per step, and a feed of its last 50 events merged
-  by id.
+  by id — every event naming it but port discovery's (`data.source: "discovery"`, `inFeed`), which
+  are the ports panel's and would crowd its history out (port forwarding §13 step 6; the server's
+  `GET /api/workspaces/:id` leaves them out alike).
 - `workspaces.ts` holds the fetches and the mutations. A clone is settled by the create's
   `workspace.state` carrying its `repository_id`, because the only workspace id before that is in
   the `202` body, which is never read.
@@ -126,7 +128,17 @@ The ports panel (frontend §6.3; port forwarding §13 step 4), on the workspace'
   plainly — or *Not listening now*. Nothing else moves: no toast, no alert, no announcement, no
   title (`views/PortsDiscovery.spec.ts` asserts each). **Look for listening ports now** is the
   rescan, settled by that workspace's `port.scanned` newer than the press (`settlesRescan`), which
-  changes no entity.
+  changes no row.
+- **Diagnosis** (port forwarding §11, §13 step 6) is `lib/portDiagnosis.ts`, a pure function of
+  the row's `observedState`, `loopback`, `bindAddr` and `lastSeenAt`, the workspace's state and
+  its discovery's (`entities.portDiscovery`, written by `port.scanned`, `port.discovery` and the
+  list's `discovery`, versioned). A row listening on loopback only is greyed and says
+  *"Listening on 127.0.0.1:5173, which is only reachable from inside the container. Start it with
+  `--host 0.0.0.0`."* — the proxy's own sentence, which the spec reads from the Go — with **Look
+  again** (the rescan) in place of the switch the server refuses (`port_loopback`); an enabled
+  row nothing listens on, or never has, says so. The panel badges *discovery unavailable* and
+  *discovery limited* (a budget holding changes back). A device sent to `/ws/:id?preview=<port>`
+  by `/preview/authorize` (its workspace not running) is told why under the card.
 - The card's *"3 listening · 1 previewed"* is `components/PortCount.vue` over `lib/portCount.ts`:
   counted from the port entities, never stored. On the home view each running card loads its
   workspace's ports itself (the reducer's `portsLoaded` is per workspace); on the workspace's page
@@ -169,7 +181,9 @@ with the `all_repos` confirm, the two-kinds rotate result, delete.
   address; absent, `listening` on 0.0.0.0): listed after two scans, gone after three
   (`SCAN_GRACE_SCANS`, the server's 15 s at its 5 s cadence), and a row only discovery holds
   retired 120 scans after it was last seen (`SCAN_RETIRE_SCANS`, ten minutes). The server's churn
-  budgets are not mocked. `mocks/discovery.spec.ts` replays the
+  budgets are not mocked; `scanLimited` plays their effect (no new row, `limited` reported), and
+  `scanUnavailable` an unreadable table, each reported as the server reports it
+  (`discoveryReported`, the list's `discovery`). `mocks/discovery.spec.ts` replays the
   server's golden scenario (`internal/preview/testdata/discovery-events.json`, written by
   `TestDiscoveryEventsGolden`) and demands the same events at the same scans, so the two cannot
   drift. `scanMode: 'manual'` leaves a rescan's scan to the spec; dev:mock scans every 5 s, and

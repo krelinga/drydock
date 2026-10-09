@@ -56,14 +56,14 @@ func TestProbeIsTheProxysDial(t *testing.T) {
 
 	// Answering: one resolution, one confirmation, the resolved address.
 	res := &fakeResolver{ips: []string{"127.0.0.1"}}
-	got := (&preview.Proxy{Resolver: res, Dial: dial}).Probe(context.Background(), "ws", port)
+	got := (&preview.Proxy{Resolver: res, Dial: dial}).Probe(context.Background(), "ws", port, preview.Observation{})
 	if r, c := res.counts(); got.Outcome != preview.ProbeAnswering || r != 1 || c != 1 || last() != "127.0.0.1:"+strconv.Itoa(port) {
 		t.Errorf("answering: %+v, %d resolutions, %d confirmations, dialled %q", got, r, c, last())
 	}
 
 	// Moved between the connect and the confirmation: not running, as the
 	// proxy's denied page treats it.
-	got = (&preview.Proxy{Resolver: &fakeResolver{ips: []string{"127.0.0.1"}, confirmErr: preview.ErrNotRunning}, Dial: dial}).Probe(context.Background(), "ws", port)
+	got = (&preview.Proxy{Resolver: &fakeResolver{ips: []string{"127.0.0.1"}, confirmErr: preview.ErrNotRunning}, Dial: dial}).Probe(context.Background(), "ws", port, preview.Observation{})
 	if got.Outcome != preview.ProbeNotRunning {
 		t.Errorf("moved after the connect: %+v", got)
 	}
@@ -72,7 +72,7 @@ func TestProbeIsTheProxysDial(t *testing.T) {
 	mu.Lock()
 	n := len(dialled)
 	mu.Unlock()
-	got = (&preview.Proxy{Resolver: &fakeResolver{err: fmt.Errorf("%w: none", preview.ErrNotRunning)}, Dial: dial}).Probe(context.Background(), "ws", port)
+	got = (&preview.Proxy{Resolver: &fakeResolver{err: fmt.Errorf("%w: none", preview.ErrNotRunning)}, Dial: dial}).Probe(context.Background(), "ws", port, preview.Observation{})
 	mu.Lock()
 	extra := len(dialled) - n
 	mu.Unlock()
@@ -83,7 +83,7 @@ func TestProbeIsTheProxysDial(t *testing.T) {
 	// A restarted container: the first address refuses, the next resolution
 	// names another, and that one answers — the proxy's one retry.
 	res = &fakeResolver{ips: []string{"127.0.0.3", "127.0.0.1"}}
-	got = (&preview.Proxy{Resolver: res, Dial: dial}).Probe(context.Background(), "ws", port)
+	got = (&preview.Proxy{Resolver: res, Dial: dial}).Probe(context.Background(), "ws", port, preview.Observation{})
 	if r, _ := res.counts(); got.Outcome != preview.ProbeAnswering || r != 2 {
 		t.Errorf("restarted: %+v after %d resolutions", got, r)
 	}
@@ -92,20 +92,20 @@ func TestProbeIsTheProxysDial(t *testing.T) {
 	closed, _ := net.Listen("tcp", "127.0.0.1:0")
 	cport := closed.Addr().(*net.TCPAddr).Port
 	closed.Close()
-	refused := (&preview.Proxy{Resolver: &fakeResolver{ips: []string{"127.0.0.1"}}}).Probe(context.Background(), "ws", cport)
+	refused := (&preview.Proxy{Resolver: &fakeResolver{ips: []string{"127.0.0.1"}}}).Probe(context.Background(), "ws", cport, preview.Observation{})
 	tg := proxyTarget(t, "http://x:"+strconv.Itoa(cport))
 	_, page := get(t, front(t, &preview.Proxy{Resolver: &fakeResolver{ips: []string{"127.0.0.1"}}}, tg).URL+"/")
 	if refused.Outcome != preview.ProbeRefused || !strings.Contains(page, html.EscapeString(refused.Message)) {
 		t.Errorf("refused: %+v; the proxy's page says %q", refused, page)
 	}
 	blocking := func(ctx context.Context, _, _ string) (net.Conn, error) { <-ctx.Done(); return nil, ctx.Err() }
-	timed := (&preview.Proxy{Resolver: &fakeResolver{ips: []string{"127.0.0.1"}}, Dial: blocking, DialTimeout: 50 * time.Millisecond}).Probe(context.Background(), "ws", port)
+	timed := (&preview.Proxy{Resolver: &fakeResolver{ips: []string{"127.0.0.1"}}, Dial: blocking, DialTimeout: 50 * time.Millisecond}).Probe(context.Background(), "ws", port, preview.Observation{})
 	if timed.Outcome != preview.ProbeTimedOut || !strings.Contains(timed.Message, "in time") {
 		t.Errorf("timed out: %+v", timed)
 	}
 	var logged atomic.Int32
 	failed := (&preview.Proxy{Resolver: &fakeResolver{err: errors.New("docker: daemon down")},
-		Logf: func(string, ...any) { logged.Add(1) }}).Probe(context.Background(), "ws", port)
+		Logf: func(string, ...any) { logged.Add(1) }}).Probe(context.Background(), "ws", port, preview.Observation{})
 	if failed.Outcome != preview.ProbeLookupFailed || strings.Contains(failed.Message, "daemon") || logged.Load() != 1 {
 		t.Errorf("lookup failed: %+v, logged %d", failed, logged.Load())
 	}

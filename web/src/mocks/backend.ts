@@ -17,11 +17,12 @@
 
 import { http, HttpResponse, sse, type HttpHandler } from 'msw'
 import type {
-  ActionView, ApprovalView, BuildLogBody, PortList, PortView, ProbeResult, HostDiskView, ResourcesView, HostSettingView, CatalogView, Device, IdentityState, IdentityView, InstallationView, LoginView, PutSecretResult, RepoView, SecretMeta, SessionInfo, SessionView, Stale, StaleWorkspace, SupervisorView,
+  ActionView, ApprovalView, BuildLogBody, DiscoveryState, PortList, PortView, ProbeResult, HostDiskView, ResourcesView, HostSettingView, CatalogView, Device, IdentityState, IdentityView, InstallationView, LoginView, PutSecretResult, RepoView, SecretMeta, SessionInfo, SessionView, Stale, StaleWorkspace, SupervisorView,
   StepView, StreamEvent, Undeliverable, UndeliverableSecret, WorkspaceDetail, WorkspaceList, WorkspaceState, WorkspaceView,
 } from '../api/types'
 import { checkDescription, checkName, checkReach, checkValue, type SecretRefusal } from '../lib/secretRules'
 import { acceptsCode, checkCodeShape, loginLive } from '../lib/login'
+import { bindWhere, loopbackSentence } from '../lib/portDiagnosis'
 
 export const MOCK_PASSWORD = 'drydock'
 const LOCKOUT_AFTER = 5
@@ -217,6 +218,14 @@ export interface MockBackend {
   scanTracks: Record<string, Record<number, { bind: string; streak: number; missed: number }>>
   /** Workspaces whose socket table cannot be read: a scan changes nothing there. */
   scanUnavailable: string[]
+  /**
+   * Workspaces whose mint budget is spent (internal/preview MintBurst): a
+   * scan lists no new row there and reports `limited`. The mock models the
+   * budget's effect, not its buckets.
+   */
+  scanLimited: string[]
+  /** Per workspace, discovery's state as last reported (Scanner.Discovery); absent is 'ok'. */
+  discoveryReported: Record<string, DiscoveryState>
   /** 'auto' runs a rescan's scan at once; 'manual' leaves it to a spec's `scanPorts`. */
   scanMode: 'auto' | 'manual'
   /** Hands out port row ids and slug suffixes. */
@@ -555,6 +564,8 @@ function newBackendBare(now: number, overrides: Partial<MockBackend>): MockBacke
     sockets: {},
     scanTracks: {},
     scanUnavailable: [],
+    scanLimited: [],
+    discoveryReported: {},
     scanMode: 'auto',
     portSeq: 0,
     ...overrides,
@@ -734,7 +745,9 @@ export function workspaceList(b: MockBackend): WorkspaceList {
 
 /** `GET /api/workspaces/:id`: the row and its latest 50 events, newest first. */
 export function workspaceDetail(b: MockBackend, w: MockWorkspace): WorkspaceDetail {
-  const events = b.events.filter((e) => e.workspace_id === w.id).slice(-50).reverse()
+  // Without port discovery's, as events.Log.Feed reads them.
+  const events = b.events.filter((e) => e.workspace_id === w.id && (e.data as { source?: unknown } | undefined)?.source !== 'discovery')
+    .slice(-50).reverse()
   return { ...workspaceView(b, w), events }
 }
 
@@ -1422,9 +1435,10 @@ export function scanPorts(b: MockBackend, asked: string[] = []): void {
   for (const w of targets) {
     const note = asked.includes(w.id)
     if (w.state === 'running' && b.scanUnavailable.includes(w.id)) {
-      if (note) emit(b, 'port.scanned', { workspace_id: w.id, message: "Could not read what this workspace's container is listening on.", data: { discovery: 'unavailable', source: 'discovery' } })
+      reportDiscovery(b, w.id, 'unavailable', note)
       continue
     }
+    let held = 0
     const seen = new Map<number, string[]>()
     if (w.state === 'running') {
       for (const s of mockSockets(b, w.id)) seen.set(s.port, [...(seen.get(s.port) ?? []), s.bind])
@@ -1454,6 +1468,10 @@ export function scanPorts(b: MockBackend, asked: string[] = []): void {
         }
         const all = liveRows(w.id)
         if (all.length >= 64 || all.filter(observedOnly).length >= MAX_OBSERVED) continue
+        if (b.scanLimited.includes(w.id)) {
+          held++ // the budget holds it back; the next scan derives it again
+          continue
+        }
         const id = `01JP${String(++b.portSeq).padStart(22, '0')}`
         const fresh: MockPort = {
           id, workspace_id: w.id, container_port: port, slug: mintSlug(b, w.id, port), host: null, url: null,
@@ -1487,8 +1505,34 @@ export function scanPorts(b: MockBackend, asked: string[] = []): void {
         data: { port_id: row.id, container_port: port, source: 'discovery' },
       })
     }
-    if (note) emit(b, 'port.scanned', { workspace_id: w.id, message: 'Ports scanned.', data: { discovery: 'ok', source: 'discovery' } })
+    reportDiscovery(b, w.id, held > 0 ? 'limited' : 'ok', note)
   }
+}
+
+/**
+ * The round's report of a workspace's discovery state, as Scanner.observe
+ * writes it: port.scanned with the verdict when it was asked about, else
+ * port.discovery when the verdict differs from the last report. (The status
+ * budget is the server's alone; no spec flaps it.)
+ */
+function reportDiscovery(b: MockBackend, wsId: string, verdict: DiscoveryState, asked: boolean): void {
+  const last = b.discoveryReported[wsId] ?? 'ok'
+  const said: Record<DiscoveryState, string> = {
+    ok: 'Port discovery records what this workspace\'s container listens on.',
+    unavailable: "Could not read what this workspace's container is listening on.",
+    limited: "This workspace's ports are changing faster than discovery records them; some changes are held back.",
+  }
+  if (asked) {
+    emit(b, 'port.scanned', {
+      workspace_id: wsId, message: verdict === 'ok' ? 'Ports scanned.' : `Ports scanned. ${said[verdict]}`,
+      data: { discovery: verdict, source: 'discovery' },
+    })
+  } else if (verdict !== last) {
+    emit(b, 'port.discovery', { workspace_id: wsId, message: said[verdict], data: { discovery: verdict, source: 'discovery' } })
+  } else {
+    return
+  }
+  b.discoveryReported[wsId] = verdict
 }
 
 const PORT_PATCH_FIELDS = { enabled: 'boolean', hidden: 'boolean', label: 'string', host_header: 'string' } as const
@@ -1879,7 +1923,7 @@ export function handlersFor(b: MockBackend): HttpHandler[] {
         .filter((p) => p.workspace_id === id && !p.retired && (hidden || !p.hidden))
         .sort((x, y) => x.container_port - y.container_port)
         .map((p) => portView(b, p))
-      return HttpResponse.json({ ports, previews: b.previewDomain !== null } satisfies PortList)
+      return HttpResponse.json({ ports, previews: b.previewDomain !== null, discovery: b.discoveryReported[id] ?? 'ok' } satisfies PortList)
     }),
 
     // POST …/ports/rescan (§13 step 5): 202, then a scan that answers it
@@ -1949,6 +1993,10 @@ export function handlersFor(b: MockBackend): HttpHandler[] {
       const cur = b.ports[String(params.port)]
       if (cur === undefined || cur.retired || cur.workspace_id !== id) return envelope(404, 'not_found', 'This workspace lists no such port.')
       if (body.enabled === true && w.state === 'deleting') return envelope(409, 'in_progress', 'This workspace is being deleted.')
+      if (body.enabled === true && cur.observed_state === 'listening' && loopbackAddr(cur.bind_addr)) {
+        return envelope(409, 'port_loopback',
+          'This port is listening on loopback only, which nothing outside the container can reach. Start the dev server with --host 0.0.0.0.')
+      }
       const next: MockPort = {
         ...cur,
         ...(typeof body.hidden === 'boolean' ? { hidden: body.hidden } : {}),
@@ -1990,15 +2038,24 @@ export function handlersFor(b: MockBackend): HttpHandler[] {
       const cur = b.ports[String(params.port)]
       if (cur === undefined || cur.retired || cur.workspace_id !== id) return envelope(404, 'not_found', 'This workspace lists no such port.')
       const n = cur.container_port
-      // internal/preview OutcomeSentence's words.
-      const result: ProbeResult = w.state !== 'running'
-        ? { outcome: 'not_running', message: "This workspace has no running container to reach." }
-        : mockSockets(b, id).some((s) => s.port === n && !loopbackAddr(s.bind))
-          ? { outcome: 'answering', message: `Something is answering on port ${n} in this workspace's container.` }
-          : {
-            outcome: 'refused',
-            message: `Nothing is answering on port ${n} in this workspace's container. Is the dev server running, and listening on 0.0.0.0 rather than 127.0.0.1?`,
-          }
+      // internal/preview Probe: a loopback-only port from the row, with no
+      // dial; then OutcomeSentence's words, a refusal on a port seen gone
+      // saying nothing listens.
+      const result: ProbeResult = cur.observed_state === 'listening' && loopbackAddr(cur.bind_addr)
+        ? { outcome: 'loopback', message: loopbackSentence(bindWhere(cur.bind_addr, n)) }
+        : w.state !== 'running'
+          ? { outcome: 'not_running', message: "This workspace has no running container to reach." }
+          : mockSockets(b, id).some((s) => s.port === n && !loopbackAddr(s.bind))
+            ? { outcome: 'answering', message: `Something is answering on port ${n} in this workspace's container.` }
+            : cur.observed_state === 'gone'
+              ? {
+                outcome: 'not_listening',
+                message: `Nothing is listening on port ${n} in this workspace's container: the dev server has not been started, or it has stopped.`,
+              }
+              : {
+                outcome: 'refused',
+                message: `Nothing is answering on port ${n} in this workspace's container. Is the dev server running, and listening on 0.0.0.0 rather than 127.0.0.1?`,
+              }
       return HttpResponse.json(result)
     }),
 

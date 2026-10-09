@@ -36,7 +36,9 @@ type WorkspaceReader interface {
 
 // EventReader is a workspace's recent events.
 type EventReader interface {
-	ForWorkspace(ctx context.Context, workspaceID string, limit int) ([]events.Event, error)
+	// Feed is the activity list: events.Log.Feed, which leaves port
+	// discovery's ambient events out.
+	Feed(ctx context.Context, workspaceID string, limit int) ([]events.Event, error)
 }
 
 // Resources is the sampler's latest measurements (internal/usage): read from
@@ -176,7 +178,7 @@ func (wr WorkspaceRoutes) read(w http.ResponseWriter, r *http.Request) {
 		WriteError(w, http.StatusInternalServerError, CodeInternal, "Could not read the workspace.", "")
 		return
 	}
-	evs, err := wr.Events.ForWorkspace(r.Context(), v.ID, detailEvents)
+	evs, err := wr.Events.Feed(r.Context(), v.ID, detailEvents)
 	if err != nil {
 		WriteError(w, http.StatusInternalServerError, CodeInternal, "Could not read the workspace's events.", "")
 		return

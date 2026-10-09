@@ -163,11 +163,11 @@ describe('discovery (port forwarding §13 step 5)', () => {
     const bogus = { ...found, observed_state: 'bogus' } as unknown as PortView
     expect(play([ev(1, 'port.added', { port: bogus })]).ports.D1!.observedState).toBeNull()
   })
-  it('port.scanned changes no entity: it only answers a rescan', () => {
+  it('port.scanned changes no row: it answers a rescan, and joins no feed (step 6)', () => {
     const e = play([ev(1, 'port.added', { port: found })])
     const after = reduce(e, { type: 'event', event: ev(2, 'port.scanned', { discovery: 'ok', source: 'discovery' }) })
     expect(after.ports).toBe(e.ports)
-    expect(after.feeds[WS]!.map((f) => f.kind)).toEqual(['port.scanned', 'port.added']) // newest first
+    expect(after.feeds[WS]!.map((f) => f.kind)).toEqual(['port.added'])
   })
   it("a rescan ends on that workspace's port.scanned newer than the press, or its going", () => {
     const settles = settlesRescan(WS, 5)
@@ -176,5 +176,53 @@ describe('discovery (port forwarding §13 step 5)', () => {
     expect(settles(ev(6, 'port.added', { port: found }))).toBe(false)
     expect(settles(ev(6, 'port.scanned', { discovery: 'unavailable' }))).toBe(true)
     expect(settles(ev(7, 'workspace.gone', {}))).toBe(true)
+  })
+})
+
+// Port forwarding §11, §13 step 6: discovery's state per workspace, and the
+// feed without discovery's events.
+describe('port discovery state', () => {
+  it('is written by port.scanned, port.discovery and the list, each versioned', () => {
+    let e = play([ev(3, 'port.discovery', { discovery: 'unavailable', source: 'discovery' })])
+    expect(e.portDiscovery[WS]).toEqual({ state: 'unavailable', at: 3 })
+    // An older list cannot undo a newer report; a newer list can.
+    e = reduce(e, { type: 'ports', at: 2, workspaceId: WS, view: { ports: [], previews: true, discovery: 'ok' } })
+    expect(e.portDiscovery[WS]!.state).toBe('unavailable')
+    e = reduce(e, { type: 'ports', at: 5, workspaceId: WS, view: { ports: [], previews: true, discovery: 'limited' } })
+    expect(e.portDiscovery[WS]).toEqual({ state: 'limited', at: 5 })
+    // A rescan's answer is a report too; a late one changes nothing.
+    e = reduce(e, { type: 'event', event: ev(6, 'port.scanned', { discovery: 'ok', source: 'discovery' }) })
+    expect(e.portDiscovery[WS]).toEqual({ state: 'ok', at: 6 })
+    expect(reduce(e, { type: 'event', event: ev(4, 'port.discovery', { discovery: 'limited', source: 'discovery' }) })).toBe(e)
+    // Nonsense and a list with no scanner (null) leave it alone.
+    expect(reduce(e, { type: 'event', event: ev(7, 'port.discovery', { discovery: 'broken', source: 'discovery' }) }).portDiscovery[WS]!.state).toBe('ok')
+    expect(reduce(e, { type: 'ports', at: 8, workspaceId: WS, view: { ports: [], previews: true, discovery: null } }).portDiscovery[WS]!.state).toBe('ok')
+    // Another workspace's is its own; the workspace going takes it.
+    e = reduce(e, { type: 'event', event: ev(9, 'port.discovery', { discovery: 'unavailable', source: 'discovery' }, OTHER) })
+    expect(e.portDiscovery[WS]!.state).toBe('ok')
+    e = reduce(e, { type: 'event', event: ev(10, 'workspace.gone', {}) })
+    expect(e.portDiscovery[WS]).toBeUndefined()
+    expect(e.portDiscovery[OTHER]!.state).toBe('unavailable')
+  })
+
+  it("keeps discovery's events out of the feed and the operator's in", () => {
+    const p = port('P1', 5173)
+    const e = play([
+      ev(1, 'port.added', { port: { ...p, observed: true }, source: 'discovery' }),
+      ev(2, 'port.enabled', { port: on(p) }),
+      ev(3, 'port.scanned', { discovery: 'ok', source: 'discovery' }),
+      ev(4, 'port.discovery', { discovery: 'limited', source: 'discovery' }),
+    ])
+    expect(e.feeds[WS]!.map((x) => x.id)).toEqual([2])
+    // Discovery's row is still a row: the feed is all it is kept out of.
+    expect(e.ports.P1!.enabled).toBe(true)
+    const d = reduce(emptyEntities(), {
+      type: 'workspace', at: 4,
+      view: {
+        id: WS, repository_id: 1, repo: 'o/myapp', branch: 'main', state: 'running', state_detail: null, container_id: null,
+        created_at: at(0), steps: {}, events: [ev(1, 'port.added', { port: p, source: 'discovery' }), ev(2, 'port.enabled', { port: on(p) })],
+      } as never,
+    })
+    expect(d.feeds[WS]!.map((x) => x.id)).toEqual([2])
   })
 })

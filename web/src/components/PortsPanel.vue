@@ -17,7 +17,18 @@
 // listening now. An enabled row shows its full preview host — the address the
 // operator is learning to trust is never hidden behind a friendly label
 // (§6.3) — and opens it in a new tab, never a frame (§8).
+//
+// Diagnosis (PF §11, §13 step 6), from structured state alone
+// (lib/portDiagnosis): a port listening on loopback only is greyed, says
+// where it listens and the `--host 0.0.0.0` that fixes it, and offers no
+// switch — the server refuses that enable (`port_loopback`) and never dials
+// such a port — but *Look again*, the action that can help once the server
+// has restarted. An enabled port nothing listens on says so. And the panel
+// says when discovery cannot read the container, or is holding changes back,
+// so a broken scanner never looks like an empty list.
 import { computed, onMounted, ref, watch } from 'vue'
+import { diagnose, loopbackLead } from '../lib/portDiagnosis'
+import { relativeTime } from '../lib/time'
 import { describeError } from '../api/messages'
 import type { ProbeResult } from '../api/types'
 import ActionButton from './ActionButton.vue'
@@ -63,6 +74,9 @@ const loaded = computed(() => stream.entities.portsLoaded[wsId.value] !== undefi
 const load = computed(() => ports.status[wsId.value] ?? null)
 const previewsOn = computed(() => stream.entities.previews !== false)
 const running = computed(() => props.workspace.state === 'running')
+/** Discovery's state as last reported (PF §11); null when nothing has been said. */
+const discovery = computed(() => stream.entities.portDiscovery[wsId.value]?.state ?? null)
+const diagnosis = (p: Port) => diagnose(p, running.value, discovery.value)
 
 function provenance(p: Port): string[] {
   const out: string[] = []
@@ -72,14 +86,10 @@ function provenance(p: Port): string[] {
   return out
 }
 
-/** What discovery last saw of it, or null when it never has. */
+/** What discovery last saw of it, or null when it never has (or a diagnosis says more). */
 function observation(p: Port): string | null {
-  if (p.observedState === 'listening') {
-    if (p.bindAddr === null) return 'Listening.'
-    return p.loopback
-      ? `Listening on ${p.bindAddr} only, which nothing outside the container can reach.`
-      : `Listening on ${p.bindAddr}.`
-  }
+  if (diagnosis(p) !== null) return null
+  if (p.observedState === 'listening') return p.bindAddr === null ? 'Listening.' : `Listening on ${p.bindAddr}.`
   if (p.observedState === 'gone') return 'Not listening now.'
   return null
 }
@@ -133,11 +143,23 @@ async function add(): Promise<void> {
     <p v-else-if="!running && all.some((p) => p.enabled)" class="sub" data-test="ports-not-running">
       The workspace is not running, so its previews will not answer until it is started.
     </p>
+    <p v-if="running && discovery === 'unavailable'" class="sub warn" data-test="discovery-unavailable">
+      <span class="badge">discovery unavailable</span>
+      Drydock cannot read what this workspace's container is listening on right now, so ports it starts are not
+      listed and what each row says about listening may be out of date. Declared ports, and adding a port by
+      number, still work.
+    </p>
+    <p v-else-if="running && discovery === 'limited'" class="sub warn" data-test="discovery-limited">
+      <span class="badge">discovery limited</span>
+      Ports in this container are opening and closing faster than Drydock records them, so some that are listening
+      are not listed yet. They will appear within a few minutes; adding a port by number lists it now.
+    </p>
 
     <ul v-if="rows.length > 0" class="ports">
       <li
-        v-for="p in rows" :key="p.id" class="port" :class="{ on: p.enabled, hidden: p.hidden }"
-        data-test="port" :data-port="p.containerPort"
+        v-for="p in rows" :key="p.id" class="port"
+        :class="{ on: p.enabled, hidden: p.hidden, loop: diagnosis(p)?.kind === 'loopback' }"
+        data-test="port" :data-port="p.containerPort" :data-diagnosis="diagnosis(p)?.kind"
       >
         <div class="head">
           <span class="num">{{ p.containerPort }}</span>
@@ -145,17 +167,39 @@ async function add(): Promise<void> {
           <span v-for="b in provenance(p)" :key="b" class="badge" data-test="port-badge">{{ b }}</span>
           <span v-if="p.hidden" class="badge">hidden</span>
         </div>
-        <p v-if="observation(p)" class="sub" :class="{ loop: p.loopback && p.observedState === 'listening' }" data-test="port-observed">
+        <p v-if="observation(p)" class="sub" data-test="port-observed">
           {{ observation(p) }}
         </p>
+        <template v-for="d in [diagnosis(p)]" :key="'d'">
+          <p v-if="d?.kind === 'loopback'" class="sub bad" data-test="port-diagnosis">
+            {{ loopbackLead(d.where) }} <code>--host 0.0.0.0</code>.
+          </p>
+          <p v-else-if="d?.kind === 'not_listening'" class="sub bad" data-test="port-diagnosis">
+            Nothing is listening on port {{ p.containerPort }} now<template v-if="d.lastSeenAt">, and nothing has
+            since {{ relativeTime(d.lastSeenAt) }}</template>: the dev server has not been started, or it has stopped.
+            Its preview answers once it listens again.
+          </p>
+          <p v-else-if="d?.kind === 'never_listened'" class="sub" data-test="port-diagnosis">
+            Nothing has listened on port {{ p.containerPort }} yet. Its preview answers once a dev server listens on
+            it, on 0.0.0.0.
+          </p>
+        </template>
 
         <template v-if="p.enabled && p.url">
           <a
+            v-if="diagnosis(p)?.kind !== 'loopback'"
             class="host" :href="p.url" target="_blank" rel="noopener noreferrer" data-test="port-open"
           >{{ p.host }}</a>
           <ActionButton
             label="Turn off preview" :flight-key="portEnableKey(p.id)"
             :run="() => ports.setEnabled(wsId, p.id, false)" data-test="port-disable"
+          />
+        </template>
+        <template v-else-if="previewsOn && diagnosis(p)?.kind === 'loopback'">
+          <p class="sub" data-test="port-off">Not previewable while it listens on loopback.</p>
+          <ActionButton
+            v-if="running" label="Look again" :flight-key="portRescanKey(wsId)"
+            :run="() => ports.rescan(wsId)" data-test="port-look-again"
           />
         </template>
         <template v-else-if="previewsOn">
@@ -269,7 +313,8 @@ async function add(): Promise<void> {
 <style scoped>
 .block { display: flex; flex-direction: column; gap: 8px; }
 .sub { font-size: 13px; color: var(--ink-2); }
-.sub.bad, .sub.refused, .sub.timed_out, .sub.lookup_failed { color: var(--bad); }
+.sub.bad, .sub.refused, .sub.timed_out, .sub.lookup_failed, .sub.loopback, .sub.not_listening { color: var(--bad); }
+.sub.warn { color: var(--ink-2); }
 .sub.answering { color: var(--ok); }
 .ports {
   list-style: none; margin: 0; padding: 0;
@@ -278,6 +323,7 @@ async function add(): Promise<void> {
 .port { padding: 10px 12px; border-bottom: 1px solid var(--line-soft); display: flex; flex-direction: column; gap: 6px; }
 .port:last-child { border-bottom: 0; }
 .port.hidden { opacity: .7; }
+.port.loop .head { opacity: .6; }
 .head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 8px; }
 .num { font-family: var(--mono); font-weight: 700; font-size: 14px; }
 .label { font-size: 13.5px; color: var(--ink-2); overflow-wrap: anywhere; }

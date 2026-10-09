@@ -53,7 +53,10 @@
 // 202, settled by its port.* event; ports.rescan (§13 step 5) 202, settled by
 // the port.scanned of the scan it asked for (a PortScanner, preview.Scanner).
 // The probe goes through a PortProber, which the server makes the preview
-// proxy itself.
+// proxy itself, handed the row's discovery observation so a loopback-only
+// port is answered without a dial; an enable of one is 409 port_loopback, and
+// the list carries discovery's state (PF §11, §13 step 6). The detail view's
+// events are events.Log.Feed: the workspace's history without discovery's.
 package api
 
 import "net/http"

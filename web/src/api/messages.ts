@@ -73,6 +73,8 @@ const SENTENCES: Record<string, string> = {
   too_many_ports: 'This workspace lists as many ports as Drydock allows. Remove one first.',
   previews_not_configured:
     'No preview domain is set up, so no port can be previewed. Install with --preview-domain and its wildcard certificate.',
+  port_loopback:
+    'This port is listening on loopback only, which nothing outside the container can reach. Start the dev server with --host 0.0.0.0, then try again.',
   // Design §7.2's refusals. None can say anything about the code itself:
   // the code goes up and nothing about it comes back (frontend §2.5).
   login_code_invalid: 'That looks like only part of the code. Copy the whole code Claude shows, both sides of the #.',

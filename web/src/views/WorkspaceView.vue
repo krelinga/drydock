@@ -17,6 +17,13 @@
 // Under the card, the ports panel (PortsPanel, §6.3): off until enabled, each
 // switch settled by its port.* event (port forwarding §13 step 4).
 //
+// A device opening an enabled port's preview while its workspace is not
+// running is sent here by /preview/authorize with `?preview=<port id>` (PF
+// §11's *workspace stopped*: the state named, with a start button). The card
+// is the state and the action; the note under it says why the device is here,
+// from the port entity the panel loads — and, once the workspace runs, links
+// the preview again.
+//
 // Event messages are rendered as text, never HTML (§8): `message` is the
 // server's prose about things that can carry repository content.
 import { computed, nextTick, onMounted, ref, watch } from 'vue'
@@ -54,6 +61,12 @@ const ws = computed(() => stream.entities.workspaces[id.value] ?? null)
 const deleted = computed(() => stream.entities.gone[id.value] !== undefined)
 const load = computed(() => workspaces.detail[id.value] ?? { status: 'idle', error: null })
 const status = computed(() => (ws.value !== null ? cardStatus(ws.value, stream.entities.identity?.state ?? null) : null))
+/** The preview the device was opening when authorize sent it here, if it is this workspace's. */
+const openedPreview = computed(() => {
+  const q = route.query.preview
+  const p = typeof q === 'string' ? stream.entities.ports[q] : undefined
+  return p !== undefined && p.workspaceId === id.value ? p : null
+})
 
 const name = computed(() => {
   const w = ws.value
@@ -232,6 +245,16 @@ watch(id, () => {
         <PortCount :workspace="ws" :panel="ws.state !== 'deleting'" />
         <ReadOnlyNote :workspace="ws" />
         <WorkspaceIdentityNote :state="ws.state" part="waiting" />
+        <template v-if="openedPreview">
+          <p v-if="ws.state !== 'running'" class="note" data-test="preview-not-running">
+            This workspace is not running, so port {{ openedPreview.containerPort }}'s preview cannot answer. It
+            answers again once the workspace is running.
+          </p>
+          <p v-else-if="openedPreview.enabled && openedPreview.url" class="note" data-test="preview-running">
+            Port {{ openedPreview.containerPort }}'s preview:
+            <a :href="openedPreview.url" target="_blank" rel="noopener noreferrer">{{ openedPreview.host }}</a>
+          </p>
+        </template>
         <p v-if="status.since" class="note" data-test="waiting-since">Waiting since {{ relativeTime(status.since) }}.</p>
         <WorkspaceAction :workspace="ws" :action="status.action" :link="status.link" primary />
         <dl class="facts">

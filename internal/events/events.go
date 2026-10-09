@@ -415,13 +415,39 @@ func (l *Log) Since(ctx context.Context, id int64) ([]Event, error) {
 	return out, nil
 }
 
-// ForWorkspace returns a workspace's most recent events, newest first, for
-// the detail view's activity list.
+// ForWorkspace returns a workspace's most recent events, newest first, every
+// kind.
 func (l *Log) ForWorkspace(ctx context.Context, workspaceID string, limit int) ([]Event, error) {
-	rows, err := l.DB.QueryContext(ctx,
-		`SELECT id, coalesce(workspace_id,''), coalesce(level,''), coalesce(kind,''),
+	return l.forWorkspace(ctx, workspaceID, limit, "")
+}
+
+// SourceDiscovery is the `data.source` of every event port discovery writes
+// (internal/preview's SourceDiscovery is this): the rows it lists, the
+// rescans it answers, the state it reports.
+const SourceDiscovery = "discovery"
+
+// Feed returns a workspace's most recent events, newest first, for the
+// detail view's activity list — without port discovery's (PF §13 step 6).
+// Discovery is ambient by design (PF §8.2): what it finds is the ports
+// panel's, and a test suite opening and closing ports would otherwise push
+// the workspace's lifecycle history out of the list's 50. The stream still
+// carries them, and the reducer leaves them out of the feed alike.
+func (l *Log) Feed(ctx context.Context, workspaceID string, limit int) ([]Event, error) {
+	return l.forWorkspace(ctx, workspaceID, limit, SourceDiscovery)
+}
+
+func (l *Log) forWorkspace(ctx context.Context, workspaceID string, limit int, exceptSource string) ([]Event, error) {
+	q := `SELECT id, coalesce(workspace_id,''), coalesce(level,''), coalesce(kind,''),
 		        coalesce(message,''), data, at
-		 FROM event WHERE workspace_id = ? ORDER BY id DESC LIMIT ?`, workspaceID, limit)
+		 FROM event WHERE workspace_id = ?`
+	args := []any{workspaceID}
+	if exceptSource != "" {
+		// data is a JSON object written by NewEvent; one that is not
+		// valid JSON is kept rather than failing the whole query.
+		q += ` AND (data IS NULL OR NOT json_valid(data) OR coalesce(json_extract(data, '$.source'), '') <> ?)`
+		args = append(args, exceptSource)
+	}
+	rows, err := l.DB.QueryContext(ctx, q+` ORDER BY id DESC LIMIT ?`, append(args, limit)...)
 	if err != nil {
 		return nil, err
 	}

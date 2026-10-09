@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"os"
 	"path"
 	"strings"
@@ -187,9 +188,21 @@ func (p PreviewHandshake) authorize(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
+		// An enabled port on a workspace that is not running: PF §11's
+		// *workspace stopped* — the state named, with a start button —
+		// is the workspace's own page in the UI, on this origin. Its
+		// card says the state and offers Start, and `preview` names the
+		// port so the page says why the device is there. Telling this
+		// apart from the dead end tells a signed-in device nothing its
+		// workspace list does not; an unauthenticated caller never gets
+		// here (§13.2's uniformity is about that caller).
+		if wsID, portID, stopped, err := p.Previews.Stopped(r.Context(), slug); err == nil && stopped {
+			http.Redirect(w, r, "/ws/"+url.PathEscape(wsID)+"?"+url.Values{"preview": {portID}}.Encode(), http.StatusFound)
+			return
+		}
 		// The host is a well-formed preview host, so its own dead end is
 		// the right place to land — and says nothing about which of "no
-		// such port", "disabled" or "workspace stopped" it was.
+		// such port" or "disabled" it was.
 		http.Redirect(w, r, "https://"+host+preview.DeniedPath, http.StatusFound)
 		return
 	}

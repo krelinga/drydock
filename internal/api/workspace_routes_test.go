@@ -81,7 +81,7 @@ func (s stubReader) View(_ context.Context, id string) (workspace.View, error) {
 
 type stubEvents struct{}
 
-func (stubEvents) ForWorkspace(_ context.Context, id string, limit int) ([]events.Event, error) {
+func (stubEvents) Feed(_ context.Context, id string, limit int) ([]events.Event, error) {
 	if limit != 50 {
 		return nil, errors.New("the detail carries 50 events")
 	}

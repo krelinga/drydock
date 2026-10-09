@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -18,9 +19,13 @@ import (
 	"github.com/krelinga/drydock/internal/sys"
 )
 
-type recordingProber struct{ asked []int }
+type recordingProber struct {
+	asked []int
+	seen  []preview.Observation
+}
 
-func (p *recordingProber) Probe(_ context.Context, ws string, port int) preview.ProbeResult {
+func (p *recordingProber) Probe(_ context.Context, ws string, port int, seen preview.Observation) preview.ProbeResult {
+	p.seen = append(p.seen, seen)
 	p.asked = append(p.asked, port)
 	return preview.ProbeResult{Outcome: preview.ProbeAnswering, Message: "m"}
 }
@@ -153,9 +158,12 @@ func TestPortRoutesRequestsAndRefusals(t *testing.T) {
 }
 
 type recordingScanner struct {
-	asked []string
-	err   error
+	discovery string
+	asked     []string
+	err       error
 }
+
+func (s *recordingScanner) Discovery(string) string { return s.discovery }
 
 func (s *recordingScanner) Rescan(_ context.Context, ws string) error {
 	s.asked = append(s.asked, ws)
@@ -207,5 +215,48 @@ func TestPortsWithNoPreviewDomain(t *testing.T) {
 	}
 	if code, _, _ := portCall(h, "PATCH", "/api/workspaces/w1/ports/"+ps[0].ID, `{"label":"still editable"}`); code != http.StatusAccepted {
 		t.Errorf("control: a relabel with no domain = %d", code)
+	}
+}
+
+// TestPortRoutesDiagnosis is PF §13 step 6 at the routes: an enable of a port
+// discovery sees listening on loopback only is 409 port_loopback with the row
+// left off (the control on 0.0.0.0 enables); the probe hands the prober the
+// row's observation, which is how the proxy's probe answers it without a dial;
+// and the list carries discovery's state, null with no scanner.
+func TestPortRoutesDiagnosis(t *testing.T) {
+	h, svc, pr, db := portRoutes(t, testPreviewDomain)
+	ctx := context.Background()
+	for _, n := range []int{5173, 8080} {
+		portCall(h, "POST", "/api/workspaces/w1/ports", fmt.Sprintf(`{"container_port":%d}`, n))
+	}
+	db.Exec(`UPDATE forwarded_port SET observed = 1, observed_state = 'listening', bind_addr = '127.0.0.1' WHERE container_port = 5173`)
+	db.Exec(`UPDATE forwarded_port SET observed = 1, observed_state = 'listening', bind_addr = '0.0.0.0' WHERE container_port = 8080`)
+	ps, _ := svc.Ports(ctx, "w1", true)
+	loop, open := ps[0], ps[1]
+	if code, e, _ := portCall(h, "PATCH", "/api/workspaces/w1/ports/"+loop.ID, `{"enabled":true}`); code != http.StatusConflict || e.Code != CodePortLoopback {
+		t.Errorf("enabling a loopback port = %d %s; want 409 %s", code, e.Code, CodePortLoopback)
+	}
+	if p, _ := svc.Port(ctx, "w1", loop.ID); p.Enabled {
+		t.Error("the refused enable enabled it")
+	}
+	if code, _, body := portCall(h, "PATCH", "/api/workspaces/w1/ports/"+open.ID, `{"enabled":true}`); code != http.StatusAccepted {
+		t.Errorf("control: enabling a port on 0.0.0.0 = %d %s", code, body)
+	}
+	portCall(h, "GET", "/api/workspaces/w1/ports/"+loop.ID+"/probe", "")
+	if len(pr.seen) != 1 || !pr.seen[0].LoopbackOnly() || pr.seen[0].Bind != "127.0.0.1" {
+		t.Errorf("the probe was handed %+v; want the row's loopback observation", pr.seen)
+	}
+
+	var l struct {
+		Discovery *string `json:"discovery"`
+	}
+	_, _, body := portCall(h, "GET", "/api/workspaces/w1/ports", "")
+	if json.Unmarshal(body, &l); l.Discovery != nil || !strings.Contains(string(body), `"discovery":null`) {
+		t.Errorf("with no scanner the list says %s", body)
+	}
+	sh := Build(MuxAPI, allOpen, PortRoutes{Registry: svc, Scanner: &recordingScanner{discovery: "limited"}}.Handlers())
+	_, _, body = portCall(sh, "GET", "/api/workspaces/w1/ports", "")
+	if json.Unmarshal(body, &l); l.Discovery == nil || *l.Discovery != "limited" {
+		t.Errorf("with a scanner holding changes back the list says %s", body)
 	}
 }

@@ -133,7 +133,15 @@ type Proxy struct {
 	mu       sync.Mutex
 	upgrades map[*upgrade]struct{}
 	closed   bool
+
+	// dialsSkipped counts the requests and probes answered from discovery's
+	// observation without a dial (a loopback-only port), for tests.
+	dialsSkipped atomic.Int64
 }
+
+// Skipped is how many requests and probes were answered from discovery's
+// observation alone, with no resolution and no dial: a test's counter.
+func (p *Proxy) Skipped() int64 { return p.dialsSkipped.Load() }
 
 // maxResolving bounds how many dials resolve at once. Each resolution is two
 // docker invocations and each confirmation one more; a first page load of a
@@ -171,6 +179,16 @@ func (p *Proxy) init() {
 // ServePreview proxies one request to the target's container port.
 func (p *Proxy) ServePreview(w http.ResponseWriter, r *http.Request, t Target) {
 	p.init()
+	if t.Seen.LoopbackOnly() {
+		// PF §11's first row: discovery read the bind address, so the
+		// answer is known before anyone dials — and nothing is dialled.
+		// The container's bridge address can never reach a socket bound to
+		// its loopback, so a dial could only be refused, and the generic
+		// 502 would send the operator debugging the proxy.
+		p.dialsSkipped.Add(1)
+		previewPage(w, http.StatusBadGateway, "Preview not reachable", LoopbackSentence(t.Seen.Bind, t.ContainerPort))
+		return
+	}
 	if r.Method == http.MethodConnect {
 		// Not a request to the app: a tunnel through the proxy, which is
 		// TCP forwarding by another name (PF §1's non-goals).
@@ -480,7 +498,7 @@ func (p *Proxy) fail(w *proxyWriter, r *http.Request, t Target, err error) {
 		// The device went away; there is no one to answer.
 		return
 	}
-	outcome := p.outcomeOf(err, t.WorkspaceID)
+	outcome := refine(p.outcomeOf(err, t.WorkspaceID), t.Seen)
 	switch outcome {
 	case ProbeNotRunning:
 		// Treated as stopped (PF §8.1): the one dead end, as the front door
@@ -492,8 +510,24 @@ func (p *Proxy) fail(w *proxyWriter, r *http.Request, t Target, err error) {
 	case ProbeTimedOut:
 		previewPage(w, http.StatusGatewayTimeout, "Preview not answering", OutcomeSentence(outcome, t.ContainerPort))
 	default:
+		// Refused, or refused where discovery saw nothing listening.
 		previewPage(w, http.StatusBadGateway, "Preview not answering", OutcomeSentence(outcome, t.ContainerPort))
 	}
+}
+
+// refine reads a dial's outcome with what discovery last saw of the port: a
+// refused connect to a port discovery saw stop listening is "nothing is
+// listening" — PF §11's *port enabled, nothing listening* — rather than the
+// generic refusal, which has to guess at a loopback bind. Only a refusal is
+// refined: discovery's view is up to a grace period old, so the dial stays the
+// truth of what happened and the observation only names it — which is also
+// why a port seen gone is still dialled (a server started a moment ago
+// answers before discovery has seen it twice).
+func refine(outcome string, seen Observation) string {
+	if outcome == ProbeRefused && seen.State == StateGone {
+		return ProbeNotListening
+	}
+	return outcome
 }
 
 // What one dial came to — the proxy's failure pages and the probe endpoint
@@ -512,7 +546,46 @@ const (
 	// ProbeLookupFailed: Drydock could not ask Docker — 503, and the
 	// reason in the journal.
 	ProbeLookupFailed = "lookup_failed"
+	// ProbeLoopback: discovery saw the port listening on loopback only, so
+	// nothing outside the container can reach it — answered with no
+	// resolution and no dial (PF §11's first row); the proxy's 502.
+	ProbeLoopback = "loopback"
+	// ProbeNotListening: refused, on a port discovery saw stop listening —
+	// the proxy's 502, saying so rather than guessing (§11's second row).
+	ProbeNotListening = "not_listening"
 )
+
+// Observation is what discovery last recorded of a port — its row's
+// observed_state and bind_addr (PF §8.2) — which the proxy and the probe read
+// before deciding whether to dial at all. The zero value is "never seen".
+type Observation struct {
+	State string // StateListening, StateGone, or "" for never seen
+	Bind  string // the bind address, "" when never seen
+}
+
+// LoopbackOnly reports a port listening now on loopback only: the widest
+// socket on it bound to 127.0.0.0/8 or ::1 (a mapped ::ffff:127.x too), so
+// every one is. Such a port is never dialled: the container's bridge address
+// cannot reach it.
+func (o Observation) LoopbackOnly() bool {
+	if o.State != StateListening {
+		return false
+	}
+	a, err := netip.ParseAddr(o.Bind)
+	return err == nil && a.Unmap().IsLoopback()
+}
+
+// LoopbackSentence is PF §11's first row: where the server is listening, why
+// that cannot be previewed, and the flag that fixes it. Discovery cannot tell
+// which server it is (no process attribution, §14.2), so the flag is the one
+// Vite, Next.js, Astro, Nuxt and webpack-dev-server all take.
+func LoopbackSentence(bind string, port int) string {
+	where := strconv.Itoa(port)
+	if a, err := netip.ParseAddr(bind); err == nil && port > 0 && port <= 65535 {
+		where = netip.AddrPortFrom(a.Unmap(), uint16(port)).String()
+	}
+	return fmt.Sprintf("Listening on %s, which is only reachable from inside the container. Start it with --host 0.0.0.0.", where)
+}
 
 // ProbeResult is GET …/ports/:port/probe: what a dial made now came to, and
 // the sentence the proxy's own page would say for it.
@@ -526,18 +599,25 @@ type ProbeResult struct {
 // label (Resolver.Resolve), the connect, Resolver.Confirm, and the one retry
 // a moved container gets. The connection is closed unused; nothing is sent
 // on it. Its answers are the failure pages' (OutcomeSentence), so the panel
-// and a preview tab never disagree about a port.
-func (p *Proxy) Probe(ctx context.Context, workspaceID string, port int) ProbeResult {
+// and a preview tab never disagree about a port. `seen` is the row's
+// Observation: a port listening on loopback only is answered from it with no
+// resolution and no dial, as ServePreview answers it (PF §11).
+func (p *Proxy) Probe(ctx context.Context, workspaceID string, port int, seen Observation) ProbeResult {
 	p.init()
 	if port < 1 || port > 65535 {
 		return ProbeResult{Outcome: ProbeRefused, Message: OutcomeSentence(ProbeRefused, port)}
+	}
+	if seen.LoopbackOnly() {
+		// Known without a dial, and never dialled (PF §11).
+		p.dialsSkipped.Add(1)
+		return ProbeResult{Outcome: ProbeLoopback, Message: LoopbackSentence(seen.Bind, port)}
 	}
 	conn, err := p.dial(ctx, "tcp", dialKey(workspaceID, port))
 	if err == nil {
 		conn.Close()
 		return ProbeResult{Outcome: ProbeAnswering, Message: OutcomeSentence(ProbeAnswering, port)}
 	}
-	o := p.outcomeOf(err, workspaceID)
+	o := refine(p.outcomeOf(err, workspaceID), seen)
 	return ProbeResult{Outcome: o, Message: OutcomeSentence(o, port)}
 }
 
@@ -572,6 +652,10 @@ func OutcomeSentence(outcome string, port int) string {
 		return "Drydock could not look up this workspace's container. The service log says why."
 	case ProbeTimedOut:
 		return fmt.Sprintf("Nothing answered on port %d in this workspace's container in time. Is the dev server running, and listening on 0.0.0.0 rather than 127.0.0.1?", port)
+	case ProbeNotListening:
+		return fmt.Sprintf("Nothing is listening on port %d in this workspace's container: the dev server has not been started, or it has stopped.", port)
+	case ProbeLoopback:
+		return LoopbackSentence("127.0.0.1", port)
 	}
 	return fmt.Sprintf("Nothing is answering on port %d in this workspace's container. Is the dev server running, and listening on 0.0.0.0 rather than 127.0.0.1?", port)
 }

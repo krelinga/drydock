@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -289,5 +290,46 @@ func TestASubscriptionEndsOnceHoweverItEnds(t *testing.T) {
 				})
 			}
 		}
+	}
+}
+
+// TestFeedLeavesDiscoveryOut is PF §13 step 6's feed decision: the activity
+// list GET /api/workspaces/:id carries is the workspace's history without
+// port discovery's ambient events, so a test suite opening and closing ports
+// cannot push a stop or a rebuild out of its 50. The operator's own port
+// changes (no source) stay, and ForWorkspace — the control — still has all.
+func TestFeedLeavesDiscoveryOut(t *testing.T) {
+	ctx := context.Background()
+	l, _ := newLog(t)
+	emit := func(kind string, data any) {
+		t.Helper()
+		if _, err := l.Emit(ctx, "ws1", Info, kind, kind, data); err != nil {
+			t.Fatal(err)
+		}
+	}
+	emit("workspace.state", map[string]string{"state": "running"})
+	for i := 0; i < 60; i++ {
+		emit("port.updated", map[string]any{"port": map[string]int{"container_port": 40000 + i}, "source": SourceDiscovery})
+	}
+	emit("port.scanned", map[string]string{"discovery": "ok", "source": SourceDiscovery})
+	emit("port.discovery", map[string]string{"discovery": "limited", "source": SourceDiscovery})
+	emit("port.enabled", map[string]any{"port": map[string]int{"container_port": 5173}})
+	emit("workspace.action", map[string]string{"source": "somewhere else"})
+	emit("other.kind", nil)
+
+	feed, err := l.Feed(ctx, "ws1", 50)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var kinds []string
+	for _, e := range feed {
+		kinds = append(kinds, e.Kind)
+	}
+	if want := []string{"other.kind", "workspace.action", "port.enabled", "workspace.state"}; strings.Join(kinds, " ") != strings.Join(want, " ") {
+		t.Errorf("Feed = %v; want %v", kinds, want)
+	}
+	all, err := l.ForWorkspace(ctx, "ws1", 1000)
+	if err != nil || len(all) != 66 {
+		t.Errorf("control: ForWorkspace = %d events, %v; want all 66", len(all), err)
 	}
 }

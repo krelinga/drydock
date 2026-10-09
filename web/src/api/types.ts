@@ -78,6 +78,7 @@ export type ErrorCode =
   | 'port_exists'
   | 'too_many_ports'
   | 'previews_not_configured'
+  | 'port_loopback'
   | 'login_code_invalid'
   | 'login_not_awaiting_code'
   | 'login_ended'
@@ -328,16 +329,27 @@ export interface PortView {
   created_at: string | null
 }
 
+/**
+ * A workspace's port discovery (internal/preview DiscoveryOK, …): reading
+ * what the container listens on, unable to (`unavailable`), or reading it but
+ * holding changes back because its ports change faster than the budgets
+ * allow (`limited`). Reported by `port.scanned` and `port.discovery`, and
+ * carried by the port list.
+ */
+export type DiscoveryState = 'ok' | 'unavailable' | 'limited'
+
 /** `GET /api/workspaces/:id/ports` (internal/api PortList). */
 export interface PortList {
   ports: PortView[]
   /** Whether a preview domain is configured: without one nothing can be enabled. */
   previews: boolean
+  /** Discovery's state as last reported; null when the server runs no scanner. */
+  discovery?: DiscoveryState | null
 }
 
 /** `GET /api/workspaces/:id/ports/:port/probe` (internal/preview ProbeResult). */
 export interface ProbeResult {
-  outcome: 'answering' | 'not_running' | 'refused' | 'timed_out' | 'lookup_failed'
+  outcome: 'answering' | 'not_running' | 'refused' | 'timed_out' | 'lookup_failed' | 'loopback' | 'not_listening'
   /** The sentence the proxy's own page says for the same outcome. */
   message: string
 }
