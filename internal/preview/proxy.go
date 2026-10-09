@@ -721,8 +721,17 @@ type upgrade struct {
 	closers []io.Closer
 	done    chan struct{}
 	once    sync.Once
+	watched sync.Once
 }
 
+// touch records a byte either way. A read touches once its bytes are in, and
+// a write before it hands them on, so every touch a byte causes happens
+// before that byte reaches the other side — and nothing stamps it later. A
+// write stamped after it returned could land after whoever received the bytes
+// had moved the clock on, recording traffic at a moment there was none: the
+// idle deadline then slid by however far the clock had moved
+// (TestAnIdleUpgradeIsClosed's flake, the echo stamped at minute 10 rather
+// than 9). On a real clock that is nanoseconds; on a fake one it is a minute.
 func (u *upgrade) touch() { u.last.Store(u.p.clock().Now().UnixNano()) }
 
 func (u *upgrade) add(c io.Closer) bool {
@@ -746,7 +755,9 @@ func (u *upgrade) backend(rwc io.ReadWriteCloser) io.ReadWriteCloser {
 	return b
 }
 
-// client wraps the device's side and starts the watch: both sides exist now.
+// client wraps the device's side and registers the upgrade, so Close and
+// CloseWhere reach it from here on: both sides exist now. The watch starts
+// at the side's first use (start), not here.
 func (u *upgrade) client(c net.Conn) net.Conn {
 	if !u.add(c) {
 		c.Close()
@@ -761,10 +772,34 @@ func (u *upgrade) client(c net.Conn) net.Conn {
 	u.p.mu.Unlock()
 	if closed {
 		u.close()
-		return &activeConn{Conn: c, u: u}
 	}
-	go u.watch()
 	return &activeConn{Conn: c, u: u}
+}
+
+// start begins the watch, once, at the first Read or Write of the device's
+// side. ReverseProxy writes the 101 through the hijacked connection's own
+// buffer after Hijack returns, and only then copies the stream through this
+// side — as any proxy must, since the 101 precedes the stream. A watch begun
+// in Hijack raced that write: its first look, at a session revoked before the
+// upgrade registered, could close the connection before the 101 went out, so
+// the device saw the connection cut rather than switched and closed. Begun
+// here, it looks only once the 101 is on the wire. An upgrade whose 101 was
+// never written starts no watch; ServePreview's deferred close ends it.
+//
+// The call in activeConn.Read is the one that matters. A Write comes only
+// when the app sends something, and an app may never speak first; but
+// ReverseProxy starts its device-to-app copier, which reads this side, as soon
+// as the 101 is flushed, so a silent upgrade's watch starts then. That is an
+// undocumented detail of httputil, pinned by TestASilentUpgradeIsStillWatched:
+// without it a silent upgrade would be neither rechecked nor idled out.
+func (u *upgrade) start() {
+	u.watched.Do(func() {
+		select {
+		case <-u.done:
+		default:
+			go u.watch()
+		}
+	})
 }
 
 func (u *upgrade) idle() time.Duration {
@@ -786,10 +821,10 @@ func (u *upgrade) watch() {
 		every = DefaultRecheckEvery
 	}
 	idleLeft := limit
-	// Once at once, now that the upgrade is registered: a disable or a
-	// sign-out whose CloseWhere ran after the gate passed this request but
-	// before it registered found nothing to close, and would otherwise be
-	// noticed only at the first RecheckEvery.
+	// Once at once, now that the upgrade is registered (and its 101 sent): a
+	// disable or a sign-out whose CloseWhere ran after the gate passed this
+	// request but before it registered found nothing to close, and would
+	// otherwise be noticed only at the first RecheckEvery.
 	if u.recheck != nil && !u.stillHolds() {
 		u.close()
 		return
@@ -853,6 +888,7 @@ type activeConn struct {
 }
 
 func (c *activeConn) Read(b []byte) (int, error) {
+	c.u.start()
 	n, err := c.Conn.Read(b)
 	if n > 0 {
 		c.u.touch()
@@ -861,11 +897,11 @@ func (c *activeConn) Read(b []byte) (int, error) {
 }
 
 func (c *activeConn) Write(b []byte) (int, error) {
-	n, err := c.Conn.Write(b)
-	if n > 0 {
-		c.u.touch()
+	c.u.start()
+	if len(b) > 0 {
+		c.u.touch() // before, never after: see touch
 	}
-	return n, err
+	return c.Conn.Write(b)
 }
 
 // CloseWrite keeps ReverseProxy's half-close: when the app ends its side, the
@@ -891,11 +927,10 @@ func (c *activeRWC) Read(b []byte) (int, error) {
 }
 
 func (c *activeRWC) Write(b []byte) (int, error) {
-	n, err := c.rwc.Write(b)
-	if n > 0 {
-		c.u.touch()
+	if len(b) > 0 {
+		c.u.touch() // before, never after: see touch
 	}
-	return n, err
+	return c.rwc.Write(b)
 }
 
 func (c *activeRWC) Close() error { return c.rwc.Close() }

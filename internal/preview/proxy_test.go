@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"net/netip"
 	"net/url"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -756,6 +757,98 @@ func TestAnUpgradeRevokedBeforeItRegisteredClosesAtOnce(t *testing.T) {
 	if clock.Waiting() != 0 {
 		t.Errorf("the watch is still sleeping on the clock (%d)", clock.Waiting())
 	}
+}
+
+// silentUpstream switches protocols and then sends nothing, ever: an app
+// whose websocket waits for the device to speak first.
+func silentUpstream(t *testing.T) *httptest.Server {
+	t.Helper()
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		c, brw, err := w.(http.Hijacker).Hijack()
+		if err != nil {
+			return
+		}
+		defer c.Close()
+		brw.WriteString("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n")
+		brw.Flush()
+		io.Copy(io.Discard, brw) // until the proxy closes its side
+	}))
+	t.Cleanup(up.Close)
+	return up
+}
+
+// TestASilentUpgradeIsStillWatched: an upgrade on which no byte ever moves,
+// either way, is still asked about and still idles out. The watch starts at
+// the device side's first use, and with nothing to write that use is the
+// device-to-app copier's Read, which ReverseProxy begins as soon as the 101 is
+// flushed — what this test pins. Mutation-checked: without start() in
+// activeConn.Read, the watch never starts and all three subtests fail.
+func TestASilentUpgradeIsStillWatched(t *testing.T) {
+	serve := func(t *testing.T, p *preview.Proxy, recheck func(context.Context) bool) (net.Conn, *bufio.Reader) {
+		t.Helper()
+		tg := proxyTarget(t, silentUpstream(t).URL)
+		s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if recheck != nil {
+				r = r.WithContext(preview.WithRecheck(r.Context(), recheck))
+			}
+			p.ServePreview(&preview.CookieGuard{ResponseWriter: w}, preview.StripCookie(r), tg)
+		}))
+		t.Cleanup(func() { p.Close(); s.Close() })
+		resp, c, br := upgradeVia(t, s)
+		if resp.StatusCode != http.StatusSwitchingProtocols {
+			t.Fatalf("%d", resp.StatusCode)
+		}
+		return c, br
+	}
+	closed := func(t *testing.T, c net.Conn, br *bufio.Reader) bool {
+		t.Helper()
+		c.SetReadDeadline(time.Now().Add(5 * time.Second))
+		_, err := br.ReadByte()
+		return err != nil && !errors.Is(err, os.ErrDeadlineExceeded)
+	}
+
+	t.Run("a session that holds stays open", func(t *testing.T) {
+		// The control for the next subtest: the watch asks at once, the
+		// session holds, and the watch waits on the clock.
+		clock := sys.NewFakeClock(time.Date(2026, 10, 8, 12, 0, 0, 0, time.UTC))
+		p := &preview.Proxy{Resolver: &fakeResolver{ips: []string{"127.0.0.1"}}, Clock: clock,
+			IdleTimeout: time.Hour, RecheckEvery: 30 * time.Second}
+		var asked atomic.Int32
+		serve(t, p, func(context.Context) bool { asked.Add(1); return true })
+		waitFor(t, "the watch's first ask", func() bool { return asked.Load() == 1 && clock.Waiting() == 1 })
+		if p.Upgrades() != 1 {
+			t.Error("closed although the session holds")
+		}
+	})
+
+	t.Run("a revoked session closes it", func(t *testing.T) {
+		clock := sys.NewFakeClock(time.Date(2026, 10, 8, 12, 0, 0, 0, time.UTC))
+		p := &preview.Proxy{Resolver: &fakeResolver{ips: []string{"127.0.0.1"}}, Clock: clock,
+			IdleTimeout: time.Hour, RecheckEvery: 30 * time.Second}
+		var asked atomic.Int32
+		c, br := serve(t, p, func(context.Context) bool { asked.Add(1); return false })
+		waitFor(t, "the upgrade to close", func() bool { return asked.Load() >= 1 && p.Upgrades() == 0 })
+		if !closed(t, c, br) {
+			t.Error("the device's side is still open after its session ended")
+		}
+	})
+
+	t.Run("the idle timeout closes it", func(t *testing.T) {
+		clock := sys.NewFakeClock(time.Date(2026, 10, 8, 12, 0, 0, 0, time.UTC))
+		p := &preview.Proxy{Resolver: &fakeResolver{ips: []string{"127.0.0.1"}}, Clock: clock,
+			IdleTimeout: 10 * time.Minute}
+		c, br := serve(t, p, nil)
+		waitFor(t, "the idle watch", func() bool { return clock.Waiting() == 1 })
+		clock.Advance(10*time.Minute - time.Second) // short of the timer: nothing fires
+		if p.Upgrades() != 1 {
+			t.Fatal("control: closed a second before the idle timeout")
+		}
+		clock.Advance(time.Second)
+		waitFor(t, "the upgrade to close", func() bool { return p.Upgrades() == 0 })
+		if !closed(t, c, br) {
+			t.Error("the device's side is still open after ten idle minutes")
+		}
+	})
 }
 
 // TestCloseWhereClosesOnlyItsMatches: what a sign-out calls, with the auth
