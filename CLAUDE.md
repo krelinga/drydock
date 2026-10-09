@@ -389,10 +389,12 @@ These come from §2 (Claude Code constraints) and §13.5 (non-negotiables). Most
   owed after a cancellation uses `sys.Cleanup(parent, clock, d)`: `WithoutCancel` plus a bound on the
   injected clock. (4) Shared, joinable work never runs under a caller's context. `TestContextRule`
   (`internal/sys/contextrule_test.go`) parses every non-test file and fails, by file and function, on
-  `context.Background`/`TODO`/`WithoutCancel` or a wall-clock `time` call (`Now`, `After`, `Sleep`,
-  timers, tickers) outside `cmd/`, `internal/sys`, `internal/dockerguard` and the `*test` helper
-  packages, unless its allowlist names it with a reason. A new entry is a design decision, so its
-  reason must say which rule makes it right.
+  `context.Background`/`TODO`/`WithoutCancel`, a wall-clock deadline (`context.WithTimeout`,
+  `WithDeadline` and their `Cause` forms) or a wall-clock `time` call (`Now`, `After`, `Sleep`,
+  timers and tickers) outside `cmd/`, `internal/sys` and the helper packages `claudetest` (with
+  `fakeclaude`), `githubtest` and `logintest`, unless its allowlist names it with a reason. Entries
+  marked *R1 debt* are wall-clock bounds R1 moves to the injected clock. A new entry is a design
+  decision, so its reason must say which rule makes it right.
 
 ## Build order
 
