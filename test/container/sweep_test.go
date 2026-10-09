@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/krelinga/drydock/internal/config"
+	"github.com/krelinga/drydock/internal/dockerguard"
 	"github.com/krelinga/drydock/internal/provision"
 	"github.com/krelinga/drydock/internal/server"
 	"github.com/krelinga/drydock/internal/sys"
@@ -38,10 +39,14 @@ func TestBootSweepsLeftoverHelpers(t *testing.T) {
 	workspaceC := labelled(t, p, ws, "sleep", "300")
 	both := docker(t, "run", "-d", "--label", p+".cleanup="+ws2, "--label", p+".workspace="+ws2, image, "sleep", "300")
 	foreign := docker(t, "create", "--label", other+".cleanup="+gone, image, "true")
+	// A docker guard log probe a killed guard left (created, never started),
+	// and another instance's.
+	probe := docker(t, "create", "--label", p+"."+dockerguard.LabelLogProbe+"="+gone, image, "true")
+	foreignProbe := docker(t, "create", "--label", other+"."+dockerguard.LabelLogProbe+"="+gone, image, "true")
 	exists := func(id string) bool {
 		return docker(t, "ps", "-aq", "--no-trunc", "--filter", "id="+id) != ""
 	}
-	for _, id := range []string{stopped, live, workspaceC, both, foreign} {
+	for _, id := range []string{stopped, live, workspaceC, both, foreign, probe, foreignProbe} {
 		if !exists(id) {
 			t.Fatalf("setup: %s is not there", id)
 		}
@@ -85,8 +90,8 @@ func TestBootSweepsLeftoverHelpers(t *testing.T) {
 			}
 		}
 		if swept != "" {
-			if swept != `{"count":2}` {
-				t.Errorf("swept %s; want the two helpers", swept)
+			if swept != `{"count":3}` {
+				t.Errorf("swept %s; want the two helpers and the probe", swept)
 			}
 			break
 		}
@@ -97,7 +102,7 @@ func TestBootSweepsLeftoverHelpers(t *testing.T) {
 	}
 
 	// The positive control: both of this instance's helpers are gone.
-	for name, id := range map[string]string{"the stopped helper": stopped, "the running helper": live} {
+	for name, id := range map[string]string{"the stopped helper": stopped, "the running helper": live, "the log probe": probe} {
 		if exists(id) {
 			t.Errorf("%s survived the boot sweep", name)
 		}
@@ -107,6 +112,7 @@ func TestBootSweepsLeftoverHelpers(t *testing.T) {
 		"the workspace's container":                          workspaceC,
 		"a container with the workspace label and the other": both,
 		"another instance's helper":                          foreign,
+		"another instance's log probe":                       foreignProbe,
 	} {
 		if !exists(id) {
 			t.Errorf("the boot sweep removed %s", name)

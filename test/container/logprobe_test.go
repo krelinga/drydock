@@ -2,6 +2,7 @@ package container_test
 
 import (
 	"encoding/json"
+	"os"
 	"os/exec"
 	"reflect"
 	"strings"
@@ -31,7 +32,7 @@ func TestTheLogProbeReadsWhatAPlainCreateGets(t *testing.T) {
 	policy := &dockerguard.Policy{Version: dockerguard.PolicyVersion, LabelPrefix: p,
 		IDLabels:   map[string]string{p + ".workspace": "01JLOGPR0BE000000000000000"},
 		ProbeImage: config.DefaultCleanupImage, Clone: t.TempDir(), TempDir: t.TempDir()}
-	got, err := dockerguard.DaemonLogConfig(real, policy)
+	got, err := dockerguard.DaemonLogConfig(real, policy, os.Stderr)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -54,7 +55,7 @@ func TestTheLogProbeReadsWhatAPlainCreateGets(t *testing.T) {
 	if got.Type != want.Type || len(got.Config) != len(want.Config) || (len(want.Config) > 0 && !reflect.DeepEqual(got.Config, want.Config)) {
 		t.Errorf("the probe read %+v, a plain create got %+v", *got, want)
 	}
-	probe := func() (*dockerguard.LogConfig, error) { return dockerguard.DaemonLogConfig(real, policy) }
+	probe := func() (*dockerguard.LogConfig, error) { return dockerguard.DaemonLogConfig(real, policy, os.Stderr) }
 	if d := dockerguard.CheckStarted(policy, []string{plainID}, plain, probe); d.Refused {
 		t.Errorf("a plain container: %+v", d)
 	}

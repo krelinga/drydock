@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os/exec"
 	"regexp"
 	"sort"
@@ -42,7 +43,14 @@ import (
 const LabelLogProbe = "log-probe"
 
 // ProbeTimeout bounds the probe, a pull of ProbeImage included.
-var ProbeTimeout = 2 * time.Minute
+// RemoveTimeout bounds removing it, apart: the probe's own time may be what
+// ran out. ProbeSettle is how long a create that was cut off is given to
+// finish on the daemon before its label is listed again.
+var (
+	ProbeTimeout  = 2 * time.Minute
+	RemoveTimeout = 30 * time.Second
+	ProbeSettle   = 3 * time.Second
+)
 
 // pinnedImage is an image reference pinned by digest, as
 // config.CleanupImage must be.
@@ -83,8 +91,10 @@ func (l LogConfig) String() string {
 // a container with no log options, through real (the real docker), reading
 // it and removing it. The container is created from p.ProbeImage, which must
 // be pinned by digest, with --network none and the probe label, and is never
-// started.
-func DaemonLogConfig(real string, p *Policy) (*LogConfig, error) {
+// started. A probe it could not remove is said on warn (the guard's stderr,
+// which reaches the service log with up's), and boot's helper sweep removes
+// it.
+func DaemonLogConfig(real string, p *Policy, warn io.Writer) (*LogConfig, error) {
 	if p == nil || !pinnedImage.MatchString(p.ProbeImage) {
 		return nil, errors.New("no probe image pinned by digest in the policy")
 	}
@@ -95,41 +105,76 @@ func DaemonLogConfig(real string, p *Policy) (*LogConfig, error) {
 	label := p.LabelPrefix + "." + LabelLogProbe + "=" + ws
 	ctx, cancel := context.WithTimeout(context.Background(), ProbeTimeout)
 	defer cancel()
-	docker := func(args ...string) ([]byte, error) {
+	docker := func(ctx context.Context, args ...string) ([]byte, error) {
 		var out, stderr bytes.Buffer
 		cmd := exec.CommandContext(ctx, real, args...)
 		cmd.Stdout, cmd.Stderr = &out, &stderr
+		// A child docker left holding the pipes must not hold this up.
+		cmd.WaitDelay = time.Second
 		if err := cmd.Run(); err != nil {
 			return nil, fmt.Errorf("docker %s: %w: %s", args[0], err, strings.TrimSpace(short(stderr.String())))
 		}
 		return out.Bytes(), nil
 	}
-	// A probe an earlier guard was killed beside: removed first, so they
-	// never accumulate.
-	out, err := docker("ps", "--all", "--quiet", "--no-trunc", "--filter", "label="+label)
-	if err != nil {
-		return nil, err
-	}
-	if stray := strings.Fields(string(out)); len(stray) > 0 {
+	// sweep removes every probe of this workspace's, by label.
+	sweep := func(ctx context.Context) error {
+		out, err := docker(ctx, "ps", "--all", "--quiet", "--no-trunc", "--filter", "label="+label)
+		if err != nil {
+			return err
+		}
+		stray := strings.Fields(string(out))
+		if len(stray) == 0 {
+			return nil
+		}
 		for _, id := range stray {
 			if !fullID.MatchString(id) {
-				return nil, fmt.Errorf("docker ps: %q is not a container id", short(id))
+				return fmt.Errorf("docker ps: %q is not a container id", short(id))
 			}
 		}
-		if _, err := docker(append([]string{"rm", "--force", "--volumes", "--"}, stray...)...); err != nil {
-			return nil, err
+		_, err = docker(ctx, append([]string{"rm", "--force", "--volumes", "--"}, stray...)...)
+		return err
+	}
+	// Cleanup runs under a context of its own: the probe's may be what just
+	// ran out, and exec starts nothing under a context already done.
+	cleanup := func(what string, remove func(context.Context) error) {
+		cctx, ccancel := context.WithTimeout(context.Background(), RemoveTimeout)
+		defer ccancel()
+		if err := remove(cctx); err != nil && warn != nil {
+			fmt.Fprintf(warn, "drydock-docker-guard: %s could not be removed: %v; boot's helper sweep removes it\n", what, err)
 		}
 	}
-	out, err = docker("create", "--label", label, "--network", "none", p.ProbeImage)
-	if err != nil {
+	// A probe an earlier guard was killed beside: removed first, so they
+	// never accumulate.
+	if err := sweep(ctx); err != nil {
 		return nil, err
 	}
+	// create pulls ProbeImage when the daemon lacks it, deliberately: it is
+	// pinned by digest (the same busybox the cleanup and volume-owner
+	// helpers run), the pull is bounded by ProbeTimeout, and a host that
+	// cannot pull fails closed: the start is refused, as before this probe.
+	out, err := docker(ctx, "create", "--label", label, "--network", "none", p.ProbeImage)
 	id := strings.TrimSpace(string(out))
-	if !fullID.MatchString(id) {
-		return nil, fmt.Errorf("docker create: %q is not a container id", short(id))
+	if err == nil && !fullID.MatchString(id) {
+		err = fmt.Errorf("docker create: %q is not a container id", short(id))
 	}
-	defer docker("rm", "--force", "--volumes", "--", id)
-	out, err = docker("inspect", "--type", "container", "--", id)
+	if err != nil {
+		// A create cut off may still be finished by the daemon after the
+		// client is gone (measured for the login container): give it
+		// ProbeSettle, then remove whatever carries the label.
+		cleanup("a log probe", func(cctx context.Context) error {
+			select {
+			case <-time.After(ProbeSettle):
+			case <-cctx.Done():
+			}
+			return sweep(cctx)
+		})
+		return nil, err
+	}
+	defer cleanup("the log probe "+id, func(cctx context.Context) error {
+		_, err := docker(cctx, "rm", "--force", "--volumes", "--", id)
+		return err
+	})
+	out, err = docker(ctx, "inspect", "--type", "container", "--", id)
 	if err != nil {
 		return nil, err
 	}

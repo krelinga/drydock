@@ -145,8 +145,9 @@ type Policy struct {
 	Approved []Setting `json:"approved"`
 	// ProbeImage is config.CleanupImage, pinned by digest: the image of the
 	// container the guard creates, never starts, and removes to learn the
-	// daemon's default log configuration (DaemonLogConfig). Empty, a start
-	// is held to the file drivers alone.
+	// daemon's default log configuration (DaemonLogConfig). Empty or not
+	// pinned, there is no probe: a start whose log configuration needs one
+	// is refused, naming "no probe image pinned by digest in the policy".
 	ProbeImage string `json:"probe_image,omitempty"`
 }
 

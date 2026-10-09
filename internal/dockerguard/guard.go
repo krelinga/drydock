@@ -279,7 +279,7 @@ func Main(argv0 string, args []string, stderr io.Writer) int {
 			d = Decision{Refused: true, Command: "start", Settings: []string{SettingStartUnread},
 				Why: []string{fmt.Sprintf("docker inspect of the containers to start: %v", err)}}
 		} else {
-			d = CheckStarted(p, d.Start, out, func() (*LogConfig, error) { return DaemonLogConfig(real, p) })
+			d = CheckStarted(p, d.Start, out, func() (*LogConfig, error) { return DaemonLogConfig(real, p, stderr) })
 		}
 	}
 	if d.Refused {

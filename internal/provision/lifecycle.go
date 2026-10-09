@@ -342,11 +342,16 @@ const KindHelpersSwept = "container.helpers_swept"
 // clears a stray before running a new helper for the same workspace, but
 // only for a workspace whose delete needs the helper again; a delete
 // resumed at boot whose host removal then succeeds, or a workspace whose
-// row is gone, would leave one for good. So boot sweeps, after
+// row is gone, would leave one for good. The docker guard's log probes
+// (<prefix>.log-probe: created, never started, removed within a start's
+// check) are listed and swept with them: a guard killed mid-probe leaves
+// one, which its workspace's next probe removes — unless there is none.
+// So boot sweeps, after
 // reconciliation has resumed and finished every interrupted delete.
 //
 // It never touches a workspace's container: ListHelpers lists by the cleanup
-// label alone and drops anything carrying the workspace label too. And it
+// and log-probe labels alone and drops anything carrying the workspace label
+// too. And it
 // skips a helper whose workspace has a job in flight here — a delete the
 // operator started since boot may be running that helper right now. p.mu is
 // held throughout, so no job can start between that check and the removal;
@@ -374,9 +379,9 @@ func (p *Provisioner) SweepHelpers(ctx context.Context) (int, error) {
 	if err := p.Containers.Remove(ctx, ids); err != nil {
 		return 0, err
 	}
-	msg := "Removed a cleanup helper container an interrupted delete left behind."
+	msg := "Removed a helper container an interrupted delete or start left behind."
 	if len(ids) > 1 {
-		msg = fmt.Sprintf("Removed %d cleanup helper containers interrupted deletes left behind.", len(ids))
+		msg = fmt.Sprintf("Removed %d helper containers interrupted deletes or starts left behind.", len(ids))
 	}
 	_, err = p.Events.Emit(ctx, "", events.Info, KindHelpersSwept, msg, map[string]any{"count": len(ids)})
 	return len(ids), err

@@ -98,8 +98,8 @@
 // before the next runs. Everything before the helper's own docker run that
 // fails is ErrCleanupNotRun (an unpinned image also ErrCleanupImage), so the
 // delete never says a helper was tried when none ran. ListHelpers is the boot
-// sweep's listing: the bare cleanup label, and nothing that also carries the
-// workspace label.
+// sweep's listing: the bare cleanup label and the docker guard's bare
+// log-probe label, and nothing that also carries the workspace label.
 //
 // BuiltImages(folder) are the names up gives the images it builds, measured on
 // CLI 0.89.0: vsc-<basename>-<sha256 of --workspace-folder> and that with
