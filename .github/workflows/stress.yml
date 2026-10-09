@@ -12,18 +12,16 @@ name: stress
 
 on:
   schedule:
-    # 4 am America/Chicago. Cron is UTC-only and Chicago observes DST (CDT is
-    # UTC-5, CST is UTC-6), so both candidate hours are scheduled and the
-    # `gate` job lets only the one that is 04:00 in Chicago go on.
-    - cron: "3 9 * * *"
-    - cron: "3 10 * * *"
+    # 08:23 UTC, which is 03:23 CDT or 02:23 CST: between 2 and 4 am in
+    # Chicago all year, with no DST handling.
+    - cron: "23 8 * * *"
   workflow_dispatch:
     inputs:
       packages:
         description: "Space-separated Go packages to stress (e.g. ./internal/events ./internal/life). Empty: the priority list, then the rest of ./internal/..."
         default: ""
       minutes:
-        description: "Minutes for the test loop, setup excluded. The job limit is 60 and one iteration can overrun by up to 8, so keep this at 40 or under."
+        description: "Minutes for the test loop, setup excluded. The job limit is 60 minutes from the job's start, so this is clamped to 1-40."
         default: "40"
       container_runs:
         description: "Runs of test/container at the end, if the budget has room (0 skips it)"
@@ -42,49 +40,44 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  # Cheap: a skipped stress job shows as skipped, never failed.
-  gate:
-    runs-on: ubuntu-latest
-    timeout-minutes: 2
-    outputs:
-      run: ${{ steps.hour.outputs.run }}
-    steps:
-      - id: hour
-        run: |
-          if [ "$GITHUB_EVENT_NAME" != schedule ] || [ "$(TZ=America/Chicago date +%H)" = 04 ]; then
-            echo run=true >>"$GITHUB_OUTPUT"
-          else
-            echo run=false >>"$GITHUB_OUTPUT"
-            echo "Not 04:xx in America/Chicago; the other schedule runs the stress job."
-          fi
-
   stress:
-    needs: gate
-    if: needs.gate.outputs.run == 'true'
     runs-on: ubuntu-latest
-    # 60 minutes in all: ~5 for tools and compilation, the loop (40 by
-    # default, plus at most one 8-minute iteration over), ~1 for the issues.
+    # 60 minutes from the job's start. The tests stop for good at minute 52
+    # (stress.sh), whatever the inputs say, so the filing step always has room.
     timeout-minutes: 60
     steps:
+      - name: Note the start
+        run: |
+          echo "JOB_START=$(date +%s)" >>"$GITHUB_ENV"
+          echo "STRESS_DIR=$RUNNER_TEMP/stress" >>"$GITHUB_ENV"
       - uses: actions/checkout@v5
         with:
           fetch-depth: 0
+          persist-credentials: false
       # The tools only; the loop below is the tests.
       - uses: ./.github/actions/go-suite
         with:
           run-suite: "false"
+      - name: Check the failure parser
+        run: .github/stress/selftest.sh
       - name: Stress
         env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
           PACKAGES: ${{ inputs.packages }}
           MINUTES: ${{ inputs.minutes || '40' }}
           CONTAINER_RUNS: ${{ inputs.container_runs || '2' }}
           FAKE_FAILURE: ${{ inputs.fake_failure && '1' || '' }}
-          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-          COMMIT: ${{ github.sha }}
           # As in CI: a missing tool is a failure here, never a skip.
           DRYDOCK_REQUIRE_CADDY: "1"
           DRYDOCK_REQUIRE_DOCKER: "1"
           DRYDOCK_REQUIRE_TRANSPORTS: "1"
         run: .github/stress/stress.sh
+      # Even when the loop failed, was cancelled or hit the job limit: whatever
+      # it recorded is filed.
+      - name: File issues
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          COMMIT: ${{ github.sha }}
+        run: .github/stress/file-issues.sh

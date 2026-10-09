@@ -1,28 +1,57 @@
 #!/usr/bin/env bash
-# The nightly stress loop (see .github/workflows/stress.yml). Inputs come from
-# the environment: PACKAGES, MINUTES, CONTAINER_RUNS, FAKE_FAILURE, RUN_URL,
-# COMMIT, and GH_TOKEN/GH_REPO for gh.
+# The nightly stress loop (see .github/workflows/stress.yml). It only records:
+# what failed goes to $STRESS_DIR as it happens, and file-issues.sh, which the
+# workflow runs under `if: always()`, turns that into issues, so a job that is
+# cancelled or times out still reports what it found.
+#
+# Environment: PACKAGES, MINUTES, CONTAINER_RUNS, FAKE_FAILURE, JOB_START (the
+# job's start, epoch seconds, before checkout and tool setup), STRESS_DIR.
 set -euo pipefail
+here=$(cd "$(dirname "$0")" && pwd)
+
+now() { date +%s; }
+JOB_START=${JOB_START:-$(now)}
+# The job has 60 minutes from its start. Tests stop for good at 52, leaving
+# the issue-filing step room before the limit.
+HARD_END=$((JOB_START + 52 * 60))
 
 MINUTES=${MINUTES:-40}
+case $MINUTES in '' | *[!0-9]*) MINUTES=40 ;; esac
+[ "$MINUTES" -ge 1 ] || MINUTES=1
+[ "$MINUTES" -le 40 ] || MINUTES=40
 CONTAINER_RUNS=${CONTAINER_RUNS:-2}
-ITER_TIMEOUT=8m
+case $CONTAINER_RUNS in '' | *[!0-9]*) CONTAINER_RUNS=2 ;; esac
+[ "$CONTAINER_RUNS" -le 3 ] || CONTAINER_RUNS=3
+
+ITER_SECS=480 # -timeout 8m
+CONTAINER_SECS=1200
 CONTAINER_MIN_EACH=7
-WORK=$(mktemp -d)
+
+WORK=${STRESS_DIR:?}
 FAILS=$WORK/fails.tsv # package <TAB> test, one line per failure
-RUNS=$WORK/runs.tsv   # package <TAB> iterations
+RUNS=$WORK/runs.tsv   # package <TAB> 1, one line per iteration
 OUT=$WORK/out
 mkdir -p "$OUT"
 : >"$FAILS"
 : >"$RUNS"
+echo "$MINUTES" >"$WORK/minutes"
+# shellcheck source=lib.sh
+. "$here/lib.sh"
 
 PRIORITY="preview supervisor provision identity login events life catalog server"
 
-now() { date +%s; }
-slug() { echo "$1" | tr -c 'A-Za-z0-9\n' '_'; }
-summary() { echo "$@" | tee -a "${GITHUB_STEP_SUMMARY:-/dev/null}"; }
-outfile() { # pkg test
-  if [ "$2" = "(package)" ]; then echo "$OUT/$(slug "$1")__package.txt"; else echo "$OUT/$(slug "$1")__$(slug "$2").txt"; fi
+remaining() { echo $((HARD_END - $(now))); }
+
+# record, with a build failure turned into a failed job: that is a setup
+# problem, not a flake.
+record_or_die() { # pkg jsonfile [discard]
+  local rc=0
+  record "$@" || rc=$?
+  if [ "$rc" = 2 ]; then
+    echo "::error::build failed for $1"
+    exit 1
+  fi
+  return "$rc"
 }
 
 # Compile everything once, under -race, so a build error fails the job here
@@ -50,64 +79,46 @@ LOOP_END=$((START + MINUTES * 60))
 CONTAINER_NOTE="not run (container_runs=0)"
 if [ "$CONTAINER_RUNS" -gt 0 ]; then
   need=$((CONTAINER_RUNS * CONTAINER_MIN_EACH * 60))
-  if [ $((MINUTES * 60)) -ge $((need + 15 * 60)) ]; then
+  if [ $((LOOP_END - START)) -ge $((need + 15 * 60)) ]; then
     LOOP_END=$((LOOP_END - need)) # the unit loop stops where the container tier starts
     CONTAINER_NOTE="$CONTAINER_RUNS runs"
   else
     CONTAINER_NOTE="skipped: ${MINUTES} min leaves no room for $CONTAINER_RUNS runs of ~${CONTAINER_MIN_EACH} min after the unit loop"
   fi
 fi
-
-# Record the failing top-level tests of one `go test -json` output. A failure
-# with no test named (a package-level panic or timeout) is one "(package)"
-# entry; a build failure is a setup error and fails the job.
-record() { # pkg jsonfile
-  local pkg=$1 f=$2 tests t
-  if grep -q '\[build failed\]' "$f"; then
-    echo "::error::build failed for $pkg"
-    exit 1
-  fi
-  tests=$(jq -r 'select(.Action=="fail" and .Test != null and (.Test|contains("/")|not)) | .Test' "$f" | sort -u)
-  if [ -z "$tests" ] && jq -e 'select(.Action=="fail" and .Test == null)' "$f" >/dev/null; then
-    tests="(package)"
-  fi
-  [ -z "$tests" ] && return 0
-  while read -r t; do
-    printf '%s\t%s\n' "$pkg" "$t" >>"$FAILS"
-    if [ "$t" = "(package)" ]; then
-      jq -r 'select(.Action=="output") | .Output' "$f" | tail -n 60 >"$(outfile "$pkg" "$t")"
-    else
-      jq -r --arg t "$t" 'select(.Test==$t and .Action=="output") | .Output' "$f" | tail -n 60 >"$(outfile "$pkg" "$t")"
-    fi
-  done <<<"$tests"
-}
+[ "$LOOP_END" -le "$HARD_END" ] || LOOP_END=$HARD_END
+echo "$CONTAINER_NOTE" >"$WORK/container-note"
 
 stress_group() { # end-epoch pkg...
   local end=$1
   shift
-  local left=$# pkg n t slice pend f
+  local left=$# pkg t slice pend f
   for pkg in "$@"; do
     t=$(now)
     if [ "$t" -ge "$end" ]; then break; fi
     slice=$(((end - t) / left))
     left=$((left - 1))
-    n=0
     pend=$((t + slice))
     # At least one iteration, then more until this package's slice is spent.
     while :; do
+      # An iteration may run its whole timeout; never start one that could
+      # pass the hard deadline.
+      if [ "$(remaining)" -lt "$ITER_SECS" ]; then
+        echo "hard deadline near: no more iterations"
+        return 0
+      fi
       f=$WORK/$(slug "$pkg").json
-      go test -race -count=1 -shuffle=on -timeout "$ITER_TIMEOUT" -json "$pkg" >"$f" 2>"$f.err" || true
+      go test -race -count=1 -shuffle=on -timeout "${ITER_SECS}s" -json "$pkg" >"$f" 2>"$f.err" || true
       [ -s "$f" ] || {
         cat "$f.err"
         echo "::error::no test output for $pkg"
         exit 1
       }
-      record "$pkg" "$f"
-      n=$((n + 1))
+      record_or_die "$pkg" "$f"
+      printf '%s\t1\n' "$pkg" >>"$RUNS"
       [ "$(now)" -lt "$pend" ] || break
     done
-    printf '%s\t%s\n' "$pkg" "$n" >>"$RUNS"
-    echo "$pkg: $n iterations"
+    echo "$pkg: $(awk -F'\t' -v p="$pkg" '$1==p {s+=$2} END {print s+0}' "$RUNS") iterations"
   done
 }
 
@@ -118,72 +129,37 @@ PRIO_END=$((START + (LOOP_END - START) * 3 / 4))
 [ ${#REST[@]} -gt 0 ] && stress_group "$LOOP_END" "${REST[@]}"
 
 if [ "$CONTAINER_NOTE" = "$CONTAINER_RUNS runs" ]; then
-  n=0
+  done_runs=0
   for _ in $(seq "$CONTAINER_RUNS"); do
+    rem=$(remaining)
+    if [ "$rem" -lt 600 ]; then
+      CONTAINER_NOTE="$done_runs of $CONTAINER_RUNS runs: out of time"
+      echo "$CONTAINER_NOTE" >"$WORK/container-note"
+      break
+    fi
+    secs=$CONTAINER_SECS
+    discard=
+    if [ "$rem" -lt "$secs" ]; then
+      secs=$rem
+      discard=1 # a timeout at this shortened limit is not the tests' doing
+    fi
     f=$WORK/container.json
-    go test -count=1 -timeout 20m -json ./test/container >"$f" 2>"$f.err" || true
+    go test -count=1 -timeout "${secs}s" -json ./test/container >"$f" 2>"$f.err" || true
     [ -s "$f" ] || {
       cat "$f.err"
       echo "::error::no test output for test/container"
       exit 1
     }
-    record ./test/container "$f"
-    n=$((n + 1))
+    record_or_die ./test/container "$f" "$discard"
+    printf './test/container\t1\n' >>"$RUNS"
+    done_runs=$((done_runs + 1))
   done
-  printf '%s\t%s\n' ./test/container "$n" >>"$RUNS"
 fi
 
-TITLE_PREFIX=""
 if [ -n "${FAKE_FAILURE:-}" ]; then
   printf './internal/sys\tTestInventedFlake\n' >>"$FAILS"
   echo "invented failure output, to prove the issue is filed" >"$(outfile ./internal/sys TestInventedFlake)"
-  TITLE_PREFIX="[test] "
+  echo 1234567890 >"$(outfile ./internal/sys TestInventedFlake).seed"
+  touch "$WORK/fake"
 fi
-
-summary "## Stress run"
-summary "Loop budget ${MINUTES} min, took $(((($(now) - START)) / 60)) min. test/container: $CONTAINER_NOTE."
-summary ""
-summary "| package | iterations |"
-summary "|---|---|"
-while IFS=$'\t' read -r p n; do summary "| $p | $n |"; done <"$RUNS"
-
-if [ ! -s "$FAILS" ]; then
-  summary ""
-  summary "No test failed."
-  exit 0
-fi
-
-gh label create flake --color d93f0b --description "A test that failed in the nightly stress run" 2>/dev/null || true
-
-sort "$FAILS" | uniq -c | while read -r k pkg test; do
-  # `read` splits on spaces; the (package) entry has none, test names never do.
-  iters=$(awk -F'\t' -v p="$pkg" '$1==p {s+=$2} END {print s+0}' "$RUNS")
-  title="${TITLE_PREFIX}flake: ${pkg#./} $test"
-  body=$WORK/body.md
-  {
-    echo "@krelinga: \`$test\` in \`${pkg#./}\` failed $k of $iters iterations in this stress run."
-    if [ "$k" -ge "$iters" ]; then
-      echo
-      echo "It failed every time, so it may be broken rather than flaky."
-    fi
-    echo
-    echo "- Run: $RUN_URL"
-    echo "- Commit: $COMMIT"
-    echo "- Command: \`go test -race -count=1 -shuffle=on -timeout $ITER_TIMEOUT $pkg\`"
-    echo
-    echo "Tail of the last failing output:"
-    echo
-    echo '```'
-    tail -c 6000 "$(outfile "$pkg" "$test")" | sed 's/```/` ` `/g'
-    echo '```'
-  } >"$body"
-  existing=$(gh issue list --label flake --state open --limit 200 --json number,title |
-    jq -r --arg t "$title" '.[] | select(.title==$t) | .number' | head -n1)
-  if [ -n "$existing" ]; then
-    gh issue comment "$existing" --body-file "$body"
-    summary "- commented on #$existing: $title ($k/$iters)"
-  else
-    url=$(gh issue create --title "$title" --label flake --assignee krelinga --body-file "$body")
-    summary "- filed $url: $title ($k/$iters)"
-  fi
-done
+echo "took $((($(now) - START) / 60)) min of a ${MINUTES} min loop" >"$WORK/took"

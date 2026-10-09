@@ -1,0 +1,14 @@
+{"Time":"2026-10-09T18:38:51.926101258Z","Action":"start","Package":"fx/sub"}
+{"Time":"2026-10-09T18:38:51.927059952Z","Action":"output","Package":"fx/sub","Output":"-test.shuffle 1791571131927037019\n"}
+{"Time":"2026-10-09T18:38:51.927138581Z","Action":"run","Package":"fx/sub","Test":"TestParent"}
+{"Time":"2026-10-09T18:38:51.927151615Z","Action":"output","Package":"fx/sub","Test":"TestParent","Output":"=== RUN   TestParent\n","OutputType":"frame"}
+{"Time":"2026-10-09T18:38:51.927155763Z","Action":"run","Package":"fx/sub","Test":"TestParent/a"}
+{"Time":"2026-10-09T18:38:51.927157446Z","Action":"output","Package":"fx/sub","Test":"TestParent/a","Output":"=== RUN   TestParent/a\n","OutputType":"frame"}
+{"Time":"2026-10-09T18:38:51.92715919Z","Action":"output","Package":"fx/sub","Test":"TestParent/a","Output":"    s_test.go:6: boom detail\n","OutputType":"error"}
+{"Time":"2026-10-09T18:38:51.927163989Z","Action":"output","Package":"fx/sub","Test":"TestParent/a","Output":"--- FAIL: TestParent/a (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-10-09T18:38:51.927165542Z","Action":"fail","Package":"fx/sub","Test":"TestParent/a","Elapsed":0}
+{"Time":"2026-10-09T18:38:51.927170471Z","Action":"output","Package":"fx/sub","Test":"TestParent","Output":"--- FAIL: TestParent (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-10-09T18:38:51.927172004Z","Action":"fail","Package":"fx/sub","Test":"TestParent","Elapsed":0}
+{"Time":"2026-10-09T18:38:51.927173156Z","Action":"output","Package":"fx/sub","Output":"FAIL\n","OutputType":"frame"}
+{"Time":"2026-10-09T18:38:51.927273555Z","Action":"output","Package":"fx/sub","Output":"FAIL\tfx/sub\t0.001s\n","OutputType":"frame"}
+{"Time":"2026-10-09T18:38:51.92729763Z","Action":"fail","Package":"fx/sub","Elapsed":0.001}

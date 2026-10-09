@@ -166,14 +166,14 @@ which in CI is a silent pass); `npm run check`; `test/install/run.sh`; the Featu
 - Releases are amd64 only, by choice.
 
 **The nightly stress job** (`.github/workflows/stress.yml`, with `.github/stress/stress.sh`) hunts flaky
-tests, nightly at 4 am America/Chicago (DST-aware: two UTC crons and a gate job). It is not part of `ci.yml`, not a required check, and uses only the workflow's `GITHUB_TOKEN`
+tests, nightly at 08:23 UTC (2–4 am Chicago). It is not part of `ci.yml`, not a required check, and uses only the workflow's `GITHUB_TOKEN`
 (`issues: write`). Within a 60-minute job (a 40-minute loop by default) it runs `go test -race
 -count=1 -shuffle=on` repeatedly in a time-boxed loop: three quarters of the loop on the timer- and
 goroutine-heavy packages (`preview`, `supervisor`, `provision`, `identity`, `login`, `events`, `life`,
 `catalog`, `server`), the rest on every other `./internal/...` package, then two runs of
 `test/container` if the budget has room. Each distinct failing test becomes an open issue titled
 `flake: <package> <Test>`, labelled `flake`, assigned to `krelinga` and @-mentioning them, with the
-output tail, run URL, commit and k-of-N; a test with an open issue gets a comment instead. A setup
+output tail, run URL, commit and k-of-N; a test with an open issue gets a comment instead, and more than five distinct failures in one run (a registry outage) become one summary issue. Issues are filed by an `if: always()` step from what the loop recorded, so a timed-out job still reports; the tests stop at minute 52. A setup
 failure fails the workflow, which GitHub reports as a failed scheduled run. It installs its tools by
 running `go-suite` with `run-suite: "false"`, so a new test dependency still goes in that action. It
 can be run on demand (`gh workflow run stress.yml -f packages=./internal/events -f minutes=5`), and
