@@ -46,7 +46,7 @@ printf "%s\n" "$PW" | ./drydock passwd --db x.db  # set the operator password (n
 | `internal/clone` | §6 step 2. The token reaches git only through its environment — never argv, a URL or `.git/config`. |
 | `internal/container` | `devcontainer up`/`exec`/`read-configuration`, finding containers by label (never a table parse), the host-access subset, the cleanup and volume-owner helpers. Every devcontainer invocation runs docker through the guard. |
 | `internal/dockerguard` | The docker guard: the drydock binary run as `docker`, holding every container-creating command to the approval. An allowlist that fails closed. |
-| `internal/provision` | §6 end to end, and stop/rebuild/delete, as jobs, one per workspace. A delete removes only `<WorkspaceRoot>/<ULID>` proved real, never following a symlink. |
+| `internal/provision` | §6 end to end, and stop/rebuild/delete, as jobs, one per workspace, each a goroutine of `Serve`'s `life.Group` (`RunIn`): admitted under `p.mu` before anything is written for it, so a job asked for once the group stops is `ErrShuttingDown` (503) with nothing written, and shutdown waits for every cut-off job's step failure and `workspace.job` end before the database closes. Bounds are on the injected clock. A delete removes only `<WorkspaceRoot>/<ULID>` proved real, never following a symlink. |
 | `internal/supervisor` | §8: one `claude remote-control` per running workspace. Exits classified by message, never status; stops signal inside the container; the log ring owns its redaction. |
 | `internal/redact` | The one masking rule for subprocess text Drydock shows. |
 | `internal/usage` | Memory and disk for the card. A measurement is never an event; unknown is never zero. |

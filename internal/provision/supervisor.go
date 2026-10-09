@@ -24,9 +24,11 @@ func (p *Provisioner) RestartSupervisor(ctx context.Context, id string) error {
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if p.closed {
-		return ErrShuttingDown
+	a, err := p.admit(JobSupervisor + " " + id)
+	if err != nil {
+		return err
 	}
+	defer a.abandon()
 	w, err := p.Workspaces.Get(ctx, id)
 	if err != nil {
 		return err
@@ -34,7 +36,7 @@ func (p *Provisioner) RestartSupervisor(ctx context.Context, id string) error {
 	if p.active[id] != nil || w.State != workspace.Running {
 		return workspace.ErrInProgress
 	}
-	p.launch(id, JobSupervisor, func(ctx context.Context) error {
+	a.launch(id, JobSupervisor, func(ctx context.Context) error {
 		if err := p.SupervisorRestart(ctx, id); err != nil {
 			p.logf("drydock: workspace %s: restarting the session server: %v", id, err)
 			return err
@@ -79,7 +81,7 @@ func (p *Provisioner) ReopenSockets(ctx context.Context) error {
 			continue
 		}
 		p.mu.Lock()
-		if p.active[w.ID] == nil && !p.closed && p.stillRunning(ctx, &w) {
+		if p.active[w.ID] == nil && !p.stopping() && p.stillRunning(ctx, &w) {
 			if err := p.Broker.Open(ctx, w.ID); err != nil {
 				errs = append(errs, err)
 			}
@@ -122,7 +124,7 @@ func (p *Provisioner) ResumeSupervisors(ctx context.Context) error {
 			}
 		}
 		p.mu.Lock()
-		busy := p.active[w.ID] != nil || p.closed
+		busy := p.active[w.ID] != nil || p.stopping()
 		if !busy {
 			// Read again under the lock: the list is from before, and a
 			// stop asked since may have finished, leaving nothing in flight

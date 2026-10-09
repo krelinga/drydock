@@ -79,7 +79,7 @@ func TestTheGuardRefusesWhatTheCheckDidNotSee(t *testing.T) {
 	if err := e.p.Rebuild(ctx, v.ID); err != nil {
 		t.Fatal(err)
 	}
-	e.p.wg.Wait()
+	e.p.idle()
 	r := e.view(t, v.ID)
 	st := r.Steps[workspace.StepUp]
 	if r.State != workspace.Failed || st.Status != "failed" || !strings.Contains(st.Detail, "privileged") ||
@@ -119,7 +119,7 @@ func TestTheGuardRefusesWhatTheCheckDidNotSee(t *testing.T) {
 	if err := e.p.Start(ctx, v.ID); err != nil {
 		t.Fatal(err)
 	}
-	e.p.wg.Wait()
+	e.p.idle()
 	if r := e.view(t, v.ID); r.State != workspace.Running {
 		t.Fatalf("with privileged approved: %s (%s) %+v", r.State, deref(r.StateDetail), r.Steps[workspace.StepUp])
 	}

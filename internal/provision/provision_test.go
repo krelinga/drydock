@@ -23,6 +23,7 @@ import (
 	"github.com/krelinga/drydock/internal/events"
 	"github.com/krelinga/drydock/internal/github"
 	"github.com/krelinga/drydock/internal/github/githubtest"
+	"github.com/krelinga/drydock/internal/life"
 	"github.com/krelinga/drydock/internal/store"
 	"github.com/krelinga/drydock/internal/subproc"
 	"github.com/krelinga/drydock/internal/sys"
@@ -201,6 +202,7 @@ func (c *fakeCLI) callsTo(t *testing.T, sub string) [][]string {
 
 type env struct {
 	p      *Provisioner
+	g      *life.Group // p's jobs run in it
 	cli    *fakeCLI
 	fake   *githubtest.Fake
 	broker *stubBroker
@@ -262,7 +264,7 @@ func newEnv(t *testing.T, setup ...func(*githubtest.Fake)) *env {
 		Timeout:           time.Minute,
 		Logf:              t.Logf,
 	}
-	return &env{p: p, cli: cli, fake: f, broker: b, log: log, root: root, dbPath: dbPath}
+	return &env{p: p, g: runIn(t, p), cli: cli, fake: f, broker: b, log: log, root: root, dbPath: dbPath}
 }
 
 // wire installs the fake CLI as it stands; call it after changing a body.
@@ -275,7 +277,7 @@ func (e *env) create(t *testing.T, repo int64, branch string) workspace.View {
 	if err != nil {
 		t.Fatalf("Create(%d): %v", repo, err)
 	}
-	e.p.wg.Wait()
+	e.p.idle()
 	return e.view(t, w.ID)
 }
 
@@ -507,7 +509,7 @@ esac`
 	if err := e.p.Rebuild(ctx, first.ID); err != nil {
 		t.Fatal(err)
 	}
-	e.p.wg.Wait()
+	e.p.idle()
 	first = e.view(t, first.ID)
 	for _, v := range []workspace.View{first, second} {
 		if v.State != workspace.Running {
@@ -743,7 +745,7 @@ func TestStartResumesFromTheRightStep(t *testing.T) {
 		if err := e.p.Start(ctx, v.ID); err != nil {
 			t.Fatal(err)
 		}
-		e.p.wg.Wait()
+		e.p.idle()
 		v = e.view(t, v.ID)
 		if v.State != workspace.Running {
 			t.Fatalf("state %s (%s)", v.State, deref(v.StateDetail))
@@ -768,7 +770,7 @@ func TestStartResumesFromTheRightStep(t *testing.T) {
 		if err := e.p.Rebuild(ctx, v.ID); err != nil {
 			t.Fatal(err)
 		}
-		e.p.wg.Wait()
+		e.p.idle()
 		if v = e.view(t, v.ID); v.State != workspace.Failed || e.broker.isOpen(v.ID) {
 			t.Errorf("a failed rebuild: %s, socket open %v", v.State, e.broker.isOpen(v.ID))
 		}
@@ -777,7 +779,7 @@ func TestStartResumesFromTheRightStep(t *testing.T) {
 		if err := e.p.Rebuild(ctx, v.ID); err != nil {
 			t.Fatal(err)
 		}
-		e.p.wg.Wait()
+		e.p.idle()
 		if v = e.view(t, v.ID); v.State != workspace.Running || !e.broker.isOpen(v.ID) {
 			t.Errorf("a rebuild from failed: %s, socket open %v", v.State, e.broker.isOpen(v.ID))
 		}
@@ -804,7 +806,7 @@ func TestStartResumesFromTheRightStep(t *testing.T) {
 		if err := e.p.Start(ctx, v.ID); err != nil {
 			t.Fatal(err)
 		}
-		e.p.wg.Wait()
+		e.p.idle()
 		v = e.view(t, v.ID)
 		if v.State != workspace.Running {
 			t.Fatalf("state %s (%s)", v.State, deref(v.StateDetail))
@@ -837,7 +839,7 @@ func TestStartResumesFromTheRightStep(t *testing.T) {
 		if err := e.p.Start(ctx, failed.ID); err != nil {
 			t.Errorf("control: under the cap, start = %v", err)
 		}
-		e.p.wg.Wait()
+		e.p.idle()
 	})
 
 	t.Run("one run at a time", func(t *testing.T) {
@@ -856,7 +858,7 @@ func TestStartResumesFromTheRightStep(t *testing.T) {
 		if !e.p.Owns(v.ID) {
 			t.Error("Owns is false during a run")
 		}
-		e.p.Shutdown(10 * time.Second)
+		e.shutdown(10 * time.Second)
 	})
 }
 
@@ -881,11 +883,31 @@ func TestInterruptedRunsSayWhy(t *testing.T) {
 		e := newEnv(t)
 		e.cli.up = "exec sleep 30"
 		e.wire(t)
-		e.p.Timeout = 3 * time.Second
+		// The run's timeout is on the injected clock: moved past it, the
+		// run is cut off at once, never 30 real minutes later — nor 30 real
+		// seconds, when up would end by itself and fail for another reason.
+		clock := sys.NewFakeClock(time.Now())
+		e.p.Workspaces.Env.Clock = clock
+		e.p.Timeout = 30 * time.Minute
 		start := time.Now()
-		v := e.create(t, alpha, "")
+		w, err := e.p.Create(ctx, alpha, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		for deadline := time.Now().Add(20 * time.Second); len(e.cli.callsTo(t, "up")) == 0; time.Sleep(20 * time.Millisecond) {
+			if time.Now().After(deadline) {
+				t.Fatal("up never started")
+			}
+		}
+		// Control: up is running, and the run is still building.
+		if v := e.view(t, w.ID); v.State != workspace.Building || v.Steps[workspace.StepUp].Status != "started" {
+			t.Fatalf("control: before the timeout: %s %+v", v.State, v.Steps[workspace.StepUp])
+		}
+		clock.Advance(e.p.Timeout)
+		e.p.idle()
+		v := e.view(t, w.ID)
 		if v.State != workspace.Failed || v.Steps[workspace.StepUp].Status != "failed" ||
-			!strings.Contains(v.Steps[workspace.StepUp].Detail, "did not finish within 3s") {
+			!strings.Contains(v.Steps[workspace.StepUp].Detail, "did not finish within 30m0s") {
 			t.Errorf("after the timeout: %s %+v", v.State, v.Steps[workspace.StepUp])
 		}
 		if time.Since(start) > 20*time.Second {
@@ -908,7 +930,7 @@ func TestInterruptedRunsSayWhy(t *testing.T) {
 			}
 			time.Sleep(20 * time.Millisecond)
 		}
-		e.p.Shutdown(15 * time.Second)
+		e.shutdown(15 * time.Second)
 		v := e.view(t, w.ID)
 		if v.State != workspace.Failed || !strings.Contains(v.Steps[workspace.StepUp].Detail, "Drydock shut down") {
 			t.Errorf("after shutdown: %s %+v", v.State, v.Steps[workspace.StepUp])

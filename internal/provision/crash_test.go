@@ -58,7 +58,7 @@ func TestACreateCutOffInsideAStepIsClosedAtBoot(t *testing.T) {
 			}
 			// The first process is never told it crashed; at the end it is
 			// shut down, so nothing it runs outlives the test.
-			t.Cleanup(func() { close(hold); e.p.Shutdown(time.Minute) })
+			t.Cleanup(func() { close(hold); e.shutdown(time.Minute) })
 
 			w, err := e.p.Create(ctx, alpha, "")
 			if err != nil {
@@ -101,7 +101,7 @@ func TestACreateCutOffInsideAStepIsClosedAtBoot(t *testing.T) {
 					}
 					return err
 				}}
-			t.Cleanup(func() { p2.Shutdown(time.Minute) })
+			runIn(t, p2)
 			if _, err := reconciler(p2).Run(ctx); err != nil {
 				t.Fatal(err)
 			}
@@ -141,7 +141,7 @@ func TestACreateCutOffInsideAStepIsClosedAtBoot(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			p2.wg.Wait()
+			p2.idle()
 			v = e.view(t, w.ID)
 			if v.State != workspace.Running || v.Steps[workspace.StepSessionServer].Status != "done" {
 				t.Errorf("the next run: %s, steps %+v", v.State, v.Steps)

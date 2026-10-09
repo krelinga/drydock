@@ -13,6 +13,7 @@ import (
 	"github.com/krelinga/drydock/internal/broker"
 	"github.com/krelinga/drydock/internal/container"
 	"github.com/krelinga/drydock/internal/events"
+	"github.com/krelinga/drydock/internal/sys"
 	"github.com/krelinga/drydock/internal/workspace"
 )
 
@@ -64,9 +65,11 @@ var (
 func (p *Provisioner) Stop(ctx context.Context, id string) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if p.closed {
-		return ErrShuttingDown
+	a, err := p.admit(JobStop + " " + id)
+	if err != nil {
+		return err
 	}
+	defer a.abandon()
 	w, err := p.Workspaces.Get(ctx, id)
 	if err != nil {
 		return err
@@ -81,7 +84,7 @@ func (p *Provisioner) Stop(ctx context.Context, id string) error {
 	if _, err := p.Workspaces.ClearDetail(ctx, id, workspace.Running); err != nil {
 		return err
 	}
-	p.launch(id, JobStop, func(ctx context.Context) error {
+	a.launch(id, JobStop, func(ctx context.Context) error {
 		err := p.stopJob(ctx, w)
 		if err != nil {
 			p.logf("drydock: workspace %s: stop: %v", id, err)
@@ -132,7 +135,7 @@ func (p *Provisioner) stopJob(ctx context.Context, w workspace.Workspace) error 
 		}
 		// A container this stop unpaused and did not stop goes back to the
 		// pause the operator made, with its access as it was.
-		if said := p.repause(w, un, true); said != "" {
+		if said := p.repause(ctx, w, un, true); said != "" {
 			detail += " " + said
 		}
 		var ill workspace.ErrIllegalMove
@@ -202,9 +205,14 @@ func (p *Provisioner) ResumeDelete(ctx context.Context, id string) error {
 func (p *Provisioner) startDelete(ctx context.Context, id string) (*job, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if p.closed {
-		return nil, ErrShuttingDown
+	// Admitted before the move to deleting, so a delete refused for
+	// shutdown has written nothing; one admitted runs, even if the group
+	// stops before it launches, and its first sub-step then says so.
+	a, err := p.admit(JobDelete + " " + id)
+	if err != nil {
+		return nil, err
 	}
+	defer a.abandon()
 	prev := p.active[id]
 	if prev != nil && prev.kind == JobDelete {
 		return prev, nil
@@ -228,7 +236,7 @@ func (p *Provisioner) startDelete(ctx context.Context, id string) (*job, error) 
 	if prev != nil {
 		prev.cancel(errDeleting)
 	}
-	return p.launch(id, JobDelete, func(ctx context.Context) error {
+	return a.launch(id, JobDelete, func(ctx context.Context) error {
 		if prev != nil {
 			<-prev.done
 		}
@@ -310,7 +318,7 @@ func (p *Provisioner) deleteJob(ctx context.Context, id string) error {
 		}
 		// Halted or cancelled before its containers went: what it unpaused
 		// is paused again, its access left closed (the workspace is deleting).
-		if said := p.repause(w, un, false); said != "" {
+		if said := p.repause(ctx, w, un, false); said != "" {
 			detail += " " + said
 		}
 		if aerr := p.Workspaces.Annotate(workspace.Ending(book, true), id, workspace.Deleting, detail); aerr != nil {
@@ -375,7 +383,7 @@ const KindHelpersSwept = "container.helpers_swept"
 func (p *Provisioner) SweepHelpers(ctx context.Context) (int, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if p.closed {
+	if p.stopping() {
 		return 0, ErrShuttingDown
 	}
 	found, err := p.Containers.ListHelpers(ctx)
@@ -411,7 +419,7 @@ func (p *Provisioner) SweepHelpers(ctx context.Context) (int, error) {
 func (p *Provisioner) SweepGuardPolicies(ctx context.Context) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if p.closed {
+	if p.stopping() {
 		return ErrShuttingDown
 	}
 	entries, err := os.ReadDir(p.Workspaces.Root)
@@ -559,8 +567,8 @@ func (p *Provisioner) unpauseAndStopSupervisor(ctx context.Context, w workspace.
 	return err
 }
 
-// repauseTimeout bounds a re-pause, which runs on a context of its own: the
-// action's may be the very thing that was cancelled.
+// repauseTimeout bounds a re-pause, which runs under sys.Cleanup of the
+// action's context: that may be the very thing that was cancelled.
 const repauseTimeout = 30 * time.Second
 
 // repause pauses again what an action unpaused and then did not end — a stop
@@ -573,11 +581,15 @@ const repauseTimeout = 30 * time.Second
 // container that could not be paused again keeps its access closed. It
 // returns a sentence for the action's failure detail, or "" when there was
 // nothing to pause again.
-func (p *Provisioner) repause(w workspace.Workspace, un *unpaused, reopen bool) string {
+//
+// parent is the action's context: its values are kept and its cancellation
+// is not (sys.Cleanup), since a re-pause is owed after a cancel; the bound is
+// on the injected clock.
+func (p *Provisioner) repause(parent context.Context, w workspace.Workspace, un *unpaused, reopen bool) string {
 	if un == nil || len(un.ids) == 0 {
 		return ""
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), repauseTimeout)
+	ctx, cancel := sys.Cleanup(parent, p.clock(), repauseTimeout)
 	defer cancel()
 	n, err := p.Containers.Repause(ctx, w.ID, un.ids)
 	if n == 0 && err == nil {

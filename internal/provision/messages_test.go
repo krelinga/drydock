@@ -82,7 +82,7 @@ func TestUpFailuresNameTheirCause(t *testing.T) {
 			if err := e.p.Start(context.Background(), v.ID); err != nil {
 				t.Fatal(err)
 			}
-			e.p.wg.Wait()
+			e.p.idle()
 			if _, ok, _ := e.p.BuildLog(context.Background(), v.ID); ok {
 				t.Error("a later up kept the earlier failure's build log")
 			}

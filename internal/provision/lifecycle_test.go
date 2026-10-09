@@ -283,7 +283,7 @@ func TestStopStopsTheContainerAndClosesTheSocket(t *testing.T) {
 	if err := e.p.Stop(ctx, v.ID); err != nil {
 		t.Fatal(err)
 	}
-	e.p.wg.Wait()
+	e.p.idle()
 	after := e.view(t, v.ID)
 	if after.State != workspace.Stopped {
 		t.Fatalf("state %s (%s); actions %v", after.State, deref(after.StateDetail), e.actions(t, v.ID))
@@ -349,7 +349,7 @@ func TestStopStopsTheContainerAndClosesTheSocket(t *testing.T) {
 	if err := e.p.Stop(ctx, other.ID); err != nil {
 		t.Fatal(err)
 	}
-	e.p.wg.Wait()
+	e.p.idle()
 
 	// Start reattaches: the same container, and up without the flag.
 	e.cli.exec = strings.ReplaceAll(e.cli.exec, "/krelinga/plain.git", "/krelinga/alpha.git")
@@ -357,7 +357,7 @@ func TestStopStopsTheContainerAndClosesTheSocket(t *testing.T) {
 	if err := e.p.Start(ctx, v.ID); err != nil {
 		t.Fatal(err)
 	}
-	e.p.wg.Wait()
+	e.p.idle()
 	started := e.view(t, v.ID)
 	if started.State != workspace.Running {
 		t.Fatalf("after start: %s (%s)", started.State, deref(started.StateDetail))
@@ -381,7 +381,7 @@ func TestStopStopsTheContainerAndClosesTheSocket(t *testing.T) {
 	if err := e.p.Stop(ctx, v.ID); !errors.Is(err, workspace.ErrInProgress) {
 		t.Errorf("stop during a build = %v, want ErrInProgress", err)
 	}
-	e.p.wg.Wait()
+	e.p.idle()
 	if s := e.view(t, v.ID).State; s != workspace.Running {
 		t.Errorf("the build a refused stop raced ended %s", s)
 	}
@@ -397,7 +397,7 @@ func TestStopFailureLeavesItRunning(t *testing.T) {
 	if err := e.p.Stop(context.Background(), v.ID); err != nil {
 		t.Fatal(err)
 	}
-	e.p.wg.Wait()
+	e.p.idle()
 	if s := e.view(t, v.ID).State; s != workspace.Running {
 		t.Errorf("state %s after a failed stop", s)
 	}
@@ -431,7 +431,7 @@ func TestStopFailureLeavesItRunning(t *testing.T) {
 	if err := e.p.Stop(context.Background(), v.ID); err != nil {
 		t.Fatal(err)
 	}
-	e.p.wg.Wait()
+	e.p.idle()
 	after := e.view(t, v.ID)
 	if after.State != workspace.Stopped || after.StateDetail != nil {
 		t.Errorf("control: state %s (%q)", after.State, deref(after.StateDetail))
@@ -445,10 +445,10 @@ func TestStopFailureLeavesItRunning(t *testing.T) {
 	if err := e.p.Start(context.Background(), v.ID); err != nil {
 		t.Fatal(err)
 	}
-	e.p.wg.Wait()
+	e.p.idle()
 	os.WriteFile(filepath.Join(e.cli.dir, "docker-fail-stop"), nil, 0o600)
 	e.p.Stop(context.Background(), v.ID)
-	e.p.wg.Wait()
+	e.p.idle()
 	if d := deref(e.view(t, v.ID).StateDetail); d != failedDetail {
 		t.Fatalf("setup: detail %q", d)
 	}
@@ -456,7 +456,7 @@ func TestStopFailureLeavesItRunning(t *testing.T) {
 	if err := e.p.Rebuild(context.Background(), v.ID); err != nil {
 		t.Fatal(err)
 	}
-	e.p.wg.Wait()
+	e.p.idle()
 	if r := e.view(t, v.ID); r.State != workspace.Running || r.StateDetail != nil {
 		t.Errorf("after a rebuild: %s (%q)", r.State, deref(r.StateDetail))
 	}
@@ -514,7 +514,7 @@ func TestRebuildReplacesTheContainer(t *testing.T) {
 	if err := e.p.Rebuild(ctx, v.ID); err != nil {
 		t.Fatal(err)
 	}
-	e.p.wg.Wait()
+	e.p.idle()
 	r := e.view(t, v.ID)
 	if r.State != workspace.Running || r.ContainerID == nil || *r.ContainerID == old {
 		t.Fatalf("after rebuild: %s %v (old %s)", r.State, r.ContainerID, old)
@@ -545,7 +545,7 @@ func TestRebuildReplacesTheContainer(t *testing.T) {
 	if err := e.p.Start(ctx, v.ID); !errors.Is(err, workspace.ErrInProgress) {
 		t.Errorf("a start during a rebuild = %v", err)
 	}
-	e.p.wg.Wait()
+	e.p.idle()
 	if err := e.p.Rebuild(ctx, "01JABCDEFGHJKMNPQRSTVWXYZ0"); !errors.Is(err, workspace.ErrNotFound) {
 		t.Errorf("rebuild of no workspace = %v", err)
 	}
@@ -558,11 +558,11 @@ func TestRebuildReplacesTheContainer(t *testing.T) {
 	if err := e.p.Rebuild(ctx, v.ID); err != nil {
 		t.Errorf("rebuild of a running workspace at the cap = %v", err)
 	}
-	e.p.wg.Wait()
+	e.p.idle()
 	if err := e.p.Stop(ctx, v.ID); err != nil {
 		t.Fatal(err)
 	}
-	e.p.wg.Wait()
+	e.p.idle()
 	e.cli.exec = strings.ReplaceAll(e.cli.exec, "/krelinga/alpha.git", "/krelinga/plain.git")
 	e.wire(t)
 	e.running(t, plain)
@@ -575,7 +575,7 @@ func TestRebuildReplacesTheContainer(t *testing.T) {
 	if err := e.p.Rebuild(ctx, v.ID); err != nil {
 		t.Errorf("control: under the cap, rebuild = %v", err)
 	}
-	e.p.wg.Wait()
+	e.p.idle()
 
 	// Start from failed removes the leftover container.
 	e.cli.exec = `case " $* " in *" drydock-probe "*) exit 1 ;; esac`
@@ -583,7 +583,7 @@ func TestRebuildReplacesTheContainer(t *testing.T) {
 	if err := e.p.Rebuild(ctx, v.ID); err != nil {
 		t.Fatal(err)
 	}
-	e.p.wg.Wait()
+	e.p.idle()
 	f := e.view(t, v.ID)
 	if f.State != workspace.Failed || len(e.containers(t, v.ID)) != 1 {
 		t.Fatalf("setup: a failed probe leaves %s with containers %v", f.State, e.containers(t, v.ID))
@@ -593,7 +593,7 @@ func TestRebuildReplacesTheContainer(t *testing.T) {
 	if err := e.p.Start(ctx, v.ID); err != nil {
 		t.Fatal(err)
 	}
-	e.p.wg.Wait()
+	e.p.idle()
 	ups = e.cli.callsTo(t, "up")
 	if last := ups[len(ups)-1]; !strings.Contains(strings.Join(last, " "), "--remove-existing-container") {
 		t.Errorf("start from failed reattached: %v", last)
@@ -650,7 +650,7 @@ func TestDeleteRemovesEverything(t *testing.T) {
 	if err := e.p.Delete(ctx, v.ID, "krelinga/alpha"); err != nil {
 		t.Fatal(err)
 	}
-	e.p.wg.Wait()
+	e.p.idle()
 	if _, err := e.p.Workspaces.Get(ctx, v.ID); !errors.Is(err, workspace.ErrNotFound) {
 		t.Errorf("the row survived: %v; actions %v", err, e.actions(t, v.ID))
 	}
@@ -742,7 +742,7 @@ func TestDeleteCancelsARunInFlight(t *testing.T) {
 	if err := e.p.Delete(ctx, w.ID, "krelinga/alpha"); err != nil && !errors.Is(err, workspace.ErrNotFound) {
 		t.Errorf("a second delete in flight = %v", err)
 	}
-	e.p.wg.Wait()
+	e.p.idle()
 	if time.Since(start) > 20*time.Second {
 		t.Errorf("the delete waited out the run: %s", time.Since(start))
 	}
@@ -877,7 +877,7 @@ func TestDeleteRefusalStaysResumable(t *testing.T) {
 	if err := e.p.Delete(ctx, v.ID, "krelinga/alpha"); err != nil {
 		t.Fatal(err)
 	}
-	e.p.wg.Wait()
+	e.p.idle()
 	got := e.view(t, v.ID)
 	if got.State != workspace.Deleting || !strings.Contains(deref(got.StateDetail), "refused") {
 		t.Errorf("after a refused files step: %s (%s)", got.State, deref(got.StateDetail))
@@ -893,7 +893,7 @@ func TestDeleteRefusalStaysResumable(t *testing.T) {
 	if err := e.p.Delete(ctx, v.ID, "krelinga/alpha"); err != nil {
 		t.Fatal(err)
 	}
-	e.p.wg.Wait()
+	e.p.idle()
 	if _, err := e.p.Workspaces.Get(ctx, v.ID); !errors.Is(err, workspace.ErrNotFound) {
 		t.Errorf("asking again did not finish the delete: %v", err)
 	}
@@ -944,7 +944,7 @@ func TestDeleteIsResumableAfterEverySubStep(t *testing.T) {
 				if err := e.p.Delete(ctx, v.ID, "krelinga/alpha"); err != nil {
 					t.Fatal(err)
 				}
-				e.p.wg.Wait()
+				e.p.idle()
 			}
 			if got := e.view(t, v.ID); got.State != workspace.Deleting {
 				t.Fatalf("after the crash: %s", got.State)
@@ -954,6 +954,7 @@ func TestDeleteIsResumableAfterEverySubStep(t *testing.T) {
 			b2 := &stubBroker{}
 			p2 := &Provisioner{Workspaces: e.p.Workspaces, Events: e.log, Broker: b2,
 				Cloner: e.p.Cloner, Containers: e.p.Containers, Logf: t.Logf}
+			runIn(t, p2)
 			rec := &reconcile.Reconciler{Workspaces: e.p.Workspaces, Events: e.log, Containers: e.p.Containers,
 				Exclusive: p2.Unowned,
 				Delete: func(ctx context.Context, w workspace.Workspace, _ string) error {
@@ -1024,7 +1025,7 @@ func TestDeleteNamesAStuckSubStep(t *testing.T) {
 			if err := e.p.Delete(ctx, v.ID, "krelinga/alpha"); err != nil {
 				t.Fatal(err)
 			}
-			e.p.wg.Wait()
+			e.p.idle()
 			got := e.view(t, v.ID)
 			if got.State != workspace.Deleting || !strings.Contains(deref(got.StateDetail), "container") {
 				t.Errorf("%s (%s)", got.State, deref(got.StateDetail))
@@ -1047,7 +1048,7 @@ func TestDeleteNamesAStuckSubStep(t *testing.T) {
 			if err := e.p.Delete(ctx, v.ID, "krelinga/alpha"); err != nil {
 				t.Fatal(err)
 			}
-			e.p.wg.Wait()
+			e.p.idle()
 			tl := e.timeline(t, v.ID)[mark:]
 			if len(tl) < 2 || tl[0] != "state:deleting|" || tl[1] != "action:delete:session_server:started" ||
 				tl[len(tl)-1] != "state:deleting|"+stuck {
@@ -1059,7 +1060,7 @@ func TestDeleteNamesAStuckSubStep(t *testing.T) {
 			if err := e.p.Delete(ctx, v.ID, "krelinga/alpha"); err != nil {
 				t.Fatal(err)
 			}
-			e.p.wg.Wait()
+			e.p.idle()
 			if _, err := e.p.Workspaces.Get(ctx, v.ID); !errors.Is(err, workspace.ErrNotFound) {
 				t.Errorf("control: %v", err)
 			}
@@ -1235,7 +1236,7 @@ func TestDeleteFallsBackToTheHelperContainer(t *testing.T) {
 	if err := e.p.Delete(ctx, c.ID, "krelinga/alpha"); err != nil {
 		t.Fatal(err)
 	}
-	e.p.wg.Wait()
+	e.p.idle()
 	if _, err := e.p.Workspaces.Get(ctx, c.ID); !errors.Is(err, workspace.ErrNotFound) {
 		t.Fatalf("control: %v", err)
 	}
@@ -1252,7 +1253,7 @@ func TestDeleteFallsBackToTheHelperContainer(t *testing.T) {
 	if err := e.p.Delete(ctx, v.ID, "krelinga/alpha"); err != nil {
 		t.Fatal(err)
 	}
-	e.p.wg.Wait()
+	e.p.idle()
 	if _, err := e.p.Workspaces.Get(ctx, v.ID); !errors.Is(err, workspace.ErrNotFound) {
 		t.Fatalf("the row survived: %v; actions %v", err, e.actions(t, v.ID))
 	}
@@ -1279,7 +1280,7 @@ func TestDeleteFallsBackToTheHelperContainer(t *testing.T) {
 	if err := e.p.Delete(ctx, f.ID, "krelinga/alpha"); err != nil {
 		t.Fatal(err)
 	}
-	e.p.wg.Wait()
+	e.p.idle()
 	got := e.view(t, f.ID)
 	ran := "Drydock could not remove the workspace's directory, even with a helper container for the files it does not own."
 	if got.State != workspace.Deleting || detail(f.ID) != "failed: "+ran {
@@ -1309,7 +1310,7 @@ func TestDeleteFallsBackToTheHelperContainer(t *testing.T) {
 		if err := e.p.Delete(ctx, f.ID, "krelinga/alpha"); err != nil {
 			t.Fatal(err)
 		}
-		e.p.wg.Wait()
+		e.p.idle()
 		if d := detail(f.ID); d != "failed: "+c.want {
 			t.Errorf("%s: files %q\nwant %q", c.name, d, "failed: "+c.want)
 		}
@@ -1327,7 +1328,7 @@ func TestDeleteFallsBackToTheHelperContainer(t *testing.T) {
 	if err := e.p.Delete(ctx, f.ID, "krelinga/alpha"); err != nil {
 		t.Fatal(err)
 	}
-	e.p.wg.Wait()
+	e.p.idle()
 	if _, err := e.p.Workspaces.Get(ctx, f.ID); !errors.Is(err, workspace.ErrNotFound) {
 		t.Errorf("retry after the helper recovered: %v", err)
 	}
@@ -1382,7 +1383,7 @@ func TestSweepHelpersSkipsAJobInFlight(t *testing.T) {
 	}
 
 	// Control: the job ends, and the next sweep takes the other.
-	e.p.wg.Wait()
+	e.p.idle()
 	if n, err := e.p.SweepHelpers(ctx); err != nil || n != 1 {
 		t.Errorf("sweep after the job = %d, %v", n, err)
 	}
@@ -1417,6 +1418,7 @@ func TestReconciliationActsUnderTheJobLock(t *testing.T) {
 	// The restart: a fresh process, which has started no job.
 	p2 := &Provisioner{Workspaces: e.p.Workspaces, Events: e.log, Broker: &stubBroker{},
 		Cloner: e.p.Cloner, Containers: e.p.Containers, Logf: t.Logf}
+	runIn(t, p2)
 
 	// Control: with nothing held, a stop is answered at once.
 	answered := make(chan error, 1)
@@ -1448,7 +1450,7 @@ func TestReconciliationActsUnderTheJobLock(t *testing.T) {
 	if err := <-stopped; !errors.Is(err, workspace.ErrInProgress) {
 		t.Errorf("the stop asked during reconciliation = %v; want ErrInProgress, refused against the stopped row", err)
 	}
-	p2.wg.Wait()
+	p2.idle()
 	if got := e.view(t, v.ID); got.State != workspace.Stopped || !strings.Contains(deref(got.StateDetail), "had exited") {
 		t.Errorf("after: %s %q", got.State, deref(got.StateDetail))
 	}
@@ -1477,6 +1479,7 @@ func TestBootFollowUpsReadTheRowUnderTheLock(t *testing.T) {
 				started = append(started, w.ID)
 				return nil
 			}}
+		runIn(t, p)
 		return p, b, &started
 	}
 

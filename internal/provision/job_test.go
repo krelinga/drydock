@@ -142,7 +142,7 @@ func TestEveryJobEndsWithOneEvent(t *testing.T) {
 	if err := e.p.Stop(ctx, v.ID); err != nil {
 		t.Fatal(err)
 	}
-	e.p.wg.Wait()
+	e.p.idle()
 	prev = e.endsOnce(t, v.ID, mark, JobStop, workspace.JobFailed)
 	if prev.Kind != workspace.KindState || !strings.Contains(string(prev.Data), "The stop did not finish") {
 		t.Errorf("failed stop: the event before the end is %s %s, want the annotation", prev.Kind, prev.Data)
@@ -157,7 +157,7 @@ func TestEveryJobEndsWithOneEvent(t *testing.T) {
 	if err := e.p.Stop(ctx, v.ID); err != nil {
 		t.Fatal(err)
 	}
-	e.p.wg.Wait()
+	e.p.idle()
 	prev = e.endsOnce(t, v.ID, mark, JobStop, workspace.JobOK)
 	if prev.Kind != workspace.KindState || !strings.Contains(string(prev.Data), `"state":"stopped"`) {
 		t.Errorf("stop: the event before the end is %s %s, want the move to stopped", prev.Kind, prev.Data)
@@ -171,7 +171,7 @@ func TestEveryJobEndsWithOneEvent(t *testing.T) {
 	if err := e.p.Start(ctx, v.ID); err != nil {
 		t.Fatal(err)
 	}
-	e.p.wg.Wait()
+	e.p.idle()
 	e.endsOnce(t, v.ID, mark, JobStart, workspace.JobOK)
 
 	// rebuild, failed at up: the move to failed carries it.
@@ -182,7 +182,7 @@ func TestEveryJobEndsWithOneEvent(t *testing.T) {
 	if err := e.p.Rebuild(ctx, v.ID); err != nil {
 		t.Fatal(err)
 	}
-	e.p.wg.Wait()
+	e.p.idle()
 	prev = e.endsOnce(t, v.ID, mark, JobRebuild, workspace.JobFailed)
 	if prev.Kind != workspace.KindState || !strings.Contains(string(prev.Data), `"state":"failed"`) {
 		t.Errorf("failed rebuild: the event before the end is %s %s, want the move to failed", prev.Kind, prev.Data)
@@ -198,7 +198,7 @@ func TestEveryJobEndsWithOneEvent(t *testing.T) {
 	if err := e.p.Rebuild(ctx, v.ID); err != nil {
 		t.Fatal(err)
 	}
-	e.p.wg.Wait()
+	e.p.idle()
 	e.endsOnce(t, v.ID, mark, JobRebuild, workspace.JobOK)
 
 	// supervisor restart, ok and failed: its events are the supervisor's
@@ -224,7 +224,7 @@ func TestEveryJobEndsWithOneEvent(t *testing.T) {
 		if err := e.p.RestartSupervisor(ctx, v.ID); err != nil {
 			t.Fatal(err)
 		}
-		e.p.wg.Wait()
+		e.p.idle()
 		prev = e.endsOnce(t, v.ID, mark, JobSupervisor, outcome)
 		if prev.Kind != workspace.KindSupervisor {
 			t.Errorf("supervisor (failed %v): the event before the end is %s", failed, prev.Kind)
@@ -241,7 +241,7 @@ func TestEveryJobEndsWithOneEvent(t *testing.T) {
 	if err := e.p.Delete(ctx, v.ID, "krelinga/alpha"); err != nil {
 		t.Fatal(err)
 	}
-	e.p.wg.Wait()
+	e.p.idle()
 	prev = e.endsOnce(t, v.ID, mark, JobDelete, workspace.JobFailed)
 	if prev.Kind != workspace.KindState || !strings.Contains(string(prev.Data), "The delete stopped part-way") {
 		t.Errorf("stuck delete: the event before the end is %s %s", prev.Kind, prev.Data)
@@ -254,7 +254,7 @@ func TestEveryJobEndsWithOneEvent(t *testing.T) {
 	if err := e.p.Delete(ctx, v.ID, "krelinga/alpha"); err != nil {
 		t.Fatal(err)
 	}
-	e.p.wg.Wait()
+	e.p.idle()
 	prev = e.endsOnce(t, v.ID, mark, JobDelete, workspace.JobOK)
 	if prev.Kind != workspace.KindGone {
 		t.Errorf("delete: the event before the end is %s, want workspace.gone", prev.Kind)
@@ -288,7 +288,7 @@ func TestAJobStoppedForApprovalAndItsApprovalEachEnd(t *testing.T) {
 	if err := e.p.Rebuild(ctx, v.ID); err != nil {
 		t.Fatal(err)
 	}
-	e.p.wg.Wait()
+	e.p.idle()
 	prev := e.endsOnce(t, v.ID, mark, JobRebuild, workspace.JobOK)
 	if prev.Kind != workspace.KindState || !strings.Contains(string(prev.Data), `"approval"`) {
 		t.Errorf("the event before the end is %s %s, want the stop for approval", prev.Kind, prev.Data)
@@ -301,7 +301,7 @@ func TestAJobStoppedForApprovalAndItsApprovalEachEnd(t *testing.T) {
 	if err := e.p.ApproveConfig(ctx, v.ID, a.Hash, "session-x"); err != nil {
 		t.Fatal(err)
 	}
-	e.p.wg.Wait()
+	e.p.idle()
 	e.endsOnce(t, v.ID, mark, JobApprove, workspace.JobOK)
 }
 
@@ -331,7 +331,7 @@ func TestAJobCutOffByADeleteEndsCancelled(t *testing.T) {
 		if err := e.p.Delete(ctx, w.ID, "krelinga/alpha"); err != nil {
 			t.Fatal(err)
 		}
-		e.p.wg.Wait()
+		e.p.idle()
 		ends := e.jobEnds(t, w.ID, mark)
 		if len(ends) != 2 || ends[0].Kind != JobCreate || ends[0].Outcome != workspace.JobCancelled ||
 			ends[1].Kind != JobDelete || ends[1].Outcome != workspace.JobOK {
@@ -375,7 +375,7 @@ func TestAJobCutOffByADeleteEndsCancelled(t *testing.T) {
 		if err := e.p.Delete(ctx, v.ID, "krelinga/alpha"); err != nil {
 			t.Fatal(err)
 		}
-		e.p.wg.Wait()
+		e.p.idle()
 		ends := e.jobEnds(t, v.ID, mark)
 		if len(ends) != 2 || ends[0].Kind != JobSupervisor || ends[0].Outcome != workspace.JobCancelled ||
 			ends[1].Kind != JobDelete || ends[1].Outcome != workspace.JobOK {
@@ -406,7 +406,7 @@ func TestAJobCutOffByShutdownEndsCancelled(t *testing.T) {
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	e.p.Shutdown(15 * time.Second)
+	e.shutdown(15 * time.Second)
 	prev := e.endsOnce(t, w.ID, mark, JobCreate, workspace.JobCancelled)
 	if prev.Kind != workspace.KindState || !strings.Contains(string(prev.Data), "Drydock shut down") {
 		t.Errorf("the event before the end is %s %s, want the move to failed", prev.Kind, prev.Data)

@@ -138,6 +138,9 @@ type Server struct {
 	// loginWork is the login handshake's group in Serve's work, stored
 	// likewise: a test stops it to see the begin route refuse.
 	loginWork atomic.Pointer[life.Group]
+	// provisionWork is the provisioner's group in Serve's work, stored
+	// likewise: a test stops it to see the workspace routes refuse.
+	provisionWork atomic.Pointer[life.Group]
 	// clock is env's, for the bounds shutdown waits under.
 	clock sys.Clock
 	// repoOf caches each workspace's repository id for secretValues: it is
@@ -501,29 +504,37 @@ func apiSocketHandler(gate api.Gate, apiMux *http.ServeMux, ui http.Handler) htt
 	return web.SecurityHeaders(root)
 }
 
-// provisionShutdownWait is how long shutdown waits for in-flight runs to
-// write down that they were interrupted.
+// workShutdownWait bounds how long shutdown waits for the goroutines of
+// Serve's life.Group, all of them at once:
+//
+//   - each workspace job in flight, whose step's subprocess is SIGTERMed as
+//     its context ends and wound down within subproc's 5 s WaitDelay, after
+//     which it writes the step's failure, its move to failed and its
+//     workspace.job end to the local database — about 5 s. A job that had
+//     unpaused a paused container also pauses it again, under provision's
+//     30 s repauseTimeout; one that uses all of that outlasts this wait and
+//     is named in the log. Its step's failure is written before the
+//     re-pause, so what is lost is the re-pause and what follows it (a stop's
+//     or delete's annotation, the job's end); a job cut off before writing
+//     its step's failure is boot reconciliation's, which closes the dangling
+//     step;
+//   - the catalog's refresh, whose GitHub calls and transaction end with its
+//     context;
+//   - the identity watch's check, which ends with it too but then removes a
+//     cut-off read's helper container under its own 30-second bound;
+//   - a login in progress, which kills its process, removes its container and
+//     announces its end in about 30 s at worst: one 5 s kill (or an abandoned
+//     launch's docker command winding down within subproc's 5 s WaitDelay),
+//     the 15 s removal plus that WaitDelay for a docker command it cut off,
+//     and the 5 s announcement — counted beside login's killWait,
+//     removeTimeout and emitTimeout.
+//
+// So this is the longest of those and a little more.
 //
 // Shutdown's whole budget must stay inside systemd's 90-second stop timeout,
-// so the service is never SIGKILLed for waiting. The waits after serving
-// ends run one after another — this one, supervisorDetachWait and the HTTP
-// servers' 10 s, 40 s in all — while workShutdownWait runs beside them, so
-// the most shutdown waits is the longer of the two: 40 s.
-const provisionShutdownWait = 20 * time.Second
-
-// workShutdownWait bounds how long shutdown waits for the goroutines of
-// Serve's life.Group: the catalog's refresh, whose GitHub calls and
-// transaction end with its context; the identity watch's check, which ends
-// with it too but then removes a cut-off read's helper container under its
-// own 30-second bound; and a login in progress, which kills its process,
-// removes its container and announces its end in about 30 s at worst: one
-// 5 s kill (or an abandoned launch's docker command winding down within
-// subproc's 5 s WaitDelay), the 15 s removal plus that WaitDelay for a
-// docker command it cut off, and the 5 s announcement — counted beside
-// login's killWait, removeTimeout and emitTimeout. So this
-// is the longer of those and a little more. It runs beside the waits below
-// rather than after them, so it adds nothing to their sum unless it is the
-// longest.
+// so the service is never SIGKILLed for waiting. This wait runs beside the
+// others — supervisorDetachWait, then the HTTP servers' 10 s, 20 s in all —
+// so the most shutdown waits is the longer of the two: 35 s.
 const workShutdownWait = 35 * time.Second
 
 // supervisorDetachWait bounds how long shutdown waits for the supervisors to
@@ -615,10 +626,19 @@ func (s *Server) Serve(ctx context.Context) error {
 	defer stop()
 	// work owns the goroutines of the components that have moved onto
 	// life.Group: shutdown stops it and waits for it before the database
-	// closes. Today that is the catalog, the identity watch and the login
-	// handshake; the rest still end on ctx and their own Shutdown.
+	// closes. Today that is the provisioner's jobs, the catalog, the
+	// identity watch and the login handshake; the rest still end on ctx and
+	// their own Shutdown.
 	work := life.NewGroup(ctx)
 	defer work.Stop()
+	// Every workspace job — a run, a stop, a delete, a session server
+	// restart — in work, before anything can ask for one: the routes, and
+	// reconciliation's resumed deletes just below.
+	provisionWork := work.Child("provision")
+	s.provisionWork.Store(provisionWork)
+	if err := s.Provisioner.RunIn(provisionWork); err != nil {
+		fmt.Fprintf(os.Stderr, "drydock: provision: %v\n", err)
+	}
 	// Reconcile once at boot, beside serving rather than before it: a slow
 	// daemon must not keep the sign-in page down. A failure changes nothing
 	// (reconcile refuses to act on a list it could not read), is written to
@@ -726,13 +746,18 @@ func (s *Server) Serve(ctx context.Context) error {
 	case serveErr = <-errc:
 	}
 	stop()
-	// work's goroutines — the catalog's refreshes, the identity watch's
-	// checks, periodic or asked for, and a login in progress, which ends
-	// failed, saying Drydock shut down, once its process is killed and its
-	// container removed — end now, beside the waits below rather than after
-	// them, and are waited for before the database closes. Nothing asked of
-	// them from here on starts; a login's last act, asking the watch for a
-	// check, is refused at once, since the watch is stopping too.
+	// work's goroutines end now, beside the waits below rather than after
+	// them, and are waited for before the broker's sockets and the database
+	// close: every workspace job in flight, each of which fails the step it
+	// was on, saying Drydock shut down, and writes its workspace.job end
+	// (one that outlasts the wait is left mid-provision for boot
+	// reconciliation to mark failed); the catalog's refreshes; the identity
+	// watch's checks, periodic or asked for; and a login in progress, which
+	// ends failed, saying Drydock shut down, once its process is killed and
+	// its container removed. Nothing asked of them from here on starts — a
+	// route asking for a job answers 503 — and a login's last act, asking
+	// the watch for a check, is refused at once, since the watch is
+	// stopping too.
 	work.Stop()
 	workStopped := make(chan struct{})
 	go func() {
@@ -745,20 +770,21 @@ func (s *Server) Serve(ctx context.Context) error {
 				workShutdownWait, strings.Join(late, ", "))
 		}
 	}()
-	// Runs first, while the broker, the log and the database are all still
-	// there: each in-flight run fails the step it was on, saying Drydock shut
-	// down, and that has to be written before anything it writes to closes.
-	// One that outlasts the wait is left mid-provision for boot
-	// reconciliation to mark failed.
-	s.Provisioner.Shutdown(provisionShutdownWait)
 	// Session servers keep serving while Drydock is down (Spike 02: a plain
-	// restart reconnects them); only Drydock's terminals close.
+	// restart reconnects them); only Drydock's terminals close. This runs
+	// beside work's wait, while provision's jobs may still be ending, which
+	// is safe because every job's context was cancelled by work.Stop above,
+	// before this began: a job's StopSupervisor after that signals nothing
+	// (docker exec is not started under a cancelled context, and a stop cut
+	// off records nothing), and its StartSupervisor (step 8, or a restart's
+	// second half) is ordered against Detach by the supervisor's own lock —
+	// one that got in first is detached with the rest, and one after is
+	// ErrClosed, which the cancelled step reports as Drydock shutting down.
 	s.Supervisor.Detach(supervisorDetachWait)
-	if s.Broker != nil {
-		s.Broker.CloseAll()
-	}
 	// Streams never go idle, so Shutdown would wait out its whole timeout on
 	// every open browser; ending the subscriptions ends the streams first.
+	// A job still ending writes its last events after this: they are rows
+	// all the same, which a browser replays from the next process.
 	s.Events.Close()
 	shutCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -767,10 +793,18 @@ func (s *Server) Serve(ctx context.Context) error {
 	// Shutdown does not track a hijacked connection: a preview's websocket
 	// is closed here, or it would outlive the server that proxied it.
 	s.Proxy.Close()
-	<-reconciled // they may still be writing; the database closes after them
+	<-workStopped
+	// Boot's follow-ups end with ctx; one may be reopening a broker socket
+	// under the provisioner's lock right now, so the sockets close after.
+	<-reconciled
+	// After every job and boot's follow-ups: a run's step 5, or a stop's
+	// re-pause, opens a socket, and one closed under it would be opened
+	// again behind CloseAll.
+	if s.Broker != nil {
+		s.Broker.CloseAll()
+	}
 	<-supervising
 	<-sampling
-	<-workStopped
 	s.DB.Close()
 	if errors.Is(serveErr, http.ErrServerClosed) {
 		serveErr = nil

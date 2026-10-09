@@ -47,14 +47,14 @@ func TestStartOfALegacyContainerAsksForARebuild(t *testing.T) {
 		if err := e.p.Stop(ctx, v.ID); err != nil {
 			t.Fatal(err)
 		}
-		e.p.wg.Wait()
+		e.p.idle()
 		if s := e.view(t, v.ID).State; s != workspace.Stopped {
 			t.Fatalf("setup: stop left %s", s)
 		}
 		if err := e.p.Start(ctx, v.ID); err != nil {
 			t.Fatal(err)
 		}
-		e.p.wg.Wait()
+		e.p.idle()
 		return e.view(t, v.ID)
 	}
 	if got := stopStart(); got.State != workspace.Running {
@@ -79,7 +79,7 @@ func TestStartOfALegacyContainerAsksForARebuild(t *testing.T) {
 	if err := e.p.Rebuild(ctx, v.ID); err != nil {
 		t.Fatal(err)
 	}
-	e.p.wg.Wait()
+	e.p.idle()
 	if r := e.view(t, v.ID); r.State != workspace.Running {
 		t.Fatalf("the rebuild: %s (%s)", r.State, deref(r.StateDetail))
 	}
@@ -152,7 +152,7 @@ func TestDeleteFinishesPastALeftoverInTheBrokerDirectory(t *testing.T) {
 		if err := e.p.Delete(ctx, v.ID, "krelinga/alpha"); err != nil {
 			t.Fatal(err)
 		}
-		e.p.wg.Wait()
+		e.p.idle()
 		_, err := e.p.Workspaces.Get(ctx, v.ID)
 		if gone := errors.Is(err, workspace.ErrNotFound); gone != c.finished {
 			t.Errorf("%v: the delete finished = %v; actions %v", c.err, gone, e.actions(t, v.ID))
