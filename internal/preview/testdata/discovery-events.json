@@ -113,5 +113,38 @@
     ],
     "source": "discovery",
     "container_port": 8080
+  },
+  {
+    "scan": 127,
+    "kind": "port.discovery",
+    "level": "info",
+    "data_keys": [
+      "discovery",
+      "source"
+    ],
+    "source": "discovery",
+    "discovery": "unavailable"
+  },
+  {
+    "scan": 128,
+    "kind": "port.scanned",
+    "level": "info",
+    "data_keys": [
+      "discovery",
+      "source"
+    ],
+    "source": "discovery",
+    "discovery": "unavailable"
+  },
+  {
+    "scan": 129,
+    "kind": "port.discovery",
+    "level": "info",
+    "data_keys": [
+      "discovery",
+      "source"
+    ],
+    "source": "discovery",
+    "discovery": "ok"
   }
 ]

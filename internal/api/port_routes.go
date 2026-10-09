@@ -27,15 +27,17 @@ type PortRegistry interface {
 
 // PortScanner is discovery's half of the registry (PF §8.2, §13 step 5):
 // preview.Scanner. Rescan asks for a scan that begins after the call and
-// returns at once.
+// returns at once. Discovery is the workspace's discovery state as the events
+// last reported it (PF §11, §13 step 6): ok, unavailable or limited.
 type PortScanner interface {
 	Rescan(ctx context.Context, workspaceID string) error
+	Discovery(workspaceID string) string
 }
 
 // PortProber is the probe's dial: preview.Proxy.Probe, the proxy's own dial
 // and no second resolver (PF §13.4, "What step 4 should know").
 type PortProber interface {
-	Probe(ctx context.Context, workspaceID string, port int) preview.ProbeResult
+	Probe(ctx context.Context, workspaceID string, port int, seen preview.Observation) preview.ProbeResult
 }
 
 // PortRoutes serves the port registry. Every mutation answers 202 and is
@@ -89,9 +91,14 @@ func (pr PortRoutes) rescan(w http.ResponseWriter, r *http.Request) {
 // PortList is GET /api/workspaces/{id}/ports. previews says whether a preview
 // domain is configured: without one a port is listed and never enabled, and
 // the panel says why rather than offering a switch that cannot work.
+// discovery is the workspace's discovery state as port.scanned and
+// port.discovery last reported it — "ok", "unavailable" or "limited" — and
+// null with no scanner (PF §11: a broken scanner and an empty list must not
+// look alike).
 type PortList struct {
-	Ports    []preview.Port `json:"ports"`
-	Previews bool           `json:"previews"`
+	Ports     []preview.Port `json:"ports"`
+	Previews  bool           `json:"previews"`
+	Discovery *string        `json:"discovery"`
 }
 
 func (pr PortRoutes) list(w http.ResponseWriter, r *http.Request) {
@@ -101,7 +108,12 @@ func (pr PortRoutes) list(w http.ResponseWriter, r *http.Request) {
 		writePortError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, PortList{Ports: ps, Previews: pr.Registry.PreviewsOn()})
+	out := PortList{Ports: ps, Previews: pr.Registry.PreviewsOn()}
+	if pr.Scanner != nil {
+		d := pr.Scanner.Discovery(r.PathValue("id"))
+		out.Discovery = &d
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 // addBody is POST …/ports.
@@ -188,7 +200,7 @@ func (pr PortRoutes) probe(w http.ResponseWriter, r *http.Request) {
 		writePortError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, pr.Prober.Probe(r.Context(), p.WorkspaceID, p.ContainerPort))
+	writeJSON(w, http.StatusOK, pr.Prober.Probe(r.Context(), p.WorkspaceID, p.ContainerPort, p.Observation()))
 }
 
 // readBody reads a small JSON body.
@@ -227,6 +239,9 @@ func writePortError(w http.ResponseWriter, err error) {
 		WriteError(w, http.StatusConflict, CodeTooManyPorts, "This workspace lists as many ports as it may. Remove one first.", "")
 	case errors.Is(err, preview.ErrWorkspaceDeleting):
 		WriteError(w, http.StatusConflict, CodeInProgress, "This workspace is being deleted.", "")
+	case errors.Is(err, preview.ErrLoopbackOnly):
+		WriteError(w, http.StatusConflict, CodePortLoopback,
+			"This port is listening on loopback only, which nothing outside the container can reach. Start the dev server with --host 0.0.0.0.", "")
 	case errors.Is(err, preview.ErrPreviewsOff):
 		WriteError(w, http.StatusServiceUnavailable, CodePreviewsNotConfigured,
 			"No preview domain is configured, so no port can be previewed.",

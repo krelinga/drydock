@@ -10,7 +10,7 @@ function p(over: Partial<Port>): Port {
   return {
     id: 'P', workspaceId: 'W', containerPort: 1, slug: 's', host: null, url: null, label: null, hostHeader: 'localhost',
     enabled: false, hidden: false, declared: false, observed: false, manual: false, bindAddr: null, loopback: false,
-    observedState: null, at: 1, ...over,
+    observedState: null, lastSeenAt: null, at: 1, ...over,
   }
 }
 

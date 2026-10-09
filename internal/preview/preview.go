@@ -95,7 +95,9 @@
 // While Watched says no SSE stream is open, unasked rounds run at most every
 // IdleInterval. Two token buckets per workspace bound discovery's churn —
 // every row write a change (ChangeBurst, ChangeEvery), every new row a mint
-// as well (MintBurst, MintEvery); a change held back is derived again next
+// as well (MintBurst, MintEvery), the last MintReserve and ChangeReserve kept
+// for ports below EphemeralFrom so a test run on ephemeral ports cannot starve
+// the dev server started after it; a change held back is derived again next
 // scan. Service.Observe merges by container_port onto live rows only
 // (a retired row stays retired; the port seen again is a new row and a new
 // slug), in one Commit with its events — port.added, port.updated,
@@ -108,6 +110,22 @@
 // "listening now" and "hidden" as holders. An unreadable table changes
 // nothing (ErrScanRaced, or any error but ErrNotRunning) and is logged once
 // per workspace until it recovers.
+//
+// Diagnosis (PF §11, §13 step 6) is read from what discovery recorded, never
+// from prose. Each workspace's discovery state — DiscoveryOK, Unavailable (the
+// table cannot be read) or Limited (a budget held a change back) — is reported
+// by port.scanned (a rescan's answer, so a rescan never answers "ok" while a
+// listening port is withheld) and, unasked, by port.discovery when it changes
+// (at most StatusBurst, then one per StatusEvery); Scanner.Discovery is the
+// last report, which the port list carries. A Target carries its row's
+// Observation, and a port listening on loopback only (LoopbackOnly) is
+// answered by ServePreview and Probe with LoopbackSentence — the
+// --host 0.0.0.0 fix — before any resolution or dial; Update refuses its
+// enable (ErrLoopbackOnly). A refused dial on a port discovery saw go is
+// ProbeNotListening. Stopped names an enabled port on a workspace that is not
+// running, which authorize sends to the workspace's page. Discovery's events
+// carry events.SourceDiscovery and stay out of the activity feed
+// (events.Log.Feed).
 package preview
 
 import (
@@ -220,6 +238,10 @@ type Target struct {
 	Host           string // <slug>.<domain>
 	UpstreamScheme string // http | https
 	HostHeader     string // localhost | passthrough (PF §8.3)
+	// Seen is what discovery last recorded of the port, read with the row
+	// on every request: a port listening on loopback only is answered from
+	// it, never dialled (PF §11).
+	Seen Observation
 	// AuthSessionID is the auth session the preview session was minted
 	// under, when the Target came from a preview cookie (Session): what the
 	// proxy closes an open websocket by when that session is revoked.
@@ -364,7 +386,8 @@ func (s *Service) Pending() int {
 	return len(s.pending)
 }
 
-const targetCols = `fp.id, fp.workspace_id, fp.container_port, fp.slug, fp.upstream_scheme, fp.host_header`
+const targetCols = `fp.id, fp.workspace_id, fp.container_port, fp.slug, fp.upstream_scheme, fp.host_header,
+	coalesce(fp.observed_state, ''), coalesce(fp.bind_addr, '')`
 
 const previewable = `fp.enabled = 1 AND fp.retired_at IS NULL AND w.state = 'running'`
 
@@ -382,7 +405,8 @@ func (s *Service) Resolve(ctx context.Context, slug string) (Target, error) {
 
 func (s *Service) scanTarget(r interface{ Scan(...any) error }, extra ...any) (Target, error) {
 	var t Target
-	err := r.Scan(append([]any{&t.PortID, &t.WorkspaceID, &t.ContainerPort, &t.Slug, &t.UpstreamScheme, &t.HostHeader}, extra...)...)
+	err := r.Scan(append([]any{&t.PortID, &t.WorkspaceID, &t.ContainerPort, &t.Slug, &t.UpstreamScheme, &t.HostHeader,
+		&t.Seen.State, &t.Seen.Bind}, extra...)...)
 	t.Host = s.HostFor(t.Slug)
 	return t, err
 }

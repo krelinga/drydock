@@ -120,7 +120,7 @@ import {
   type IdentityCheckError, type IdentityState, type InstallationView, type LoginPhase, type RepoView, type SecretList,
   type SecretMeta, type StepStatus, type StreamEvent, type ApprovalView, type WorkspaceDetail, type WorkspaceList, type WorkspaceState,
   type WorkspaceView, SUPERVISOR_STATES, type SupervisorState, type HostDiskView, type ResourcesView,
-  type HostHeader, type PortList, type PortView,
+  type HostHeader, type PortList, type PortView, type DiscoveryState,
 } from '../api/types'
 import { frameParts, mergeHostDisk, mergeResources, type HostDisk, type Resources } from './resources'
 
@@ -382,6 +382,19 @@ export interface Port {
   loopback: boolean
   /** Discovery's verdict: listening now, gone (seen before, not now), or null for never seen. */
   observedState: 'listening' | 'gone' | null
+  /** When discovery last saw it listening; null when it never has. */
+  lastSeenAt: string | null
+  /** The id of the event (or snapshot position) that last wrote it. */
+  at: number
+}
+
+/**
+ * A workspace's port discovery as the server last reported it (port
+ * forwarding §11): by `port.scanned` and `port.discovery` (`data.discovery`)
+ * and by the port list (`discovery`), versioned like any entity.
+ */
+export interface PortDiscovery {
+  state: DiscoveryState
   /** The id of the event (or snapshot position) that last wrote it. */
   at: number
 }
@@ -465,6 +478,8 @@ export interface Entities {
   portsLoaded: Record<string, number>
   /** Whether a preview domain is configured, from the last port list; null until one. */
   previews: boolean | null
+  /** Per workspace: its port discovery's state. Absent: nothing said yet, or no scanner. */
+  portDiscovery: Record<string, PortDiscovery>
 }
 
 export type Action =
@@ -508,6 +523,7 @@ export function emptyEntities(): Entities {
     portsRetired: {},
     portsLoaded: {},
     previews: null,
+    portDiscovery: {},
   }
 }
 
@@ -767,12 +783,17 @@ function applyEvent(prev: Entities, ev: StreamEvent): Entities {
     const ports = Object.fromEntries(Object.entries(base.ports).filter(([, p]) => p.workspaceId !== wsId))
     const portsLoaded = { ...base.portsLoaded }
     delete portsLoaded[wsId]
-    return { ...base, workspaces, feeds, resources, ports, portsLoaded, gone: { ...base.gone, [wsId]: ev.id } }
+    const portDiscovery = { ...base.portDiscovery }
+    delete portDiscovery[wsId]
+    return { ...base, workspaces, feeds, resources, ports, portsLoaded, portDiscovery, gone: { ...base.gone, [wsId]: ev.id } }
   }
 
-  // Every event naming a workspace joins its feed, whatever its kind.
-  const feed = mergeFeed(base.feeds[wsId], [ev])
-  const fed = feed === base.feeds[wsId] ? base : { ...base, feeds: { ...base.feeds, [wsId]: feed } }
+  // Every event naming a workspace joins its feed, whatever its kind — but
+  // port discovery's (PF §13 step 6): what it finds is the ports panel's, and
+  // a test suite opening ports would push the workspace's history out of the
+  // feed's 50. GET /api/workspaces/:id leaves them out alike (events.Log.Feed).
+  const feed = inFeed(ev) ? mergeFeed(base.feeds[wsId], [ev]) : base.feeds[wsId]
+  const fed = feed === base.feeds[wsId] ? base : { ...base, feeds: { ...base.feeds, [wsId]: feed! } }
 
   if (ev.kind.startsWith('port.')) return applyPortEvent(fed, wsId, ev)
 
@@ -965,6 +986,11 @@ export function stopFailed(w: Workspace): boolean {
   const a = w.lastAction
   return w.state === 'running' && w.detail !== null && liveAction(w) === null &&
     a !== null && a.name === 'stop' && a.status === 'failed'
+}
+
+/** Whether an event belongs in a workspace's feed: everything but port discovery's (`data.source: "discovery"`). */
+export function inFeed(ev: StreamEvent): boolean {
+  return (ev.data as Record<string, unknown> | null | undefined)?.source !== 'discovery'
 }
 
 /** Merges events into a feed: by id, newest first, capped. Returns `feed` itself when nothing changed. */
@@ -1165,7 +1191,7 @@ function applyWorkspaceDetail(prev: Entities, at: number, view: WorkspaceDetail)
   if (!isView(view) || prev.gone[view.id] !== undefined) {
     return at > prev.lastEventId ? { ...prev, lastEventId: at } : prev
   }
-  const events = (view.events ?? []).filter((e) => str(e.workspace_id) === view.id)
+  const events = (view.events ?? []).filter((e) => str(e.workspace_id) === view.id && inFeed(e))
   // The body's events are the stream's own, ids and all, so the stop or
   // delete they tell — and the state event that ended it, if one did — fold
   // in exactly as they would have live. That is what lets a reload show a
@@ -1328,8 +1354,15 @@ function toPort(m: unknown, at: number): Port | null {
     bindAddr: str(v.bind_addr),
     loopback: v.loopback === true,
     observedState: v.observed_state === 'listening' || v.observed_state === 'gone' ? v.observed_state : null,
+    lastSeenAt: str(v.last_seen_at),
     at,
   }
+}
+
+const DISCOVERY_STATES: readonly string[] = ['ok', 'unavailable', 'limited']
+
+function toDiscovery(v: unknown): DiscoveryState | null {
+  return typeof v === 'string' && DISCOVERY_STATES.includes(v) ? (v as DiscoveryState) : null
 }
 
 /**
@@ -1337,12 +1370,19 @@ function toPort(m: unknown, at: number): Port | null {
  * the whole row as `data.port`, so it is an upsert versioned by event id;
  * port.retired drops the row for good. Discovery's (`data.source:
  * "discovery"`) are the same kinds and are applied alike: a row the scan
- * found is a row, never a notice. port.scanned answers a rescan and changes
- * no entity (stores/ports.ts settles on it); a kind from a later phase
- * changes nothing either.
+ * found is a row, never a notice. port.scanned (which answers a rescan, and
+ * stores/ports.ts settles on) and port.discovery change no row: each reports
+ * the workspace's discovery state, which the panel says (PF §11); a kind from
+ * a later phase changes nothing.
  */
 function applyPortEvent(base: Entities, wsId: string, ev: StreamEvent): Entities {
   const data = ev.data ?? {}
+  if (ev.kind === 'port.scanned' || ev.kind === 'port.discovery') {
+    const state = toDiscovery(data.discovery)
+    const cur = base.portDiscovery[wsId]
+    if (state === null || (cur !== undefined && cur.at >= ev.id)) return base
+    return { ...base, portDiscovery: { ...base.portDiscovery, [wsId]: { state, at: ev.id } } }
+  }
   if (ev.kind === 'port.retired') {
     const id = str(data.port_id)
     if (id === null) return base
@@ -1379,12 +1419,20 @@ function applyPortList(prev: Entities, at: number, wsId: string, view: PortList)
     const cur = prev.ports[p.id]
     ports[p.id] = cur !== undefined && cur.at > at ? cur : p
   }
+  // The list's discovery is as fresh as the request, so it stands over any
+  // report the stream had delivered by `at`; a newer event stands over it.
+  const state = toDiscovery(view.discovery)
+  const cur = prev.portDiscovery[wsId]
+  const portDiscovery = state !== null && (cur === undefined || cur.at <= at)
+    ? { ...prev.portDiscovery, [wsId]: { state, at } }
+    : prev.portDiscovery
   return {
     ...prev,
     lastEventId: Math.max(prev.lastEventId, at),
     ports,
     portsLoaded: { ...prev.portsLoaded, [wsId]: at },
     previews: typeof view.previews === 'boolean' ? view.previews : prev.previews,
+    portDiscovery,
   }
 }
 

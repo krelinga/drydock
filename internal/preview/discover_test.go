@@ -290,7 +290,9 @@ func TestDiscoveryChurnIsBudgeted(t *testing.T) {
 		t.Errorf("%d rows minted in %s; want some, and at most %d", rows, span, maxRows)
 	}
 	es, _ := d.log.Since(context.Background(), 0)
-	maxEvents := preview.ChangeBurst + int(span/preview.ChangeEvery) + 1
+	// Every row change spends a change token; the state reports
+	// (port.discovery, "limited" and back) have their own budget.
+	maxEvents := preview.ChangeBurst + int(span/preview.ChangeEvery) + 1 + preview.StatusBurst + int(span/preview.StatusEvery) + 1
 	if len(es) > maxEvents {
 		t.Errorf("%d events in %s; want at most %d", len(es), span, maxEvents)
 	}
@@ -612,7 +614,9 @@ func TestDiscoveryScansWhatIsNotRunningAsEmpty(t *testing.T) {
 // an empty one (PF §11): the rows keep what they said however long it lasts,
 // a rescan is answered "unavailable", and the journal is told once, then
 // once more when it recovers. A read that raced a restart teaches nothing
-// either.
+// either. And it fails visibly (§11, step 6): the first unasked round that
+// cannot read the table says so with port.discovery, the port list carries
+// it, and the round that reads again says that too.
 func TestDiscoveryUnavailableChangesNothing(t *testing.T) {
 	d := newDiscovery(t)
 	d.src.listen("w1", "0.0.0.0:5173")
@@ -627,27 +631,45 @@ func TestDiscoveryUnavailableChangesNothing(t *testing.T) {
 			t.Errorf("%v: the row is %+v; want unchanged", err, p)
 		}
 	}
-	kinds := d.kinds(t)
-	if got := strings.Join(kinds, " "); got != "port.added:5173 port.scanned:0 port.scanned:0" {
-		t.Errorf("events = %s", got)
-	}
-	es, _ := d.log.Since(context.Background(), 0)
-	var verdicts []string
-	for _, e := range es {
-		if e.Kind == preview.KindPortScanned {
-			var v struct{ Discovery string }
-			json.Unmarshal(e.Data, &v)
-			verdicts = append(verdicts, v.Discovery)
-		}
-	}
-	if strings.Join(verdicts, " ") != "unavailable unavailable" {
-		t.Errorf("rescans answered %v; want unavailable both times — a raced read read nothing", verdicts)
+	if got := d.sc.Discovery("w1"); got != preview.DiscoveryUnavailable {
+		t.Errorf("the port list would say discovery is %q; want unavailable", got)
 	}
 	d.src.listen("w1", "0.0.0.0:5173")
 	d.scan()
+	kinds := d.kinds(t)
+	if got := strings.Join(kinds, " "); got != "port.added:5173 port.discovery:0 port.scanned:0 port.scanned:0 port.discovery:0" {
+		t.Errorf("events = %s", got)
+	}
+	if got := strings.Join(discoveryVerdicts(t, d), " "); got != "port.discovery:unavailable port.scanned:unavailable port.scanned:unavailable port.discovery:ok" {
+		t.Errorf("reports = %s; want unavailable said once unasked, both rescans unavailable — a raced read read nothing — and the recovery said", got)
+	}
+	if got := d.sc.Discovery("w1"); got != preview.DiscoveryOK {
+		t.Errorf("after the recovery the port list would say %q", got)
+	}
 	if len(d.logs) != 2 || !strings.Contains(d.logs[0], "unavailable") || !strings.Contains(d.logs[1], "works again") {
 		t.Errorf("journal = %q; want one line as it broke and one as it recovered", d.logs)
 	}
+}
+
+// discoveryVerdicts is every port.scanned and port.discovery, kind:verdict.
+func discoveryVerdicts(t *testing.T, d *discovery) []string {
+	t.Helper()
+	es, err := d.log.Since(context.Background(), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out []string
+	for _, e := range es {
+		if e.Kind == preview.KindPortScanned || e.Kind == preview.KindPortDiscovery {
+			var v struct{ Discovery, Source string }
+			json.Unmarshal(e.Data, &v)
+			if v.Source != preview.SourceDiscovery || e.Level != events.Info {
+				t.Errorf("%s: source %q, level %q", e.Kind, v.Source, e.Level)
+			}
+			out = append(out, e.Kind+":"+v.Discovery)
+		}
+	}
+	return out
 }
 
 // TestRescan: POST …/ports/rescan's half — a scan that begins after the call,
@@ -697,8 +719,9 @@ func TestRescan(t *testing.T) {
 }
 
 // TestDiscoveryEventsNotifyNoOne: every event discovery writes is a row's
-// own kind (port.added, port.updated, port.retired) or the rescan's answer,
-// at info level, carrying source "discovery" — nothing the UI turns into a
+// own kind (port.added, port.updated, port.retired), the rescan's answer, or
+// the state report the panel badges (port.discovery — a state, shown where
+// the operator looks, never a notice), at info level, carrying source "discovery" — nothing the UI turns into a
 // notification, and nothing above info. The web spec
 // (web/src/views/PortsDiscovery.spec.ts) plays the same events through the
 // app and finds no alert, no announcement and no title change.
@@ -706,7 +729,8 @@ func TestDiscoveryEventsNotifyNoOne(t *testing.T) {
 	d := newDiscovery(t)
 	playGolden(t, d)
 	es, _ := d.log.Since(context.Background(), 0)
-	allowed := map[string]bool{"port.added": true, "port.updated": true, "port.retired": true, "port.scanned": true}
+	allowed := map[string]bool{"port.added": true, "port.updated": true, "port.retired": true, "port.scanned": true,
+		"port.discovery": true}
 	if len(es) < 2 || es[0].Kind != preview.KindPortAdded {
 		t.Fatalf("events = %+v; want the declaration's port.added, then discovery's", es)
 	}
@@ -751,6 +775,13 @@ func playGolden(t *testing.T, d *discovery) []int64 {
 	for i := 0; i < 3+int(preview.RetireAfter/preview.DefaultScanInterval); i++ {
 		scan()
 	}
+	// Step 6: the table cannot be read for a while — said unasked, answered
+	// to a rescan — and then can, which is said too.
+	d.src.fail("w1", errors.New("permission denied"))
+	scan()
+	scan("w1")
+	d.src.listen("w1")
+	scan()
 	return after
 }
 

@@ -59,8 +59,8 @@ describe('port discovery', () => {
     expect(found.find('[data-test="port-open"]').exists()).toBe(false)
     expect(btn(found, 'port-enable').exists()).toBe(true) // offered, never pressed
     const loop = row(wrapper, 9229)
-    expect(loop.find('[data-test="port-observed"]').text())
-      .toBe('Listening on 127.0.0.1 only, which nothing outside the container can reach.')
+    expect(loop.find('[data-test="port-diagnosis"]').text())
+      .toBe('Listening on 127.0.0.1:9229, which is only reachable from inside the container. Start it with --host 0.0.0.0.')
     // The declared row the server listens on is one row, now both.
     expect(wrapper.findAll('[data-test="port"][data-port="5173"]').length).toBe(1)
     expect(row(wrapper, 5173).findAll('[data-test="port-badge"]').map((x) => x.text())).toEqual(['declared', 'discovered'])

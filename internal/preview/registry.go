@@ -65,6 +65,12 @@ var (
 	ErrPortExists        = errors.New("preview: the workspace already lists that port")
 	ErrTooManyPorts      = errors.New("preview: the workspace lists as many ports as it may")
 	ErrPreviewsOff       = errors.New("preview: no preview domain is configured")
+	// ErrLoopbackOnly refuses an enable of a port discovery sees listening
+	// on loopback only (PF §11's first row): nothing outside the container
+	// can reach it, so the switch could only make a preview that never
+	// answers. The dev server restarted on 0.0.0.0 is seen within two scans
+	// and the switch is offered again.
+	ErrLoopbackOnly = errors.New("preview: the port is listening on loopback only")
 )
 
 // InvalidError is a request the registry refuses as malformed; Reason is a
@@ -100,6 +106,19 @@ type Port struct {
 	ObservedState *string `json:"observed_state"`
 	LastSeenAt    *string `json:"last_seen_at"`
 	CreatedAt     *string `json:"created_at"`
+}
+
+// Observation is what discovery last recorded of the port, as the proxy and
+// the probe read it.
+func (p Port) Observation() Observation {
+	var o Observation
+	if p.ObservedState != nil {
+		o.State = *p.ObservedState
+	}
+	if p.BindAddr != nil {
+		o.Bind = *p.BindAddr
+	}
+	return o
 }
 
 // AddSpec is a port added by hand (POST …/ports).
@@ -455,6 +474,16 @@ func (s *Service) Update(ctx context.Context, workspaceID, portID string, c Chan
 		if c.Enabled != nil && *c.Enabled && state == "deleting" {
 			return nil, ErrWorkspaceDeleting
 		}
+		if c.Enabled != nil && *c.Enabled && cur.Observation().LoopbackOnly() {
+			// Refused, not allowed with a warning: an enabled loopback
+			// port is a link the operator would open onto Drydock's own
+			// failure page, and the proxy never dials it anyway. One
+			// already enabled when its server moved to loopback stays
+			// enabled — discovery has no path to the switch, either way
+			// (PF §10.7) — and its preview says the sentence until the
+			// server listens on 0.0.0.0 again.
+			return nil, ErrLoopbackOnly
+		}
 		set := func(col string, v any) error {
 			_, err := tx.ExecContext(ctx, `UPDATE forwarded_port SET `+col+` = ? WHERE id = ?`, v, cur.ID)
 			return err
@@ -686,6 +715,24 @@ func (s *Service) DeclarePorts(ctx context.Context, workspaceID string, ds []Dec
 		}
 		return es, nil
 	})
+}
+
+// Stopped reports whether a slug names an enabled, unretired port on a
+// workspace that exists, is not running and is not being deleted — and which
+// workspace and port. Authorize asks it, for a signed-in device only, after
+// Resolve has refused the slug: such a device is sent to the workspace's page
+// in the UI, which says the workspace is not running beside its Start (PF
+// §11's *workspace stopped*), rather than to the preview host's constant dead
+// end. Only the UI origin hears it, and only a signed-in device, which can
+// read the workspace's page anyway.
+func (s *Service) Stopped(ctx context.Context, slug string) (workspaceID, portID string, ok bool, err error) {
+	err = s.DB.QueryRowContext(ctx, `SELECT fp.workspace_id, fp.id FROM forwarded_port fp JOIN workspace w ON w.id = fp.workspace_id
+		WHERE fp.slug = ? AND fp.enabled = 1 AND fp.retired_at IS NULL AND w.state NOT IN ('running', 'deleting')`,
+		slug).Scan(&workspaceID, &portID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", "", false, nil
+	}
+	return workspaceID, portID, err == nil, err
 }
 
 // Spent reports whether a slug names a port that was switched off or retired

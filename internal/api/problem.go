@@ -134,6 +134,9 @@ const (
 	CodeTooManyPorts = "too_many_ports"
 	// CodePreviewsNotConfigured: an enable with no preview domain.
 	CodePreviewsNotConfigured = "previews_not_configured"
+	// CodePortLoopback: an enable of a port discovery sees listening on
+	// loopback only, which no preview can reach (PF §11, §13 step 6).
+	CodePortLoopback = "port_loopback"
 )
 
 // WriteError sends the envelope. Nothing else in the codebase should write an

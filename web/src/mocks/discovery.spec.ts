@@ -36,7 +36,7 @@ describe('mock discovery', () => {
     const b = newBackend()
     // internal/preview playGolden: 5173 declared, labelled; then a server on
     // it at 0.0.0.0 and another on 127.0.0.1:8080; a rescan; both stop, and
-    // the second is retired.
+    // the second is retired; then discovery unavailable, and back.
     addMockPort(b, WS_RUNNING, 5173, { label: 'vite', declared: true })
     const got: Record<string, unknown>[] = []
     let scans = 0
@@ -56,6 +56,13 @@ describe('mock discovery', () => {
     // Gone at the third; 8080, discovery's own, retired ten minutes after it
     // was last seen.
     for (let i = 0; i < 123; i++) scan()
+    // Step 6: the table unreadable for a while — said unasked, answered to a
+    // rescan — and then readable, which is said too.
+    b.scanUnavailable = [WS_RUNNING]
+    scan()
+    scan([WS_RUNNING])
+    b.scanUnavailable = []
+    scan()
     expect(GOLDEN.length).toBeGreaterThan(0)
     expect(got).toEqual(GOLDEN)
   })

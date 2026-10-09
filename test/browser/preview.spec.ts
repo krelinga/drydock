@@ -396,6 +396,73 @@ test.describe('the ports panel', () => {
   })
 })
 
+/**
+ * PF §13 step 6: discovery has seen two servers on 127.0.0.1 — the previewed
+ * port, enabled while it listened on 0.0.0.0 and since restarted on loopback,
+ * and a debugger never enabled. (The stand-in docker reports no PID, so the
+ * tier's own discovery cannot read a table and changes neither row; the rows
+ * are what discovery writes.) The real Vite app still listens on 0.0.0.0 at
+ * the address the stand-in reports, so a proxy that dialled would reach it:
+ * only the loopback check keeps the page Drydock's.
+ */
+function seedLoopback(stack: Stack): void {
+  const db = new DatabaseSync(stack.db)
+  try {
+    db.exec('PRAGMA busy_timeout = 5000')
+    db.exec(`INSERT INTO repository (id, installation_id, full_name, default_branch) VALUES (424242, 1, 'o/myapp', 'main')`)
+    db.exec(`INSERT INTO workspace (id, repository_id, host_path, branch, state) VALUES ('${WS}', 424242, '/x', 'main', 'running')`)
+    db.exec(`INSERT INTO forwarded_port (id, workspace_id, container_port, slug, enabled, observed, observed_state, bind_addr, last_seen_at)
+      VALUES ('ppreview', '${WS}', ${dev.port}, '${SLUG}', 1, 1, 'listening', '127.0.0.1', '${new Date().toISOString()}')`)
+    db.exec(`INSERT INTO forwarded_port (id, workspace_id, container_port, slug, observed, observed_state, bind_addr, last_seen_at)
+      VALUES ('ploop', '${WS}', 9229, 'myapp-9229-loop', 1, 'listening', '127.0.0.1', '${new Date().toISOString()}')`)
+  } finally {
+    db.close()
+  }
+  stack.previewContainer(WS, hostAddress())
+}
+
+test.describe('diagnosis', () => {
+  test.beforeEach(({ stack }) => seedLoopback(stack))
+  test.afterEach(({ stack }) => {
+    const db = new DatabaseSync(stack.db)
+    try {
+      db.exec('PRAGMA busy_timeout = 5000')
+      db.exec(`DELETE FROM forwarded_port WHERE id = 'ploop'`)
+    } finally {
+      db.close()
+    }
+    unseed(stack)
+  })
+
+  test('a server bound to 127.0.0.1 is said to need --host 0.0.0.0, on the preview and the panel, and is never dialled', async ({
+    signedIn: page,
+    stack,
+  }) => {
+    if (dev.proc === null) await dev.restart()
+    const sentence = `Listening on 127.0.0.1:${dev.port}, which is only reachable from inside the container. Start it with --host 0.0.0.0.`
+    stack.previewTap.clear()
+    await clickTo(page, `${TARGET}/app/page`)
+    // Drydock's page, never the app's — which a dial would have reached.
+    await expect(page.locator('[data-test=preview-failure]')).toHaveText(sentence)
+    await expect(page.locator('[data-test=upstream]')).toHaveCount(0)
+    const answered = await seenBy(stack.previewTap.seen, (s) => s.path === '/app/page' && s.status !== 302, 'the preview after the handshake')
+    expect(answered.status).toBe(502)
+    expect(answered.cookieNames).toContain(PREVIEW_COOKIE)
+
+    // The panel: the debugger has no switch, the previewed port no link.
+    await page.goto(`${UI}/ws/${WS}`)
+    const debuggerRow = page.locator('[data-test=port][data-port="9229"]')
+    await expect(debuggerRow.locator('[data-test=port-diagnosis]')).toHaveText(
+      'Listening on 127.0.0.1:9229, which is only reachable from inside the container. Start it with --host 0.0.0.0.')
+    await expect(debuggerRow.locator('[data-test=port-enable]')).toHaveCount(0)
+    await expect(debuggerRow.locator('[data-test=port-look-again] [data-test=action]')).toBeEnabled()
+    const previewed = page.locator(`[data-test=port][data-port="${dev.port}"]`)
+    await expect(previewed.locator('[data-test=port-diagnosis]')).toHaveText(sentence)
+    await expect(previewed.locator('[data-test=port-open]')).toHaveCount(0)
+    await expect(previewed.locator('[data-test=port-disable] [data-test=action]')).toBeEnabled()
+  })
+})
+
 test('an unknown slug and the installer probe land on the denied page, which says nothing', async ({ signedIn: page, stack }) => {
   // A well-formed slug with no port behind it: the handshake runs, and
   // authorize — signed in — sends it to its own dead end.

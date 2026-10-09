@@ -487,8 +487,8 @@ func previewHandlers(p *preview.Service) map[string]http.HandlerFunc {
 // the probe and a preview never resolve a container two ways.
 type proxyProber struct{ s *Server }
 
-func (p proxyProber) Probe(ctx context.Context, workspaceID string, port int) preview.ProbeResult {
-	return p.s.Proxy.Probe(ctx, workspaceID, port)
+func (p proxyProber) Probe(ctx context.Context, workspaceID string, port int, seen preview.Observation) preview.ProbeResult {
+	return p.s.Proxy.Probe(ctx, workspaceID, port, seen)
 }
 
 // discoverySource is the discovery scanner's view of the container manager:

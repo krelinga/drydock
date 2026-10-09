@@ -539,9 +539,11 @@ func TestAuthorizeRefusesOpenRedirects(t *testing.T) {
 }
 
 // TestAuthorizeSendsTheUnpreviewableToDenied: a well-formed preview host whose
-// slug is unknown, or whose workspace is stopped, lands on its own denied page
-// with no token minted; and the denied page says nothing about which. (A
-// disabled or retired port's host is TestAuthorizeClearsASpentPreview's.)
+// slug is unknown, or whose workspace is being deleted, lands on its own
+// denied page with no token minted; and the denied page says nothing about
+// which. (A disabled or retired port's host is
+// TestAuthorizeClearsASpentPreview's, a stopped workspace's
+// TestAuthorizeSendsAStoppedWorkspacesPreviewToItsPage's.)
 func TestAuthorizeSendsTheUnpreviewableToDenied(t *testing.T) {
 	f := newHandshake(t)
 	var pages []string
@@ -559,10 +561,10 @@ func TestAuthorizeSendsTheUnpreviewableToDenied(t *testing.T) {
 			t.Errorf("%s's denied page clears the site", h)
 		}
 	}
-	f.db.Exec(`UPDATE workspace SET state = 'stopped'`)
+	f.db.Exec(`UPDATE workspace SET state = 'deleting'`)
 	a := f.get(t, testUIOrigin+"/preview/authorize?return="+url.QueryEscape("https://"+testPreviewHost+"/"), f.uiCookie())
 	if a.header.Get("Location") != "https://"+testPreviewHost+preview.DeniedPath {
-		t.Errorf("a stopped workspace's preview = %s; want denied", a)
+		t.Errorf("a deleting workspace's preview = %s; want denied", a)
 	}
 	pages = append(pages, f.get(t, "https://"+testPreviewHost+preview.DeniedPath).String())
 	for _, p := range pages[1:] {
@@ -575,6 +577,43 @@ func TestAuthorizeSendsTheUnpreviewableToDenied(t *testing.T) {
 			t.Errorf("the denied page says %q", leak)
 		}
 	}
+}
+
+// TestAuthorizeSendsAStoppedWorkspacesPreviewToItsPage is PF §11's *workspace
+// stopped*: a signed-in device opening an enabled port's preview on a
+// workspace that is not running is sent to that workspace's page on the UI
+// origin, naming the port — where the card says the state and offers Start —
+// rather than to the preview host's dead end, and no token is minted. The
+// control is the same port once the workspace runs: a token, as ever. Neither
+// a disabled port on it (the clearing token, unchanged) nor a device that is
+// not signed in (sign-in, unchanged) is told.
+func TestAuthorizeSendsAStoppedWorkspacesPreviewToItsPage(t *testing.T) {
+	f := newHandshake(t)
+	for _, state := range []string{"stopped", "failed", "building"} {
+		f.db.Exec(`UPDATE workspace SET state = ?`, state)
+		a := f.get(t, testUIOrigin+"/preview/authorize?return="+url.QueryEscape("https://"+testPreviewHost+"/x?y=1"), f.uiCookie())
+		if a.status != http.StatusFound || a.header.Get("Location") != "/ws/w1?preview=p1" || f.svc.Pending() != 0 {
+			t.Errorf("%s: %s; want the workspace's page naming the port, and no token", state, a)
+		}
+		if a.header.Get("Cache-Control") != "no-store" {
+			t.Errorf("%s: the redirect may be cached: %v", state, a.header)
+		}
+	}
+	// A switched-off port on the stopped workspace is still cleared.
+	a := f.get(t, testUIOrigin+"/preview/authorize?return="+url.QueryEscape("https://myapp-9000-off0."+testPreviewDomain+"/"), f.uiCookie())
+	if loc, _ := url.Parse(a.header.Get("Location")); a.status != http.StatusFound || loc == nil || loc.Path != preview.SessionPath {
+		t.Errorf("a disabled port on a stopped workspace = %s; want the clearing token", a)
+	}
+	// Not signed in: sign-in, as for any preview.
+	r := httptest.NewRequest("GET", testUIOrigin+"/preview/authorize?return="+url.QueryEscape("https://"+testPreviewHost+"/"), nil)
+	rec := httptest.NewRecorder()
+	f.api.ServeHTTP(rec, r)
+	if loc := rec.Header().Get("Location"); rec.Code != http.StatusFound || !strings.HasPrefix(loc, "/signin") {
+		t.Errorf("not signed in = %d %q; want sign-in", rec.Code, loc)
+	}
+	// Control: running again, the same port mints.
+	f.db.Exec(`UPDATE workspace SET state = 'running'`)
+	f.authorize(t, "https://"+testPreviewHost+"/")
 }
 
 // TestAuthorizeClearsASpentPreview is PF §10.3's countermeasure: a signed-in
@@ -639,8 +678,8 @@ func TestAuthorizeClearsASpentPreview(t *testing.T) {
 	}
 	f.db.Exec(`UPDATE workspace SET state = 'stopped'`)
 	a := f.get(t, testUIOrigin+"/preview/authorize?return="+url.QueryEscape("https://"+testPreviewHost+"/"), f.uiCookie())
-	if a.header.Get("Location") != "https://"+testPreviewHost+preview.DeniedPath || f.svc.Pending() != 0 {
-		t.Errorf("a stopped workspace's enabled port = %s; want the plain denied page", a)
+	if a.header.Get("Location") != "/ws/w1?preview=p1" || a.header.Get("Clear-Site-Data") != "" || f.svc.Pending() != 0 {
+		t.Errorf("a stopped workspace's enabled port = %s; want its workspace's page, nothing cleared", a)
 	}
 }
 
