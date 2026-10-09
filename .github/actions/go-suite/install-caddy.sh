@@ -3,7 +3,8 @@
 # the release's checksums. The one Caddy pin in CI: go-suite runs this, and so
 # does the browser job, inside the Playwright image (where it is root and has
 # no sudo). The devcontainer's Caddy feature takes the latest, so bump this
-# when a rebuild moves it.
+# when a rebuild moves it. test/install/lib.sh reads CADDY_VERSION from here for
+# the installer test image's .deb (Caddy's cloudsmith apt repo answers 402).
 set -euo pipefail
 
 CADDY_VERSION=2.11.7

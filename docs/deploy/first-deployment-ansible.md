@@ -419,6 +419,55 @@ their signing keys, rather than the runbook's `.list` files and `apt_key`-era ke
   failed_when: drydock_tool_check.rc != 0 or not drydock_tool_check.stdout.startswith(item.want)
 ```
 
+**If `apt` fails with `402 Payment Required` from `dl.cloudsmith.io`**, Caddy's apt repository is
+unavailable. Make three changes to `roles/drydock/tasks/prerequisites.yml`, then re-run. The first
+removes the repository files an earlier run left behind: the play's first cache refresh is `Install
+the base packages`, which fails on them, so the removal must come before it. The third installs the
+same package from Caddy's GitHub release. This is a variant of the blocks above, so
+`test/ansible/check.sh` does not extract it.
+
+1. Delete the `Add Caddy's apt repository` task, and add this at the **top** of the file, before
+   `Install the base packages` (it uses `file`, not `deb822_repository`, which needs the
+   `python3-debian` that task installs):
+
+   ```yaml
+   - name: Remove Caddy's apt repository, which answers 402
+     ansible.builtin.file:
+       path: "{{ item }}"
+       state: absent
+     loop:
+       - /etc/apt/sources.list.d/caddy-stable.sources
+       - /etc/apt/keyrings/caddy-stable.asc
+   ```
+
+2. In the `Refresh the package lists` task, delete `or drydock_repo_caddy is changed` from its
+   `when:` (that variable no longer exists), and delete `caddy` from the `Install Docker Engine, Node.js
+   and Caddy` package list. Keep `caddy` in the `Start Docker and Caddy` loop.
+3. Add this task after the package task. It reinstalls only when the installed version differs, so to
+   upgrade Caddy change `drydock_caddy_version`:
+
+   ```yaml
+   - name: Install Caddy from its GitHub release, checked against the release's checksums
+     ansible.builtin.shell:
+       cmd: |
+         set -euo pipefail
+         if [ "$(dpkg-query -W -f='${Version}' caddy 2>/dev/null)" = "{{ drydock_caddy_version }}" ]; then
+           echo unchanged; exit 0
+         fi
+         cd "$(mktemp -d)"
+         base=https://github.com/caddyserver/caddy/releases/download/v{{ drydock_caddy_version }}
+         deb=caddy_{{ drydock_caddy_version }}_linux_amd64.deb
+         curl -fsSLO "$base/$deb" -fsSLO "$base/caddy_{{ drydock_caddy_version }}_checksums.txt"
+         grep " $deb\$" "caddy_{{ drydock_caddy_version }}_checksums.txt" | sha512sum -c -
+         apt-get install -y "./$deb"
+       executable: /bin/bash
+     register: drydock_caddy_deb
+     changed_when: "'unchanged' not in drydock_caddy_deb.stdout"
+     vars:
+       drydock_caddy_version: "2.11.7"
+   ```
+
+
 Not automated from §3: the runbook's `sudo docker run --rm hello-world` (it pulls from Docker Hub
 on every run) and §3.3's decision about **a Caddy that already serves other sites**. That one is
 yours: the installer refuses a foreign `/etc/caddy/Caddyfile`, and `drydock_take_over_caddy: true`
