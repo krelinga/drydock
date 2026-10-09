@@ -28,6 +28,10 @@ type Launcher struct {
 	Hold chan struct{}
 	// Fail, when set, is what Launch returns.
 	Fail error
+	// OnRemove, when set, is called by Remove with its arguments before it
+	// records them: a test's look at the moment a login's container goes —
+	// whether its context is live, whether the end is announced yet.
+	OnRemove func(ctx context.Context, id string, killed bool)
 
 	mu       sync.Mutex
 	launched []string
@@ -72,7 +76,10 @@ func (l *Launcher) Launch(ctx context.Context, id string, cols, rows int) (*logi
 }
 
 // Remove implements login.Launcher: recorded, since there is no container.
-func (l *Launcher) Remove(_ context.Context, id string, killed bool) error {
+func (l *Launcher) Remove(ctx context.Context, id string, killed bool) error {
+	if l.OnRemove != nil {
+		l.OnRemove(ctx, id, killed)
+	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	l.removed = append(l.removed, id)

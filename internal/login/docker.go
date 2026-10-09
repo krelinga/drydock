@@ -15,6 +15,7 @@ import (
 	"github.com/krelinga/drydock/internal/config"
 	"github.com/krelinga/drydock/internal/container"
 	"github.com/krelinga/drydock/internal/subproc"
+	"github.com/krelinga/drydock/internal/sys"
 )
 
 // LabelLogin is the label a login container carries, valued with its login
@@ -88,8 +89,12 @@ type DockerLauncher struct {
 	// — fakeclaude bind-mounted in — and empty in production.
 	Extra []string
 	// RemoveSettle bounds Remove's wait for a killed CLI's container; zero
-	// is DefaultRemoveSettle.
+	// is DefaultRemoveSettle, and more than MaxRemoveSettle is
+	// MaxRemoveSettle.
 	RemoveSettle time.Duration
+	// Clock is what RemoveSettle and its relisting are measured on; nil is
+	// the real clock.
+	Clock sys.Clock
 }
 
 // Launch implements Launcher.
@@ -192,6 +197,14 @@ func (d DockerLauncher) label(id string) string { return d.LabelPrefix + "." + L
 // later still goes, at the next login's sweep.
 const DefaultRemoveSettle = 3 * time.Second
 
+// MaxRemoveSettle is the longest Remove will wait for a killed CLI's
+// container, whatever RemoveSettle says. The Manager gives a removal 15 s in
+// all (removeTimeout), and after the settle Remove still lists once more and
+// runs docker rm: a settle as long as the removal's bound would run that
+// bound out first, and the end would log an error instead of removing. This
+// leaves those two commands 5 s; a test pins the arithmetic.
+const MaxRemoveSettle = 10 * time.Second
+
 // Remove implements Launcher: every container carrying this login's label,
 // by full id. When the CLI was killed and nothing is listed yet, it keeps
 // looking until RemoveSettle has passed, since the CLI's create may still be
@@ -205,20 +218,36 @@ func (d DockerLauncher) Remove(ctx context.Context, id string, killed bool) erro
 	if settle <= 0 {
 		settle = DefaultRemoveSettle
 	}
-	deadline := time.Now().Add(settle)
+	if settle > MaxRemoveSettle {
+		settle = MaxRemoveSettle
+	}
+	clock := d.Clock
+	if clock == nil {
+		clock = sys.RealClock{}
+	}
+	settled, stopSettle := sys.NewTimer(clock, settle)
+	defer stopSettle()
+	over := false
 	for {
 		ids, err := d.list(ctx, d.label(id))
 		if err != nil {
 			return err
 		}
-		if len(ids) > 0 || !killed || !time.Now().Before(deadline) {
+		if len(ids) > 0 || !killed || over {
 			return d.rm(ctx, ids)
 		}
+		poll, stopPoll := sys.NewTimer(clock, removePoll)
 		select {
 		case <-ctx.Done():
+			stopPoll()
 			return ctx.Err()
-		case <-time.After(removePoll):
+		case <-settled:
+			// One last look, then give up: what lands later goes at the
+			// next login's sweep.
+			over = true
+		case <-poll:
 		}
+		stopPoll()
 	}
 }
 

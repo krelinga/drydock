@@ -51,7 +51,19 @@
 // ten-minute start timeout covers the image's first build. A success is
 // announced at once, then IdentityRecorder.LoggedIn(at) (the watch), which runs
 // the check on the watch's own worker and is only waited for under the
-// manager's own context, which Shutdown ends.
+// manager's group's context.
+//
+// The manager's lifecycle is a life.Group (Start): Serve's work.Child("login").
+// Each login's session — the one goroutine that owns the PTY, an actor fed by
+// Submit and Cancel — and its helpers (the launch, the PTY reader) are the
+// group's goroutines; so are boot's Sweep and nothing else. Stop ends a login
+// in progress through the same path as every other end, failed with
+// ProblemShutdown, and the group's Wait waits for it, which is how a login's
+// end reaches the database before Serve closes it. Begin once the group is
+// stopping starts nothing (ErrShutdown, the route's 503). Every bound is on
+// the injected clock: the kill's wait, Settle, and the removal and the
+// announcement every end owes, which run under sys.Cleanup because the
+// session's context may be over by then.
 //
 // DockerLauncher is production: EnsureClaudeVolume first — §6 step 4's own
 // call, which makes the volume labelled (a docker run would create it
@@ -94,6 +106,7 @@ import (
 
 	"github.com/krelinga/drydock/internal/classify"
 	"github.com/krelinga/drydock/internal/events"
+	"github.com/krelinga/drydock/internal/life"
 	"github.com/krelinga/drydock/internal/subproc"
 	"github.com/krelinga/drydock/internal/sys"
 )
@@ -192,6 +205,8 @@ var (
 	ErrEnded       = errors.New("login: the login has ended")
 	ErrNotAwaiting = errors.New("login: the login is not waiting for a code")
 	ErrShutdown    = errors.New("login: Drydock is shutting down")
+	// ErrNotStarted is Begin before Start: nothing would run the login.
+	ErrNotStarted = errors.New("login: not started")
 )
 
 // CodeError is a code refused for its shape. It wraps one of classify's
@@ -273,19 +288,48 @@ func (p *Proc) Exited() <-chan struct{} { return p.exited }
 // docker launcher that is the CLI: the container itself is Remove's — a
 // killed CLI leaves its container running (measured), or, killed during its
 // create, one the daemon finishes creating after the CLI has gone.
-func (p *Proc) kill(wait time.Duration) bool {
+//
+// The wait is on c: the injected clock, like every other bound here.
+func (p *Proc) kill(c sys.Clock, wait time.Duration) bool {
 	select {
 	case <-p.exited:
 		return false
 	default:
 	}
 	p.proc.Signal(subproc.SignalKill)
+	gone, stop := sys.NewTimer(c, wait)
+	defer stop()
 	select {
 	case <-p.exited:
-	case <-time.After(wait):
+	case <-gone:
 	}
 	return true
 }
+
+// Bounds on the injected clock for what every end owes. They must fit inside
+// the server's wait for its life.Group at shutdown (workShutdownWait, 35 s),
+// and the terms that add up are these, about 30 s at the very worst:
+//
+//   - 5 s, one of: the end's killWait for a running process, or — for a
+//     launch abandoned before it had one, whose end has no process to kill —
+//     its cancelled docker command winding down, which subproc.Exec bounds
+//     with its 5 s WaitDelay after the SIGTERM;
+//   - removeTimeout's 15 s, plus up to WaitDelay's 5 s for a docker ps or
+//     docker rm still running when it fires;
+//   - emitTimeout's 5 s for the announcement.
+//
+// Shorten workShutdownWait, or lengthen one of these, and count again.
+const (
+	// killWait is how long a killed process is given to be reaped.
+	killWait = 5 * time.Second
+	// removeTimeout bounds removing a login's container, owed after the
+	// session's context has ended (sys.Cleanup): a docker ps, a docker rm,
+	// and up to RemoveSettle's relisting for a killed create.
+	removeTimeout = 15 * time.Second
+	// emitTimeout bounds writing one auth.login event, owed even when the
+	// context it was made under has ended.
+	emitTimeout = 5 * time.Second
+)
 
 // Manager runs at most one login at a time.
 type Manager struct {
@@ -306,20 +350,20 @@ type Manager struct {
 	// stream bytes in them.
 	Logf func(string, ...any)
 
-	once   sync.Once
-	base   context.Context
-	stop   context.CancelFunc
-	wg     sync.WaitGroup
-	sweep  sync.RWMutex // a boot sweep holds it, so it never races a launch
-	mu     sync.Mutex
-	cur    *session
-	last   *View
-	closed bool
+	sweep sync.RWMutex // a boot sweep holds it, so it never races a launch
+	mu    sync.Mutex
+	g     *life.Group // Start's: every session and its helpers run in it
+	cur   *session
+	last  *View
 }
 
 type session struct {
-	m         *Manager
-	view      View // guarded by m.mu
+	m    *Manager
+	g    *life.Group
+	view View // guarded by m.mu
+	// begun is closed once Begin has announced starting; the session waits
+	// for it, so nothing it announces can reach the stream first.
+	begun     chan struct{}
 	submit    chan submission
 	cancelReq chan struct{}
 	cancelOne sync.Once
@@ -337,8 +381,20 @@ type submission struct {
 	reply chan error
 }
 
-func (m *Manager) init() {
-	m.once.Do(func() { m.base, m.stop = context.WithCancel(context.Background()) })
+// Start runs the manager's logins under g until g stops: each login's
+// session and its helpers are g's goroutines, so g's Stop ends a login in
+// progress — failed, saying Drydock shut down, after its process is killed
+// and its container removed — and g's Wait waits for that end, which is what
+// keeps a login from outliving the database it is announced in. Once g is
+// stopping a Begin is ErrShutdown; before Start it is ErrNotStarted.
+func (m *Manager) Start(g *life.Group) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.g != nil {
+		return errors.New("login: already started")
+	}
+	m.g = g
+	return nil
 }
 
 func durOr(d, def time.Duration) time.Duration {
@@ -383,35 +439,38 @@ func ValidID(s string) bool {
 // Begin starts a login and returns its first view, which is already
 // announced. A login in progress is ErrInProgress, with its view.
 func (m *Manager) Begin(ctx context.Context) (View, error) {
-	m.init()
 	id, err := m.newID()
 	if err != nil {
 		return View{}, err
 	}
 	m.mu.Lock()
-	if m.closed {
+	if m.g == nil {
 		m.mu.Unlock()
-		return View{}, ErrShutdown
+		return View{}, ErrNotStarted
 	}
 	if m.cur != nil {
 		v := m.cur.view
 		m.mu.Unlock()
 		return v, ErrInProgress
 	}
-	s := &session{m: m, submit: make(chan submission), cancelReq: make(chan struct{}), done: make(chan struct{}),
+	s := &session{m: m, g: m.g, submit: make(chan submission), cancelReq: make(chan struct{}),
+		done: make(chan struct{}), begun: make(chan struct{}),
 		view: View{ID: id, Phase: Starting, StartedAt: m.Clock.Now().UTC(), Message: message(Starting, "")}}
+	// Under m.mu, so a login is current only if its session is running in
+	// the group: once the group is stopping nothing starts, and nothing is
+	// made current that no session would end.
+	if err := s.g.TryGo("session "+id, s.run); err != nil {
+		m.mu.Unlock()
+		return View{}, ErrShutdown
+	}
 	m.cur, m.last = s, nil
 	v := s.view
-	sctx, cancel := context.WithCancel(m.base)
-	m.wg.Add(1)
 	m.mu.Unlock()
 	// The receipt is written before the 202, so a client that reads the
-	// stream from its request's position always sees it.
+	// stream from its request's position always sees it — and before the
+	// session does anything, so no later phase can come first.
 	m.emit(ctx, v)
-	go func() {
-		defer cancel()
-		s.run(sctx)
-	}()
+	close(s.begun)
 	return v, nil
 }
 
@@ -503,25 +562,10 @@ func (m *Manager) Sweep(ctx context.Context) (int, error) {
 	return m.Launcher.Sweep(ctx, keep)
 }
 
-// Shutdown ends a login in progress — failed, saying Drydock shut down — and
-// waits up to wait for its cleanup.
-func (m *Manager) Shutdown(wait time.Duration) {
-	m.init()
-	m.mu.Lock()
-	m.closed = true
-	m.mu.Unlock()
-	m.stop()
-	done := make(chan struct{})
-	go func() {
-		m.wg.Wait()
-		close(done)
-	}()
-	select {
-	case <-done:
-	case <-time.After(wait):
-	}
-}
-
+// emit announces v. An announcement is owed whether or not the context it
+// was made under has ended — a login's end is announced after its session's
+// context did, at shutdown — so it is written under sys.Cleanup: ctx's
+// values without its cancellation, bounded on the injected clock.
 func (m *Manager) emit(ctx context.Context, v View) {
 	if m.Events == nil {
 		return
@@ -531,10 +575,9 @@ func (m *Manager) emit(ctx context.Context, v View) {
 	case Failed, TimedOut:
 		level = events.Warn
 	}
-	if ctx == nil || ctx.Err() != nil {
-		ctx = context.Background()
-	}
-	m.Events.Emit(ctx, "", level, KindLogin, v.Message, map[string]any{"login": v})
+	ectx, cancel := sys.Cleanup(ctx, m.Clock, emitTimeout)
+	defer cancel()
+	m.Events.Emit(ectx, "", level, KindLogin, v.Message, map[string]any{"login": v})
 }
 
 // message is the sentence for a phase. Never built from the stream or the code.
@@ -599,18 +642,21 @@ type outcome struct {
 	msg     string // overrides message() when set
 }
 
+// run is the session, one goroutine in the manager's group; ctx is the
+// group's, which its Stop ends.
 func (s *session) run(ctx context.Context) {
 	m := s.m
-	defer m.wg.Done()
 	defer close(s.done)
+	<-s.begun
 
-	startTimer := m.Clock.After(durOr(m.StartTimeout, DefaultStartTimeout))
+	startTimer, stopStart := sys.NewTimer(m.Clock, durOr(m.StartTimeout, DefaultStartTimeout))
+	defer stopStart()
 	proc, out := s.launch(ctx, startTimer)
 	var buf []byte
 	if proc != nil {
 		buf, out = s.drive(ctx, proc, startTimer)
 	}
-	s.finish(proc, buf, out)
+	s.finish(ctx, proc, buf, out)
 }
 
 // launch starts the process, abandoning it on cancel, timeout or shutdown.
@@ -623,7 +669,9 @@ func (s *session) launch(ctx context.Context, startTimer <-chan time.Time) (*Pro
 		err error
 	}
 	lc := make(chan launched, 1)
-	go func() {
+	// A helper in the group, and always waited for: launch receives from lc
+	// on every path before it returns.
+	err := s.g.TryGo("launch "+s.view.ID, func(context.Context) {
 		m.sweep.RLock()
 		defer m.sweep.RUnlock()
 		// Whatever an earlier login left, such as a container whose create
@@ -636,7 +684,10 @@ func (s *session) launch(ctx context.Context, startTimer <-chan time.Time) (*Pro
 		}
 		p, err := m.Launcher.Launch(lctx, s.view.ID, durOr2(m.Cols, DefaultCols), durOr2(m.Rows, DefaultRows))
 		lc <- launched{p, err}
-	}()
+	})
+	if err != nil {
+		return nil, outcome{phase: Failed, problem: ProblemShutdown}
+	}
 	var stop outcome
 	select {
 	case l := <-lc:
@@ -659,7 +710,7 @@ func (s *session) launch(ctx context.Context, startTimer <-chan time.Time) (*Pro
 	// Abandoned: wait for the launch to give up, and kill what it started.
 	abandon()
 	if l := <-lc; l.p != nil {
-		s.killed = l.p.kill(5 * time.Second)
+		s.killed = l.p.kill(m.Clock, killWait)
 		l.p.Master.Close()
 	}
 	return nil, stop
@@ -672,36 +723,89 @@ func durOr2(n, def int) int {
 	return def
 }
 
+// stream carries the PTY's chunks from the reader to drive, and makes sure
+// none is left unzeroed once drive stops receiving: the PTY buffer is never
+// kept (§13.5), and a chunk left in a channel nobody reads is kept until the
+// collector gets to it.
+//
+// stop closes quit, after which put zeroes a chunk rather than handing it
+// over, and drains what is buffered. A chunk put sends just as stop runs —
+// after stop's drain, its select having picked the send over quit — is
+// drained by put's own look at quit after the send. So every chunk is either
+// received by drive, which zeroes it, or zeroed here.
+type stream struct {
+	c    chan []byte
+	quit chan struct{}
+}
+
+func newStream() *stream { return &stream{c: make(chan []byte, 16), quit: make(chan struct{})} }
+
+// put is the reader's: it hands c over, or zeroes it once stop has run.
+func (s *stream) put(c []byte) {
+	select {
+	case s.c <- c:
+		select {
+		case <-s.quit:
+			s.drain()
+		default:
+		}
+	case <-s.quit:
+		wipe(c)
+	}
+}
+
+// stop is drive's, as it returns.
+func (s *stream) stop() {
+	close(s.quit)
+	s.drain()
+}
+
+// drain zeroes whatever is buffered, without waiting for more.
+func (s *stream) drain() {
+	for {
+		select {
+		case c, ok := <-s.c:
+			if !ok {
+				return
+			}
+			wipe(c)
+		default:
+			return
+		}
+	}
+}
+
 // drive reads the stream and types codes until the login ends.
 func (s *session) drive(ctx context.Context, p *Proc, startTimer <-chan time.Time) ([]byte, outcome) {
 	m := s.m
-	chunks := make(chan []byte, 16)
-	go func() {
-		defer close(chunks)
+	st := newStream()
+	chunks := st.c
+	// The reader is a helper in the group. It ends with the stream: the
+	// process exiting, or finish closing the PTY, which releases a Read
+	// blocked on it (internal/pty registers the master with the poller).
+	err := s.g.TryGo("read "+s.view.ID, func(context.Context) {
+		defer close(st.c)
 		defer s.streamEnded.Store(true)
 		b := make([]byte, 4096)
+		defer wipe(b)
 		for {
 			n, err := p.Master.Read(b)
 			if n > 0 {
 				c := make([]byte, n)
 				copy(c, b[:n])
-				chunks <- c
+				st.put(c)
 			}
 			if err != nil {
-				wipe(b)
 				return
 			}
 		}
-	}()
-	// Whatever is still in flight when this returns is drained and zeroed
-	// in the background; the reader ends when finish closes the PTY.
-	defer func() {
-		go func() {
-			for c := range chunks {
-				wipe(c)
-			}
-		}()
-	}()
+	})
+	if err != nil {
+		return nil, outcome{phase: Failed, problem: ProblemShutdown}
+	}
+	// From here on nothing receives from chunks: what is buffered, and
+	// anything the reader sends later, is zeroed.
+	defer st.stop()
 
 	var (
 		buf      []byte
@@ -813,7 +917,8 @@ func (s *session) succeed(ctx context.Context, p *Proc, buf []byte, chunks <-cha
 	m.emit(ctx, s.set(func(v *View) {
 		v.Phase, v.Message, v.EndedAt, v.Deadline = Succeeded, message(Succeeded, ""), &now, nil
 	}))
-	settle := time.After(durOr(m.Settle, DefaultSettle))
+	settle, stop := sys.NewTimer(m.Clock, durOr(m.Settle, DefaultSettle))
+	defer stop()
 	for {
 		select {
 		case c, ok := <-chunks:
@@ -831,19 +936,21 @@ func (s *session) succeed(ctx context.Context, p *Proc, buf []byte, chunks <-cha
 
 // finish kills the process, removes the container, zeroes the stream, and
 // only then announces the end — so a login reported over has nothing left
-// running, and a new one can start at once.
-func (s *session) finish(p *Proc, buf []byte, out outcome) {
+// running, and a new one can start at once. ctx is the session's, which a
+// shutdown has ended: the removal and the announcement are owed anyway, so
+// each runs under sys.Cleanup's bound on the injected clock.
+func (s *session) finish(ctx context.Context, p *Proc, buf []byte, out outcome) {
 	m := s.m
 	if p != nil {
 		// Read before the kill, whose own effect is to end the stream.
 		ended := s.streamEnded.Load()
-		if p.kill(5*time.Second) && !ended {
+		if p.kill(m.Clock, killWait) && !ended {
 			s.killed = true
 		}
 		p.Master.Close()
 	}
 	wipe(buf)
-	rctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	rctx, cancel := sys.Cleanup(ctx, m.Clock, removeTimeout)
 	if err := m.Launcher.Remove(rctx, s.view.ID, s.killed); err != nil {
 		m.logf("drydock: login %s: removing the login container: %v", s.view.ID, err)
 	}
@@ -871,16 +978,16 @@ func (s *session) finish(p *Proc, buf []byte, out outcome) {
 	m.last = &last
 	m.mu.Unlock()
 	if out.phase != Succeeded {
-		m.emit(context.Background(), v)
+		m.emit(ctx, v)
 		return
 	}
 	if m.Identity != nil {
 		// The check runs on the watch's own worker, under the watch's
-		// group; m.base, which Shutdown ends, bounds only this wait. A
-		// check always ends (the watch bounds its reads on its clock), and
-		// once the watch's group stops the request is refused or answered
-		// at once, so no backstop of our own is needed.
-		if err := m.Identity.LoggedIn(m.base, *v.EndedAt); err != nil {
+		// group; ctx, which the manager's group's Stop ends, bounds only
+		// this wait. A check always ends (the watch bounds its reads on its
+		// clock), and once the watch's group stops the request is refused
+		// or answered at once, so no backstop of our own is needed.
+		if err := m.Identity.LoggedIn(ctx, *v.EndedAt); err != nil {
 			m.logf("drydock: login %s: the check after the login failed: %v", v.ID, err)
 		}
 	}

@@ -95,7 +95,13 @@ func (cr ClaudeRoutes) begin(w http.ResponseWriter, r *http.Request) {
 		WriteError(w, http.StatusConflict, CodeInProgress, "A Claude login is already in progress.", "")
 		return
 	case errors.Is(err, login.ErrShutdown):
+		// Its group stopping: nothing would run the login, so nothing is
+		// accepted.
 		WriteError(w, http.StatusServiceUnavailable, CodeUnavailable, "Drydock is shutting down.", "")
+		return
+	case errors.Is(err, login.ErrNotStarted):
+		// Before Serve starts it, which serving never precedes.
+		WriteError(w, http.StatusServiceUnavailable, CodeUnavailable, "The login handshake is not running.", "")
 		return
 	case err != nil:
 		WriteError(w, http.StatusInternalServerError, CodeInternal, "Could not start a Claude login.", "")

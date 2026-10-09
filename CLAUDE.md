@@ -55,7 +55,7 @@ printf "%s\n" "$PW" | ./drydock passwd --db x.db  # set the operator password (n
 | `internal/catalog` | The repository list, refreshed by a `life.Coalescer` under `Serve`'s `life.Group`, stopped and waited for before the database closes. Grants deleted outside `internal/secrets` must call `secrets.Store.Invalidate`. |
 | `internal/identity` | The expiry watch (§7.3), its checks on a `life.Coalescer` under `Serve`'s `life.Group`, never under a caller's context (`LoggedIn` is a request carrying the handshake's moment). The credential's bytes reach nothing but the classifier; every check ends, and every requested check is answered. |
 | `internal/claudeimage` | The one image Drydock runs Claude Code in itself, at exactly `classify.ClaudeCodeVersion`. |
-| `internal/login` | The login handshake (§7.2) on a PTY Drydock owns. The code is never stored or copied into a string; every end removes the container by label first. |
+| `internal/login` | The login handshake (§7.2) on a PTY Drydock owns, each login's session and helpers in `Serve`'s `life.Group` (shutdown is one more end, waited for before the database closes). The code is never stored or copied into a string; every end removes the container by label first. |
 | `internal/broker` | The token broker (§9). The socket's directory is what a container mounts and must outlive the process; a refusal never falls back to anything broader. |
 | `internal/secrets` | Repository secrets (§10): sealed, validated on write, default deny. Any undeliverable row refuses everything. |
 | `internal/server` | Assembles the front door: two `0660` sockets and no TCP listener, asserted on the running process. |

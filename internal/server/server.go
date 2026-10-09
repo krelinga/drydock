@@ -135,6 +135,9 @@ type Server struct {
 	// Serve starts the watch: a test stops it to see the check route refuse
 	// what nothing would answer.
 	identityWork atomic.Pointer[life.Group]
+	// loginWork is the login handshake's group in Serve's work, stored
+	// likewise: a test stops it to see the begin route refuse.
+	loginWork atomic.Pointer[life.Group]
 	// clock is env's, for the bounds shutdown waits under.
 	clock sys.Clock
 	// repoOf caches each workspace's repository id for secretValues: it is
@@ -358,7 +361,7 @@ func New(ctx context.Context, cfg config.Config, env sys.Env) (*Server, error) {
 	s.Login = &login.Manager{Events: s.Events, Clock: env.Clock, Identity: s.Identity,
 		Launcher: login.DockerLauncher{Run: subproc.Exec{}, Volumes: containers, Image: claudeImage,
 			Volume: cfg.ClaudeVolume, LabelPrefix: cfg.LabelPrefix,
-			UID: os.Getuid(), GID: os.Getgid()},
+			UID: os.Getuid(), GID: os.Getgid(), Clock: env.Clock},
 		Logf: func(f string, a ...any) { fmt.Fprintf(os.Stderr, f+"\n", a...) }}
 	for name, h := range (api.ClaudeRoutes{Watch: s.Identity, Login: s.Login}).Handlers() {
 		handlers[name] = h
@@ -499,17 +502,28 @@ func apiSocketHandler(gate api.Gate, apiMux *http.ServeMux, ui http.Handler) htt
 }
 
 // provisionShutdownWait is how long shutdown waits for in-flight runs to
-// write down that they were interrupted — well inside systemd's 90-second
-// stop timeout, so the service is never SIGKILLed for waiting.
+// write down that they were interrupted.
+//
+// Shutdown's whole budget must stay inside systemd's 90-second stop timeout,
+// so the service is never SIGKILLed for waiting. The waits after serving
+// ends run one after another — this one, supervisorDetachWait and the HTTP
+// servers' 10 s, 40 s in all — while workShutdownWait runs beside them, so
+// the most shutdown waits is the longer of the two: 40 s.
 const provisionShutdownWait = 20 * time.Second
 
 // workShutdownWait bounds how long shutdown waits for the goroutines of
 // Serve's life.Group: the catalog's refresh, whose GitHub calls and
-// transaction end with its context, and the identity watch's check, which
-// ends with it too but then removes a cut-off read's helper container under
-// its own 30-second bound — so this is that bound and a little more. It runs
-// beside the waits below rather than after them, so it adds nothing to
-// their sum unless it is the longest.
+// transaction end with its context; the identity watch's check, which ends
+// with it too but then removes a cut-off read's helper container under its
+// own 30-second bound; and a login in progress, which kills its process,
+// removes its container and announces its end in about 30 s at worst: one
+// 5 s kill (or an abandoned launch's docker command winding down within
+// subproc's 5 s WaitDelay), the 15 s removal plus that WaitDelay for a
+// docker command it cut off, and the 5 s announcement — counted beside
+// login's killWait, removeTimeout and emitTimeout. So this
+// is the longer of those and a little more. It runs beside the waits below
+// rather than after them, so it adds nothing to their sum unless it is the
+// longest.
 const workShutdownWait = 35 * time.Second
 
 // supervisorDetachWait bounds how long shutdown waits for the supervisors to
@@ -601,8 +615,8 @@ func (s *Server) Serve(ctx context.Context) error {
 	defer stop()
 	// work owns the goroutines of the components that have moved onto
 	// life.Group: shutdown stops it and waits for it before the database
-	// closes. Today that is the catalog and the identity watch; the rest
-	// still end on ctx and their own Shutdown.
+	// closes. Today that is the catalog, the identity watch and the login
+	// handshake; the rest still end on ctx and their own Shutdown.
 	work := life.NewGroup(ctx)
 	defer work.Stop()
 	// Reconcile once at boot, beside serving rather than before it: a slow
@@ -670,18 +684,22 @@ func (s *Server) Serve(ctx context.Context) error {
 		defer close(supervising)
 		s.Supervisor.Watch(ctx)
 	}()
-	// A login container an earlier process left — killed mid-login, or a
-	// crash — is removed by its label, as reconciliation's sweep removes
-	// cleanup helpers. A login started meanwhile waits for it.
-	sweeping := make(chan struct{})
-	go func() {
-		defer close(sweeping)
+	// The login handshake (§7.2): each login, and everything it starts, in
+	// work. A login container an earlier process left — killed mid-login,
+	// or a crash — is removed by its label first, as reconciliation's sweep
+	// removes cleanup helpers; a login started meanwhile waits for it.
+	loginWork := work.Child("login")
+	s.loginWork.Store(loginWork)
+	if err := s.Login.Start(loginWork); err != nil {
+		fmt.Fprintf(os.Stderr, "drydock: login: %v\n", err)
+	}
+	loginWork.Go("sweep", func(ctx context.Context) {
 		if n, err := s.Login.Sweep(ctx); err != nil && ctx.Err() == nil {
 			fmt.Fprintf(os.Stderr, "drydock: login: sweeping leftover login containers: %v\n", err)
 		} else if n > 0 {
 			fmt.Fprintf(os.Stderr, "drydock: login: removed %d leftover login container(s)\n", n)
 		}
-	}()
+	})
 	// Memory and disk, on their own cadence (§6 *Resources*): measurements
 	// for the card, published live and never written to the event log.
 	sampling := make(chan struct{})
@@ -708,10 +726,13 @@ func (s *Server) Serve(ctx context.Context) error {
 	case serveErr = <-errc:
 	}
 	stop()
-	// work's goroutines — the catalog's refreshes and the identity watch's
-	// checks, periodic or asked for — end now, beside the waits below rather than after them, and are
-	// waited for before the database closes. Nothing asked of them from
-	// here on starts.
+	// work's goroutines — the catalog's refreshes, the identity watch's
+	// checks, periodic or asked for, and a login in progress, which ends
+	// failed, saying Drydock shut down, once its process is killed and its
+	// container removed — end now, beside the waits below rather than after
+	// them, and are waited for before the database closes. Nothing asked of
+	// them from here on starts; a login's last act, asking the watch for a
+	// check, is refused at once, since the watch is stopping too.
 	work.Stop()
 	workStopped := make(chan struct{})
 	go func() {
@@ -733,9 +754,6 @@ func (s *Server) Serve(ctx context.Context) error {
 	// Session servers keep serving while Drydock is down (Spike 02: a plain
 	// restart reconnects them); only Drydock's terminals close.
 	s.Supervisor.Detach(supervisorDetachWait)
-	// The login's last act may be asking the watch for a check: work has
-	// stopped, so that is refused at once, and the login waits on nothing.
-	s.Login.Shutdown(provisionShutdownWait)
 	if s.Broker != nil {
 		s.Broker.CloseAll()
 	}
@@ -751,7 +769,6 @@ func (s *Server) Serve(ctx context.Context) error {
 	s.Proxy.Close()
 	<-reconciled // they may still be writing; the database closes after them
 	<-supervising
-	<-sweeping
 	<-sampling
 	<-workStopped
 	s.DB.Close()
