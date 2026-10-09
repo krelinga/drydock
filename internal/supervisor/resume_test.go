@@ -67,3 +67,44 @@ func TestASignInBesideAParkIsNotLost(t *testing.T) {
 		})
 	}
 }
+
+// TestASignInDuringARefusedRunIsNotLost is round 1 of #112's review: a
+// sign-in that lands while a server is running — starting, not
+// awaiting_login, so AwaitingLogin does not list it and Resume leaves it
+// alone — and that server then exits with the organization refusal (whose own
+// sentence asks for a sign-in). SignedIn, which OnChange calls first, tells
+// every running loop, so the refusal's park goes round again under the new
+// login and the next server serves. The control is the same refusal with no
+// sign-in: it parks in awaiting_login, no_organization, after one start.
+func TestASignInDuringARefusedRunIsNotLost(t *testing.T) {
+	for _, signIn := range []bool{false, true} {
+		t.Run(fmt.Sprintf("signIn=%v", signIn), func(t *testing.T) {
+			r := newRig(t)
+			r.claude(
+				claudetest.Step{Mode: claudetest.RCRefuseNoOrganization, ExitAfter: dur(1500 * time.Millisecond), Times: 1},
+				claudetest.Step{Mode: claudetest.RCServe},
+			)
+			r.m.Identity = func(context.Context) (string, bool) { return "ok", true }
+			r.start()
+			r.waitFor(10*time.Second, "the first server running", func() bool { return r.invocations() == 1 })
+			if signIn {
+				// As the server's OnChange does it: tell the running loops,
+				// then resume the parked ones (none: it is starting).
+				r.m.SignedIn()
+				if got := r.m.AwaitingLogin(); len(got) != 0 {
+					t.Fatalf("AwaitingLogin mid-run = %v, want none", got)
+				}
+				r.waitState(Serving, ReasonServing)
+				if n := r.invocations(); n != 2 {
+					t.Errorf("%d starts; want 2", n)
+				}
+				return
+			}
+			r.waitState(AwaitingLogin, ReasonNoOrganization)
+			time.Sleep(500 * time.Millisecond)
+			if n := r.invocations(); n != 1 {
+				t.Errorf("control: %d starts; want 1", n)
+			}
+		})
+	}
+}

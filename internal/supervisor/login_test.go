@@ -96,6 +96,7 @@ func TestASuccessfulHandshakeResumesAWaitingSupervisor(t *testing.T) {
 		if v.State == nil || !v.State.Live() {
 			return
 		}
+		r.m.SignedIn()
 		for _, id := range r.m.AwaitingLogin() {
 			resumes.Add(1)
 			if err := r.m.Resume(ctx, id); err != nil {

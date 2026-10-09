@@ -748,6 +748,27 @@ func (m *Manager) AwaitingLogin() []string {
 	return out
 }
 
+// SignedIn tells every supervisor loop that is running and has not parked —
+// whatever its state: starting a server, serving, in backoff — that a live
+// login was just stored. It starts nothing, so it is no job: the loop takes
+// the news at its next park (sup.park) and goes round again under the new
+// login instead of parking. That is the case of a sign-in during a run the
+// server then refuses as no_organization — the refusal whose own sentence
+// asks for a sign-in — which is not awaiting_login when the sign-in lands, so
+// AwaitingLogin does not list it and Resume would leave it alone. Called
+// before internal/provision's ResumeAwaitingLogin, under the same m.mu every
+// park takes: a loop that parked first is listed and resumed by a job, and
+// one that parks after is told here.
+func (m *Manager) SignedIn() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, s := range m.sups {
+		if s.running() && !s.parked {
+			s.loginSeen = true
+		}
+	}
+}
+
 // Resume starts the workspace's session server again if its supervisor is
 // waiting on a sign-in and the stored identity is now a live login: the body
 // of the supervisor job internal/provision launches for it (ResumeAwaitingLogin),
@@ -757,8 +778,8 @@ func (m *Manager) AwaitingLogin() []string {
 // identity — is left alone, and is not an error.
 //
 // A loop still running when the sign-in lands — launched a moment before,
-// its identity read before the new verdict was stored, about to park — is
-// told rather than replaced: it takes the news at its park (sup.park) and
+// its identity read before the new verdict was stored, about to park; or
+// any running loop at all, through SignedIn — is told rather than replaced: it takes the news at its park (sup.park) and
 // goes round again, so the sign-in is never lost between its read and its
 // park. One that has already parked is replaced, as a parked one is by
 // Start.

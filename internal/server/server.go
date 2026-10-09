@@ -375,7 +375,12 @@ func New(ctx context.Context, cfg config.Config, env sys.Env) (*Server, error) {
 		if v.State == nil || !v.State.Live() {
 			return
 		}
-		if err := s.Provisioner.ResumeAwaitingLogin(ctx); err != nil && !errors.Is(err, provision.ErrShuttingDown) {
+		// First every loop still running — one mid-start that the server is
+		// about to refuse as no_organization goes round again rather than
+		// park — then a job for each that has parked (supervisor.SignedIn).
+		s.Supervisor.SignedIn()
+		err := s.Provisioner.ResumeAwaitingLogin(ctx)
+		if err != nil && ctx.Err() == nil && !errors.Is(err, provision.ErrShuttingDown) && !errors.Is(err, context.Canceled) {
 			fmt.Fprintf(os.Stderr, "drydock: resuming session servers after a sign-in: %v\n", err)
 		}
 	}

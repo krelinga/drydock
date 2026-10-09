@@ -73,6 +73,9 @@ func (p *Provisioner) ResumeAwaitingLogin(ctx context.Context) error {
 	}
 	var errs []error
 	for _, id := range p.SupervisorsAwaitingLogin() {
+		if err := ctx.Err(); err != nil {
+			return err // the watch is shutting down: nothing more to say
+		}
 		p.mu.Lock()
 		err := p.resumeLocked(ctx, id)
 		p.mu.Unlock()

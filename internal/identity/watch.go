@@ -244,7 +244,10 @@ type Watch struct {
 	// internal/provision's ResumeAwaitingLogin when the view is a live login.
 	// A direct call, so the event log stays the record and the stream, with
 	// no subscriber inside Drydock. It must not wait on the watch (Check,
-	// LoggedIn): it runs on the worker that would answer.
+	// LoggedIn): it runs on the worker that would answer. It may wait,
+	// boundedly, on the provisioner's lock (p.mu, once per workspace resumed)
+	// — which boot's helper and guard-policy sweeps hold across Docker
+	// calls — so a check's answer, and the next check, can wait behind one.
 	OnChange func(ctx context.Context, v View)
 
 	// c runs every check, one at a time, on the goroutine Start gives it:

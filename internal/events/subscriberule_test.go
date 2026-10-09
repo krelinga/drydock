@@ -51,29 +51,37 @@ func TestOnlySSESubscribes(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		for _, decl := range f.Decls {
-			fd, ok := decl.(*ast.FuncDecl)
-			if !ok || fd.Body == nil {
-				continue
-			}
-			name := fd.Name.Name
-			if fd.Recv != nil && len(fd.Recv.List) > 0 {
-				t := fd.Recv.List[0].Type
-				if s, ok := t.(*ast.StarExpr); ok {
-					t = s.X
-				}
-				if id, ok := t.(*ast.Ident); ok {
-					name = id.Name + "." + name
-				}
-			}
-			ast.Inspect(fd.Body, func(n ast.Node) bool {
-				if call, ok := n.(*ast.CallExpr); ok {
-					if sel, ok := call.Fun.(*ast.SelectorExpr); ok && sel.Sel.Name == "Subscribe" {
-						found = append(found, rel+": "+name)
-					}
+		// Every Subscribe selector, called or not — a method value
+		// (sub := l.Subscribe) subscribes as surely as a call — anywhere:
+		// in a function, or in a package-level var's initializer.
+		subscribes := func(where string, n ast.Node) {
+			ast.Inspect(n, func(n ast.Node) bool {
+				if sel, ok := n.(*ast.SelectorExpr); ok && sel.Sel.Name == "Subscribe" {
+					found = append(found, rel+": "+where)
 				}
 				return true
 			})
+		}
+		for _, decl := range f.Decls {
+			switch d := decl.(type) {
+			case *ast.GenDecl:
+				subscribes("package-level "+d.Tok.String(), d)
+			case *ast.FuncDecl:
+				if d.Body == nil {
+					continue
+				}
+				name := d.Name.Name
+				if d.Recv != nil && len(d.Recv.List) > 0 {
+					t := d.Recv.List[0].Type
+					if s, ok := t.(*ast.StarExpr); ok {
+						t = s.X
+					}
+					if id, ok := t.(*ast.Ident); ok {
+						name = id.Name + "." + name
+					}
+				}
+				subscribes(name, d.Body)
+			}
 		}
 		return nil
 	})
