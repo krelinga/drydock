@@ -7,6 +7,20 @@
 // an error string. Each of those is a place a token-in-the-URL clone (the
 // obvious implementation, and the one earlier drafts of §6 described) leaks
 // it.
+//
+// # Rules and details
+//
+// A contents:read token for the one repository reaches git only through its
+// environment: a GIT_CONFIG_COUNT credential helper that prints it from an
+// environment variable. It is never in argv, a URL or .git/config. git runs
+// with global and system config at /dev/null and GIT_CEILING_DIRECTORIES above
+// the workspace, so an enclosing repo's http.extraheader cannot win. It never
+// deletes a directory already at the clone path.
+//
+// Tested with a GIT_TRACE wrapper that records every child process's argv (a
+// wrapper around git sees only git's own argv; GIT_TRACE also records the
+// credential helper git starts), plus a canary sweep of the tree and the
+// database.
 package clone
 
 import (

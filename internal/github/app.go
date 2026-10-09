@@ -14,6 +14,20 @@
 //   - **Each token asks for what its caller needs** (§9.3). The App holds a
 //     superset; a token for listing repositories asks for metadata and
 //     nothing else.
+//
+// # Rules and details
+//
+// The key is loaded from a file and refused if its group or others can read
+// it. The JWT is RS256, built on the standard library. Installation tokens are
+// cached in memory for 55 minutes by what they grant; listing is paginated. A
+// Token refuses to marshal, and a token request must name its permissions.
+//
+// githubtest is the fake GitHub: it verifies the JWT and enforces each token's
+// permissions and repositories, and EnableGit adds a git smart-HTTP remote
+// (git's own http-backend behind GitHub's token authorization) that records
+// every token it is shown. The TestContract* functions run against it on every
+// go test (githubtest.NewBackend) and against the real dev App in
+// github-live.yml.
 package github
 
 import (

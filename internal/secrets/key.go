@@ -16,6 +16,36 @@
 //     human with an error message, delivery is a shell prelude that can only
 //     fail or guess.
 //   - **Default deny.** No secret_grant row and no all_repos, no secret.
+//
+// # Rules and details
+//
+// The master key is 32 bytes read once from a 0400 file (Key formats as
+// [redacted]); a fresh nonce per write.
+//
+// Validation on write: the name pattern, the reserved list (exact names plus
+// the CLAUDE_, ANTHROPIC_, DISABLE_, GH_, GIT_, DRYDOCK_, LD_, BASH_ prefixes
+// — each with its reason, which the refusal quotes), any Unicode control
+// character or non-UTF-8 in a value, an empty or over-32-KiB value, a blank
+// reach (secret_reach_required) apart from a long one (secret_reach_too_long),
+// a long description. web/src/lib/secretRules.ts mirrors validate.go and its
+// spec reads that file, so a changed reserved name or limit fails that spec
+// until the copy matches. all_repos widens a grant to every repository.
+//
+// Resolve serves the broker from a snapshot decrypted once per write, and
+// refuses *everything* if any row is undeliverable. That condition is **state,
+// not just an event**: Undeliverable names every broken row and why, GET
+// /api/secrets reports it, and its changes are secret.undeliverable and
+// secret.deliverable. A write rebuilds the snapshot at once, so a repair is
+// announced within its request, and boot checks too. Grants deleted outside
+// this package must be followed by Invalidate.
+//
+// Put answers the stale running workspaces split by StaleKind (a hook; nil
+// means new_commands). PutProse keeps the stored value and is never a
+// rotation; it is the PUT with **no** value key, which is a different request
+// from "value":"" (refused) and null (bad_request), decoded explicitly by
+// optionalValue in internal/api. Create is Put that refuses a stored name with
+// ErrExists inside the write's transaction, nothing written: the API's
+// If-None-Match: *, which the UI's New secret always sends.
 package secrets
 
 import (

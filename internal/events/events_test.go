@@ -204,7 +204,7 @@ func TestSlowSubscriberIsCutOff(t *testing.T) {
 	}
 }
 
-// The documented threshold (CLAUDE.md, the package doc) is 256. The tests
+// The documented threshold (the package doc) is 256. The tests
 // above count against subBuffer, so a changed constant would move them with
 // it; this pins the number itself.
 func TestTheLagThresholdIs256(t *testing.T) {

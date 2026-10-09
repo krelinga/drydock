@@ -36,6 +36,72 @@
 //   - **Nothing stops a workspace automatically.** The supervisor stops its
 //     own server only when told to (stop, rebuild, delete) or when a hung
 //     gate has been diagnosed; it never stops a container.
+//
+// # Rules and details
+//
+// The server runs through devcontainer exec on a PTY Drydock owns
+// (container.SessionArgs: sh -c of the constant RemoteControlLaunch, which
+// records the pid in the container, runs the secrets prelude and execs the
+// server). Every stop is container.SignalSession: docker exec -u 0 of a
+// constant script that signals the recorded pid only if it is a
+// remote-control, SIGTERM, SIGKILL after StopTimeout. Every start first stops
+// any server the pid file names, which is how boot adoption replaces the
+// server an earlier Drydock left serving; Detach (shutdown) closes terminals
+// and signals nobody.
+//
+// Retries: the registration wait is waiting_registration on a flat retry and
+// never charged to the budget (2 s→60 s, 6 in 10 min, then degraded); the
+// organization refusal is awaiting_login; trust and --spawn are degraded, not
+// retried. No environment within GateTimeout is a hang: stopped, then named by
+// its prompt, never answered. A stored identity of blanked or absent starts
+// nothing and spends nothing; Watch resumes on auth.identity. **expired starts
+// the server** — parking every server on it left nothing to refresh (a dead
+// refresh token is blanked, not expired).
+//
+// Discovery is classify.ClassifyDiscovery over a 16 KB raw window (transient):
+// environment id to workspace.environment_id, OSC 8 session ids to rc_session,
+// `Capacity: N/M` to session.status.
+//
+// The log is a 1 MB Ring of redacted visible lines (token shapes and the
+// workspace's granted secret values), served by GET …/logs, never persisted or
+// mirrored to event. **The ring owns its redaction**: NewRing takes the
+// values' source (Manager.Redact), asked on every Write, Flush and Mark, and
+// add — the only way in — masks, so no call site passes a list and none can
+// pass nil (two Flush calls once did, and a final unterminated line carried a
+// secret's value out unmasked). It masks every value it was ever given,
+// longest first, so a rotated-out or revoked value, or a moment of
+// undeliverable snapshot, unmasks nothing. The server's source caches each
+// workspace's repository id and reads values from the broker's snapshot, so no
+// query per read and never a stale set.
+//
+// Every reason is a code (Reason), the UI's key. Park records degraded with a
+// reason Drydock found before starting (stale_broker_mount), starts nothing,
+// holds nothing in memory, and leaves alone a server already running there;
+// only an explicit Start (a rebuild's step 8) starts it.
+//
+// **A stop that fails is recorded, never only returned**: degraded with
+// stop_failed (Docker could not be asked — docker ps/exec failed, or whether
+// SIGKILL worked could not be asked; the card offers *Restart session server*
+// again) or survived_kill (SIGKILL sent, or refused by the kernel — the signal
+// script's exit 4, container.ErrSessionSignalRefused — and the server still
+// there; the card offers Rebuild), each a constant sentence naming no one
+// caller, never the error — and written even when it repeats the last
+// (announce, not set), because every *Restart session server* press waits for
+// a supervisor.state. **Drydock's terminal closing is not the server ending**:
+// killing a docker exec client leaves its process running (measured), so a
+// held-terminal stop that reaches SIGKILL asks the container through the pid
+// file before calling it done. Every start's own stop of a leftover server
+// records survived_kill and starts nothing, rather than a second server over
+// the pid file. A workspace stop or delete whose server outlived SIGKILL
+// (container.ErrSessionSurvivedKill through the StopSupervisor seam) carries
+// on to its container step, which ends it. The supervisor stays registered
+// after a failed stop, so a retry reaches the same server; Start replaces one
+// still stopping. A stop or restart its caller cancelled records and starts
+// nothing; a start that fails after a good stop writes start_failed.
+//
+// Tested against fakeclaude behind fake devcontainer/docker binaries that run
+// the real launch line and signal script on the host, and in test/container
+// through the real CLI and Docker.
 package supervisor
 
 import (

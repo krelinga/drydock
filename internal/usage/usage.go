@@ -37,6 +37,24 @@
 // Every frame and every view's copy carries a round number from this process
 // and a boot id: the client orders copies by (boot, round), never by the wall
 // clock, which can step backwards.
+//
+// # Rules and details
+//
+// Memory runs for running rows only — one `docker stats --no-stream --no-trunc
+// --format '{{json .}}'` for every running container, MemUsage parsed
+// strictly, a stopped container's "0B / 0B" absent, never zero. Disk is the
+// directory walked plus SizeRw from docker inspect --size. **The walk is
+// bounded** — the container shapes the tree: a context (30 s, cancelled by
+// shutdown), entries, depth, the hard-link set, batched ReadDir — and descends
+// by openat(O_NOFOLLOW) from the parent's descriptor, never by name; a bound
+// reached is partial. A container vanishing mid-round is retried without
+// (dockerSurviving).
+//
+// **A measurement is never an event**: each round is one named resources frame
+// with no id (events.Log.Broadcast), which a lagging subscriber skips rather
+// than being cut off for. The pre-flight beside it (provision.preflight)
+// refuses a create, start, rebuild or approval with 507 disk_full at or above
+// --disk-limit-percent, reading the disk at the request.
 package usage
 
 import (

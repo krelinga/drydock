@@ -19,6 +19,62 @@
 // It is an allowlist, like the subset it enforces: a docker option it does
 // not know is host-affecting until someone has read what it does, and so is
 // a docker command it does not know.
+//
+// # Rules and details
+//
+// Check(policy, argv) decides one docker command; Main is the process.
+// cmd/drydock (and the test binaries' TestMain) run Main when run as docker
+// (IsGuard); it reads policy.json from the directory of the path it was run as
+// — absolute, or it runs nothing — and either refuses (one
+// `drydock-docker-guard: refused: …` stderr line, refused.json beside it, exit
+// 77, docker never run) or execves real-docker with argv untouched, so stdin,
+// stdout, stderr, signals and the exit status are docker's own.
+//
+// **Fail closed:** with no readable policy every command that creates a
+// container or builds an image is refused (no_policy). run/create options are
+// parsed against a table of the ones CLI 0.89.0 writes (measured,
+// test/fixtures/devcontainer/docker-argv-*.jsonl), and an option it does not
+// know is refused as runArgs, since its arity is what is not known; an
+// approved runArgs or build.options is removed first as the contiguous run it
+// was approved as.
+//
+// --mount passes as Drydock's own, the clone's bind, a volume named with
+// DevcontainerID(idLabels) (the CLI's base-32 SHA-256, tested against the
+// recorded docker-in-docker volume) and no other 52-digit id, an anonymous
+// volume or a tmpfs, or an approved mounts/workspaceMount element compared
+// field by field — an approved bind whose source is in the clone only while it
+// still resolves inside it (staysPut: the container could have made it a link
+// to /). --privileged, --cap-add (but SYS_PTRACE), --security-opt (but
+// seccomp=unconfined), -p (as the CLI renders appPort), --gpus need their
+// field approved; -e/--build-arg without a value and a label under the prefix
+// that is not an id-label are refused.
+//
+// Builds: -f/context inside the clone or TMPDIR (symlinks followed) or
+// approved, --build-context only the CLI's own in its TMPDIR, --cache-from
+// only a registry cache or an approved element, **read by CacheFromIsRegistry
+// as buildx reads it** (CSV, keys lowercased, last type wins, no = is a
+// reference, quotes refused) — never a substring: TYPE=local,src=/x is a local
+// import to buildx. Every option whose value the guard reads goes through a
+// parser equivalent to docker's or buildx's, or an exact comparison.
+//
+// compose needs dockerComposeFile approved but for read-only commands; exec
+// --privileged needs privileged. **start is not passed**: Main reads the
+// containers with docker inspect and CheckStarted holds **every** HostConfig
+// field to the policy by hostConfigFields, an allowlist of Docker 29's fields
+// (an unknown one, set, is refused): precise for privileged, capabilities,
+// security options, MaskedPaths/ReadonlyPaths (where systempaths=unconfined
+// shows), mounts with bind propagation, and GPUs; namespaces,
+// DeviceCgroupRules, CgroupParent, Sysctls, a log driver other than
+// json-file/local or any log option (the daemon runs it on the host: gelf
+// reached the host's loopback), and the rest only runArgs sets, and published
+// ports, need that field approved at all. Anything but one result per full
+// 64-hex id, each with a HostConfig, is start_unread. Measured inspect output
+// is the fixtures docker-inspect-{image,dind,hostile}.json; a global option or
+// an unknown docker command is refused.
+//
+// Labels off the prefix pass, deliberately: a denylist of host services'
+// prefixes would read as a guarantee (design §6). Source-blind: docker's argv
+// cannot say whether a --privileged was the repository's or a Feature's.
 package dockerguard
 
 import (

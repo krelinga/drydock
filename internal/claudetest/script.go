@@ -15,6 +15,17 @@
 // in this package. A cleaned or re-typed transcript tests a parser against a
 // world that does not exist (fixtures README), and two copies of the bytes are
 // two things to keep in step.
+//
+// # Rules and details
+//
+// fakeclaude replays the corpus onto a real PTY of a chosen width, scripted by
+// a JSON file beside the binary (not an env var, which subproc replaces), and
+// logs what it received — each code as a SHA-256 with its framing judged,
+// anything typed at a gate or a serving server, a missing PTY. Every file it
+// replays is pinned by SHA-256 in Pinned, so a re-record stops it until it is
+// re-derived. Install builds and scripts it; Start runs it on a PTY;
+// Events/NoViolations read its log. internal/pty is the PTY itself, usable by
+// the supervisor too.
 package claudetest
 
 import (

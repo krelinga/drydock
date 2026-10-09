@@ -7,6 +7,37 @@
 // which case the row stays, marked removed, because the working tree may
 // hold unpushed work (§12). Adding a repository is a GitHub-side action;
 // Drydock picks it up on the next refresh.
+//
+// # Rules and details
+//
+// Refreshed at boot, every 15 minutes and on demand, with concurrent refreshes
+// joined. Boot's and the timer's refreshes are Run's, under Serve's context
+// and waited for; an on-demand one (Trigger, behind POST /api/repos/refresh)
+// runs under the catalog's own context, tracked by a WaitGroup added to under
+// the same mutex Shutdown cancels under, so Serve cancels and waits for it
+// before the database closes (logging a line if its bound runs out) and a
+// Trigger after that starts nothing. A Trigger while a refresh is running
+// queues **one more** to start when it ends, under the same context and with
+// its own event — the running one may have listed before the click, or already
+// emitted the event the button settles on — and any number of them queue that
+// same one; none starts after Shutdown. (Two Triggers before the first's
+// refresh has begun can each start one; the second joins the first inside
+// Refresh.)
+//
+// A listing token asks for metadata only and a probe token for contents read.
+// A repo is probed for devcontainer.json only when it was pushed to, and a
+// failed probe is null, never false.
+//
+// A repo dropped from the installation is deleted unless a workspace holds it,
+// and its secret grants with it. One a workspace holds keeps its row and
+// grants while that workspace lives (§12: the broker keeps serving it what it
+// had) and loses both when it is released: store.DropReleasedRepositories runs
+// in workspace.Remove's transaction and on every refresh (which sweeps rows an
+// older release left), so a re-added repository is granted nothing. **Deleting
+// grants outside internal/secrets must call secrets.Store.Invalidate** (the
+// GrantsDropped hooks on Catalog and workspace.Store), or the broker serves
+// them from its snapshot to the re-added repository. token_grant and
+// secret_access are never touched.
 package catalog
 
 import (

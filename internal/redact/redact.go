@@ -7,6 +7,15 @@
 // it matchable by nothing (a secret "pfx-ghp_…" would otherwise show its
 // "pfx-"). And longer values before shorter ones, so a value containing
 // another is masked whole.
+//
+// # Rules and details
+//
+// Literal values first, longest first, then GitHub, Anthropic and bearer token
+// shapes and credential query parameters. The session server's Ring, the build
+// log (provision.BuildLog: masked when kept and again when served — only the
+// masked copy is held, so a rotated or revoked value stays masked; masked,
+// then cut; withheld when the values cannot be read) and the journal's logTail
+// all use it.
 package redact
 
 import (

@@ -11,6 +11,14 @@
 //
 // So resolution goes through PATH, or through an injected Resolver, and the
 // component tier substitutes a real executable rather than a mock.
+//
+// # Rules and details
+//
+// Exec is the real runner: no shell anywhere, Env replaces rather than
+// inherits, a non-zero exit is data, and cancelling sends SIGTERM. StartPTY is
+// the same rules on a terminal (internal/pty composed, not reimplemented): the
+// supervisor's and the login handshake's way to start a child that must see a
+// PTY.
 package subproc
 
 import (
