@@ -89,7 +89,8 @@ type DockerLauncher struct {
 	// — fakeclaude bind-mounted in — and empty in production.
 	Extra []string
 	// RemoveSettle bounds Remove's wait for a killed CLI's container; zero
-	// is DefaultRemoveSettle.
+	// is DefaultRemoveSettle, and more than MaxRemoveSettle is
+	// MaxRemoveSettle.
 	RemoveSettle time.Duration
 	// Clock is what RemoveSettle and its relisting are measured on; nil is
 	// the real clock.
@@ -196,6 +197,14 @@ func (d DockerLauncher) label(id string) string { return d.LabelPrefix + "." + L
 // later still goes, at the next login's sweep.
 const DefaultRemoveSettle = 3 * time.Second
 
+// MaxRemoveSettle is the longest Remove will wait for a killed CLI's
+// container, whatever RemoveSettle says. The Manager gives a removal 15 s in
+// all (removeTimeout), and after the settle Remove still lists once more and
+// runs docker rm: a settle as long as the removal's bound would run that
+// bound out first, and the end would log an error instead of removing. This
+// leaves those two commands 5 s; a test pins the arithmetic.
+const MaxRemoveSettle = 10 * time.Second
+
 // Remove implements Launcher: every container carrying this login's label,
 // by full id. When the CLI was killed and nothing is listed yet, it keeps
 // looking until RemoveSettle has passed, since the CLI's create may still be
@@ -208,6 +217,9 @@ func (d DockerLauncher) Remove(ctx context.Context, id string, killed bool) erro
 	settle := d.RemoveSettle
 	if settle <= 0 {
 		settle = DefaultRemoveSettle
+	}
+	if settle > MaxRemoveSettle {
+		settle = MaxRemoveSettle
 	}
 	clock := d.Clock
 	if clock == nil {

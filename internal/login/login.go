@@ -306,10 +306,19 @@ func (p *Proc) kill(c sys.Clock, wait time.Duration) bool {
 	return true
 }
 
-// Bounds on the injected clock for what every end owes. Together they fit
-// inside the server's wait for its life.Group at shutdown (workShutdownWait,
-// 35 s): an abandoned launch's kill, the end's kill, the removal and the
-// announcement come to 30 s at the very worst.
+// Bounds on the injected clock for what every end owes. They must fit inside
+// the server's wait for its life.Group at shutdown (workShutdownWait, 35 s),
+// and the terms that add up are these, about 30 s at the very worst:
+//
+//   - 5 s, one of: the end's killWait for a running process, or — for a
+//     launch abandoned before it had one, whose end has no process to kill —
+//     its cancelled docker command winding down, which subproc.Exec bounds
+//     with its 5 s WaitDelay after the SIGTERM;
+//   - removeTimeout's 15 s, plus up to WaitDelay's 5 s for a docker ps or
+//     docker rm still running when it fires;
+//   - emitTimeout's 5 s for the announcement.
+//
+// Shorten workShutdownWait, or lengthen one of these, and count again.
 const (
 	// killWait is how long a killed process is given to be reaped.
 	killWait = 5 * time.Second
@@ -714,33 +723,68 @@ func durOr2(n, def int) int {
 	return def
 }
 
+// stream carries the PTY's chunks from the reader to drive, and makes sure
+// none is left unzeroed once drive stops receiving: the PTY buffer is never
+// kept (§13.5), and a chunk left in a channel nobody reads is kept until the
+// collector gets to it.
+//
+// stop closes quit, after which put zeroes a chunk rather than handing it
+// over, and drains what is buffered. A chunk put sends just as stop runs —
+// after stop's drain, its select having picked the send over quit — is
+// drained by put's own look at quit after the send. So every chunk is either
+// received by drive, which zeroes it, or zeroed here.
+type stream struct {
+	c    chan []byte
+	quit chan struct{}
+}
+
+func newStream() *stream { return &stream{c: make(chan []byte, 16), quit: make(chan struct{})} }
+
+// put is the reader's: it hands c over, or zeroes it once stop has run.
+func (s *stream) put(c []byte) {
+	select {
+	case s.c <- c:
+		select {
+		case <-s.quit:
+			s.drain()
+		default:
+		}
+	case <-s.quit:
+		wipe(c)
+	}
+}
+
+// stop is drive's, as it returns.
+func (s *stream) stop() {
+	close(s.quit)
+	s.drain()
+}
+
+// drain zeroes whatever is buffered, without waiting for more.
+func (s *stream) drain() {
+	for {
+		select {
+		case c, ok := <-s.c:
+			if !ok {
+				return
+			}
+			wipe(c)
+		default:
+			return
+		}
+	}
+}
+
 // drive reads the stream and types codes until the login ends.
 func (s *session) drive(ctx context.Context, p *Proc, startTimer <-chan time.Time) ([]byte, outcome) {
 	m := s.m
-	chunks := make(chan []byte, 16)
-	// quit is closed as drive returns, after which nothing receives from
-	// chunks: the reader zeroes what it reads rather than sending it, and
-	// what is buffered is zeroed by drive's drain or, for a chunk sent after
-	// that drain, by the reader's own.
-	quit := make(chan struct{})
-	drain := func() {
-		for {
-			select {
-			case c, ok := <-chunks:
-				if !ok {
-					return
-				}
-				wipe(c)
-			default:
-				return
-			}
-		}
-	}
+	st := newStream()
+	chunks := st.c
 	// The reader is a helper in the group. It ends with the stream: the
 	// process exiting, or finish closing the PTY, which releases a Read
 	// blocked on it (internal/pty registers the master with the poller).
 	err := s.g.TryGo("read "+s.view.ID, func(context.Context) {
-		defer close(chunks)
+		defer close(st.c)
 		defer s.streamEnded.Store(true)
 		b := make([]byte, 4096)
 		defer wipe(b)
@@ -749,16 +793,7 @@ func (s *session) drive(ctx context.Context, p *Proc, startTimer <-chan time.Tim
 			if n > 0 {
 				c := make([]byte, n)
 				copy(c, b[:n])
-				select {
-				case chunks <- c:
-					select {
-					case <-quit:
-						drain()
-					default:
-					}
-				case <-quit:
-					wipe(c)
-				}
+				st.put(c)
 			}
 			if err != nil {
 				return
@@ -768,10 +803,9 @@ func (s *session) drive(ctx context.Context, p *Proc, startTimer <-chan time.Tim
 	if err != nil {
 		return nil, outcome{phase: Failed, problem: ProblemShutdown}
 	}
-	defer func() {
-		close(quit)
-		drain()
-	}()
+	// From here on nothing receives from chunks: what is buffered, and
+	// anything the reader sends later, is zeroed.
+	defer st.stop()
 
 	var (
 		buf      []byte

@@ -15,6 +15,7 @@ import (
 	"github.com/krelinga/drydock/internal/container"
 	"github.com/krelinga/drydock/internal/login"
 	"github.com/krelinga/drydock/internal/subproc"
+	"github.com/krelinga/drydock/internal/sys"
 )
 
 const (
@@ -287,5 +288,44 @@ func TestRemoveWaitsForAKilledCreate(t *testing.T) {
 	}
 	if ps, rms := count(f); ps < 2 || rms != nil {
 		t.Errorf("nothing came: %d listings, rm %q; want several and none", ps, rms)
+	}
+}
+
+// TestRemoveSettleIsCapped: a RemoveSettle longer than MaxRemoveSettle is
+// waited only MaxRemoveSettle, on the injected clock, so it cannot outlast
+// the Manager's bound on the whole removal. The control is that just short
+// of MaxRemoveSettle it is still looking.
+func TestRemoveSettleIsCapped(t *testing.T) {
+	clock := sys.NewFakeClock(time.Date(2026, 10, 9, 12, 0, 0, 0, time.UTC))
+	d := launcher()
+	d.Run = &fakeRunner{ans: func([]string) (string, int) { return "", 0 }} // nothing ever lists
+	d.Clock = clock
+	d.RemoveSettle = time.Hour
+	done := make(chan error, 1)
+	go func() { done <- d.Remove(context.Background(), loginID, true) }()
+	waitTimers := func(n int) {
+		t.Helper()
+		for deadline := time.Now().Add(5 * time.Second); clock.Waiting() < n; time.Sleep(time.Millisecond) {
+			if time.Now().After(deadline) {
+				t.Fatalf("Remove never set %d timers", n)
+			}
+		}
+	}
+	waitTimers(2) // the settle and a poll
+	clock.Advance(login.MaxRemoveSettle - time.Millisecond)
+	waitTimers(2) // still settling: a new poll beside the settle
+	select {
+	case err := <-done:
+		t.Fatalf("control: Remove gave up before MaxRemoveSettle: %v", err)
+	default:
+	}
+	clock.Advance(time.Millisecond)
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Remove waited past MaxRemoveSettle")
 	}
 }

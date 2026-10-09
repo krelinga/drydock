@@ -516,8 +516,11 @@ const provisionShutdownWait = 20 * time.Second
 // transaction end with its context; the identity watch's check, which ends
 // with it too but then removes a cut-off read's helper container under its
 // own 30-second bound; and a login in progress, which kills its process,
-// removes its container and announces its end under bounds that come to
-// 30 s at worst (login's killWait, removeTimeout and emitTimeout). So this
+// removes its container and announces its end in about 30 s at worst: one
+// 5 s kill (or an abandoned launch's docker command winding down within
+// subproc's 5 s WaitDelay), the 15 s removal plus that WaitDelay for a
+// docker command it cut off, and the 5 s announcement — counted beside
+// login's killWait, removeTimeout and emitTimeout. So this
 // is the longer of those and a little more. It runs beside the waits below
 // rather than after them, so it adds nothing to their sum unless it is the
 // longest.

@@ -556,9 +556,9 @@ func TestLoginCancelDuringCreate(t *testing.T) {
 	// Far past the late create, which lands about a second after the
 	// cancel, so a slow daemon's `docker create` cannot outlast it. Remove
 	// stops waiting once the container lists, so a passing run pays nothing.
-	// Under the manager's own bound on a removal (15 s), which a longer
-	// settle would only run into.
-	d.RemoveSettle = 12 * time.Second
+	// The longest Remove allows, which leaves the manager's own bound on a
+	// removal (15 s) room for the last listing and the rm.
+	d.RemoveSettle = login.MaxRemoveSettle
 	m := &login.Manager{Launcher: d, Events: log, Clock: sys.RealClock{}, Identity: &loggedIn{}, Settle: 10 * time.Second}
 	startLogins(t, m)
 	v, err := m.Begin(ctx)

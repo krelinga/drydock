@@ -297,8 +297,9 @@ func TestLoginHandshakeEndToEnd(t *testing.T) {
 }
 
 // loginRig is a server whose login runs fakeclaude, which waits at the
-// prompt for a code it is never given.
-func loginRig(t *testing.T) (r *running, launcher *logintest.Launcher, cookie string, cancel context.CancelFunc, done chan error) {
+// prompt for a code it never accepts. Its login's service log is kept, for a
+// sweep: logged reads it.
+func loginRig(t *testing.T) (r *running, launcher *logintest.Launcher, cookie string, cancel context.CancelFunc, done chan error, logged func() string) {
 	t.Helper()
 	dir := t.TempDir()
 	cfg := testConfig(t, dir)
@@ -315,11 +316,15 @@ func loginRig(t *testing.T) (r *running, launcher *logintest.Launcher, cookie st
 	os.MkdirAll(cfgDir, 0o700)
 	launcher = &logintest.Launcher{Fake: fake, ConfigDir: cfgDir}
 	srv.Login.Launcher = launcher
+	var logMu sync.Mutex
+	var log bytes.Buffer
+	srv.Login.Logf = func(f string, a ...any) { logMu.Lock(); fmt.Fprintf(&log, f+"\n", a...); logMu.Unlock() }
+	logged = func() string { logMu.Lock(); defer logMu.Unlock(); return log.String() }
 	ctx, cancel := context.WithCancel(context.Background())
 	done = make(chan error, 1)
 	go func() { done <- srv.Serve(ctx) }()
 	r = &running{cfg: cfg, srv: srv, client: unixClient(cfg.APISocket)}
-	return r, launcher, r.signIn(t), cancel, done
+	return r, launcher, r.signIn(t), cancel, done, logged
 }
 
 // beginLogin starts a login through the route and waits for its prompt.
@@ -351,7 +356,7 @@ func beginLogin(t *testing.T, r *running, cookie string) string {
 // database under it — and its end announced, failed for the shutdown, in the
 // database Serve closed. The control is the 202 and the prompt before.
 func TestShutdownEndsALoginInFlight(t *testing.T) {
-	r, launcher, cookie, cancel, done := loginRig(t)
+	r, launcher, cookie, cancel, done, _ := loginRig(t)
 	defer cancel()
 	type atRemove struct {
 		ctxErr error
@@ -424,7 +429,7 @@ func TestShutdownEndsALoginInFlight(t *testing.T) {
 // for a login nothing would ever end. The control is the 202 before, whose
 // login the stop ends.
 func TestLoginBeginRefusedOnceStopped(t *testing.T) {
-	r, launcher, cookie, cancel, done := loginRig(t)
+	r, launcher, cookie, cancel, done, _ := loginRig(t)
 	t.Cleanup(func() { cancel(); <-done })
 	id := beginLogin(t, r, cookie)
 	if late := r.srv.loginWork.Load().Wait(time.After(10 * time.Second)); late != nil {
@@ -440,5 +445,85 @@ func TestLoginBeginRefusedOnceStopped(t *testing.T) {
 	}
 	if n := len(launcher.Launched()); n != 1 {
 		t.Errorf("%d launches; begin after the stop must start none", n)
+	}
+}
+
+// TestShutdownAfterACodeLeavesNoCode is testing §4.2's canary sweep over the
+// shutdown end, the one end no other sweep covers: a canary code typed into
+// the login, then Serve's context cancelled while the code is being checked.
+// Once Serve returns, no part of the code is in any file under the temp root
+// (the database, closed, and its WAL; the fake's state), the login's service
+// log, or any process's argv. The positive controls: fakeclaude saw the code
+// on its stdin, by hash; the login ended failed for the shutdown; and the
+// same sweep finds a canary the test plants.
+func TestShutdownAfterACodeLeavesNoCode(t *testing.T) {
+	r, launcher, cookie, cancel, done, logged := loginRig(t)
+	defer cancel()
+	rnd := func() string { b := make([]byte, 16); rand.Read(b); return hex.EncodeToString(b) }
+	code := "cnrySHUT" + rnd() + "#cnrySSTATE" + rnd()
+	id := beginLogin(t, r, cookie)
+	body, _ := json.Marshal(map[string]string{"code": code})
+	resp := r.do(t, req{method: "POST", path: "/api/auth/claude/login/" + id + "/code", cookie: cookie, origin: uiOrigin, body: string(body)})
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("control: the code = %d", resp.StatusCode)
+	}
+	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(10 * time.Millisecond) {
+		if subs := claudetest.Kind(launcher.Fake.Events(t), claudetest.EventSubmission); len(subs) == 1 {
+			if subs[0].SHA256 != claudetest.CodeSHA256(code) {
+				t.Fatalf("control: fakeclaude saw %+v", subs[0])
+			}
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("control: the code never reached fakeclaude")
+		}
+	}
+
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Serve: %v", err)
+		}
+	case <-time.After(60 * time.Second):
+		t.Fatal("Serve did not return")
+	}
+	if v := r.srv.Login.Current(); v == nil || v.Phase != login.Failed || v.Problem == nil || *v.Problem != login.ProblemShutdown {
+		t.Fatalf("control: the login ended %+v; want failed for the shutdown", v)
+	}
+
+	root := filepath.Dir(r.cfg.DatabasePath)
+	sinks := func(needle string) []string {
+		var where []string
+		if strings.Contains(logged(), needle) {
+			where = append(where, "the service log")
+		}
+		filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
+			if err != nil || d.IsDir() || d.Type()&fs.ModeSocket != 0 {
+				return nil
+			}
+			if b, err := os.ReadFile(p); err == nil && bytes.Contains(b, []byte(needle)) {
+				where = append(where, p)
+			}
+			return nil
+		})
+		procs, _ := os.ReadDir("/proc")
+		for _, d := range procs {
+			if b, err := os.ReadFile(filepath.Join("/proc", d.Name(), "cmdline")); err == nil && bytes.Contains(b, []byte(needle)) {
+				where = append(where, "/proc/"+d.Name()+"/cmdline")
+			}
+		}
+		return where
+	}
+	x, y, _ := strings.Cut(code, "#")
+	for _, part := range []string{code, x, y} {
+		if where := sinks(part); len(where) > 0 {
+			t.Errorf("the login code is in %v", where)
+		}
+	}
+	plant := filepath.Join(root, "planted")
+	os.WriteFile(plant, []byte("x"+code+"x"), 0o600)
+	if where := sinks(code); len(where) != 1 || where[0] != plant {
+		t.Errorf("control: the sweep found the planted canary in %v", where)
 	}
 }
