@@ -419,6 +419,29 @@ their signing keys, rather than the runbook's `.list` files and `apt_key`-era ke
   failed_when: drydock_tool_check.rc != 0 or not drydock_tool_check.stdout.startswith(item.want)
 ```
 
+> **If `apt` fails with `402 Payment Required` from `dl.cloudsmith.io`**, Caddy's apt repository is
+> unavailable. Drop the `Add Caddy's apt repository` task and `caddy` from the package list, and
+> install Caddy's GitHub release `.deb` instead (the same package; no updates from apt, so bump the
+> version by hand). Keep `caddy` in the `Start Docker and Caddy` loop. Add after the package task:
+>
+> ```yaml
+> - name: Install Caddy from its GitHub release, checked against the release's checksums
+>   ansible.builtin.shell:
+>     cmd: |
+>       set -euo pipefail
+>       cd "$(mktemp -d)"
+>       base=https://github.com/caddyserver/caddy/releases/download/v{{ drydock_caddy_version }}
+>       deb=caddy_{{ drydock_caddy_version }}_linux_amd64.deb
+>       curl -fsSLO "$base/$deb" -fsSLO "$base/caddy_{{ drydock_caddy_version }}_checksums.txt"
+>       grep " $deb\$" "caddy_{{ drydock_caddy_version }}_checksums.txt" | sha512sum -c -
+>       apt-get install -y "./$deb"
+>     creates: /usr/bin/caddy
+>     executable: /bin/bash
+>   vars:
+>     drydock_caddy_version: "2.11.7"
+> ```
+
+
 Not automated from §3: the runbook's `sudo docker run --rm hello-world` (it pulls from Docker Hub
 on every run) and §3.3's decision about **a Caddy that already serves other sites**. That one is
 yours: the installer refuses a foreign `/etc/caddy/Caddyfile`, and `drydock_take_over_caddy: true`
