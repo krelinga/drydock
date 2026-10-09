@@ -2,7 +2,7 @@
 
 *An adversarial read of the Drydock design as specified, with the port-forwarding supplement folded in. The job here is to try to break it on paper — not to restate its security section approvingly.*
 
-**Status** review, draft v1 · **Date** 27 August 2026 · **Reviewer** adversarial pass
+**Status** review, a dated record of the designs as they stood then — its history is the git log (`git log -p -- docs/design/security-review.md`) · **Date** 27 August 2026 · **Reviewer** adversarial pass
 
 **Reviews** [`overall/drydock-design.md`](overall/drydock-design.md) draft v3 · [`port-forwarding/port-forwarding-design.md`](port-forwarding/port-forwarding-design.md) draft v1
 
