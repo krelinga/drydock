@@ -36,6 +36,11 @@ What it covers:
   `Host: localhost:5173` and refuses the preview host under `passthrough`, an event stream
   streams, and the HMR socket says `connected`, echoes a custom event and delivers the hot update
   for a file edited on the host; then `docker stop` behind Drydock's back and the denied page.
+- **Port discovery** (`TestDiscoveryReadsARealContainer`, PF §13 step 5): a container serving on
+  an undeclared `0.0.0.0:8000` and on `127.0.0.1:9229` is read from the host — this unprivileged
+  user, `/proc/<pid>/net/tcp`, nothing run inside — and the real scanner lists both, off, the
+  second classified loopback; `docker restart` gives a new PID, which the next read follows; a
+  host-network container's table is never read.
 - **The host-access gate** (design §6): the tier's own `runArgs: --network=host` is pre-approved
   per repository (`approveHostNetwork`, hashed by the same function); a docker-in-docker repository
   stops `needs_approval` with no container, is approved through the API and comes up privileged;

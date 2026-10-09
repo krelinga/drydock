@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/krelinga/drydock/internal/events"
+	"github.com/krelinga/drydock/internal/life"
 	"github.com/krelinga/drydock/internal/preview"
 	"github.com/krelinga/drydock/internal/store"
 	"github.com/krelinga/drydock/internal/sys"
@@ -145,9 +146,45 @@ func TestPortRoutesRequestsAndRefusals(t *testing.T) {
 		t.Errorf("add on a deleting workspace = %d %s", code, e.Code)
 	}
 
-	// The rescan is step 5's: declared, gated, 501.
+	// Without a scanner the rescan is declared, gated, 501.
 	if code, e, _ := portCall(h, "POST", "/api/workspaces/w1/ports/rescan", ""); code != http.StatusNotImplemented || e.Code != CodeNotImplemented {
-		t.Errorf("rescan = %d %s", code, e.Code)
+		t.Errorf("rescan with no scanner = %d %s", code, e.Code)
+	}
+}
+
+type recordingScanner struct {
+	asked []string
+	err   error
+}
+
+func (s *recordingScanner) Rescan(_ context.Context, ws string) error {
+	s.asked = append(s.asked, ws)
+	return s.err
+}
+
+// TestRescanRoute: POST …/ports/rescan asks the scanner about the path's
+// workspace and answers 202 with nothing to apply; the scanner's refusals
+// are the registry's codes, and a scanner stopping is 503 unavailable.
+func TestRescanRoute(t *testing.T) {
+	sc := &recordingScanner{}
+	h := Build(MuxAPI, allOpen, PortRoutes{Registry: &preview.Service{}, Scanner: sc}.Handlers())
+	code, _, body := portCall(h, "POST", "/api/workspaces/w1/ports/rescan", "")
+	if code != http.StatusAccepted || strings.TrimSpace(string(body)) != "{}" || len(sc.asked) != 1 || sc.asked[0] != "w1" {
+		t.Fatalf("rescan = %d %s, asked %v", code, body, sc.asked)
+	}
+	for err, want := range map[error]struct {
+		code int
+		name string
+	}{
+		preview.ErrNoWorkspace:       {404, CodeNotFound},
+		preview.ErrWorkspaceDeleting: {409, CodeInProgress},
+		life.ErrStopping:             {503, CodeUnavailable},
+		life.ErrNotStarted:           {503, CodeUnavailable},
+	} {
+		sc.err = err
+		if code, e, _ := portCall(h, "POST", "/api/workspaces/w1/ports/rescan", ""); code != want.code || e.Code != want.name {
+			t.Errorf("%v: %d %s; want %v", err, code, e.Code, want)
+		}
 	}
 }
 

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/netip"
 	"strconv"
 	"strings"
 	"time"
@@ -92,9 +93,13 @@ type Port struct {
 	Observed       bool    `json:"observed"`
 	Manual         bool    `json:"manual"`
 	BindAddr       *string `json:"bind_addr"`
-	ObservedState  *string `json:"observed_state"`
-	LastSeenAt     *string `json:"last_seen_at"`
-	CreatedAt      *string `json:"created_at"`
+	// Loopback is discovery's classification of BindAddr (PF §8.2): a
+	// server bound to loopback is listed, but only the container itself can
+	// reach it, so no preview of it can answer. Derived, never stored.
+	Loopback      bool    `json:"loopback"`
+	ObservedState *string `json:"observed_state"`
+	LastSeenAt    *string `json:"last_seen_at"`
+	CreatedAt     *string `json:"created_at"`
 }
 
 // AddSpec is a port added by hand (POST …/ports).
@@ -146,6 +151,9 @@ func (s *Service) scanPort(r interface{ Scan(...any) error }) (Port, error) {
 		return &v
 	}
 	p.Label, p.BindAddr, p.ObservedState, p.LastSeenAt, p.CreatedAt = str(label), str(bind), str(state), str(seen), str(created)
+	if a, err := netip.ParseAddr(bind.String); bind.Valid && err == nil {
+		p.Loopback = a.Unmap().IsLoopback()
+	}
 	if s.Domain != "" {
 		h := s.HostFor(p.Slug)
 		p.Host = &h
@@ -560,9 +568,11 @@ func retiredEvent(p Port) (events.Event, error) {
 // declared and disabled; a live row the configuration names is marked
 // declared, and given the configuration's label if it has none. A row the
 // configuration no longer names loses the flag, and is retired if nothing
-// else holds it — not enabled, not added by hand, never observed — so a
-// declaration that comes back gets a new slug, which is the bookmark failing
-// closed as it should.
+// else holds it — not enabled, not added by hand, not hidden, not listening
+// now (discovery's observed_state) — so a declaration that comes back gets a
+// new slug, which is the bookmark failing closed as it should. A row kept
+// because it is listening is discovery's from then on: it is retired when it
+// stops (Observe).
 //
 // It never touches `enabled`: the configuration is the container's to write,
 // and what the container listens on or declares is never a decision to expose
@@ -655,7 +665,8 @@ func (s *Service) DeclarePorts(ctx context.Context, workspaceID string, ds []Dec
 			if _, still := want[p.ContainerPort]; still || !p.Declared {
 				continue
 			}
-			if !p.Enabled && !p.Manual && !p.Observed {
+			listening := p.ObservedState != nil && *p.ObservedState == StateListening
+			if !p.Enabled && !p.Manual && !p.Hidden && !listening {
 				if err := retire(ctx, tx, p.ID, s.Clock.Now()); err != nil {
 					return nil, err
 				}

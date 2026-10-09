@@ -8,11 +8,15 @@
 // asked for and what they answered (a read, never an entity), the remove
 // confirm, and the "show hidden" preference.
 //
-// Off until enabled, always: a declared port is listed, never exposed, and
-// nothing here appears because something started listening (PF §12). An
-// enabled row shows its full preview host — the address the operator is
-// learning to trust is never hidden behind a friendly label (§6.3) — and opens
-// it in a new tab, never a frame (§8).
+// Off until enabled, always: a declared port is listed, never exposed, and a
+// port something in the container listens on (discovery, PF §8.2) appears
+// as a row, switched off, the way any row does — no toast, no badge, nothing
+// that asks for a click; the panel is where that decision is made (§12). A
+// row says what discovery last saw: listening, on which address (loopback
+// said plainly, since nothing outside the container can reach it), or not
+// listening now. An enabled row shows its full preview host — the address the
+// operator is learning to trust is never hidden behind a friendly label
+// (§6.3) — and opens it in a new tab, never a frame (§8).
 import { computed, onMounted, ref, watch } from 'vue'
 import { describeError } from '../api/messages'
 import type { ProbeResult } from '../api/types'
@@ -20,7 +24,7 @@ import ActionButton from './ActionButton.vue'
 import { useStreamRefetch } from '../lib/refetch'
 import { portsOf, type Port, type Workspace } from '../stores/reducer'
 import {
-  portAddKey, portEnableKey, portHideKey, portHostKey, portRetireKey, usePortsStore,
+  portAddKey, portEnableKey, portHideKey, portHostKey, portRescanKey, portRetireKey, usePortsStore,
 } from '../stores/ports'
 import { useStreamStore } from '../stores/stream'
 
@@ -63,9 +67,21 @@ const running = computed(() => props.workspace.state === 'running')
 function provenance(p: Port): string[] {
   const out: string[] = []
   if (p.declared) out.push('declared')
-  if (p.observed) out.push('observed')
+  if (p.observed) out.push('discovered')
   if (p.manual) out.push('added by hand')
   return out
+}
+
+/** What discovery last saw of it, or null when it never has. */
+function observation(p: Port): string | null {
+  if (p.observedState === 'listening') {
+    if (p.bindAddr === null) return 'Listening.'
+    return p.loopback
+      ? `Listening on ${p.bindAddr} only, which nothing outside the container can reach.`
+      : `Listening on ${p.bindAddr}.`
+  }
+  if (p.observedState === 'gone') return 'Not listening now.'
+  return null
 }
 
 // Probes: a read for this screen, by port id.
@@ -106,8 +122,9 @@ async function add(): Promise<void> {
   <div class="block" data-test="ports">
     <div class="sec-label"><span>Ports</span><span v-if="all.length > 0">{{ all.length }}</span></div>
     <p class="sub">
-      A port is previewed only once you turn it on. Each preview opens on its own address, behind your Drydock
-      sign-in; Drydock asks for its password only here, so a sign-in form on a preview is not Drydock's.
+      A port is previewed only once you turn it on, never because something started listening on it. Each
+      preview opens on its own address, behind your Drydock sign-in; Drydock asks for its password only here, so
+      a sign-in form on a preview is not Drydock's.
     </p>
     <p v-if="!previewsOn" class="sub" data-test="previews-off">
       No preview domain is set up on this Drydock, so ports are listed but cannot be previewed. The installer's
@@ -128,6 +145,9 @@ async function add(): Promise<void> {
           <span v-for="b in provenance(p)" :key="b" class="badge" data-test="port-badge">{{ b }}</span>
           <span v-if="p.hidden" class="badge">hidden</span>
         </div>
+        <p v-if="observation(p)" class="sub" :class="{ loop: p.loopback && p.observedState === 'listening' }" data-test="port-observed">
+          {{ observation(p) }}
+        </p>
 
         <template v-if="p.enabled && p.url">
           <a
@@ -202,14 +222,21 @@ async function add(): Promise<void> {
     <div v-else-if="loaded" class="empty" data-test="ports-empty">
       <span>No ports listed.</span>
       <span class="sub">
-        Ports the dev container configuration declares appear here when it is built, switched off. Add one by
-        number below.
+        Ports the dev container configuration declares, and ports something in the container is listening on,
+        appear here, switched off. Add one by number below.
       </span>
     </div>
     <div v-else-if="load?.status === 'error'" class="msg bad" role="alert" data-test="ports-error">
       <span class="glyph" aria-hidden="true">×</span><span>{{ describeError(load.error) }}</span>
     </div>
     <div v-else class="empty" data-test="ports-loading"><span>Loading…</span></div>
+
+    <div v-if="running" class="rescan">
+      <ActionButton
+        label="Look for listening ports now" :flight-key="portRescanKey(wsId)"
+        :run="() => ports.rescan(wsId)" data-test="ports-rescan"
+      />
+    </div>
 
     <label v-if="hiddenCount > 0" class="toggle" data-test="ports-show-hidden">
       <input v-model="showHidden" type="checkbox"> Show {{ hiddenCount }} hidden
@@ -261,6 +288,7 @@ async function add(): Promise<void> {
 .probe { display: flex; flex-direction: column; gap: 4px; align-items: flex-start; }
 .confirm { display: flex; flex-direction: column; gap: 6px; }
 .act { display: flex; gap: 8px; align-items: flex-start; }
+.rescan { display: flex; }
 .toggle { font-size: 13px; color: var(--ink-2); display: flex; gap: 6px; align-items: center; }
 .add { display: flex; flex-direction: column; gap: 6px; }
 .field { display: flex; flex-direction: column; gap: 3px; font-size: 13px; }

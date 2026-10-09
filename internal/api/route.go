@@ -50,8 +50,10 @@
 // PortRoutes is the port registry (PF §6, §13 step 4): list, add, PATCH
 // (enabled, hidden, label, host_header — a null or an unknown key is
 // bad_request), retire and probe, `{port}` being the row's id. Every mutation
-// 202, settled by its port.* event; ports.rescan is step 5's 501. The probe
-// goes through a PortProber, which the server makes the preview proxy itself.
+// 202, settled by its port.* event; ports.rescan (§13 step 5) 202, settled by
+// the port.scanned of the scan it asked for (a PortScanner, preview.Scanner).
+// The probe goes through a PortProber, which the server makes the preview
+// proxy itself.
 package api
 
 import "net/http"
@@ -306,8 +308,8 @@ var Table = []Route{
 	},
 	{
 		Method: "POST", Pattern: "/api/workspaces/{id}/ports/rescan", Mux: MuxAPI,
-		// Discovery's (PF §8.2), which is §13 step 5: declared here so the
-		// table stays the whole contract, a 501 behind the gate until then.
+		// Discovery's (PF §8.2, §13 step 5): a scan now rather than at the
+		// next interval. Settled by port.scanned for this workspace.
 		Auth: AuthRequired, Mutating: true,
 		Name: "ports.rescan", Doc: "POST /api/workspaces/:id/ports/rescan",
 	},

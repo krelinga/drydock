@@ -93,10 +93,12 @@ describe('Stop', () => {
     const note = stopFailedDetail("docker could not stop the workspace's container.")
     expect(live.find('[data-test="running-state"]').text()).toBe(line)
     expect(live.find('.detail').text()).toBe(note)
-    // A different page, loaded cold: GET /api/repos and GET /api/workspaces only.
+    // A different page, loaded cold: GET /api/repos and GET /api/workspaces,
+    // and the running card's port count (…/ports) — never the detail.
     const { wrapper } = await mountApp('/')
-    const paths = b.log.slice(-3).map((r) => new URL(r.url).pathname)
-    expect(paths.some((p) => p.startsWith('/api/workspaces/'))).toBe(false)
+    const paths = b.log.slice(-4).map((r) => new URL(r.url).pathname)
+    expect(paths.some((p) => /^\/api\/workspaces\/[^/]+$/.test(p))).toBe(false)
+    expect(paths).toContain('/api/workspaces')
     const card = runningCard(wrapper, WS_RUNNING)
     expect(card.find('[data-test="running-state"]').text()).toBe(line)
     expect(card.find('[data-test="running-state"]').classes()).toContain('bad')

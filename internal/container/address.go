@@ -20,6 +20,13 @@ import (
 type Address struct {
 	ContainerID string
 	IP          netip.Addr
+	// Pid is the container's init process on this host (.State.Pid), from
+	// the same inspect as IP: the discovery scan reads the container's
+	// socket table through it (PF §8.2). A resolution, never kept — a PID is
+	// reused by the kernel like any other once its container dies. Confirm
+	// does not compare it: a connection is bound to the container and its
+	// address, and the scan makes its own check (Listeners).
+	Pid int
 }
 
 var (
@@ -77,7 +84,7 @@ func (m Manager) Confirm(ctx context.Context, workspaceID string, a Address) err
 	if err != nil {
 		return err
 	}
-	if got != a {
+	if got.ContainerID != a.ContainerID || got.IP != a.IP {
 		return ErrMoved
 	}
 	return nil
@@ -95,6 +102,7 @@ type inspectAddress struct {
 	ID    string `json:"Id"`
 	State struct {
 		Running bool
+		Pid     int
 	}
 	Config struct {
 		Labels map[string]string
@@ -104,36 +112,12 @@ type inspectAddress struct {
 	}
 }
 
-// addressOf inspects one container and reads its address. Structured JSON,
-// never a table; a container removed since it was listed is not running.
+// addressOf inspects one container and reads its address and PID. Structured
+// JSON, never a table; a container removed since it was listed is not running.
 func (m Manager) addressOf(ctx context.Context, workspaceID, id string) (Address, error) {
-	if !workspaceIDPattern.MatchString(workspaceID) {
-		return Address{}, fmt.Errorf("container: %q is not a workspace id", workspaceID)
-	}
-	if !containerID.MatchString(id) {
-		return Address{}, fmt.Errorf("container: %q is not a container id", id)
-	}
-	var out, stderr bytes.Buffer
-	res := m.Run.Run(ctx, subproc.Cmd{Name: "docker", Args: []string{"inspect", "--type", "container", "--", id},
-		Stdout: limit(&out, 4<<20), Stderr: limit(&stderr, 64<<10)})
-	if res.Err == nil && res.ExitCode != 0 && noSuchContainer.MatchString(stderr.String()) {
-		return Address{}, ErrNotRunning
-	}
-	if err := failed("docker inspect", res, &stderr); err != nil {
+	c, err := m.inspectOne(ctx, workspaceID, id)
+	if err != nil {
 		return Address{}, err
-	}
-	var all []inspectAddress
-	if err := json.Unmarshal(out.Bytes(), &all); err != nil {
-		return Address{}, fmt.Errorf("docker inspect: %w", err)
-	}
-	if len(all) != 1 || all[0].ID != id {
-		return Address{}, fmt.Errorf("docker inspect: asked about %s, answered about something else", id)
-	}
-	c := all[0]
-	if c.Config.Labels[m.key(LabelWorkspace)] != workspaceID {
-		// Listed by this label a moment ago; without it now, the contract
-		// moved, and dialling it would be guessing.
-		return Address{}, fmt.Errorf("docker inspect: container %s does not carry %s=%s", id, m.key(LabelWorkspace), workspaceID)
 	}
 	if !c.State.Running {
 		return Address{}, ErrNotRunning
@@ -152,10 +136,45 @@ func (m Manager) addressOf(ctx context.Context, workspaceID, id string) (Address
 	}
 	for _, cd := range cands {
 		if drivers[cd.network] == "bridge" {
-			return Address{ContainerID: id, IP: cd.ip}, nil
+			return Address{ContainerID: id, IP: cd.ip, Pid: c.State.Pid}, nil
 		}
 	}
 	return Address{}, fmt.Errorf("%w: none of its addresses is on a bridge network", ErrNoAddress)
+}
+
+// inspectOne is `docker inspect` of one container, by full id after "--",
+// checked to be the container asked about and to carry the workspace's label
+// with this id. A container removed since it was listed is ErrNotRunning.
+func (m Manager) inspectOne(ctx context.Context, workspaceID, id string) (inspectAddress, error) {
+	if !workspaceIDPattern.MatchString(workspaceID) {
+		return inspectAddress{}, fmt.Errorf("container: %q is not a workspace id", workspaceID)
+	}
+	if !containerID.MatchString(id) {
+		return inspectAddress{}, fmt.Errorf("container: %q is not a container id", id)
+	}
+	var out, stderr bytes.Buffer
+	res := m.Run.Run(ctx, subproc.Cmd{Name: "docker", Args: []string{"inspect", "--type", "container", "--", id},
+		Stdout: limit(&out, 4<<20), Stderr: limit(&stderr, 64<<10)})
+	if res.Err == nil && res.ExitCode != 0 && noSuchContainer.MatchString(stderr.String()) {
+		return inspectAddress{}, ErrNotRunning
+	}
+	if err := failed("docker inspect", res, &stderr); err != nil {
+		return inspectAddress{}, err
+	}
+	var all []inspectAddress
+	if err := json.Unmarshal(out.Bytes(), &all); err != nil {
+		return inspectAddress{}, fmt.Errorf("docker inspect: %w", err)
+	}
+	if len(all) != 1 || all[0].ID != id {
+		return inspectAddress{}, fmt.Errorf("docker inspect: asked about %s, answered about something else", id)
+	}
+	c := all[0]
+	if c.Config.Labels[m.key(LabelWorkspace)] != workspaceID {
+		// Listed by this label a moment ago; without it now, the contract
+		// moved, and dialling it would be guessing.
+		return inspectAddress{}, fmt.Errorf("docker inspect: container %s does not carry %s=%s", id, m.key(LabelWorkspace), workspaceID)
+	}
+	return c, nil
 }
 
 type candidate struct {

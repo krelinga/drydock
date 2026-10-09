@@ -376,6 +376,12 @@ export interface Port {
   declared: boolean
   observed: boolean
   manual: boolean
+  /** What discovery last saw it bound to; null when it never has (PF §8.2). */
+  bindAddr: string | null
+  /** Bound to loopback: listed, but only the container itself can reach it. */
+  loopback: boolean
+  /** Discovery's verdict: listening now, gone (seen before, not now), or null for never seen. */
+  observedState: 'listening' | 'gone' | null
   /** The id of the event (or snapshot position) that last wrote it. */
   at: number
 }
@@ -1319,6 +1325,9 @@ function toPort(m: unknown, at: number): Port | null {
     declared: v.declared === true,
     observed: v.observed === true,
     manual: v.manual === true,
+    bindAddr: str(v.bind_addr),
+    loopback: v.loopback === true,
+    observedState: v.observed_state === 'listening' || v.observed_state === 'gone' ? v.observed_state : null,
     at,
   }
 }
@@ -1326,8 +1335,11 @@ function toPort(m: unknown, at: number): Port | null {
 /**
  * The port.* events (internal/preview): every kind but port.retired carries
  * the whole row as `data.port`, so it is an upsert versioned by event id;
- * port.retired drops the row for good. A kind from a later phase changes
- * nothing.
+ * port.retired drops the row for good. Discovery's (`data.source:
+ * "discovery"`) are the same kinds and are applied alike: a row the scan
+ * found is a row, never a notice. port.scanned answers a rescan and changes
+ * no entity (stores/ports.ts settles on it); a kind from a later phase
+ * changes nothing either.
  */
 function applyPortEvent(base: Entities, wsId: string, ev: StreamEvent): Entities {
   const data = ev.data ?? {}

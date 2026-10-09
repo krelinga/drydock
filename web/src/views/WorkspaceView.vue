@@ -30,6 +30,7 @@ import { useStreamRefetch } from '../lib/refetch'
 import { relativeTime } from '../lib/time'
 import MakeRoom from '../components/MakeRoom.vue'
 import PortsPanel from '../components/PortsPanel.vue'
+import PortCount from '../components/PortCount.vue'
 import ResourceLine from '../components/ResourceLine.vue'
 import ReadOnlyNote from '../components/ReadOnlyNote.vue'
 import { githubAccess } from '../lib/githubAccess'
@@ -228,6 +229,7 @@ watch(id, () => {
         </div>
         <p v-if="status.note" class="note" data-test="ws-note">{{ status.note }}</p>
         <ResourceLine :workspace="ws" />
+        <PortCount :workspace="ws" :panel="ws.state !== 'deleting'" />
         <ReadOnlyNote :workspace="ws" />
         <WorkspaceIdentityNote :state="ws.state" part="waiting" />
         <p v-if="status.since" class="note" data-test="waiting-since">Waiting since {{ relativeTime(status.since) }}.</p>

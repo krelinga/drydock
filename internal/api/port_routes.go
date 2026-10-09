@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 
+	"github.com/krelinga/drydock/internal/life"
 	"github.com/krelinga/drydock/internal/preview"
 )
 
@@ -24,6 +25,13 @@ type PortRegistry interface {
 	Retire(ctx context.Context, workspaceID, portID string) error
 }
 
+// PortScanner is discovery's half of the registry (PF §8.2, §13 step 5):
+// preview.Scanner. Rescan asks for a scan that begins after the call and
+// returns at once.
+type PortScanner interface {
+	Rescan(ctx context.Context, workspaceID string) error
+}
+
 // PortProber is the probe's dial: preview.Proxy.Probe, the proxy's own dial
 // and no second resolver (PF §13.4, "What step 4 should know").
 type PortProber interface {
@@ -33,14 +41,16 @@ type PortProber interface {
 // PortRoutes serves the port registry. Every mutation answers 202 and is
 // settled by its event — port.added, port.enabled, port.disabled,
 // port.updated, port.retired — which carries the row; the client discards the
-// 202's body, as it does every mutation's (frontend §2.1).
+// 202's body, as it does every mutation's (frontend §2.1). The rescan is
+// settled by port.scanned, which the scan it asked for writes.
 type PortRoutes struct {
 	Registry PortRegistry
 	Prober   PortProber
+	Scanner  PortScanner
 }
 
-// Handlers returns the map Build consumes. ports.rescan is §13 step 5's and is
-// left out, so Build mounts its 501 behind the gate.
+// Handlers returns the map Build consumes. Without a Scanner, ports.rescan is
+// left out and Build mounts its 501 behind the gate.
 func (pr PortRoutes) Handlers() map[string]http.HandlerFunc {
 	if pr.Registry == nil {
 		return map[string]http.HandlerFunc{}
@@ -54,7 +64,26 @@ func (pr PortRoutes) Handlers() map[string]http.HandlerFunc {
 	if pr.Prober != nil {
 		h["ports.probe"] = pr.probe
 	}
+	if pr.Scanner != nil {
+		h["ports.rescan"] = pr.rescan
+	}
 	return h
+}
+
+// rescan is POST …/ports/rescan: a discovery scan that begins after the
+// request, for every workspace, answered for this one by port.scanned. It
+// takes no body, and never enables anything — the scan cannot.
+func (pr PortRoutes) rescan(w http.ResponseWriter, r *http.Request) {
+	err := pr.Scanner.Rescan(r.Context(), r.PathValue("id"))
+	if errors.Is(err, life.ErrStopping) || errors.Is(err, life.ErrNotStarted) {
+		WriteError(w, http.StatusServiceUnavailable, CodeUnavailable, "Drydock is shutting down.", "")
+		return
+	}
+	if err != nil {
+		writePortError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusAccepted, struct{}{})
 }
 
 // PortList is GET /api/workspaces/{id}/ports. previews says whether a preview

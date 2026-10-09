@@ -316,7 +316,13 @@ export interface PortView {
   declared: boolean
   observed: boolean
   manual: boolean
+  /** What discovery last saw the port bound to (PF §8.2): 0.0.0.0, ::, 127.0.0.1, … */
   bind_addr: string | null
+  /**
+   * Discovery's classification of bind_addr: bound to loopback, so only the
+   * container itself can reach it and no preview of it can answer.
+   */
+  loopback: boolean
   observed_state: 'listening' | 'gone' | 'never_seen' | null
   last_seen_at: string | null
   created_at: string | null

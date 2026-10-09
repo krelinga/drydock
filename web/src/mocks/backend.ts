@@ -207,6 +207,18 @@ export interface MockBackend {
   previewDomain: string | null
   /** Per workspace, the container ports something listens on: what a probe finds answering. */
   listening: Record<string, number[]>
+  /**
+   * Per workspace, the sockets port discovery reads (PF §8.2), each with its
+   * bind address. A workspace absent here is read as `listening`'s ports on
+   * 0.0.0.0. `scanPorts` reads it; nothing else does.
+   */
+  sockets: Record<string, Array<{ port: number; bind: string }>>
+  /** Discovery's memory, by workspace then port, as preview.Scanner keeps it. */
+  scanTracks: Record<string, Record<number, { bind: string; streak: number; missed: number }>>
+  /** Workspaces whose socket table cannot be read: a scan changes nothing there. */
+  scanUnavailable: string[]
+  /** 'auto' runs a rescan's scan at once; 'manual' leaves it to a spec's `scanPorts`. */
+  scanMode: 'auto' | 'manual'
   /** Hands out port row ids and slug suffixes. */
   portSeq: number
 }
@@ -540,6 +552,10 @@ function newBackendBare(now: number, overrides: Partial<MockBackend>): MockBacke
     ports: {},
     previewDomain: 'drydock-preview.test',
     listening: {},
+    sockets: {},
+    scanTracks: {},
+    scanUnavailable: [],
+    scanMode: 'auto',
     portSeq: 0,
     ...overrides,
   }
@@ -1296,11 +1312,18 @@ export function playScript(b: MockBackend, id: string, n?: number): void {
   for (const play of now) play()
 }
 
+/** Whether a bind address is loopback, as net/netip reads it (a mapped one included). */
+function loopbackAddr(a: string | null): boolean {
+  if (a === null) return false
+  const v4 = a.startsWith('::ffff:') ? a.slice(7) : a
+  return /^127\.\d+\.\d+\.\d+$/.test(v4) || a === '::1'
+}
+
 /** A port row as the API serves it (internal/preview Port): host with a domain, url only while enabled. */
 export function portView(b: MockBackend, p: MockPort): PortView {
   const { retired: _retired, ...v } = p
   const host = b.previewDomain === null ? null : `${p.slug}.${b.previewDomain}`
-  return { ...v, host, url: host !== null && p.enabled ? `https://${host}/` : null }
+  return { ...v, host, url: host !== null && p.enabled ? `https://${host}/` : null, loopback: loopbackAddr(p.bind_addr) }
 }
 
 /** `<repo>-<port>-<4 chars>` (PF §4), never one any row — retired or not — holds. */
@@ -1327,7 +1350,7 @@ export function addMockPort(
     id, workspace_id: wsId, container_port: port, slug: mintSlug(b, wsId, port), host: null, url: null,
     label: opts.label ?? null, upstream_scheme: opts.scheme ?? 'http', host_header: opts.hostHeader ?? 'localhost',
     enabled: false, hidden: false, declared: opts.declared === true, observed: false, manual: opts.declared !== true,
-    bind_addr: null, observed_state: null, last_seen_at: null, created_at: new Date().toISOString(), retired: false,
+    bind_addr: null, loopback: false, observed_state: null, last_seen_at: null, created_at: new Date().toISOString(), retired: false,
   }
   b.ports[id] = row
   emit(b, 'port.added', {
@@ -1344,6 +1367,128 @@ export function seedPorts(b: MockBackend): void {
   addMockPort(b, WS_RUNNING, 5173, { label: 'vite dev server', declared: true })
   addMockPort(b, WS_RUNNING, 6006, { label: 'storybook', declared: true })
   b.listening[WS_RUNNING] = [5173]
+}
+
+/**
+ * Port discovery's constants (internal/preview): a port is listed after two
+ * consecutive scans see it at one bind address, and goes after its grace —
+ * DefaultGrace / DefaultScanInterval, three scans here, since the mock counts
+ * scans rather than seconds. At most 32 rows of discovery's own.
+ */
+export const SCAN_APPEAR_AFTER = 2
+export const SCAN_GRACE_SCANS = 3
+/**
+ * A row only discovery holds stays listed, gone, for RetireAfter (ten
+ * minutes: 120 scans here) before it is retired, so a server that comes back
+ * keeps its row and slug. The server's per-workspace budgets on new rows and
+ * on changes (internal/preview MintBurst, ChangeBurst) are not mocked: they
+ * bound a container churning ports, which no spec plays.
+ */
+export const SCAN_RETIRE_SCANS = 120
+const MAX_OBSERVED = 32
+
+/** What a workspace's container is listening on, as discovery reads it. */
+function mockSockets(b: MockBackend, wsId: string): Array<{ port: number; bind: string }> {
+  return b.sockets[wsId] ?? (b.listening[wsId] ?? []).map((port) => ({ port, bind: '0.0.0.0' }))
+}
+
+/** The widest bind of a port's sockets — 0.0.0.0, ::, another, loopback — as bindsByPort picks. */
+function widestBind(binds: string[]): string {
+  const rank = (a: string) => (a === '0.0.0.0' ? 0 : a === '::' ? 1 : loopbackAddr(a) ? 3 : 2)
+  return [...binds].sort((x, y) => rank(x) - rank(y) || (x < y ? -1 : x > y ? 1 : 0))[0]!
+}
+
+/** Kept when it stops listening: held by the operator or the configuration (preview.held). */
+const heldPort = (p: MockPort) => p.enabled || p.manual || p.declared || p.hidden
+
+/**
+ * One discovery round, as preview.Scanner runs it (internal/preview
+ * discover.go): every running workspace, every one with a row still
+ * waiting on discovery (a stopped one is read as empty), and every one in
+ * `asked`, which each get a port.scanned. Debounced: listed after
+ * SCAN_APPEAR_AFTER scans at one bind, gone after SCAN_GRACE_SCANS without
+ * one, and discovery's own retired SCAN_RETIRE_SCANS after it was last seen. Merged onto
+ * live rows by port, never a retired one; a new row is born off. Every event
+ * carries `source: 'discovery'`. It never writes `enabled`.
+ */
+export function scanPorts(b: MockBackend, asked: string[] = []): void {
+  const liveRows = (id: string) => Object.values(b.ports).filter((p) => p.workspace_id === id && !p.retired)
+  const observedOnly = (p: MockPort) => p.observed && !heldPort(p)
+  // A row still waiting on discovery: listening (to go), or discovery's own and gone (to be retired).
+  const pending = (p: MockPort) => p.observed_state === 'listening' || (observedOnly(p) && p.observed_state === 'gone')
+  const targets = Object.values(b.workspaces)
+    .filter((w) => w.state !== 'deleting' && (w.state === 'running' || liveRows(w.id).some(pending) || asked.includes(w.id)))
+    .sort((x, y) => (x.id < y.id ? -1 : x.id > y.id ? 1 : 0))
+  for (const w of targets) {
+    const note = asked.includes(w.id)
+    if (w.state === 'running' && b.scanUnavailable.includes(w.id)) {
+      if (note) emit(b, 'port.scanned', { workspace_id: w.id, message: "Could not read what this workspace's container is listening on.", data: { discovery: 'unavailable', source: 'discovery' } })
+      continue
+    }
+    const seen = new Map<number, string[]>()
+    if (w.state === 'running') {
+      for (const s of mockSockets(b, w.id)) seen.set(s.port, [...(seen.get(s.port) ?? []), s.bind])
+    }
+    const tracks = b.scanTracks[w.id] ?? (b.scanTracks[w.id] = {})
+    for (const [port, binds] of seen) {
+      const bind = widestBind(binds)
+      const t = tracks[port]
+      if (t !== undefined && t.streak > 0 && t.bind === bind) t.streak++
+      else tracks[port] = { bind, streak: 1, missed: 0 }
+      tracks[port]!.missed = 0
+    }
+    const live = new Map(liveRows(w.id).map((p) => [p.container_port, p]))
+    for (const [port, p] of live) if (tracks[port] === undefined && pending(p)) tracks[port] = { bind: '', streak: 0, missed: 0 }
+    const ports = Object.keys(tracks).map(Number).sort((x, y) => x - y)
+    for (const port of ports) {
+      const t = tracks[port]!
+      const row = live.get(port)
+      if (seen.has(port)) {
+        if (t.streak < SCAN_APPEAR_AFTER || (row?.observed_state === 'listening' && row.bind_addr === t.bind)) continue
+        const now = new Date().toISOString()
+        if (row !== undefined) {
+          const next: MockPort = { ...row, observed: true, observed_state: 'listening', bind_addr: t.bind, last_seen_at: now }
+          b.ports[row.id] = next
+          emit(b, 'port.updated', { workspace_id: w.id, message: `Port ${port} is listening.`, data: { port: portView(b, next), source: 'discovery' } })
+          continue
+        }
+        const all = liveRows(w.id)
+        if (all.length >= 64 || all.filter(observedOnly).length >= MAX_OBSERVED) continue
+        const id = `01JP${String(++b.portSeq).padStart(22, '0')}`
+        const fresh: MockPort = {
+          id, workspace_id: w.id, container_port: port, slug: mintSlug(b, w.id, port), host: null, url: null,
+          label: null, upstream_scheme: 'http', host_header: 'localhost',
+          enabled: false, hidden: false, declared: false, observed: true, manual: false,
+          bind_addr: t.bind, loopback: false, observed_state: 'listening', last_seen_at: now, created_at: now, retired: false,
+        }
+        b.ports[id] = fresh
+        emit(b, 'port.added', { workspace_id: w.id, message: `Port ${port} is listening. It is not previewed.`, data: { port: portView(b, fresh), source: 'discovery' } })
+        continue
+      }
+      t.streak = 0
+      if (row === undefined || !pending(row)) {
+        delete tracks[port] // nothing seen and nothing waiting: nothing pending
+        continue
+      }
+      t.missed++
+      if (row.observed_state === 'listening') {
+        if (t.missed < SCAN_GRACE_SCANS) continue
+        const next: MockPort = { ...row, observed_state: 'gone' }
+        b.ports[row.id] = next
+        emit(b, 'port.updated', { workspace_id: w.id, message: `Port ${port} stopped listening.`, data: { port: portView(b, next), source: 'discovery' } })
+        continue
+      }
+      // Discovery's own, gone: retired once nothing has listened for RetireAfter.
+      if (t.missed < SCAN_RETIRE_SCANS) continue
+      b.ports[row.id] = { ...row, retired: true, enabled: false }
+      delete tracks[port]
+      emit(b, 'port.retired', {
+        workspace_id: w.id, message: `Port ${port} removed from the ports list: nothing has listened on it for a while.`,
+        data: { port_id: row.id, container_port: port, source: 'discovery' },
+      })
+    }
+    if (note) emit(b, 'port.scanned', { workspace_id: w.id, message: 'Ports scanned.', data: { discovery: 'ok', source: 'discovery' } })
+  }
 }
 
 const PORT_PATCH_FIELDS = { enabled: 'boolean', hidden: 'boolean', label: 'string', host_header: 'string' } as const
@@ -1737,10 +1882,18 @@ export function handlersFor(b: MockBackend): HttpHandler[] {
       return HttpResponse.json({ ports, previews: b.previewDomain !== null } satisfies PortList)
     }),
 
-    http.post('/api/workspaces/:id/ports/rescan', ({ request }) => {
+    // POST …/ports/rescan (§13 step 5): 202, then a scan that answers it
+    // with port.scanned — at once in 'auto' mode, by a spec's scanPorts in
+    // 'manual'.
+    http.post('/api/workspaces/:id/ports/rescan', ({ request, params }) => {
       record(request)
       if (!b.signedIn) return unauthenticated()
-      return envelope(501, 'not_implemented', 'This route is not implemented yet.')
+      const id = String(params.id)
+      const w = b.workspaces[id]
+      if (w === undefined) return envelope(404, 'not_found', 'There is no such workspace.')
+      if (w.state === 'deleting') return envelope(409, 'in_progress', 'This workspace is being deleted.')
+      if (b.scanMode === 'auto') setTimeout(() => scanPorts(b, [id]), 0)
+      return HttpResponse.json({}, { status: 202 })
     }),
 
     http.post('/api/workspaces/:id/ports', async ({ request, params }) => {
@@ -1840,7 +1993,7 @@ export function handlersFor(b: MockBackend): HttpHandler[] {
       // internal/preview OutcomeSentence's words.
       const result: ProbeResult = w.state !== 'running'
         ? { outcome: 'not_running', message: "This workspace has no running container to reach." }
-        : (b.listening[id] ?? []).includes(n)
+        : mockSockets(b, id).some((s) => s.port === n && !loopbackAddr(s.bind))
           ? { outcome: 'answering', message: `Something is answering on port ${n} in this workspace's container.` }
           : {
             outcome: 'refused',

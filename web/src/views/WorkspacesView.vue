@@ -21,6 +21,7 @@ import { RouterLink } from 'vue-router'
 import { describeError } from '../api/messages'
 import ActionButton from '../components/ActionButton.vue'
 import MakeRoom from '../components/MakeRoom.vue'
+import PortCount from '../components/PortCount.vue'
 import ResourceLine from '../components/ResourceLine.vue'
 import ReadOnlyNote from '../components/ReadOnlyNote.vue'
 import WorkspaceAction from '../components/WorkspaceAction.vue'
@@ -90,6 +91,7 @@ function rowNote(r: CatalogRow): string | null {
           </div>
           <p v-if="status(r.workspace).note" class="detail">{{ status(r.workspace).note }}</p>
           <ResourceLine :workspace="r.workspace" />
+          <PortCount :workspace="r.workspace" />
           <ReadOnlyNote :workspace="r.workspace" />
           <WorkspaceIdentityNote :state="r.workspace.state" part="waiting" />
           <p v-if="status(r.workspace).since" class="detail" data-test="waiting-since">

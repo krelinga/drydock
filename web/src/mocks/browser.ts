@@ -54,6 +54,12 @@
 //   drydockMock.identity('expiring', 36 * 3600e3)   the login (refresh token) ends
 //                                 36 hours out; the access token is always ~8 h
 //   drydockMock.backend.previewDomain = null  previews off: ports listed, none enabled
+//   drydockMock.listen(8080)      something in the running sample's container starts
+//                                 listening on 8080 (0.0.0.0); discovery scans every
+//                                 5 s, so it is listed, off, two scans later — and
+//                                 nothing else happens (port forwarding §8.2)
+//   drydockMock.listen(9229, '127.0.0.1')   …on loopback: listed, said so
+//   drydockMock.unlisten(8080)    it stops: gone three scans later
 //   drydockMock.identityCheckFails()  a check could not read the volume; the
 //                                 stored state stands and Settings says why
 
@@ -61,7 +67,8 @@ import { setupWorker } from 'msw/browser'
 import type { IdentityState } from '../api/types'
 import {
   cloneScript, completeRefresh, emit, failIdentityCheck, handlersFor, identityView, MOCK_PASSWORD, newBackend,
-  nextWorkspaceId, recordSecretFetch, scheduleDelete, scheduleStop, secretMeta, secretUndeliverable, seedPorts, setIdentity,
+  nextWorkspaceId, recordSecretFetch, scanPorts, scheduleDelete, scheduleStop, secretMeta, secretUndeliverable, seedPorts,
+  setIdentity, WS_RUNNING,
 } from './backend'
 
 /** The server's detail for each refusal dev:mock can force: what internal/secrets would say. */
@@ -87,6 +94,10 @@ export async function startMockWorker(): Promise<void> {
   seedPorts(backend)
   const worker = setupWorker(...handlersFor(backend))
   await worker.start({ onUnhandledFrame: 'bypass', quiet: true })
+  // Port discovery's cadence (internal/preview DefaultScanInterval).
+  setInterval(() => scanPorts(backend), 5000)
+  const sockets = () => backend.sockets[WS_RUNNING] ??
+    (backend.sockets[WS_RUNNING] = (backend.listening[WS_RUNNING] ?? []).map((port) => ({ port, bind: '0.0.0.0' })))
 
   const handle = {
     password: MOCK_PASSWORD,
@@ -129,6 +140,14 @@ export async function startMockWorker(): Promise<void> {
       }, 100)
     },
     noApp(on = true) { backend.appConfigured = !on },
+    listen(port: number, bind = '0.0.0.0', ws = WS_RUNNING) {
+      if (ws === WS_RUNNING) backend.sockets[ws] = [...sockets().filter((s) => s.port !== port), { port, bind }]
+      else backend.sockets[ws] = [...(backend.sockets[ws] ?? []).filter((s) => s.port !== port), { port, bind }]
+    },
+    unlisten(port: number, ws = WS_RUNNING) {
+      if (ws === WS_RUNNING) sockets()
+      backend.sockets[ws] = (backend.sockets[ws] ?? []).filter((s) => s.port !== port)
+    },
     refuseSecret(code: string) {
       const r = REFUSALS[code]
       if (r === undefined) throw new Error(`no such refusal; one of ${Object.keys(REFUSALS).join(', ')}`)
