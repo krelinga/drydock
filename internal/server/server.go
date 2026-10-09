@@ -247,7 +247,8 @@ func New(ctx context.Context, cfg config.Config, env sys.Env) (*Server, error) {
 		// One client, so the catalog and the broker share its token cache.
 		gh := &github.Client{AppID: cfg.GitHubAppID, Key: key, BaseURL: cfg.GitHubAPI, Clock: env.Clock,
 			HTTP: &http.Client{Timeout: 30 * time.Second}}
-		s.Catalog = &catalog.Catalog{DB: db.DB, Events: s.Events, Clock: env.Clock, GitHub: gh}
+		s.Catalog = &catalog.Catalog{DB: db.DB, Events: s.Events, Clock: env.Clock, GitHub: gh,
+			Logf: func(f string, a ...any) { fmt.Fprintf(os.Stderr, f+"\n", a...) }}
 		s.Broker = &broker.Broker{Dir: cfg.BrokerDir, GitHub: gh, DB: db.DB, Events: s.Events, Env: env,
 			Logf: func(f string, a ...any) { fmt.Fprintf(os.Stderr, f+"\n", a...) }}
 		if s.Secrets != nil {
@@ -441,6 +442,11 @@ const provisionShutdownWait = 20 * time.Second
 // identity check to end and remove its helper container.
 const identityShutdownWait = 35 * time.Second
 
+// catalogShutdownWait bounds how long shutdown waits for a triggered
+// repository refresh to end. Its GitHub calls and its transaction all end
+// with its context, so it is short; it runs beside the waits above and below.
+const catalogShutdownWait = 10 * time.Second
+
 // supervisorDetachWait bounds how long shutdown waits for the supervisors to
 // let go of their terminals.
 const supervisorDetachWait = 10 * time.Second
@@ -628,6 +634,16 @@ func (s *Server) Serve(ctx context.Context) error {
 	case serveErr = <-errc:
 	}
 	stop()
+	// The refreshes POST /api/repos/refresh started end now, beside the
+	// waits below rather than after them, and are waited for before the
+	// database closes. A refresh asked for from here on starts nothing.
+	catalogStopped := make(chan struct{})
+	go func() {
+		defer close(catalogStopped)
+		if s.Catalog != nil {
+			s.Catalog.Shutdown(catalogShutdownWait)
+		}
+	}()
 	// Runs first, while the broker, the log and the database are all still
 	// there: each in-flight run fails the step it was on, saying Drydock shut
 	// down, and that has to be written before anything it writes to closes.
@@ -661,6 +677,7 @@ func (s *Server) Serve(ctx context.Context) error {
 	<-supervising
 	<-sweeping
 	<-sampling
+	<-catalogStopped
 	s.DB.Close()
 	if errors.Is(serveErr, http.ErrServerClosed) {
 		serveErr = nil

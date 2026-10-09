@@ -261,7 +261,8 @@ func (w *Watch) spawnLocked() {
 
 // Shutdown ends the checks Trigger started and waits up to wait for them —
 // each removes what it was running first — so none writes to a closed
-// database. Run's checks end with Run's context; a caller's Check with its.
+// database. A wait that runs out is written to the service log. Run's checks
+// end with Run's context; a caller's Check with its.
 func (w *Watch) Shutdown(wait time.Duration) {
 	w.init()
 	w.mu.Lock()
@@ -275,6 +276,8 @@ func (w *Watch) Shutdown(wait time.Duration) {
 	select {
 	case <-done:
 	case <-time.After(wait):
+		// Said, because what follows is the database closing under it.
+		w.logf("drydock: identity: a triggered check did not stop within %s of shutdown", wait)
 	}
 }
 
