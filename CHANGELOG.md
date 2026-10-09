@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.4](https://github.com/krelinga/drydock/compare/v0.7.3...v0.7.4) (2026-10-09)
+
+
+### Bug Fixes
+
+* make each supervisor loop the only signaller of its server ([#114](https://github.com/krelinga/drydock/issues/114)) ([a69f732](https://github.com/krelinga/drydock/commit/a69f73299433b71355a6d033cd580b9144bcfd2d))
+
 ## [0.7.3](https://github.com/krelinga/drydock/compare/v0.7.2...v0.7.3) (2026-10-09)
 
 
