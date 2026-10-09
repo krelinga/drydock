@@ -279,6 +279,21 @@ func (r *rig) logText() string {
 	return b.String()
 }
 
+// heldBack is the visible text of the partial line the log is holding back:
+// a prompt with no line end, which reaches the lines only when the gate's
+// verdict flushes it. The run has written it to its tail first.
+func (r *rig) heldBack() string {
+	r.m.mu.Lock()
+	ring := r.m.logs[wsID]
+	r.m.mu.Unlock()
+	if ring == nil {
+		return ""
+	}
+	ring.mu.Lock()
+	defer ring.mu.Unlock()
+	return visible(ring.pending)
+}
+
 func (r *rig) dockerLog() string {
 	b, _ := os.ReadFile(r.docker)
 	return string(b)

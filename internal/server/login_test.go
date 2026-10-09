@@ -13,8 +13,10 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -128,15 +130,25 @@ func TestLoginHandshakeEndToEnd(t *testing.T) {
 		t.Fatalf("events: %v", err)
 	}
 	streamDone := make(chan struct{})
+	// streamed is the id of the last event whose data line the stream has
+	// delivered, so the sweep can wait for the stream to have caught up.
+	var streamed atomic.Int64
 	go func() {
 		defer close(streamDone)
 		sc := bufio.NewScanner(sresp.Body)
 		sc.Buffer(make([]byte, 1<<20), 1<<20)
+		var id int64
 		for sc.Scan() {
 			heardMu.Lock()
 			heard.Write(sc.Bytes())
 			heard.WriteByte('\n')
 			heardMu.Unlock()
+			line := sc.Text()
+			if n, ok := strings.CutPrefix(line, "id: "); ok {
+				id, _ = strconv.ParseInt(n, 10, 64)
+			} else if strings.HasPrefix(line, "data: ") && id > 0 {
+				streamed.Store(id)
+			}
 		}
 	}()
 
@@ -238,7 +250,18 @@ func TestLoginHandshakeEndToEnd(t *testing.T) {
 	fake.NoViolations(t)
 
 	// The sweep.
-	time.Sleep(100 * time.Millisecond) // the stream's last frames
+	// The stream's last frames: everything written by now, delivered —
+	// not a fixed pause, which a loaded runner can overrun and so sweep a
+	// transcript the control then finds without its login events.
+	latest, err := srv.Events.Latest(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for deadline := time.Now().Add(15 * time.Second); streamed.Load() < latest; time.Sleep(10 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatalf("the stream delivered up to event %d of %d", streamed.Load(), latest)
+		}
+	}
 	stopStream()
 	<-streamDone
 	srv.DB.DB.Exec(`PRAGMA wal_checkpoint(FULL)`)
