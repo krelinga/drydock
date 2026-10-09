@@ -40,15 +40,30 @@ func TestACreateCutOffInsideAStepIsClosedAtBoot(t *testing.T) {
 	} {
 		t.Run(string(c.step), func(t *testing.T) {
 			e := lifecycleEnv(t)
+			// The first process is held inside the step until the test ends,
+			// and says so once it is there: the up's hold is a shell loop
+			// past the hang check, marked by the file up-entered; step 8's is
+			// StartSupervisor, marked by closing entered. The test cuts the
+			// process off only after that mark, so the step cannot end
+			// first — the started event alone is written before the fake
+			// up has even read the hang file.
 			hang := filepath.Join(e.cli.dir, "hang-up")
-			e.cli.up = `if [ -e '` + hang + `' ]; then sleep 30; exit 1; fi
+			upEntered := filepath.Join(e.cli.dir, "up-entered")
+			release := filepath.Join(e.cli.dir, "up-release")
+			e.cli.up = `if [ -e '` + hang + `' ]; then
+  : > '` + upEntered + `'
+  while [ -d '` + e.cli.dir + `' ] && [ ! -e '` + release + `' ]; do sleep 0.05; done
+  exit 1
+fi
 ` + registeringUp(e.cli.dir)
 			e.wire(t)
 			hold := make(chan struct{})
+			entered := make(chan struct{})
 			if c.step == workspace.StepUp {
 				os.WriteFile(hang, nil, 0o600)
 			} else {
 				e.p.StartSupervisor = func(ctx context.Context, w workspace.Workspace) error {
+					close(entered)
 					select {
 					case <-hold:
 					case <-ctx.Done():
@@ -56,18 +71,34 @@ func TestACreateCutOffInsideAStepIsClosedAtBoot(t *testing.T) {
 					return nil
 				}
 			}
+			inside := func() bool {
+				if c.step == workspace.StepUp {
+					_, err := os.Stat(upEntered)
+					return err == nil
+				}
+				select {
+				case <-entered:
+					return true
+				default:
+					return false
+				}
+			}
 			// The first process is never told it crashed; at the end it is
-			// shut down, so nothing it runs outlives the test.
-			t.Cleanup(func() { close(hold); e.shutdown(time.Minute) })
+			// released and shut down, so nothing it runs outlives the test.
+			t.Cleanup(func() {
+				close(hold)
+				os.WriteFile(release, nil, 0o600)
+				e.shutdown(time.Minute)
+			})
 
 			w, err := e.p.Create(ctx, alpha, "")
 			if err != nil {
 				t.Fatal(err)
 			}
 			deadline := time.Now().Add(20 * time.Second)
-			for e.view(t, w.ID).Steps[c.step].Status != "started" {
+			for e.view(t, w.ID).Steps[c.step].Status != "started" || !inside() {
 				if time.Now().After(deadline) {
-					t.Fatalf("the run never reached %s: %v", c.step, e.stepEvents(t, w.ID))
+					t.Fatalf("the run never reached the inside of %s: %v", c.step, e.stepEvents(t, w.ID))
 				}
 				time.Sleep(10 * time.Millisecond)
 			}
