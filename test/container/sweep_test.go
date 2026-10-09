@@ -13,8 +13,6 @@ import (
 	"github.com/krelinga/drydock/internal/dockerguard"
 	"github.com/krelinga/drydock/internal/ephemeral"
 	"github.com/krelinga/drydock/internal/provision"
-	"github.com/krelinga/drydock/internal/server"
-	"github.com/krelinga/drydock/internal/sys"
 )
 
 // TestBootSweepsLeftoverHelpers: a helper container an earlier process left
@@ -80,7 +78,7 @@ func TestBootSweepsLeftoverHelpers(t *testing.T) {
 	cfg.APISocket, cfg.PreviewSocket = filepath.Join(dir, "http.sock"), filepath.Join(dir, "preview.sock")
 	cfg.BrokerDir, cfg.WorkspaceRoot = filepath.Join(dir, "sock"), filepath.Join(dir, "ws")
 	cfg.SocketGroup, cfg.LabelPrefix = g.Name, p
-	srv, err := server.New(ctx, cfg, sys.Production())
+	srv, err := newServer(ctx, cfg)
 	if err != nil {
 		t.Fatal(err)
 	}

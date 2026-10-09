@@ -30,9 +30,7 @@ import (
 // no helper is left behind. The control is a regular file, which is read.
 func TestTheCredentialReadRefusesWhatNeverEnds(t *testing.T) {
 	needDocker(t)
-	if out, err := exec.Command("docker", "pull", "--quiet", config.DefaultCleanupImage).CombinedOutput(); err != nil {
-		t.Fatalf("docker pull: %v: %s", err, out)
-	}
+	pullImage(t, config.DefaultCleanupImage)
 	p := prefix(t)
 	ctx := context.Background()
 	vol := hangVolume(t, p)
@@ -84,9 +82,7 @@ func TestTheCredentialReadRefusesWhatNeverEnds(t *testing.T) {
 // control).
 func TestAHungReadIsCutOffAndItsHelperRemoved(t *testing.T) {
 	needDocker(t)
-	if out, err := exec.Command("docker", "pull", "--quiet", config.DefaultCleanupImage).CombinedOutput(); err != nil {
-		t.Fatalf("docker pull: %v: %s", err, out)
-	}
+	pullImage(t, config.DefaultCleanupImage)
 	p := prefix(t)
 	ctx := context.Background()
 	vol := hangVolume(t, p)

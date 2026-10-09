@@ -23,8 +23,6 @@ import (
 	"github.com/krelinga/drydock/internal/config"
 	"github.com/krelinga/drydock/internal/github/githubtest"
 	"github.com/krelinga/drydock/internal/preview"
-	"github.com/krelinga/drydock/internal/server"
-	"github.com/krelinga/drydock/internal/sys"
 )
 
 // viteVersion is the Vite the workspace installs: web/'s own pin, so the one
@@ -88,9 +86,7 @@ const (
 func TestViteHMRThroughThePreviewProxy(t *testing.T) {
 	needDevcontainer(t)
 	image := config.DefaultClaudeBaseImage
-	if out, err := exec.Command("docker", "pull", "--quiet", image).CombinedOutput(); err != nil {
-		t.Fatalf("docker pull %s: %v: %s", image, err, out)
-	}
+	pullImage(t, image)
 	p := prefix(t)
 
 	f := githubtest.New(t, 4242, time.Now)
@@ -123,7 +119,7 @@ func TestViteHMRThroughThePreviewProxy(t *testing.T) {
 	cfg.BotName, cfg.BotEmail = "krelinga-drydock-dev[bot]", botEmail
 	cfg.Feature, cfg.ClaudeVolume = newFeatureRegistry(t).Drydock, claudeVolume(p)
 
-	srv, err := server.New(context.Background(), cfg, sys.Production())
+	srv, err := newServer(context.Background(), cfg)
 	if err != nil {
 		t.Fatal(err)
 	}

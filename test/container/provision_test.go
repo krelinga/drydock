@@ -23,8 +23,6 @@ import (
 	"github.com/krelinga/drydock/internal/github/githubtest"
 	"github.com/krelinga/drydock/internal/provision"
 	"github.com/krelinga/drydock/internal/secrets"
-	"github.com/krelinga/drydock/internal/server"
-	"github.com/krelinga/drydock/internal/sys"
 )
 
 // TestCreateWorkspaceThroughTheServer is Phase 2's deliverable in the
@@ -51,9 +49,7 @@ import (
 // remote env. Neither changes what is under test.
 func TestCreateWorkspaceThroughTheServer(t *testing.T) {
 	needDevcontainer(t)
-	if out, err := exec.Command("docker", "pull", "--quiet", provision.DefaultImage).CombinedOutput(); err != nil {
-		t.Fatalf("docker pull %s: %v: %s", provision.DefaultImage, err, out)
-	}
+	pullImage(t, provision.DefaultImage)
 	p := prefix(t)
 
 	f := githubtest.New(t, 4242, time.Now)
@@ -121,7 +117,7 @@ func TestCreateWorkspaceThroughTheServer(t *testing.T) {
 	cfg.Feature = reg.Drydock
 	cfg.ClaudeVolume = claudeVolume(p)
 
-	srv, err := server.New(context.Background(), cfg, sys.Production())
+	srv, err := newServer(context.Background(), cfg)
 	if err != nil {
 		t.Fatal(err)
 	}

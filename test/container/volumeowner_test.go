@@ -17,8 +17,6 @@ import (
 	"github.com/krelinga/drydock/internal/github/githubtest"
 	"github.com/krelinga/drydock/internal/provision"
 	"github.com/krelinga/drydock/internal/secrets"
-	"github.com/krelinga/drydock/internal/server"
-	"github.com/krelinga/drydock/internal/sys"
 )
 
 // TestTheFirstWorkspaceDoesNotDecideTheVolumesOwner is #38's review finding,
@@ -52,12 +50,8 @@ func TestTheFirstWorkspaceDoesNotDecideTheVolumesOwner(t *testing.T) {
 	if os.Getuid() == 1500 {
 		t.Skip("this test's remote user is uid 1500, which is this process's")
 	}
-	if out, err := exec.Command("docker", "pull", "--quiet", provision.DefaultImage).CombinedOutput(); err != nil {
-		t.Fatalf("docker pull %s: %v: %s", provision.DefaultImage, err, out)
-	}
-	if out, err := exec.Command("docker", "pull", "--quiet", config.DefaultCleanupImage).CombinedOutput(); err != nil {
-		t.Fatalf("docker pull: %v: %s", err, out)
-	}
+	pullImage(t, provision.DefaultImage)
+	pullImage(t, config.DefaultCleanupImage)
 	p := prefix(t)
 	vol := claudeVolume(p)
 	t.Cleanup(func() { exec.Command("docker", "volume", "rm", "-f", vol).Run() })
@@ -118,7 +112,7 @@ func TestTheFirstWorkspaceDoesNotDecideTheVolumesOwner(t *testing.T) {
 	cfg.Feature = reg.Drydock
 	cfg.ClaudeVolume = vol
 
-	srv, err := server.New(context.Background(), cfg, sys.Production())
+	srv, err := newServer(context.Background(), cfg)
 	if err != nil {
 		t.Fatal(err)
 	}

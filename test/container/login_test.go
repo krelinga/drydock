@@ -188,9 +188,7 @@ func loginContainer(t *testing.T, p, id string) string {
 //   - on success the container exits and removes itself.
 func TestLoginPTYThroughDocker(t *testing.T) {
 	needDocker(t)
-	if out, err := exec.Command("docker", "pull", "--quiet", config.DefaultCleanupImage).CombinedOutput(); err != nil {
-		t.Fatalf("docker pull: %v: %s", err, out)
-	}
+	pullImage(t, config.DefaultCleanupImage)
 	for _, cols := range []int{80, 1000} {
 		t.Run(strconv.Itoa(cols), func(t *testing.T) {
 			p := prefix(t)
@@ -291,9 +289,7 @@ func (l *loggedIn) n() int {
 // refused before anything is written into it.
 func TestLoginManagerAgainstRealDocker(t *testing.T) {
 	needDocker(t)
-	if out, err := exec.Command("docker", "pull", "--quiet", config.DefaultCleanupImage).CombinedOutput(); err != nil {
-		t.Fatalf("docker pull: %v: %s", err, out)
-	}
+	pullImage(t, config.DefaultCleanupImage)
 	p := prefix(t)
 	vol := claudeVolume(p)
 	good := loginCode()
@@ -520,9 +516,7 @@ func waitFile(t *testing.T, path string, within time.Duration) string {
 // login left goes, and the new login's own is spared.
 func TestLoginCancelDuringCreate(t *testing.T) {
 	needDocker(t)
-	if out, err := exec.Command("docker", "pull", "--quiet", config.DefaultCleanupImage).CombinedOutput(); err != nil {
-		t.Fatalf("docker pull: %v: %s", err, out)
-	}
+	pullImage(t, config.DefaultCleanupImage)
 	p := prefix(t)
 	vol := claudeVolume(p)
 	extra, _ := fakeInContainer(t, loginCode())
