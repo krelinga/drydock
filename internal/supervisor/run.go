@@ -31,6 +31,10 @@ type sup struct {
 	// cancelled by a stop. Nil for one with no loop.
 	detached <-chan struct{}
 
+	// wmu serialises this sup's state writes (write), from the check for a
+	// change to the memory update after the commit. Taken before mu, and
+	// held across the commit, which mu never is.
+	wmu      sync.Mutex
 	mu       sync.Mutex
 	state    State
 	reason   Reason
@@ -413,35 +417,29 @@ func keepTail(b []byte, n int) []byte {
 // `Connected`).
 func (s *sup) discover(ctx context.Context, d *discovered, window []byte) bool {
 	got, _ := classify.ClassifyDiscovery(window)
-	var what []string
+	// d is what this process has announced, latched whether or not the
+	// record below commits: it decides serving, which the announcement does.
+	var env string
 	if d.env == "" && got.EnvironmentID != "" {
 		// The first id a process announces is its own (classify's rule);
 		// it cannot change within one process, so it is latched.
 		d.env = got.EnvironmentID
-		if s.recordEnvironment(ctx, d.env) {
-			what = append(what, "The session server's environment is "+d.env+".")
-		} else {
-			what = append(what, "The session server reconnected to environment "+d.env+".")
-		}
+		env = d.env
 	}
-	sessions := -1
+	var sessionIDs []string
 	for _, id := range got.SessionIDs {
 		if d.sessions[id] {
 			continue
 		}
 		d.sessions[id] = true
-		sessions = s.recordSession(ctx, id)
-		what = append(what, "Session "+id+" is being served.")
+		sessionIDs = append(sessionIDs, id)
 	}
-	if got.CapacityTotal > 0 && (got.CapacityUsed != d.capUsed || got.CapacityTotal != d.capTotal) {
+	capChanged := got.CapacityTotal > 0 && (got.CapacityUsed != d.capUsed || got.CapacityTotal != d.capTotal)
+	if capChanged {
 		d.capUsed, d.capTotal = got.CapacityUsed, got.CapacityTotal
-		what = append(what, fmt.Sprintf("Capacity %d/%d.", d.capUsed, d.capTotal))
 	}
-	if len(what) > 0 {
-		if sessions < 0 {
-			sessions = s.sessionCount(ctx)
-		}
-		s.emitSession(ctx, d, sessions, strings.Join(what, " "))
+	if env != "" || len(sessionIDs) > 0 || capChanged {
+		s.recordDiscovery(ctx, d, env, sessionIDs, capChanged)
 	}
 	return d.env != "" && d.capTotal > 0
 }

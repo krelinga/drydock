@@ -340,11 +340,12 @@ func (r *Reconciler) apply(ctx context.Context, a Action) error {
 	ws := r.Workspaces
 	switch a.Kind {
 	case Adopt:
-		if err := ws.SetContainer(ctx, a.WorkspaceID, a.ContainerID); err != nil {
+		e, err := events.NewEvent(a.WorkspaceID, events.Info, "workspace.adopted",
+			"Found running after a restart.", map[string]any{"container_id": a.ContainerID})
+		if err != nil {
 			return err
 		}
-		if _, err := r.Events.Emit(ctx, a.WorkspaceID, events.Info, "workspace.adopted",
-			"Found running after a restart.", map[string]any{"container_id": a.ContainerID}); err != nil {
+		if err := ws.SetContainerSaying(ctx, a.WorkspaceID, a.ContainerID, e); err != nil {
 			return err
 		}
 		if r.OnAdopt != nil {

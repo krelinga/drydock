@@ -588,14 +588,28 @@ func (w *Watch) failed(ctx context.Context, re *ReadError) {
 	now := w.Clock.Now().UTC()
 	ce := &CheckError{At: now, Problem: re.Problem, Message: sentence(re.Problem)}
 	w.logf("drydock: identity: %s (%s)", ce.Message, re.Detail)
-	// No row yet means there is no state to keep, and none is invented.
-	if _, dbErr := w.DB.ExecContext(ctx, `UPDATE claude_identity SET last_checked_at = ? WHERE id = 1`, ts(now)); dbErr != nil {
-		w.logf("drydock: identity: recording when the check ran: %v", dbErr)
-	}
 	w.mu.Lock()
 	w.failure = ce
 	w.mu.Unlock()
-	w.Events.Emit(ctx, "", events.Warn, KindCheckFailed, ce.Message, map[string]any{"check_error": ce})
+	e, err := events.NewEvent("", events.Warn, KindCheckFailed, ce.Message, map[string]any{"check_error": ce})
+	if err != nil {
+		w.logf("drydock: identity: %v", err)
+		return
+	}
+	// last_checked_at and the event in one events.Commit. No row yet means
+	// there is no state to keep, and none is invented.
+	_, err = w.Events.Commit(ctx, func(tx *sql.Tx) ([]events.Event, error) {
+		if _, err := tx.ExecContext(ctx, `UPDATE claude_identity SET last_checked_at = ? WHERE id = 1`, ts(now)); err != nil {
+			return nil, err
+		}
+		return []events.Event{e}, nil
+	})
+	if err != nil {
+		w.logf("drydock: identity: recording when the check ran: %v", err)
+		// The answer is owed even so: the event alone, with nothing
+		// written, since the row would not take the time.
+		w.Events.Append(ctx, e)
+	}
 	w.at("announced")
 }
 
@@ -608,10 +622,10 @@ type row struct {
 	checkedAt      sql.NullString
 }
 
-func (w *Watch) load(ctx context.Context) (*row, error) {
+func (w *Watch) load(ctx context.Context, db querier) (*row, error) {
 	var r row
 	var state string
-	err := w.DB.QueryRowContext(ctx,
+	err := db.QueryRowContext(ctx,
 		`SELECT state, account_email, expires_at, login_expires_at, logged_in_at, last_checked_at FROM claude_identity WHERE id = 1`).
 		Scan(&state, &r.email, &r.expiresAt, &r.loginExpiresAt, &r.loggedInAt, &r.checkedAt)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -633,69 +647,85 @@ func (w *Watch) store(ctx context.Context, id classify.Identity) (View, bool, er
 	// that found no login must not date a later login made some other way.
 	pending := w.login
 	w.login = nil
-	prev, err := w.load(ctx)
+	// The row and auth.identity are one fact, so one events.Commit, with
+	// the previous row and the view the event carries read inside it.
+	var v View
+	announced := false
+	_, err := w.Events.Commit(ctx, func(tx *sql.Tx) ([]events.Event, error) {
+		prev, err := w.load(ctx, tx)
+		if err != nil {
+			return nil, err
+		}
+
+		var email, expires, loginExpires, loggedIn sql.NullString
+		if state.Live() {
+			// Only beside a login: an email next to "Signed out" would name an
+			// account that is not on the volume (the classifier's own rule).
+			if id.AccountEmail != "" {
+				email = sql.NullString{String: id.AccountEmail, Valid: true}
+			}
+			expires = sql.NullString{String: ts(id.ExpiresAt), Valid: true}
+			if !id.LoginExpiresAt.IsZero() {
+				loginExpires = sql.NullString{String: ts(id.LoginExpiresAt), Valid: true}
+			}
+			// logged_in_at is when this login happened. The handshake (§7.2)
+			// knows that exactly and hands it over through LoggedIn; a login
+			// made some other way is dated by the first live verdict after
+			// none — the watch's best honest answer, never a guess about the
+			// past.
+			if pending != nil {
+				at := pending
+				loggedIn = sql.NullString{String: ts(*at), Valid: true}
+			} else if prev != nil && prev.state.Live() && prev.loggedInAt.Valid {
+				loggedIn = prev.loggedInAt
+			} else {
+				loggedIn = sql.NullString{String: ts(now), Valid: true}
+			}
+		}
+
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO claude_identity (id, volume_name, account_email, logged_in_at, state, expires_at, login_expires_at, last_checked_at)
+			VALUES (1, ?, ?, ?, ?, ?, ?, ?)
+			ON CONFLICT(id) DO UPDATE SET
+			  volume_name = excluded.volume_name, account_email = excluded.account_email,
+			  logged_in_at = excluded.logged_in_at, state = excluded.state,
+			  expires_at = excluded.expires_at, login_expires_at = excluded.login_expires_at,
+			  last_checked_at = excluded.last_checked_at`,
+			w.Volume, email, loggedIn, string(state), expires, loginExpires, ts(now)); err != nil {
+			return nil, err
+		}
+
+		w.mu.Lock()
+		recovered := w.failure != nil
+		w.mu.Unlock()
+		if v, err = w.view(ctx, tx); err != nil {
+			return nil, err
+		}
+		// A stored verdict ends the last check's failure: cleared below,
+		// once this commits.
+		v.CheckError = nil
+		changed := prev == nil || prev.state != state || prev.email != email || prev.expiresAt != expires ||
+			prev.loginExpiresAt != loginExpires || prev.loggedInAt != loggedIn
+		if !changed && !recovered {
+			// Nothing is said here: a check someone asked for is answered by
+			// run, with KindChecked, and the interval's stays silent.
+			return nil, nil
+		}
+		announced = true
+		// This answers whoever asked for this check.
+		e, err := events.NewEvent("", levelOf(state), KindIdentity, message(state, id), map[string]any{"identity": v})
+		return []events.Event{e}, err
+	})
 	if err != nil {
 		return View{}, false, err
 	}
-
-	var email, expires, loginExpires, loggedIn sql.NullString
-	if state.Live() {
-		// Only beside a login: an email next to "Signed out" would name an
-		// account that is not on the volume (the classifier's own rule).
-		if id.AccountEmail != "" {
-			email = sql.NullString{String: id.AccountEmail, Valid: true}
-		}
-		expires = sql.NullString{String: ts(id.ExpiresAt), Valid: true}
-		if !id.LoginExpiresAt.IsZero() {
-			loginExpires = sql.NullString{String: ts(id.LoginExpiresAt), Valid: true}
-		}
-		// logged_in_at is when this login happened. The handshake (§7.2)
-		// knows that exactly and hands it over through LoggedIn; a login
-		// made some other way is dated by the first live verdict after
-		// none — the watch's best honest answer, never a guess about the
-		// past.
-		if pending != nil {
-			at := pending
-			loggedIn = sql.NullString{String: ts(*at), Valid: true}
-		} else if prev != nil && prev.state.Live() && prev.loggedInAt.Valid {
-			loggedIn = prev.loggedInAt
-		} else {
-			loggedIn = sql.NullString{String: ts(now), Valid: true}
-		}
-	}
-
-	if _, err := w.DB.ExecContext(ctx, `
-		INSERT INTO claude_identity (id, volume_name, account_email, logged_in_at, state, expires_at, login_expires_at, last_checked_at)
-		VALUES (1, ?, ?, ?, ?, ?, ?, ?)
-		ON CONFLICT(id) DO UPDATE SET
-		  volume_name = excluded.volume_name, account_email = excluded.account_email,
-		  logged_in_at = excluded.logged_in_at, state = excluded.state,
-		  expires_at = excluded.expires_at, login_expires_at = excluded.login_expires_at,
-		  last_checked_at = excluded.last_checked_at`,
-		w.Volume, email, loggedIn, string(state), expires, loginExpires, ts(now)); err != nil {
-		return View{}, false, err
-	}
-
 	w.mu.Lock()
-	recovered := w.failure != nil
 	w.failure = nil
 	w.mu.Unlock()
-
-	v, err := w.Read(ctx)
-	if err != nil {
-		return View{}, false, err
+	if announced {
+		w.at("announced")
 	}
-	changed := prev == nil || prev.state != state || prev.email != email || prev.expiresAt != expires ||
-		prev.loginExpiresAt != loginExpires || prev.loggedInAt != loggedIn
-	if !changed && !recovered {
-		// Nothing is said here: a check someone asked for is answered by
-		// run, with KindChecked, and the interval's stays silent.
-		return v, false, nil
-	}
-	// This answers whoever asked for this check.
-	w.Events.Emit(ctx, "", levelOf(state), KindIdentity, message(state, id), map[string]any{"identity": v})
-	w.at("announced")
-	return v, true, nil
+	return v, announced, nil
 }
 
 func levelOf(s State) events.Level {
@@ -731,8 +761,18 @@ func message(s State, id classify.Identity) string {
 
 // Read returns the stored identity and the last check's failure.
 func (w *Watch) Read(ctx context.Context) (View, error) {
+	return w.view(ctx, w.DB)
+}
+
+// querier is a *sql.DB or a *sql.Tx: a write reads the view its event
+// carries inside its own transaction.
+type querier interface {
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+}
+
+func (w *Watch) view(ctx context.Context, db querier) (View, error) {
 	v := View{Volume: w.Volume}
-	r, err := w.load(ctx)
+	r, err := w.load(ctx, db)
 	if err != nil {
 		return View{}, err
 	}

@@ -164,13 +164,7 @@ func (c *Catalog) run(ctx context.Context, _ []struct{}) (Result, error) {
 		c.Events.Emit(ctx, "", events.Warn, KindRefreshFailed, msg, map[string]any{})
 		return Result{}, err
 	}
-	c.mu.Lock()
-	c.failure = nil
-	c.mu.Unlock()
-	_, err = c.Events.Emit(ctx, "", events.Info, KindRefreshed,
-		fmt.Sprintf("Repository list refreshed: %d repositories.", res.Count),
-		map[string]any{"count": res.Count, "added": res.Added, "removed": res.Removed})
-	return res, err
+	return res, nil
 }
 
 func (c *Catalog) logf(f string, a ...any) {
@@ -186,6 +180,13 @@ type known struct {
 	hasDevcontainer  sql.NullBool
 }
 
+// listedRepo is one repository as a refresh listed (and perhaps probed) it.
+type listedRepo struct {
+	repo            github.Repository
+	installation    int64
+	hasDevcontainer sql.NullBool
+}
+
 func (c *Catalog) refresh(ctx context.Context) (Result, error) {
 	installs, err := c.GitHub.Installations(ctx)
 	if err != nil {
@@ -196,12 +197,7 @@ func (c *Catalog) refresh(ctx context.Context) (Result, error) {
 		return Result{}, err
 	}
 
-	type row struct {
-		repo            github.Repository
-		installation    int64
-		hasDevcontainer sql.NullBool
-	}
-	var rows []row
+	var rows []listedRepo
 	for _, in := range installs {
 		// Listing needs nothing beyond metadata; the probe needs contents.
 		// Two tokens, each asking only for what its call needs (§9.3).
@@ -230,24 +226,52 @@ func (c *Catalog) refresh(ctx context.Context) (Result, error) {
 				}
 				has = c.probe(ctx, probeTok, r)
 			}
-			rows = append(rows, row{repo: r, installation: in.ID, hasDevcontainer: has})
+			rows = append(rows, listedRepo{repo: r, installation: in.ID, hasDevcontainer: has})
 		}
 	}
 
-	now := ts(c.Clock.Now())
-	tx, err := c.DB.BeginTx(ctx, nil)
+	// The rows and repo.refreshed are one fact, so one events.Commit: a
+	// refresh's event is published in its commit's place among a workspace
+	// delete's repo.removed, never after a later one.
+	var res Result
+	var dropped int64
+	_, err = c.Events.Commit(ctx, func(tx *sql.Tx) ([]events.Event, error) {
+		var err error
+		if res, dropped, err = c.write(ctx, tx, installs, cached, rows); err != nil {
+			return nil, err
+		}
+		// Cleared before the event is published, so a client refetching on
+		// it reads no stale failure. A commit that fails after this is the
+		// refresh's error, which sets the failure again (run).
+		c.mu.Lock()
+		c.failure = nil
+		c.mu.Unlock()
+		e, err := events.NewEvent("", events.Info, KindRefreshed,
+			fmt.Sprintf("Repository list refreshed: %d repositories.", res.Count),
+			map[string]any{"count": res.Count, "added": res.Added, "removed": res.Removed})
+		return []events.Event{e}, err
+	})
 	if err != nil {
 		return Result{}, err
 	}
-	defer tx.Rollback()
+	if dropped > 0 && c.GrantsDropped != nil {
+		c.GrantsDropped()
+	}
+	return res, nil
+}
+
+// write is refresh's transaction: the installations and repositories as
+// listed, and every released row dropped.
+func (c *Catalog) write(ctx context.Context, tx *sql.Tx, installs []github.Installation, cached map[int64]known, rows []listedRepo) (Result, int64, error) {
+	now := ts(c.Clock.Now())
 	if _, err := tx.ExecContext(ctx, `DELETE FROM installation`); err != nil {
-		return Result{}, err
+		return Result{}, 0, err
 	}
 	for _, in := range installs {
 		if _, err := tx.ExecContext(ctx,
 			`INSERT INTO installation (id, account, account_type, refreshed_at) VALUES (?, ?, ?, ?)`,
 			in.ID, in.Account, in.AccountType, now); err != nil {
-			return Result{}, err
+			return Result{}, 0, err
 		}
 	}
 	var res Result
@@ -272,7 +296,7 @@ func (c *Catalog) refresh(ctx context.Context) (Result, error) {
 			  refreshed_at = excluded.refreshed_at, removed_at = NULL`,
 			r.repo.ID, r.installation, r.repo.FullName, r.repo.DefaultBranch, has,
 			r.repo.Private, r.repo.Archived, ts(r.repo.PushedAt), now); err != nil {
-			return Result{}, err
+			return Result{}, 0, err
 		}
 	}
 	for id := range cached {
@@ -283,7 +307,7 @@ func (c *Catalog) refresh(ctx context.Context) (Result, error) {
 		// (§12); otherwise deleted with them, below.
 		if _, err := tx.ExecContext(ctx,
 			`UPDATE repository SET removed_at = coalesce(removed_at, ?) WHERE id = ?`, now, id); err != nil {
-			return Result{}, err
+			return Result{}, 0, err
 		}
 		res.Removed++
 	}
@@ -295,16 +319,10 @@ func (c *Catalog) refresh(ctx context.Context) (Result, error) {
 	// deny (§10.1) is the right state for one the operator last saw leave.
 	_, dropped, err := store.DropReleasedRepositories(ctx, tx)
 	if err != nil {
-		return Result{}, err
-	}
-	if err := tx.Commit(); err != nil {
-		return Result{}, err
-	}
-	if dropped > 0 && c.GrantsDropped != nil {
-		c.GrantsDropped()
+		return Result{}, 0, err
 	}
 	res.Count = len(rows)
-	return res, nil
+	return res, dropped, nil
 }
 
 // cached reads the rows a refresh compares against: every repository still
