@@ -3,6 +3,7 @@ package life
 import (
 	"context"
 	"errors"
+	"reflect"
 	"sync"
 	"testing"
 	"testing/synctest"
@@ -25,7 +26,7 @@ type runs struct {
 	gate    chan struct{}
 }
 
-func (r *runs) work(ctx context.Context) (int, error) {
+func (r *runs) work(ctx context.Context, _ []struct{}) (int, error) {
 	r.mu.Lock()
 	r.started++
 	n, gate := r.started, r.gate
@@ -53,10 +54,10 @@ func (r *runs) hold() chan struct{} {
 	return r.gate
 }
 
-func start(t *testing.T, r *runs, interval time.Duration) (*Coalescer[int], *Group) {
+func start(t *testing.T, r *runs, interval time.Duration) (*Coalescer[int, struct{}], *Group) {
 	t.Helper()
 	g := NewGroup(context.Background())
-	c := &Coalescer[int]{Work: r.work, Clock: sys.RealClock{}, Interval: interval}
+	c := &Coalescer[int, struct{}]{Work: r.work, Clock: sys.RealClock{}, Interval: interval}
 	if err := c.Start(g, "work"); err != nil {
 		t.Fatal(err)
 	}
@@ -124,7 +125,7 @@ func TestEveryTicketIsAnsweredByARunThatBeganAfterIt(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		var mu sync.Mutex
 		started := 0
-		work := func(ctx context.Context) (int, error) {
+		work := func(ctx context.Context, _ []struct{}) (int, error) {
 			mu.Lock()
 			started++
 			n := started
@@ -133,7 +134,7 @@ func TestEveryTicketIsAnsweredByARunThatBeganAfterIt(t *testing.T) {
 			return n, nil
 		}
 		g := NewGroup(context.Background())
-		c := &Coalescer[int]{Work: work, Clock: sys.RealClock{}}
+		c := &Coalescer[int, struct{}]{Work: work, Clock: sys.RealClock{}}
 		if err := c.Start(g, "work"); err != nil {
 			t.Fatal(err)
 		}
@@ -204,7 +205,7 @@ func TestTriggerAndWait(t *testing.T) {
 // Trigger after Stop is refused at once. Before Start, both say so.
 func TestShutdownAnswersOrRefusesEveryTicket(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		var unstarted Coalescer[int]
+		var unstarted Coalescer[int, struct{}]
 		if _, err := unstarted.Trigger(); !errors.Is(err, ErrNotStarted) {
 			t.Errorf("Trigger before Start: %v; want ErrNotStarted", err)
 		}
@@ -240,7 +241,7 @@ func TestShutdownAnswersOrRefusesEveryTicket(t *testing.T) {
 
 		// A coalescer started under a group already stopping runs nothing
 		// and refuses everything.
-		late := &Coalescer[int]{Work: r.work, Clock: sys.RealClock{}}
+		late := &Coalescer[int, struct{}]{Work: r.work, Clock: sys.RealClock{}}
 		if err := late.Start(g, "late"); !errors.Is(err, ErrStopping) {
 			t.Errorf("Start under a stopped group: %v; want ErrStopping", err)
 		}
@@ -281,6 +282,128 @@ func TestTheIntervalRunsAndRestartsAfterEveryRun(t *testing.T) {
 		synctest.Wait()
 		if r.count() != 3 {
 			t.Errorf("%d runs; want a periodic run 15 minutes after the asked-for one", r.count())
+		}
+	})
+}
+
+// TestAPayloadReachesTheRunThatAnswersItsTicket: a payload asked while a run
+// is going is not handed to that run — it may have read what the payload is
+// about already — but to the next, which answers its ticket; payloads asked
+// before a run are all handed to it, in order, and to no other run. The
+// controls: Trigger carries nothing, and a run nobody asked for gets nothing.
+func TestAPayloadReachesTheRunThatAnswersItsTicket(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		var mu sync.Mutex
+		var got [][]string
+		var gate chan struct{}
+		work := func(ctx context.Context, asks []string) (int, error) {
+			mu.Lock()
+			got = append(got, asks)
+			n, g := len(got), gate
+			mu.Unlock()
+			if g != nil {
+				<-g
+			}
+			return n, nil
+		}
+		g := NewGroup(context.Background())
+		t.Cleanup(func() { g.Wait(nil) })
+		c := &Coalescer[int, string]{Work: work, Clock: sys.RealClock{}, Interval: time.Hour}
+		if err := c.Start(g, "work"); err != nil {
+			t.Fatal(err)
+		}
+		mu.Lock()
+		gate = make(chan struct{})
+		release := gate
+		mu.Unlock()
+		first, _ := c.TriggerWith("a")
+		synctest.Wait() // run 1 is parked, holding "a"
+		during, _ := c.TriggerWith("b")
+		c.Trigger()
+		last, _ := c.TriggerWith("c")
+		mu.Lock()
+		gate = nil
+		mu.Unlock()
+		close(release)
+		synctest.Wait() // both runs have ended
+		if n, err := c.Await(context.Background(), first); n != 2 || err != nil {
+			t.Fatalf("first: %d, %v; want the newest run's result, 2", n, err)
+		}
+		for _, tk := range []Ticket{during, last} {
+			if n, err := c.Await(context.Background(), tk); n != 2 || err != nil {
+				t.Errorf("ticket %d answered by run %d (%v); want run 2", tk, n, err)
+			}
+		}
+		time.Sleep(time.Hour) // the interval: a run nobody asked for
+		synctest.Wait()
+		mu.Lock()
+		defer mu.Unlock()
+		want := [][]string{{"a"}, {"b", "c"}, nil}
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("runs saw %q; want %q", got, want)
+		}
+	})
+}
+
+// TestAPayloadWhoseTicketIsRefusedReachesNoRun: at Stop, a payload asked
+// during the last run is dropped with its ticket; no run sees it, and
+// TriggerWith after Stop is refused. The control is the running run's own
+// payload, which it saw.
+func TestAPayloadWhoseTicketIsRefusedReachesNoRun(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		var mu sync.Mutex
+		var got []string
+		work := func(ctx context.Context, asks []string) (int, error) {
+			mu.Lock()
+			got = append(got, asks...)
+			mu.Unlock()
+			<-ctx.Done()
+			return 0, ctx.Err()
+		}
+		g := NewGroup(context.Background())
+		c := &Coalescer[int, string]{Work: work, Clock: sys.RealClock{}}
+		if err := c.Start(g, "work"); err != nil {
+			t.Fatal(err)
+		}
+		c.TriggerWith("running")
+		synctest.Wait()
+		queued, _ := c.TriggerWith("queued")
+		g.Wait(nil)
+		if _, err := c.Await(context.Background(), queued); !errors.Is(err, ErrStopping) {
+			t.Errorf("the queued ticket: %v; want ErrStopping", err)
+		}
+		if _, err := c.TriggerWith("late"); !errors.Is(err, ErrStopping) {
+			t.Errorf("TriggerWith after Stop: %v; want ErrStopping", err)
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		if !reflect.DeepEqual(got, []string{"running"}) {
+			t.Errorf("runs saw %q; want the running one's payload alone", got)
+		}
+	})
+}
+
+// TestAwaitRefusesATicketNeverIssued: zero — what a caller holds after
+// ignoring Trigger's error — and a ticket above every one issued are
+// ErrNoTicket at once, never "answered". The control is a real ticket.
+func TestAwaitRefusesATicketNeverIssued(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		r := &runs{}
+		c, _ := start(t, r, 0)
+		if _, err := c.Await(context.Background(), 0); !errors.Is(err, ErrNoTicket) {
+			t.Errorf("Await(0) before any Trigger: %v; want ErrNoTicket", err)
+		}
+		tk, err := c.Trigger()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if n, err := c.Await(context.Background(), tk); n != 1 || err != nil {
+			t.Fatalf("control: %d, %v", n, err)
+		}
+		for _, bad := range []Ticket{0, tk + 1} {
+			if _, err := c.Await(context.Background(), bad); !errors.Is(err, ErrNoTicket) {
+				t.Errorf("Await(%d) with %d issued: %v; want ErrNoTicket", bad, tk, err)
+			}
 		}
 	})
 }

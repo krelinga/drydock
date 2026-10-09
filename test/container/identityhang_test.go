@@ -99,6 +99,7 @@ func TestAHungReadIsCutOffAndItsHelperRemoved(t *testing.T) {
 	src := &hangingDocker{DockerSource: real, t: t, p: p, started: make(chan struct{}, 1)}
 	w := &identity.Watch{DB: db.DB, Events: events.New(db.DB, clock), Clock: clock, Volume: vol, Window: 72 * time.Hour,
 		Timeout: time.Minute, Source: src}
+	startWatch(t, w)
 
 	// A first check stores absent: no file on the volume.
 	if v, err := w.Check(ctx); err != nil || v.State == nil || *v.State != identity.Absent {

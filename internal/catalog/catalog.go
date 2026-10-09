@@ -79,7 +79,7 @@ type Catalog struct {
 
 	// w runs every refresh, one at a time, on the goroutine Start gives it:
 	// the periodic ones and every one asked for (life.Coalescer).
-	w life.Coalescer[Result]
+	w life.Coalescer[Result, struct{}]
 
 	mu sync.Mutex
 	// ending, if set, runs as a refresh ends: after its event, before the
@@ -140,7 +140,7 @@ func (c *Catalog) Trigger() { c.w.Trigger() }
 
 // run is one refresh, on the worker: it writes the cache, records the
 // outcome for List and says so on the stream.
-func (c *Catalog) run(ctx context.Context) (Result, error) {
+func (c *Catalog) run(ctx context.Context, _ []struct{}) (Result, error) {
 	defer func() {
 		c.mu.Lock()
 		ending := c.ending

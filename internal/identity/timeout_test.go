@@ -2,6 +2,7 @@ package identity
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"os/exec"
@@ -13,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/krelinga/drydock/internal/life"
 	"github.com/krelinga/drydock/internal/subproc"
 )
 
@@ -51,6 +53,14 @@ func (h *hangingSource) Sweep(context.Context) (int, error) {
 	return 1, nil
 }
 
+// srcReads is how many credential reads src answered — not counting one
+// that hung.
+func srcReads(src *hangingSource) int {
+	src.mu.Lock()
+	defer src.mu.Unlock()
+	return src.credsCalls
+}
+
 func (h *hangingSource) sweepCount() int { h.hmu.Lock(); defer h.hmu.Unlock(); return h.sweeps }
 
 // TestAHungReadIsBoundedAndReported is #37's review finding: a read that
@@ -63,15 +73,15 @@ func (h *hangingSource) sweepCount() int { h.hmu.Lock(); defer h.hmu.Unlock(); r
 //   - the stored state is kept (a failed read keeps it, #37's rule) — here
 //     ok, which a frozen watch would have gone on asserting;
 //   - the helper is swept after the cut-off read;
-//   - a check that joined the hung one returns when it ends, and the check
-//     after reads normally (the positive control: same watch, same clock, a
-//     regular answer, stored).
+//   - a check asked for during the hung one is not stuck behind it: it runs
+//     when the hung one ends and reads normally (the positive control: same
+//     watch, same clock, a regular answer, stored).
 func TestAHungReadIsBoundedAndReported(t *testing.T) {
 	h := newHarness(t)
 	src := newHanging()
 	h.w.Source = src
 	h.w.Timeout = time.Minute
-	ctx := context.Background()
+	ctx := waitCtx(t)
 
 	src.set(fixture(t, "credentials", "ok.json"), fixture(t, "authstatus", "valid.json"), nil, nil)
 	v, err := h.w.Check(ctx)
@@ -85,16 +95,24 @@ func TestAHungReadIsBoundedAndReported(t *testing.T) {
 	}
 
 	src.setHang(true)
+	hung, err := h.w.c.Trigger()
+	if err != nil {
+		t.Fatal(err)
+	}
+	receive(t, src.entered, "the check did not reach its read")
 	type result struct {
 		v   View
 		err error
 	}
-	first := make(chan result, 1)
-	go func() { v, err := h.w.Check(ctx); first <- result{v, err} }()
-	<-src.entered
-	joined := make(chan result, 1)
-	go func() { v, err := h.w.Check(ctx); joined <- result{v, err} }()
+	// Asked for during the hung check: it gets a check of its own, after.
+	src.set(fixture(t, "credentials", "blanked.json"), nil, nil, nil)
+	next := make(chan result, 1)
+	go func() { v, err := h.w.Check(ctx); next <- result{v, err} }()
+	waitFor(t, func() bool { return h.w.c.Asked() == hung+1 })
+	src.setHang(false)
 
+	first := make(chan result, 1)
+	go func() { v, err := h.w.c.Await(ctx, hung); first <- result{v, err} }()
 	h.clock.Advance(59 * time.Second)
 	select {
 	case r := <-first:
@@ -108,35 +126,30 @@ func TestAHungReadIsBoundedAndReported(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("a hung read held the check past its timeout")
 	}
-	var re *ReadError
-	if !errors.As(r.err, &re) || re.Problem != ProblemTimeout {
-		t.Fatalf("hung check: %v; want a timeout ReadError", r.err)
+	// Await answers with the newest check's result, which may already be
+	// the next one's; the hung check's own verdict is on the stream.
+	if !strings.Contains(strings.Join(h.kinds(t), ","), KindCheckFailed) {
+		t.Fatalf("events %v; want the hung check's %s", h.kinds(t), KindCheckFailed)
 	}
-	stateIs(t, r.v, OK)
-	if r.v.CheckError == nil || r.v.CheckError.Problem != ProblemTimeout || r.v.CheckError.Message != sentence(ProblemTimeout) {
-		t.Errorf("check_error = %+v; want the timeout's", r.v.CheckError)
+	var data struct {
+		CheckError *CheckError `json:"check_error"`
+	}
+	for _, e := range h.events(t) {
+		if e.Kind == KindCheckFailed {
+			json.Unmarshal(e.Data, &data)
+		}
+	}
+	if data.CheckError == nil || data.CheckError.Problem != ProblemTimeout || data.CheckError.Message != sentence(ProblemTimeout) {
+		t.Errorf("check_error = %+v; want the timeout's", data.CheckError)
 	}
 	if got := src.sweepCount(); got != bootSweeps+1 {
 		t.Errorf("sweeps = %d; want one after the cut-off read", got)
 	}
-	select {
-	case j := <-joined:
-		stateIs(t, j.v, OK)
-	case <-time.After(5 * time.Second):
-		t.Fatal("a check that joined the hung one never returned")
-	}
-	kinds := h.kinds(t)
-	if kinds[len(kinds)-1] != KindCheckFailed {
-		t.Errorf("events %v; want the last to be %s", kinds, KindCheckFailed)
-	}
 
-	// Control: the next check is not stuck behind the dead one, and reads.
-	src.setHang(false)
-	src.set(fixture(t, "credentials", "blanked.json"), nil, nil, nil)
-	done := make(chan result, 1)
-	go func() { v, err := h.w.Check(ctx); done <- result{v, err} }()
+	// Control: the check asked for meanwhile is not stuck behind the dead
+	// one, and reads.
 	select {
-	case r := <-done:
+	case r = <-next:
 		if r.err != nil {
 			t.Fatal(r.err)
 		}
@@ -149,9 +162,50 @@ func TestAHungReadIsBoundedAndReported(t *testing.T) {
 	}
 }
 
-// TestAShutdownEndsATriggeredCheck: Trigger's check runs under the watch's
-// own context, which Shutdown ends, and the cut-off read is still swept. The
-// control is a triggered check that reads normally before the shutdown.
+// TestHungCheckKeepsTheStoredState: the hung check alone, with nothing asked
+// after it, so its own result is Await's: a timeout ReadError, the stored ok
+// kept, and the timeout's check_error on the view.
+func TestHungCheckKeepsTheStoredState(t *testing.T) {
+	h := newHarness(t)
+	src := newHanging()
+	h.w.Source = src
+	h.w.Timeout = time.Minute
+	src.set(fixture(t, "credentials", "ok.json"), fixture(t, "authstatus", "valid.json"), nil, nil)
+	if _, err := h.w.Check(waitCtx(t)); err != nil {
+		t.Fatal(err)
+	}
+	src.setHang(true)
+	got := make(chan error, 1)
+	var v View
+	go func() {
+		var err error
+		v, err = h.w.Check(waitCtx(t))
+		got <- err
+	}()
+	receive(t, src.entered, "the check did not reach its read")
+	h.clock.Advance(time.Minute)
+	var err error
+	select {
+	case err = <-got:
+	case <-time.After(5 * time.Second):
+		t.Fatal("a hung read held the check past its timeout")
+	}
+	var re *ReadError
+	if !errors.As(err, &re) || re.Problem != ProblemTimeout {
+		t.Fatalf("hung check: %v; want a timeout ReadError", err)
+	}
+	stateIs(t, v, OK)
+	if v.CheckError == nil || v.CheckError.Problem != ProblemTimeout {
+		t.Errorf("check_error = %+v; want the timeout's", v.CheckError)
+	}
+}
+
+// TestAShutdownEndsATriggeredCheck: a check runs under the watch's group,
+// whose Stop ends it — and whose Wait does not return before it has ended —
+// and the cut-off read is still swept, under its own bound. A check asked
+// for meanwhile never starts: its ticket is refused. The control is a
+// triggered check that reads normally before the shutdown. (#85's finding 5:
+// every wait here is bounded, so a regression fails by name.)
 func TestAShutdownEndsATriggeredCheck(t *testing.T) {
 	h := newHarness(t)
 	src := newHanging()
@@ -160,94 +214,92 @@ func TestAShutdownEndsATriggeredCheck(t *testing.T) {
 
 	src.set(nil, nil, nil, nil)
 	h.w.Trigger()
-	// Wait for the triggered check to end, not for its verdict: a check
-	// stores its verdict before it lets go of running, and a Trigger in that
-	// window joins it and reads nothing (TestATriggerJoinsACheckInFlight) —
-	// which left `<-src.entered` below waiting for ever.
-	drained(t, &h.w.triggers, "the first triggered check did not end")
-	src.mu.Lock()
-	calls := src.credsCalls
-	src.mu.Unlock()
-	if v, _ := h.w.Read(context.Background()); calls != 1 || v.State == nil || *v.State != Absent {
-		t.Fatalf("control: %d credential reads, state %v; want one read, stored absent", calls, v.State)
+	h.settled(t, "the first triggered check did not end")
+	if v, _ := h.w.Read(context.Background()); srcReads(src) != 1 || v.State == nil || *v.State != Absent {
+		t.Fatalf("control: %d credential reads, state %v; want one read, stored absent", srcReads(src), v.State)
 	}
 
 	src.setHang(true)
 	h.w.Trigger()
-	<-src.entered
+	receive(t, src.entered, "the second triggered check did not reach its read")
+	queued, err := h.w.c.Trigger()
+	if err != nil {
+		t.Fatal(err)
+	}
 	before := src.sweepCount()
-	ended := make(chan struct{})
-	go func() { h.w.Shutdown(5 * time.Second); close(ended) }()
+	ended := make(chan []string, 1)
+	go func() { ended <- h.group.Wait(nil) }()
 	select {
-	case <-ended:
+	case late := <-ended:
+		if late != nil {
+			t.Fatalf("stragglers %v", late)
+		}
 	case <-time.After(5 * time.Second):
-		t.Fatal("Shutdown did not end a triggered check")
+		t.Fatal("the group's Wait did not end a triggered check")
 	}
 	if src.sweepCount() != before+1 {
 		t.Errorf("sweeps %d → %d; want the cut-off read swept", before, src.sweepCount())
 	}
-	// After shutdown a Trigger starts nothing. A check it did start would run
-	// under the cancelled context and still reach the hanging read, which
-	// returns at once; triggers.Wait outlasts any such check, so no sleep
-	// stands in for "long enough".
-	h.w.Trigger()
-	drained(t, &h.w.triggers, "a Trigger after Shutdown left a check running")
+	if _, err := h.w.c.Await(waitCtx(t), queued); !errors.Is(err, life.ErrStopping) {
+		t.Errorf("the check asked for during the cut-off one: %v; want life.ErrStopping", err)
+	}
+	// After shutdown a Trigger starts nothing: the worker has exited, so no
+	// sleep stands in for "long enough".
+	if err := h.w.Trigger(); !errors.Is(err, life.ErrStopping) {
+		t.Errorf("a Trigger after shutdown = %v; want life.ErrStopping", err)
+	}
 	select {
 	case <-src.entered:
-		t.Error("a Trigger after Shutdown started a check")
+		t.Error("a check started after the shutdown")
 	default:
 	}
 }
 
-// TestATriggerJoinsACheckInFlight pins the interleaving the test above used
-// to hang on (CI, PR #78): a Trigger while a check is running joins it — the
-// check route's documented "start a check, or join the one running" — and
-// that includes a check that has already stored its verdict but not yet let
-// go of running. The joiner reads nothing, so waiting on a stored verdict is
-// no proof the next Trigger will read. The seam holds the first check in that
-// tail until the Trigger has joined, so the interleaving is forced rather
-// than hoped for. The positive control is a Trigger after the check has
-// ended, which reads.
-func TestATriggerJoinsACheckInFlight(t *testing.T) {
+// TestATriggerInACheckTailGetsACheckOfItsOwn replaces the join #78 and #81
+// pinned. A Trigger while a check is in its tail — verdict stored, check not
+// yet ended — used to join it and read nothing, and the test that waited on
+// the stored verdict as proof the next Trigger would read hung on CI. Now no
+// request is ever answered by a check already running: the press in the
+// tail gets a check after it, which reads. The seam holds the first check
+// after its announcement until the Trigger has been made. The control is a
+// Trigger after the check has ended, which reads too.
+func TestATriggerInACheckTailGetsACheckOfItsOwn(t *testing.T) {
 	h := newHarness(t)
 	src := newHanging()
 	h.w.Source = src
 	h.w.Timeout = time.Hour
 	src.set(nil, nil, nil, nil)
-	reads := func() int { src.mu.Lock(); defer src.mu.Unlock(); return src.credsCalls }
 
-	tail, joined := make(chan struct{}), make(chan struct{})
+	tail, pressed := make(chan struct{}), make(chan struct{})
 	var once sync.Once
 	h.w.observe = func(p string) {
-		switch p {
-		case "ending":
+		if p == "announced" {
 			once.Do(func() {
 				close(tail)
-				<-joined
+				<-pressed
 			})
-		case "joined":
-			close(joined)
 		}
 	}
 
 	h.w.Trigger()
-	<-tail // the first check has stored its verdict and still holds running
+	receive(t, tail, "the first check did not announce")
 	if v, _ := h.w.Read(context.Background()); v.State == nil || *v.State != Absent {
 		t.Fatalf("in the tail the verdict is %v; want absent already stored", v.State)
 	}
-	h.w.Trigger() // joins; joining releases the first check
-	// The first check waits in its tail for the join, so a Trigger that
-	// started a check of its own instead leaves both waiting here.
-	drained(t, &h.w.triggers, "the Trigger did not join the check in flight (or the joined check never ended)")
-	if n := reads(); n != 1 {
-		t.Fatalf("%d credential reads; want 1: a Trigger joining a check in flight reads nothing", n)
+	h.w.Trigger()
+	close(pressed)
+	h.settled(t, "the Trigger made in the tail was not answered")
+	if n := srcReads(src); n != 2 {
+		t.Fatalf("%d credential reads; want 2: a Trigger in a check's tail gets a check of its own", n)
+	}
+	if got := strings.Join(h.kinds(t), ","); got != KindIdentity+","+KindChecked {
+		t.Errorf("events [%s]; want the first check's verdict, then the press's answer", got)
 	}
 
-	h.w.observe = nil
 	h.w.Trigger()
-	drained(t, &h.w.triggers, "control: the Trigger after the check ended did not end")
-	if n := reads(); n != 2 {
-		t.Fatalf("control: %d credential reads; want 2: a Trigger after the check ended reads", n)
+	h.settled(t, "control: the Trigger after the check ended did not end")
+	if n := srcReads(src); n != 3 {
+		t.Fatalf("control: %d credential reads; want 3: a Trigger after the check ended reads", n)
 	}
 }
 
@@ -264,7 +316,7 @@ func TestABuildHasItsOwnBound(t *testing.T) {
 
 	src.set(fixture(t, "credentials", "ok.json"), fixture(t, "authstatus", "valid.json"), nil, nil)
 	got := make(chan error, 1)
-	go func() { _, err := h.w.Check(context.Background()); got <- err }()
+	go func() { _, err := h.w.Check(waitCtx(t)); got <- err }()
 	<-src.entered
 	h.clock.Advance(30 * time.Minute) // past the reads' bound, inside the build's
 	select {
@@ -280,7 +332,7 @@ func TestABuildHasItsOwnBound(t *testing.T) {
 	}
 
 	src.set(fixture(t, "credentials", "blanked.json"), nil, nil, nil)
-	go func() { _, err := h.w.Check(context.Background()); got <- err }()
+	go func() { _, err := h.w.Check(waitCtx(t)); got <- err }()
 	<-src.entered
 	h.clock.Advance(time.Hour)
 	if err := <-got; err != nil {

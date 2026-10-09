@@ -172,7 +172,7 @@ export interface MockBackend {
    */
   identityCheck: { requested: boolean } | null
   identityCheckMode: 'auto' | 'manual'
-  /** The watch has shut down: a check is refused 503 `unavailable`, as Trigger's ErrShutdown is. */
+  /** The watch has shut down: a check is refused 503 `unavailable`, as the watch's Trigger is once its group has stopped. */
   identityWatchStopped: boolean
 
   /** The login handshake internal/login.Manager holds (design §7.2); null when none. */

@@ -18,6 +18,7 @@ import (
 	"github.com/krelinga/drydock/internal/api"
 	"github.com/krelinga/drydock/internal/events"
 	"github.com/krelinga/drydock/internal/identity"
+	"github.com/krelinga/drydock/internal/life"
 	"github.com/krelinga/drydock/internal/store"
 	"github.com/krelinga/drydock/internal/sys"
 )
@@ -81,6 +82,13 @@ func TestCanarySweep(t *testing.T) {
 			defer mu.Unlock()
 			logged.WriteString(sprintf(f, a...) + "\n")
 		}}
+	// Started as Serve starts it, boot check included; stopped and waited
+	// for before the database closes below.
+	group := life.NewGroup(context.Background())
+	t.Cleanup(func() { group.Wait(nil) })
+	if err := w.Start(group); err != nil {
+		t.Fatal(err)
+	}
 	read := api.ClaudeRoutes{Watch: w}.Handlers()["claude.identity.read"]
 
 	future := clock.Now().Add(30 * 24 * time.Hour).UnixMilli()
@@ -124,6 +132,7 @@ func TestCanarySweep(t *testing.T) {
 	for _, e := range evs {
 		evText.WriteString(e.Message + string(e.Data) + "\n")
 	}
+	group.Wait(nil)
 	db.Close() // flush the WAL, so the files are everything that was written
 
 	if !bytes.Contains(src.seen.Bytes(), []byte(canary)) {

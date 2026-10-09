@@ -18,6 +18,7 @@ import (
 	"github.com/krelinga/drydock/internal/config"
 	"github.com/krelinga/drydock/internal/events"
 	"github.com/krelinga/drydock/internal/identity"
+	"github.com/krelinga/drydock/internal/life"
 	"github.com/krelinga/drydock/internal/store"
 	"github.com/krelinga/drydock/internal/subproc"
 	"github.com/krelinga/drydock/internal/sys"
@@ -67,6 +68,7 @@ func TestIdentityWatchReadsARealVolume(t *testing.T) {
 	w := &identity.Watch{DB: db.DB, Events: events.New(db.DB, clock), Clock: clock, Volume: vol, Window: 72 * time.Hour,
 		Source: identity.DockerSource{Run: subproc.Exec{}, Image: img, FileImage: config.DefaultCleanupImage,
 			Volume: vol, LabelPrefix: p}}
+	startWatch(t, w)
 	check := func(want identity.State) identity.View {
 		t.Helper()
 		v, err := w.Check(ctx)
@@ -144,5 +146,17 @@ func TestIdentityWatchReadsARealVolume(t *testing.T) {
 
 	if left := docker(t, "ps", "-aq", "--filter", "label="+p+"."+identity.LabelIdentity); left != "" {
 		t.Errorf("helpers left behind: %s", left)
+	}
+}
+
+// startWatch starts w as Serve does, boot check included, under a group
+// stopped and waited for before the database closes (cleanups run
+// last-registered first).
+func startWatch(t *testing.T, w *identity.Watch) {
+	t.Helper()
+	g := life.NewGroup(context.Background())
+	t.Cleanup(func() { g.Wait(nil) })
+	if err := w.Start(g); err != nil {
+		t.Fatal(err)
 	}
 }

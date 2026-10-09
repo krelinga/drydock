@@ -71,7 +71,7 @@ func (cr ClaudeRoutes) read(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, ClaudeIdentity{Identity: v, Login: lv})
 }
 
-// check is the async shape: start a check — or join the one running — and
+// check is the async shape: ask for a check that begins after the request and
 // answer 202. The verdict arrives as auth.identity when it changed, a failure
 // as auth.identity_check_failed, and an unchanged verdict as
 // auth.identity_checked: every request is answered by one of the three, which

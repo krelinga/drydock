@@ -48,6 +48,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -130,6 +131,10 @@ type Server struct {
 	// reconciled closes when boot reconciliation has finished, so a test
 	// can set up workspace rows reconciliation would otherwise move.
 	reconciled chan struct{}
+	// identityWork is the identity watch's group in Serve's work, stored as
+	// Serve starts the watch: a test stops it to see the check route refuse
+	// what nothing would answer.
+	identityWork atomic.Pointer[life.Group]
 	// clock is env's, for the bounds shutdown waits under.
 	clock sys.Clock
 	// repoOf caches each workspace's repository id for secretValues: it is
@@ -498,15 +503,14 @@ func apiSocketHandler(gate api.Gate, apiMux *http.ServeMux, ui http.Handler) htt
 // stop timeout, so the service is never SIGKILLed for waiting.
 const provisionShutdownWait = 20 * time.Second
 
-// identityShutdownWait bounds how long shutdown waits for a triggered
-// identity check to end and remove its helper container.
-const identityShutdownWait = 35 * time.Second
-
 // workShutdownWait bounds how long shutdown waits for the goroutines of
-// Serve's life.Group — today the catalog's refresh, whose GitHub calls and
-// transaction all end with its context, so it is short. It runs beside the
-// waits above and below.
-const workShutdownWait = 10 * time.Second
+// Serve's life.Group: the catalog's refresh, whose GitHub calls and
+// transaction end with its context, and the identity watch's check, which
+// ends with it too but then removes a cut-off read's helper container under
+// its own 30-second bound — so this is that bound and a little more. It runs
+// beside the waits below rather than after them, so it adds nothing to
+// their sum unless it is the longest.
+const workShutdownWait = 35 * time.Second
 
 // supervisorDetachWait bounds how long shutdown waits for the supervisors to
 // let go of their terminals.
@@ -597,8 +601,8 @@ func (s *Server) Serve(ctx context.Context) error {
 	defer stop()
 	// work owns the goroutines of the components that have moved onto
 	// life.Group: shutdown stops it and waits for it before the database
-	// closes. Today that is the catalog alone; the rest still end on ctx
-	// and their own Shutdown.
+	// closes. Today that is the catalog and the identity watch; the rest
+	// still end on ctx and their own Shutdown.
 	work := life.NewGroup(ctx)
 	defer work.Stop()
 	// Reconcile once at boot, beside serving rather than before it: a slow
@@ -653,11 +657,14 @@ func (s *Server) Serve(ctx context.Context) error {
 			fmt.Fprintf(os.Stderr, "drydock: secrets: %v\n", err)
 		}
 	}
-	watching := make(chan struct{})
-	go func() {
-		defer close(watching)
-		s.Identity.Run(ctx)
-	}()
+	// The expiry watch (§7.3): a check at once and every six hours, and
+	// whatever POST /api/auth/claude/check and the login handshake ask for:
+	// one worker, in work.
+	identityWork := work.Child("identity")
+	s.identityWork.Store(identityWork)
+	if err := s.Identity.Start(identityWork); err != nil {
+		fmt.Fprintf(os.Stderr, "drydock: identity: %v\n", err)
+	}
 	supervising := make(chan struct{})
 	go func() {
 		defer close(supervising)
@@ -687,7 +694,9 @@ func (s *Server) Serve(ctx context.Context) error {
 	// The repository list, at once and every 15 minutes, and whatever POST
 	// /api/repos/refresh asks for: one worker, in work.
 	if s.Catalog != nil {
-		s.Catalog.Start(work.Child("catalog"))
+		if err := s.Catalog.Start(work.Child("catalog")); err != nil {
+			fmt.Fprintf(os.Stderr, "drydock: catalog: %v\n", err)
+		}
 	}
 	errc := make(chan error, 2)
 	go func() { errc <- s.api.Serve(s.apiLn) }()
@@ -699,8 +708,8 @@ func (s *Server) Serve(ctx context.Context) error {
 	case serveErr = <-errc:
 	}
 	stop()
-	// work's goroutines — the catalog's refreshes, periodic or asked for —
-	// end now, beside the waits below rather than after them, and are
+	// work's goroutines — the catalog's refreshes and the identity watch's
+	// checks, periodic or asked for — end now, beside the waits below rather than after them, and are
 	// waited for before the database closes. Nothing asked of them from
 	// here on starts.
 	work.Stop()
@@ -724,11 +733,9 @@ func (s *Server) Serve(ctx context.Context) error {
 	// Session servers keep serving while Drydock is down (Spike 02: a plain
 	// restart reconnects them); only Drydock's terminals close.
 	s.Supervisor.Detach(supervisorDetachWait)
+	// The login's last act may be asking the watch for a check: work has
+	// stopped, so that is refused at once, and the login waits on nothing.
 	s.Login.Shutdown(provisionShutdownWait)
-	// After the login, whose last act may be a check: the checks Trigger
-	// started end here, each removing its helper, before the database
-	// closes. Run's own check ends with ctx and is waited for below.
-	s.Identity.Shutdown(identityShutdownWait)
 	if s.Broker != nil {
 		s.Broker.CloseAll()
 	}
@@ -743,7 +750,6 @@ func (s *Server) Serve(ctx context.Context) error {
 	// is closed here, or it would outlive the server that proxied it.
 	s.Proxy.Close()
 	<-reconciled // they may still be writing; the database closes after them
-	<-watching
 	<-supervising
 	<-sweeping
 	<-sampling

@@ -27,7 +27,14 @@
 // only by a run that began after it was issued, and a Trigger during a run
 // gets one more run, at once. When the worker exits (its group stopped),
 // tickets no run started for are refused with ErrStopping; it never starts a
-// run after its context has ended.
+// run after its context has ended. A request may carry a payload
+// (TriggerWith), which goes to the run that answers its ticket and no other:
+// what a caller needs a run to know, delivered without the caller ever
+// running work under its own context. Await of ticket zero, which no
+// Trigger issues, is ErrNoTicket.
+//
+// A Child is released by its parent once its own Wait has found everything
+// in it ended, so a child per job is safe as long as each is waited for.
 package life
 
 import (
@@ -46,6 +53,7 @@ var ErrStopping = errors.New("shutting down")
 // Child; the zero value is not usable.
 type Group struct {
 	name   string
+	parent *Group // nil for NewGroup's
 	ctx    context.Context
 	cancel context.CancelFunc
 
@@ -67,8 +75,15 @@ func NewGroup(parent context.Context) *Group {
 // Child returns a group whose context descends from g's, which g's Stop
 // stops and g's Wait waits for. name prefixes its goroutines' names in
 // Wait's answer. A child asked for after g's Stop is already stopped.
+//
+// g holds each child until the child's own Wait finds everything in it
+// ended; then the child lets go of g. So a child per component lives as long
+// as g, and a child per job — made, used and Waited for — costs g nothing
+// once it is over. A per-job child that is never Waited for is held until g
+// stops: wait for it.
 func (g *Group) Child(name string) *Group {
 	c := NewGroup(g.ctx)
+	c.parent = g
 	c.name = name
 	if g.name != "" {
 		c.name = g.name + "/" + name
@@ -137,7 +152,9 @@ func (g *Group) Stop() {
 // started, or until deadline fires — made by the caller on the injected
 // clock (sys.NewTimer); nil waits for ever. It returns the names of what was
 // still running when the deadline fired, sorted, children's prefixed with
-// their name; nil when everything ended.
+// their name; nil when everything ended. A child whose Wait finds everything
+// ended is released by its parent (Child); one with stragglers stays, so its
+// parent's Wait still waits for them and names them.
 func (g *Group) Wait(deadline <-chan time.Time) []string {
 	g.Stop()
 	done := make(chan struct{})
@@ -147,12 +164,28 @@ func (g *Group) Wait(deadline <-chan time.Time) []string {
 	}()
 	select {
 	case <-done:
+		if g.parent != nil {
+			g.parent.release(g)
+		}
 		return nil
 	case <-deadline:
 	}
 	late := g.stragglers()
 	sort.Strings(late)
 	return late
+}
+
+// release drops a child that has ended: stopped, so it starts nothing, and
+// waited for, so there is nothing in it left to wait for or to name.
+func (g *Group) release(child *Group) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	for i, k := range g.children {
+		if k == child {
+			g.children = append(g.children[:i], g.children[i+1:]...)
+			return
+		}
+	}
 }
 
 // waitAll waits for g's goroutines and then each child's. g is stopped, so

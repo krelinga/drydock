@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/krelinga/drydock/internal/events"
+	"github.com/krelinga/drydock/internal/life"
 	"github.com/krelinga/drydock/internal/store"
 	"github.com/krelinga/drydock/internal/sys"
 )
@@ -91,9 +92,33 @@ type harness struct {
 	db     *sql.DB
 	dir    string
 	logged *bytes.Buffer
+	group  *life.Group
 }
 
+// newHarness is a watch started as Serve starts it, but without the check at
+// once, so each test's checks are its own.
 func newHarness(t *testing.T) *harness {
+	t.Helper()
+	h := newUnstarted(t)
+	h.start(t, false)
+	return h
+}
+
+// start starts h's watch under a group that is stopped and waited for before
+// the database closes (cleanups run last-registered first), as Serve does.
+func (h *harness) start(t *testing.T, boot bool) {
+	t.Helper()
+	h.group = life.NewGroup(context.Background())
+	g := h.group
+	t.Cleanup(func() { g.Wait(nil) })
+	if err := h.w.start(g, boot); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// newUnstarted is the watch before Start: a test sets its seams, then
+// starts it.
+func newUnstarted(t *testing.T) *harness {
 	t.Helper()
 	dir := t.TempDir()
 	db, err := store.Open(context.Background(), filepath.Join(dir, "drydock.db"))
@@ -114,6 +139,28 @@ func newHarness(t *testing.T) *harness {
 			logged.WriteString(strings.TrimSpace(fmt.Sprintf(f, a...)) + "\n")
 		}}
 	return &harness{w: w, src: src, clock: clock, log: log, db: db.DB, dir: dir, logged: &logged}
+}
+
+// settled waits until every check asked for so far has ended, failing the
+// test by name rather than hanging it.
+func (h *harness) settled(t *testing.T, msg string) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if _, err := h.w.c.Await(ctx, h.w.c.Asked()); ctx.Err() != nil {
+		t.Fatal(msg)
+	} else if errors.Is(err, life.ErrNoTicket) {
+		t.Fatalf("%s: nothing was asked", msg)
+	}
+}
+
+// waitCtx bounds a test's waits on the watch, so a worker that never runs a
+// check fails the test by name instead of hanging the package until go
+// test's own timeout names a goroutine.
+func waitCtx(t *testing.T) context.Context {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	t.Cleanup(cancel)
+	return ctx
 }
 
 func (h *harness) events(t *testing.T) []events.Event {
@@ -177,7 +224,7 @@ func TestEveryFixtureGetsItsVerdict(t *testing.T) {
 				creds = fixture(t, "credentials", c.creds)
 			}
 			h.src.set(creds, fixture(t, "authstatus", c.status), nil, nil)
-			v, err := h.w.Check(context.Background())
+			v, err := h.w.Check(waitCtx(t))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -230,7 +277,7 @@ func TestBlankedIsNotAbsent(t *testing.T) {
 		t.Helper()
 		h := newHarness(t)
 		h.src.set(creds, status, nil, statusErr)
-		v, err := h.w.Check(context.Background())
+		v, err := h.w.Check(waitCtx(t))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -257,7 +304,7 @@ func TestBlankedIsNotAbsent(t *testing.T) {
 // the last: the same watch does change the stored state when it can read.
 func TestUnreadableInputKeepsTheStoredState(t *testing.T) {
 	h := newHarness(t)
-	ctx := context.Background()
+	ctx := waitCtx(t)
 	h.src.set(fixture(t, "credentials", "expiring.json"), fixture(t, "authstatus", "valid.json"), nil, nil)
 	if v, err := h.w.Check(ctx); err != nil {
 		t.Fatal(err)
@@ -324,7 +371,7 @@ func TestUnreadableInputKeepsTheStoredState(t *testing.T) {
 // with nothing to announce, emits nothing.
 func TestRecoveryIsAnnouncedEvenWithoutAChange(t *testing.T) {
 	h := newHarness(t)
-	ctx := context.Background()
+	ctx := waitCtx(t)
 	good := func() {
 		h.src.set(fixture(t, "credentials", "ok.json"), fixture(t, "authstatus", "valid.json"), nil, nil)
 		if _, err := h.w.Check(ctx); err != nil {
@@ -347,7 +394,7 @@ func TestRecoveryIsAnnouncedEvenWithoutAChange(t *testing.T) {
 func TestFirstCheckFailingInventsNothing(t *testing.T) {
 	h := newHarness(t)
 	h.src.set(nil, nil, &ReadError{Problem: ProblemDocker, Detail: "x"}, nil)
-	v, err := h.w.Check(context.Background())
+	v, err := h.w.Check(waitCtx(t))
 	if err == nil {
 		t.Fatal("a failed read was not an error")
 	}
@@ -361,7 +408,7 @@ func TestFirstCheckFailingInventsNothing(t *testing.T) {
 	}
 	// Control: the same watch, readable, does write.
 	h.src.set(nil, nil, nil, nil)
-	if v, err := h.w.Check(context.Background()); err != nil || v.State == nil || *v.State != Absent {
+	if v, err := h.w.Check(waitCtx(t)); err != nil || v.State == nil || *v.State != Absent {
 		t.Errorf("control: no file = %v, %v; want absent", v.State, err)
 	}
 }
@@ -376,7 +423,7 @@ func TestTheWindowIsConfiguration(t *testing.T) {
 		h := newHarness(t)
 		h.w.Window = c.window
 		h.src.set(fixture(t, "credentials", "expiring.json"), fixture(t, "authstatus", "valid.json"), nil, nil)
-		v, err := h.w.Check(context.Background())
+		v, err := h.w.Check(waitCtx(t))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -389,7 +436,7 @@ func TestTheWindowIsConfiguration(t *testing.T) {
 // blanked, and set afresh by the next login.
 func TestLoggedInAtIsWhenTheLoginWasFirstSeen(t *testing.T) {
 	h := newHarness(t)
-	ctx := context.Background()
+	ctx := waitCtx(t)
 	h.src.set(nil, nil, nil, nil)
 	h.w.Check(ctx)
 	h.clock.Advance(time.Hour)
@@ -418,43 +465,35 @@ func TestLoggedInAtIsWhenTheLoginWasFirstSeen(t *testing.T) {
 	}
 }
 
-// TestRunChecksAtBootAndOnTheInterval: Run checks at once, then again when
-// the interval passes, and not before.
+// TestStartChecksAtBootAndOnTheInterval: Start checks at once, then again
+// when the interval passes, and not before.
 //
-// "Run is parked on its interval" is the seam's "parked", never
-// clock.Waiting() == 1: since #61 each read puts its own timeout on the same
-// clock, so mid-check one timer is waiting too. That is what this test used to
-// wait on, and under load it read the boot check's count before the check had
-// read anything, or advanced the clock past the read's timeout instead of the
-// interval. The gate holds the boot check inside its read to prove the point:
-// one timer is waiting there and no check has finished.
-func TestRunChecksAtBootAndOnTheInterval(t *testing.T) {
-	h := newHarness(t)
+// "The worker is idle on its interval" is: the boot check's ticket answered,
+// and then exactly one timer on the clock — never clock.Waiting() == 1 alone,
+// since each read puts its own timeout on the same clock (#61), so mid-check
+// one timer is waiting too. That is what this test once waited on, and under
+// load it read the boot check's count before the check had read anything, or
+// advanced the clock past the read's timeout instead of the interval. The
+// gate holds the boot check inside its read to prove the point: one timer is
+// waiting there and no check has finished. Once the ticket is answered the
+// read's timeout is stopped, and the worker arms the interval as it goes
+// idle.
+func TestStartChecksAtBootAndOnTheInterval(t *testing.T) {
+	h := newUnstarted(t)
 	h.src.set(nil, nil, nil, nil)
 	src := &gatedSource{fakeSource: h.src, in: make(chan struct{}), gate: make(chan struct{})}
 	h.w.Source = src
-	parked := make(chan struct{}, 4)
-	h.w.observe = func(p string) {
-		if p == "parked" {
-			parked <- struct{}{}
-		}
-	}
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan struct{})
-	go func() { h.w.Run(ctx); close(done) }()
-	t.Cleanup(func() {
-		cancel()
-		receive(t, done, "Run did not return when its context ended")
-	})
+	h.start(t, true)
 
-	receive(t, src.in, "Run did not check at boot")
+	receive(t, src.in, "Start did not check at boot")
 	if n, w := h.calls(), h.clock.Waiting(); n != 0 || w != 1 {
 		t.Fatalf("inside the boot read: %d reads done, %d timers; want 0 and the read's own timeout", n, w)
 	}
 	close(src.gate)
-	receive(t, parked, "Run did not park after its boot check")
-	if n, w := h.calls(), h.clock.Waiting(); n != 1 || w != 1 {
-		t.Fatalf("parked after boot: %d checks, %d timers; want 1 and only the interval's", n, w)
+	h.settled(t, "the boot check did not end")
+	waitFor(t, func() bool { return h.clock.Waiting() == 1 })
+	if n := h.calls(); n != 1 {
+		t.Fatalf("idle after boot: %d checks; want 1", n)
 	}
 
 	// Advance fires due timers synchronously, so a timer still waiting
@@ -464,9 +503,9 @@ func TestRunChecksAtBootAndOnTheInterval(t *testing.T) {
 		t.Fatalf("a second before the interval: %d timers waiting; want the interval's still pending", w)
 	}
 	h.clock.Advance(time.Second)
-	receive(t, parked, "Run did not check again when the interval passed")
-	if n, w := h.calls(), h.clock.Waiting(); n != 2 || w != 1 {
-		t.Fatalf("parked after the interval: %d checks, %d timers; want 2 and the next interval's", n, w)
+	waitFor(t, func() bool { return h.calls() == 2 && h.clock.Waiting() == 1 })
+	if a := h.w.c.Asked(); a != 1 {
+		t.Errorf("%d checks asked for; want boot's alone — the interval's asks nothing", a)
 	}
 }
 
@@ -481,7 +520,12 @@ type gatedSource struct {
 func (g *gatedSource) Credentials(ctx context.Context) ([]byte, error) {
 	g.once.Do(func() {
 		close(g.in)
-		<-g.gate
+		// Or the check's end: a test that fails before releasing the gate
+		// must not hang its cleanup's Wait.
+		select {
+		case <-g.gate:
+		case <-ctx.Done():
+		}
 	})
 	return g.fakeSource.Credentials(ctx)
 }
@@ -494,14 +538,6 @@ func receive[T any](t *testing.T, ch <-chan T, msg string) {
 	case <-time.After(5 * time.Second):
 		t.Fatal(msg)
 	}
-}
-
-// drained waits for wg, failing the test rather than hanging it.
-func drained(t *testing.T, wg *sync.WaitGroup, msg string) {
-	t.Helper()
-	ch := make(chan struct{})
-	go func() { wg.Wait(); close(ch) }()
-	receive(t, ch, msg)
 }
 
 func (h *harness) calls() int {
@@ -544,7 +580,7 @@ func TestAFreshLoginIsNotExpiring(t *testing.T) {
 			h := newHarness(t)
 			now := h.clock.Now()
 			h.src.set(fixture(t, "credentials", c.creds), fixture(t, "authstatus", "valid.json"), nil, nil)
-			v, err := h.w.Check(context.Background())
+			v, err := h.w.Check(waitCtx(t))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -583,13 +619,13 @@ func TestAFreshLoginIsNotExpiring(t *testing.T) {
 func TestALapsedAccessTokenIsInformational(t *testing.T) {
 	h := newHarness(t)
 	h.src.set(fixture(t, "credentials", "fresh-login.json"), fixture(t, "authstatus", "valid.json"), nil, nil)
-	if v, err := h.w.Check(context.Background()); err != nil {
+	if v, err := h.w.Check(waitCtx(t)); err != nil {
 		t.Fatal(err)
 	} else {
 		stateIs(t, v, OK) // control: the same file, before its access token lapses
 	}
 	h.clock.Advance(9 * time.Hour)
-	v, err := h.w.Check(context.Background())
+	v, err := h.w.Check(waitCtx(t))
 	if err != nil {
 		t.Fatal(err)
 	}
