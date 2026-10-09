@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.9.2](https://github.com/krelinga/drydock/compare/v0.9.1...v0.9.2) (2026-10-09)
+
+
+### Bug Fixes
+
+* stamp upgrade traffic before the write, and start the watch after the 101 ([#126](https://github.com/krelinga/drydock/issues/126)) ([8098c60](https://github.com/krelinga/drydock/commit/8098c60015b17d58b39c62ca5be92d26f808d0f6))
+
 ## [0.9.1](https://github.com/krelinga/drydock/compare/v0.9.0...v0.9.1) (2026-10-09)
 
 
