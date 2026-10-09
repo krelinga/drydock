@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/krelinga/drydock/internal/config"
+	"github.com/krelinga/drydock/internal/ephemeral"
 	"github.com/krelinga/drydock/internal/events"
 	"github.com/krelinga/drydock/internal/identity"
 	"github.com/krelinga/drydock/internal/store"
@@ -121,7 +122,7 @@ func TestAHungReadIsCutOffAndItsHelperRemoved(t *testing.T) {
 		t.Fatal("the check did not end at its timeout")
 	}
 	if !src.leftRunning {
-		t.Error("measured: the killed docker client took its container with it — the sweep would be unneeded")
+		t.Error("measured: the killed docker client took its container with it — the removal by label would be unneeded")
 	}
 	if left := docker(t, "ps", "-aq", "--filter", "label="+p+"."+identity.LabelIdentity); left != "" {
 		t.Errorf("the hung helper was left behind: %s", left)
@@ -139,14 +140,16 @@ func TestAHungReadIsCutOffAndItsHelperRemoved(t *testing.T) {
 
 // hangingDocker is the real DockerSource whose credential read, while hang
 // is set, runs a helper that never ends instead — the same docker client,
-// the same label — and whose Sweep first records whether that helper outlived
-// its cut-off client.
+// run as the same ephemeral helper under the same label — and which records
+// whether that helper outlived its cut-off client: what the first listing of
+// the label after the run returned.
 type hangingDocker struct {
 	identity.DockerSource
 	t           *testing.T
 	p           string
 	hang        bool
 	started     chan struct{}
+	cutOff      bool
 	leftRunning bool
 }
 
@@ -170,16 +173,40 @@ func (h *hangingDocker) Credentials(ctx context.Context) ([]byte, error) {
 			time.Sleep(100 * time.Millisecond)
 		}
 	}()
-	res := h.Run.Run(ctx, subproc.Cmd{Name: "docker", Args: args})
+	helper := ephemeral.Helper{Docker: observed{h}, Prefix: h.p, Kind: ephemeral.Identity, Value: "1", Clock: h.Clock}
+	res, err := helper.Run(ctx, subproc.Cmd{Name: "docker", Args: args})
+	if err != nil {
+		return nil, err
+	}
 	return nil, &identity.ReadError{Problem: identity.ProblemDocker, Detail: "hung read ended: " + errString(res.Err)}
 }
 
-func (h *hangingDocker) Sweep(ctx context.Context) (int, error) {
-	if h.hang {
-		out, _ := exec.Command("docker", "ps", "-q", "--filter", "label="+h.p+"."+identity.LabelIdentity).Output()
-		h.leftRunning = strings.TrimSpace(string(out)) != ""
+// observed is the source's runner, noting what the first listing after the
+// helper's run found.
+type observed struct{ h *hangingDocker }
+
+func (o observed) Run(ctx context.Context, c subproc.Cmd) subproc.Result {
+	if c.Args[0] == "ps" && o.h.cutOff {
+		var out strings.Builder
+		real := c.Stdout
+		c.Stdout = &out
+		res := o.h.Run.Run(ctx, c)
+		if real != nil {
+			real.Write([]byte(out.String()))
+		}
+		o.h.cutOff = false
+		o.h.leftRunning = strings.TrimSpace(out.String()) != ""
+		return res
 	}
-	return h.DockerSource.Sweep(ctx)
+	res := o.h.Run.Run(ctx, c)
+	if c.Args[0] == "run" {
+		o.h.cutOff = true
+	}
+	return res
+}
+
+func (o observed) Start(ctx context.Context, c subproc.Cmd) (subproc.Process, error) {
+	return o.h.Run.Start(ctx, c)
 }
 
 func errString(err error) string {

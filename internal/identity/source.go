@@ -11,7 +11,9 @@ import (
 
 	"github.com/krelinga/drydock/internal/config"
 	"github.com/krelinga/drydock/internal/container"
+	"github.com/krelinga/drydock/internal/ephemeral"
 	"github.com/krelinga/drydock/internal/subproc"
+	"github.com/krelinga/drydock/internal/sys"
 )
 
 // Source is the two reads §7.3 names, kept apart so the watch can do what the
@@ -34,14 +36,6 @@ type Source interface {
 // watch gives it its own, longer bound, so the reads' bound can be short.
 type Preparer interface {
 	Prepare(ctx context.Context) error
-}
-
-// Sweeper is a Source that leaves something behind when a read is cut off:
-// a helper container a killed `docker run` client does not take with it
-// (measured: the container outlives its client). The watch sweeps after any
-// read that failed, and once before its first check.
-type Sweeper interface {
-	Sweep(ctx context.Context) (int, error)
 }
 
 // ImageEnsurer is internal/claudeimage's Builder.
@@ -78,10 +72,15 @@ func (e *ReadError) Error() string { return "identity: " + string(e.Problem) + "
 // CLAUDE_CONFIG_DIR is set to there.
 const Mount = "/claude"
 
-// LabelIdentity is the label a helper carries, valued "1". Deliberately not
-// <prefix>.workspace: reconciliation lists by that label, so a helper is never
-// adopted or given a row (the cleanup helper's reasoning, internal/container).
-const LabelIdentity = "identity"
+// LabelIdentity is the label a helper carries, valued "1":
+// ephemeral.Identity's. Deliberately not <prefix>.workspace: reconciliation
+// lists by that label, so a helper is never adopted or given a row (the
+// cleanup helper's reasoning, internal/container).
+const LabelIdentity = string(ephemeral.Identity)
+
+// helperValue is every identity helper's label value: the watch runs one
+// check at a time, so there is never more than one read to tell apart.
+const helperValue = "1"
 
 // LabelVolume is the label, under the prefix, that §6 step 4 puts on the
 // shared credential volume when it makes it — internal/container's
@@ -124,9 +123,8 @@ const (
 )
 
 var (
-	imageIDPattern     = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
-	containerIDPattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
-	pinnedPattern      = regexp.MustCompile(`^[a-z0-9][a-z0-9./_:-]*@sha256:[0-9a-f]{64}$`)
+	imageIDPattern = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
+	pinnedPattern  = regexp.MustCompile(`^[a-z0-9][a-z0-9./_:-]*@sha256:[0-9a-f]{64}$`)
 )
 
 // DockerSource reads the volume through a short-lived container.
@@ -149,12 +147,23 @@ var (
 // helper's image — and not with the Claude image, so blanked and absent can
 // be told even when the Claude image cannot be built (its first build needs
 // the network): the two verdicts that matter most depend on the least.
+//
+// Each read is an internal/ephemeral helper: a killed `docker run` client
+// does not take its container with it (measured — a read that never ends
+// keeps running), so whatever carries the identity label is removed however
+// the read ends, under a bound of its own on Clock even when the read's
+// context is what ended; and boot's sweep removes what a process that died
+// mid-read left.
 type DockerSource struct {
 	Run         subproc.Runner
 	Image       ImageEnsurer
 	FileImage   string
 	Volume      string
 	LabelPrefix string
+	// Clock bounds a helper's removal; nil is the real clock.
+	Clock sys.Clock
+	// Logf is told about a helper whose removal failed; nil drops it.
+	Logf func(string, ...any)
 }
 
 // Credentials implements Source.
@@ -173,7 +182,7 @@ func (d DockerSource) Credentials(ctx context.Context) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	out, code, err := d.run(ctx, args)
+	out, code, err := d.read(ctx, args)
 	if err != nil {
 		return nil, err
 	}
@@ -202,41 +211,6 @@ func (d DockerSource) Prepare(ctx context.Context) error {
 	return nil
 }
 
-// Sweep implements Sweeper: every container carrying this prefix's identity
-// label, removed by full id. Safe only because the watch runs one check at a
-// time and sweeps inside it: there is never a helper of another check's to
-// remove.
-func (d DockerSource) Sweep(ctx context.Context) (int, error) {
-	if d.LabelPrefix == "" {
-		return 0, errors.New("identity: no label prefix")
-	}
-	out, code, err := d.run(ctx, []string{"ps", "--all", "--quiet", "--no-trunc",
-		"--filter", "label=" + d.LabelPrefix + "." + LabelIdentity})
-	if err != nil {
-		return 0, err
-	}
-	if code != 0 {
-		return 0, &ReadError{Problem: ProblemDocker, Detail: fmt.Sprintf("docker ps exited %d", code)}
-	}
-	ids := strings.Fields(string(out))
-	if len(ids) == 0 {
-		return 0, nil
-	}
-	for _, id := range ids {
-		if !containerIDPattern.MatchString(id) {
-			return 0, &ReadError{Problem: ProblemDocker, Detail: "docker ps printed something that is not a container id"}
-		}
-	}
-	_, code, err = d.run(ctx, append([]string{"rm", "--force", "--"}, ids...))
-	if err != nil {
-		return 0, err
-	}
-	if code != 0 {
-		return 0, &ReadError{Problem: ProblemDocker, Detail: fmt.Sprintf("docker rm exited %d", code)}
-	}
-	return len(ids), nil
-}
-
 // AuthStatus implements Source. `auth status` exits 1 when it reports
 // loggedIn:false, so 0 and 1 are both answers; the classifier decides what
 // the bytes mean.
@@ -249,7 +223,7 @@ func (d DockerSource) AuthStatus(ctx context.Context) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	out, code, err := d.run(ctx, args)
+	out, code, err := d.read(ctx, args)
 	if err != nil {
 		return nil, err
 	}
@@ -271,8 +245,12 @@ func (d DockerSource) RunArgs(image string, entrypoint string, args ...string) (
 	if d.LabelPrefix == "" {
 		return nil, errors.New("identity: no label prefix")
 	}
+	label, err := ephemeral.Label(d.LabelPrefix, ephemeral.Identity, helperValue)
+	if err != nil {
+		return nil, fmt.Errorf("identity: %w", err)
+	}
 	out := []string{"run", "--rm",
-		"--label", d.LabelPrefix + "." + LabelIdentity + "=1",
+		"--label", label,
 		"--network", "none",
 		"--read-only",
 		"--tmpfs", "/tmp:rw,nosuid,nodev,noexec,size=16m",
@@ -340,12 +318,29 @@ func (d DockerSource) checkLabel(ctx context.Context) error {
 	return nil
 }
 
+// read runs one helper (args, from RunArgs) as an ephemeral helper, and
+// returns its stdout, capped, as run does.
+func (d DockerSource) read(ctx context.Context, args []string) ([]byte, int, error) {
+	h := ephemeral.Helper{Docker: d.Run, Prefix: d.LabelPrefix, Kind: ephemeral.Identity, Value: helperValue,
+		Clock: d.Clock, Logf: d.Logf}
+	return d.capture(func(c subproc.Cmd) (subproc.Result, error) { return h.Run(ctx, c) }, args)
+}
+
 // run executes docker and returns stdout, capped. stderr is read and dropped:
 // a failure is described by its exit code alone.
 func (d DockerSource) run(ctx context.Context, args []string) ([]byte, int, error) {
+	return d.capture(func(c subproc.Cmd) (subproc.Result, error) { return d.Run.Run(ctx, c), nil }, args)
+}
+
+// capture runs args through run, with stdout capped at maxRead and stderr
+// dropped.
+func (d DockerSource) capture(run func(subproc.Cmd) (subproc.Result, error), args []string) ([]byte, int, error) {
 	var out bytes.Buffer
 	lim := &limited{buf: &out, max: maxRead}
-	res := d.Run.Run(ctx, subproc.Cmd{Name: "docker", Args: args, Stdout: lim, Stderr: discard{}})
+	res, err := run(subproc.Cmd{Name: "docker", Args: args, Stdout: lim, Stderr: discard{}})
+	if err != nil {
+		return nil, 0, &ReadError{Problem: ProblemDocker, Detail: "the helper was not run: " + err.Error()}
+	}
 	// Over the cap first: the copy stopping is what makes Run report an
 	// error, and the error is the size, not docker.
 	if lim.over {

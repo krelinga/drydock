@@ -32,6 +32,10 @@ case "$1 $2" in
   [ -e "$o/owner-out" ] && cat "$o/owner-out"
   [ -e "$o/owner-exit" ] && exit "$(cat "$o/owner-exit")"
   exit 0 ;;
+"ps --all"|"rm --force")
+  # The owner helper's listing and removal by its label (internal/ephemeral):
+  # none is ever left here.
+  ;;
 *) exit 64 ;;
 esac`
 

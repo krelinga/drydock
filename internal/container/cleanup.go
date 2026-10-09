@@ -3,14 +3,13 @@ package container
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"path/filepath"
 	"regexp"
 	"strings"
 
-	"github.com/krelinga/drydock/internal/dockerguard"
+	"github.com/krelinga/drydock/internal/ephemeral"
 	"github.com/krelinga/drydock/internal/subproc"
 )
 
@@ -27,10 +26,11 @@ import (
 // an image pinned by digest.
 
 // LabelCleanup is the label a cleanup helper carries, valued with the
-// workspace id. Deliberately not LabelWorkspace: reconciliation lists
-// containers by <prefix>.workspace, so a helper is never mistaken for a
-// workspace's container — never adopted, and never given a row.
-const LabelCleanup = "cleanup"
+// workspace id: ephemeral.Cleanup's. Deliberately not LabelWorkspace:
+// reconciliation lists containers by <prefix>.workspace, so a helper is never
+// mistaken for a workspace's container — never adopted, and never given a
+// row (internal/ephemeral refuses an argv that names it).
+const LabelCleanup = string(ephemeral.Cleanup)
 
 // CleanupMount is where the workspace's directory appears in the helper.
 const CleanupMount = "/w"
@@ -71,8 +71,12 @@ func (m Manager) CleanupArgs(workspaceID, dir string) ([]string, error) {
 	if !ValidCleanupImage(m.CleanupImage) {
 		return nil, fmt.Errorf("%w: %q", ErrCleanupImage, m.CleanupImage)
 	}
+	label, err := ephemeral.Label(m.LabelPrefix, ephemeral.Cleanup, workspaceID)
+	if err != nil {
+		return nil, err
+	}
 	return []string{"run", "--rm",
-		"--label", m.key(LabelCleanup) + "=" + workspaceID,
+		"--label", label,
 		"--network", "none",
 		"--read-only",
 		"--cap-drop", "ALL", "--cap-add", "DAC_OVERRIDE", "--cap-add", "FOWNER",
@@ -89,9 +93,11 @@ func (m Manager) CleanupArgs(workspaceID, dir string) ([]string, error) {
 }
 
 // RemoveContents empties the workspace's directory through the cleanup
-// helper. A helper an earlier attempt left behind — Drydock killed while it
-// ran, and the daemon never got to --rm — is removed first, found by its
-// label, so a retried delete never runs two.
+// helper, run as an ephemeral helper (internal/ephemeral): what an earlier
+// attempt left behind — Drydock killed while it ran, and the daemon never got
+// to --rm — is removed by its label first, so a retried delete never runs
+// two, and whatever carries the label is removed again on every way the run
+// ends.
 //
 // Everything before the helper's own `docker run` that fails is
 // ErrCleanupNotRun, so the caller can tell "no helper ran" from "a helper
@@ -101,105 +107,25 @@ func (m Manager) RemoveContents(ctx context.Context, workspaceID, dir string) er
 	if err != nil {
 		return fmt.Errorf("%w: %w", ErrCleanupNotRun, err)
 	}
-	var out, stderr bytes.Buffer
-	res := m.Run.Run(ctx, subproc.Cmd{Name: "docker",
-		Args: []string{"ps", "--all", "--quiet", "--no-trunc",
-			"--filter", "label=" + m.key(LabelCleanup) + "=" + workspaceID},
-		Stdout: limit(&out, 64<<10), Stderr: limit(&stderr, 64<<10)})
-	if err := failed("docker ps", res, &stderr); err != nil {
+	var stderr bytes.Buffer
+	res, err := m.helper(ephemeral.Cleanup, workspaceID).Run(ctx, subproc.Cmd{Name: "docker", Args: args,
+		Stdout: limit(&bytes.Buffer{}, 64<<10), Stderr: limit(&stderr, 64<<10)})
+	if err != nil {
 		return fmt.Errorf("%w: %w", ErrCleanupNotRun, err)
 	}
-	if stray := strings.Fields(out.String()); len(stray) > 0 {
-		if err := m.Remove(ctx, stray); err != nil {
-			return fmt.Errorf("%w: removing a stray cleanup helper: %w", ErrCleanupNotRun, err)
-		}
-	}
-	stderr.Reset()
-	res = m.Run.Run(ctx, subproc.Cmd{Name: "docker", Args: args,
-		Stdout: limit(&bytes.Buffer{}, 64<<10), Stderr: limit(&stderr, 64<<10)})
 	return failed("docker run (cleanup)", res, &stderr)
 }
 
-// LabelLogProbe is the docker guard's log probe (dockerguard.LabelLogProbe):
-// a container created, never started, and removed in one start's check, which
-// a guard killed mid-probe leaves behind. The boot sweep lists it beside the
-// cleanup helpers, so a stray outlives neither a restart nor its workspace.
-const LabelLogProbe = dockerguard.LabelLogProbe
-
-// Helper is a cleanup helper container, or a docker guard log probe, found
-// by its label.
-type Helper struct {
-	ContainerID string
-	// WorkspaceID is the label's value: the workspace whose delete ran it,
-	// or whose start the probe was for.
-	WorkspaceID string
+// helper is an ephemeral helper of kind k under this manager's prefix,
+// runner and clock.
+func (m Manager) helper(k ephemeral.Kind, value string) ephemeral.Helper {
+	return ephemeral.Helper{Docker: m.Run, Prefix: m.LabelPrefix, Kind: k, Value: value, Clock: m.Clock, Logf: m.Logf}
 }
 
-// ListHelpers finds every container, running or not, carrying this prefix's
-// cleanup label or log-probe label, whatever its value: the boot sweep's
-// listing (design §6). As
-// List does, `docker ps` for the ids, filtered on the daemon's side, then
-// `docker inspect` for the labels — never a table parse.
-//
-// A container that also carries this prefix's workspace label is never
-// returned. Drydock's helpers never carry it (CleanupArgs), so one that does
-// was not made by a delete, and the one thing a sweep must never remove is a
-// workspace's container: it is left to reconciliation, which owns that label.
-// A container listed by the cleanup label whose inspect lacks it is an error,
-// as in List: the contract moved, and acting on it would be guessing.
-func (m Manager) ListHelpers(ctx context.Context) ([]Helper, error) {
-	var list []string
-	seen := map[string]bool{}
-	var stderr bytes.Buffer
-	for _, label := range []string{LabelCleanup, LabelLogProbe} {
-		var ids bytes.Buffer
-		stderr.Reset()
-		res := m.Run.Run(ctx, subproc.Cmd{Name: "docker",
-			Args:   []string{"ps", "--all", "--quiet", "--no-trunc", "--filter", "label=" + m.key(label)},
-			Stdout: limit(&ids, 1<<20), Stderr: limit(&stderr, 64<<10)})
-		if err := failed("docker ps", res, &stderr); err != nil {
-			return nil, err
-		}
-		for _, id := range strings.Fields(ids.String()) {
-			if !seen[id] {
-				seen[id] = true
-				list = append(list, id)
-			}
-		}
-	}
-	if len(list) == 0 {
-		return nil, nil
-	}
-	for _, id := range list {
-		if !containerID.MatchString(id) {
-			return nil, fmt.Errorf("docker ps: %q is not a container id", id)
-		}
-	}
-	var out bytes.Buffer
-	stderr.Reset()
-	res := m.Run.Run(ctx, subproc.Cmd{Name: "docker", Args: append([]string{"inspect", "--type", "container"}, list...),
-		Stdout: &out, Stderr: limit(&stderr, 64<<10)})
-	if err := failed("docker inspect", res, &stderr); err != nil {
-		return nil, err
-	}
-	var all []inspect
-	if err := json.Unmarshal(out.Bytes(), &all); err != nil {
-		return nil, fmt.Errorf("docker inspect: %w", err)
-	}
-	var found []Helper
-	for _, c := range all {
-		ws, ok := c.Config.Labels[m.key(LabelCleanup)]
-		if !ok {
-			ws, ok = c.Config.Labels[m.key(LabelLogProbe)]
-		}
-		if !ok || !containerID.MatchString(c.ID) {
-			return nil, fmt.Errorf("docker inspect: container %q lacks the %s or %s label it was listed by", c.ID,
-				m.key(LabelCleanup), m.key(LabelLogProbe))
-		}
-		if _, isWorkspace := c.Config.Labels[m.key(LabelWorkspace)]; isWorkspace {
-			continue
-		}
-		found = append(found, Helper{ContainerID: c.ID, WorkspaceID: ws})
-	}
-	return found, nil
+// SweepHelpers is boot's sweep of every helper kind (ephemeral.SweepAll):
+// every container carrying one of this prefix's helper labels, except one
+// that also carries the workspace label (reconciliation's), one a holder in
+// this process is running, and what skip spares. It returns what it removed.
+func (m Manager) SweepHelpers(ctx context.Context, skip func(ephemeral.Found) bool) ([]ephemeral.Found, error) {
+	return ephemeral.SweepAll(ctx, m.Run, m.LabelPrefix, skip)
 }

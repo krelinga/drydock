@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/krelinga/drydock/internal/config"
+	"github.com/krelinga/drydock/internal/ephemeral"
 	"github.com/krelinga/drydock/internal/subproc"
 )
 
@@ -108,13 +109,15 @@ func (m Manager) OwnerArgs(name string) ([]string, error) {
 	if !ValidCleanupImage(m.CleanupImage) {
 		return nil, fmt.Errorf("%w: %q", ErrCleanupImage, m.CleanupImage)
 	}
+	label, err := ephemeral.Label(m.LabelPrefix, ephemeral.VolumeOwner, name)
+	if err != nil {
+		return nil, err
+	}
 	return []string{"run", "--rm",
 		// Its own label, never the workspace's, so reconciliation never
-		// lists one. Nothing sweeps it: the script always ends by itself
-		// in a moment, and --rm is the daemon's, so a killed client does
-		// not leave it (the identity helper's case is a read that never
-		// ends, which this has none of).
-		"--label", m.key(LabelVolumeOwner) + "=" + name,
+		// lists one; removed by it however the run ends, and by boot's
+		// sweep (internal/ephemeral).
+		"--label", label,
 		"--network", "none",
 		"--read-only",
 		"--cap-drop", "ALL", "--cap-add", "CHOWN", "--cap-add", "FOWNER", "--cap-add", "DAC_OVERRIDE",
@@ -129,9 +132,11 @@ func (m Manager) OwnerArgs(name string) ([]string, error) {
 }
 
 // LabelVolumeOwner is the label the owner helper carries, valued with the
-// volume's name. Not LabelWorkspace (reconciliation lists by that) and not
-// LabelCleanup (that one's value is a workspace id).
-const LabelVolumeOwner = "volume-owner"
+// volume's name: ephemeral.VolumeOwner's. Not LabelWorkspace (reconciliation
+// lists by that) and not LabelCleanup (that one's value is a workspace id).
+// Two creates can run the helper for one volume at once; the label is
+// removed by the last of them to end (ephemeral.Helper.End).
+const LabelVolumeOwner = string(ephemeral.VolumeOwner)
 
 // ensureOwner runs the owner helper over the volume.
 func (m Manager) ensureOwner(ctx context.Context, name string) error {
@@ -140,7 +145,11 @@ func (m Manager) ensureOwner(ctx context.Context, name string) error {
 		return err
 	}
 	var out, stderr bytes.Buffer
-	res := m.Run.Run(ctx, subproc.Cmd{Name: "docker", Args: args, Stdout: limit(&out, 64), Stderr: limit(&stderr, 64<<10)})
+	res, err := m.helper(ephemeral.VolumeOwner, name).Run(ctx, subproc.Cmd{Name: "docker", Args: args,
+		Stdout: limit(&out, 64), Stderr: limit(&stderr, 64<<10)})
+	if err != nil {
+		return fmt.Errorf("docker run (volume owner): %w", err)
+	}
 	if res.Err != nil {
 		return fmt.Errorf("docker run (volume owner): %w", res.Err)
 	}

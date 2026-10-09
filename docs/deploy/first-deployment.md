@@ -811,21 +811,19 @@ That restart is the upgrade, so back up the database first, as for any upgrade
   ```
   drydock: serving on /run/drydock/http.sock and /run/drydock/preview.sock
   ```
-  One other line is benign: `drydock: login: removed N leftover login container(s)`, when a
-  Claude sign-in was cut off by the previous stop. Everything else Drydock does at boot logs
-  **only when it fails**. So silence is success, and **any other line from Drydock is a
+  Everything else Drydock does at boot logs **only when it fails**. So silence is success, and **any other line from Drydock is a
   problem**. The ones boot can write:
   - `drydock: reconcile: …`: Drydock cannot list containers. This is usually Docker access
     ([§11](#11-troubleshooting)).
-  - `drydock: sweeping cleanup helpers: …`: the helper containers an interrupted delete left
-    could not be listed or removed. Usually Docker access, as above.
+  - `drydock: sweeping helper containers: …`: the short-lived helper containers an earlier run
+    left — a delete's cleanup helper, a cut-off Claude sign-in or login check — could not be
+    listed or removed. Usually Docker access, as above.
   - `drydock: broker: …`: the broker sockets of running workspaces were not reopened, so those
     workspaces have no GitHub access until they are stopped and started.
   - `drydock: session servers: …`: running workspaces' Claude session servers were not resumed.
   - `drydock: secrets: …`: the stored secrets could not be checked at boot.
   - `drydock: identity: Could not check the Claude login: … (…)`: the shared Claude login could
     not be read. The sentence says why; the first check builds an image and needs the network.
-  - `drydock: login: sweeping leftover login containers: …`: as the reconcile line.
   - `drydock: catalog refresh: github: GET /app/installations: 401 …`: the App ID and key do not
     belong together, or the clock is off.
   - `drydock: workspace <id>: …`: one workspace's step or session server failed; its page in the

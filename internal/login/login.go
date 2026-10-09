@@ -26,7 +26,8 @@
 //     refused while one runs; every exit path — success, a wrong code left to
 //     time out, cancel, the container dying, shutdown — kills the local
 //     process and removes the container by label before the login is
-//     announced as over, and boot sweeps whatever an earlier process left.
+//     announced as over, and boot's helper sweep (ephemeral.SweepAll)
+//     removes whatever an earlier process left.
 //
 // The process itself is a Launcher's: in production a short-lived container
 // (DockerLauncher), in the component tier fakeclaude on a PTY directly.
@@ -56,7 +57,7 @@
 // The manager's lifecycle is a life.Group (Start): Serve's work.Child("login").
 // Each login's session — the one goroutine that owns the PTY, an actor fed by
 // Submit and Cancel — and its helpers (the launch, the PTY reader) are the
-// group's goroutines; so are boot's Sweep and nothing else. Stop ends a login
+// group's goroutines, and nothing else. Stop ends a login
 // in progress through the same path as every other end, failed with
 // ProblemShutdown, and the group's Wait waits for it, which is how a login's
 // end reaches the database before Serve closes it. Begin once the group is
@@ -72,13 +73,14 @@
 // -it of the Claude image as **Drydock's own uid** (the uid every workspace's
 // remote user gets; the credential is 0600), the volume read-write at
 // /home/vscode/.claude, --cap-drop ALL, read-only root, label
-// <prefix>.login=<id> — never .workspace or .identity. A killed docker CLI
-// leaves its container running (measured), hence removal by label and Sweep at
-// boot, which a launch waits for. One killed during its create leaves a
-// container the daemon finishes creating after the CLI is gone, so Remove is
-// told whether Drydock killed the CLI (killed, false once the PTY has ended by
-// itself) and then keeps listing for up to RemoveSettle (3 s), and every
-// launch first sweeps all other login containers.
+// <prefix>.login=<id> — never .workspace or .identity — as an
+// internal/ephemeral helper. A killed docker CLI leaves its container running
+// (measured), hence removal by label, and boot's sweep of every helper kind,
+// which spares the login this process is running. One killed during its
+// create leaves a container the daemon finishes creating after the CLI is
+// gone, so Remove is told whether Drydock killed the CLI (killed, false once
+// the PTY has ended by itself) and then keeps listing for up to RemoveSettle
+// (3 s), and every launch first sweeps all other login containers.
 //
 // logintest.Launcher runs fakeclaude on a PTY directly (through the same
 // StartPTY) for the component tier. A success reaches the supervisors only
@@ -239,7 +241,8 @@ type Launcher interface {
 	// create request in flight, and the daemon finishes that create anyway
 	// (measured), so what Launch made may not be listable yet.
 	Remove(ctx context.Context, id string, killed bool) error
-	// Sweep removes whatever an earlier process left, except keep's.
+	// Sweep removes whatever an earlier login left, except keep's: run
+	// before each launch.
 	Sweep(ctx context.Context, keep string) (int, error)
 }
 
@@ -350,11 +353,10 @@ type Manager struct {
 	// stream bytes in them.
 	Logf func(string, ...any)
 
-	sweep sync.RWMutex // a boot sweep holds it, so it never races a launch
-	mu    sync.Mutex
-	g     *life.Group // Start's: every session and its helpers run in it
-	cur   *session
-	last  *View
+	mu   sync.Mutex
+	g    *life.Group // Start's: every session and its helpers run in it
+	cur  *session
+	last *View
 }
 
 type session struct {
@@ -547,21 +549,6 @@ func (m *Manager) Current() *View {
 	return nil
 }
 
-// Sweep removes what an earlier process left behind — a login container a
-// crash or a kill orphaned — sparing the login in progress, if any. Boot runs
-// it; it holds off any launch until it is done.
-func (m *Manager) Sweep(ctx context.Context) (int, error) {
-	m.sweep.Lock()
-	defer m.sweep.Unlock()
-	keep := ""
-	m.mu.Lock()
-	if m.cur != nil {
-		keep = m.cur.view.ID
-	}
-	m.mu.Unlock()
-	return m.Launcher.Sweep(ctx, keep)
-}
-
 // emit announces v. An announcement is owed whether or not the context it
 // was made under has ended — a login's end is announced after its session's
 // context did, at shutdown — so it is written under sys.Cleanup: ctx's
@@ -672,8 +659,6 @@ func (s *session) launch(ctx context.Context, startTimer <-chan time.Time) (*Pro
 	// A helper in the group, and always waited for: launch receives from lc
 	// on every path before it returns.
 	err := s.g.TryGo("launch "+s.view.ID, func(context.Context) {
-		m.sweep.RLock()
-		defer m.sweep.RUnlock()
 		// Whatever an earlier login left, such as a container whose create
 		// landed after its Remove had given up, goes now rather than at the
 		// next boot. One login runs at a time, so all but this one is spare.

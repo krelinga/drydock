@@ -19,6 +19,7 @@ import (
 	"github.com/krelinga/drydock/internal/config"
 	"github.com/krelinga/drydock/internal/container"
 	"github.com/krelinga/drydock/internal/dockerguard"
+	"github.com/krelinga/drydock/internal/ephemeral"
 	"github.com/krelinga/drydock/internal/events"
 	"github.com/krelinga/drydock/internal/reconcile"
 	"github.com/krelinga/drydock/internal/store"
@@ -53,9 +54,13 @@ func prefix(t *testing.T) string {
 	rand.Read(b)
 	p := "drydock.test." + hex.EncodeToString(b)
 	t.Cleanup(func() {
-		// Workspace containers, and any cleanup helper or login container
-		// a failed test left.
-		for _, k := range []string{".workspace", ".cleanup", ".login", "." + dockerguard.LabelLogProbe} {
+		// Workspace containers, and any helper container of any kind a
+		// failed test left.
+		keys := []string{".workspace"}
+		for _, k := range ephemeral.Kinds {
+			keys = append(keys, "."+string(k))
+		}
+		for _, k := range keys {
 			out, _ := exec.Command("docker", "ps", "-aq", "--filter", "label="+p+k).Output()
 			if ids := strings.Fields(string(out)); len(ids) > 0 {
 				exec.Command("docker", append([]string{"rm", "-f"}, ids...)...).Run()

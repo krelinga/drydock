@@ -1102,8 +1102,7 @@ system store otherwise.
 
 The journal check reads only the **running** process's lines (`_PID=` its main PID), so a failure
 from an earlier start in the same boot does not fail it. It is an allowlist: every line must be the
-serving line or the benign `drydock: login: removed N leftover login container(s)`, and any other
-line fails it, whether or not [runbook §7.1](first-deployment.md#71-on-the-server) lists it. The first catalog refresh logs only when it
+serving line, and any other line fails it, whether or not [runbook §7.1](first-deployment.md#71-on-the-server) lists it. The first catalog refresh logs only when it
 fails, and asynchronously, so a wrong App key can show up seconds after this check has passed: look
 at `journalctl -u drydock -o cat` once more after signing in. That assertion carries its own tag,
 `drydock_verify_journal`, so `--skip-tags drydock_verify_journal` leaves it out while you fix
@@ -1170,11 +1169,10 @@ something it already told you about.
     that:
       - "'drydock: serving on /run/drydock/http.sock and /run/drydock/preview.sock' in drydock_journal.stdout_lines"
       # An allowlist, not a list of known failures: every line is the serving
-      # line or the one benign line, so a failure line added later fails this too.
+      # line, so a failure line added later fails this too.
       - >-
         drydock_journal.stdout_lines
         | reject('equalto', 'drydock: serving on /run/drydock/http.sock and /run/drydock/preview.sock')
-        | reject('match', 'drydock: login: removed [0-9]+ leftover login container[(]s[)]$')
         | reject('equalto', '')
         | list | length == 0
     fail_msg: "{{ drydock_journal.stdout }}"

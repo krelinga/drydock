@@ -11,23 +11,26 @@ import (
 
 	"github.com/krelinga/drydock/internal/config"
 	"github.com/krelinga/drydock/internal/dockerguard"
+	"github.com/krelinga/drydock/internal/ephemeral"
 	"github.com/krelinga/drydock/internal/provision"
 	"github.com/krelinga/drydock/internal/server"
 	"github.com/krelinga/drydock/internal/sys"
 )
 
-// TestBootSweepsLeftoverHelpers: a cleanup helper a delete left behind —
-// Drydock killed while it ran, and the daemon never reaching --rm — is
-// removed at boot, after reconciliation, by this instance's
-// <prefix>.cleanup label, through the real server against the real daemon.
-// Two are made: one stopped (created and never run, as a daemon restart
+// TestBootSweepsLeftoverHelpers: a helper container an earlier process left
+// behind — Drydock killed while it ran, a killed docker client whose create
+// landed after it, the daemon never reaching --rm — is removed at boot, after
+// reconciliation, by this instance's prefix, through the real server against
+// the real daemon: one of every kind internal/ephemeral knows. Two cleanup
+// helpers are made: one stopped (created and never run, as a daemon restart
 // leaves an --rm container) and one still running.
 //
 // Around them, what the sweep must never touch, each beside the helpers it
 // does remove: a workspace's container (adopted by reconciliation, not
 // removed); a container carrying the cleanup label *and* the workspace label,
 // which no delete makes and which is a workspace container whatever else it
-// carries; and another instance's helper, under a different prefix.
+// carries; and another instance's helper of every kind, under a different
+// prefix.
 func TestBootSweepsLeftoverHelpers(t *testing.T) {
 	needDocker(t)
 	p, other := prefix(t), prefix(t)
@@ -43,10 +46,20 @@ func TestBootSweepsLeftoverHelpers(t *testing.T) {
 	// and another instance's.
 	probe := docker(t, "create", "--label", p+"."+dockerguard.LabelLogProbe+"="+gone, image, "true")
 	foreignProbe := docker(t, "create", "--label", other+"."+dockerguard.LabelLogProbe+"="+gone, image, "true")
+	// The rest of the kinds: an identity read, a login container and the
+	// volume's owner helper, each beside another instance's.
+	rest := map[string]string{}
+	foreignRest := map[string]string{}
+	for kind, value := range map[ephemeral.Kind]string{ephemeral.Identity: "1", ephemeral.Login: "0123456789abcdef01234567",
+		ephemeral.VolumeOwner: claudeVolume(p)} {
+		rest[string(kind)] = docker(t, "create", "--label", ephemeral.Key(p, kind)+"="+value, image, "true")
+		foreignRest[string(kind)] = docker(t, "create", "--label", ephemeral.Key(other, kind)+"="+value, image, "true")
+	}
 	exists := func(id string) bool {
 		return docker(t, "ps", "-aq", "--no-trunc", "--filter", "id="+id) != ""
 	}
-	for _, id := range []string{stopped, live, workspaceC, both, foreign, probe, foreignProbe} {
+	for _, id := range []string{stopped, live, workspaceC, both, foreign, probe, foreignProbe, rest["identity"], rest["login"],
+		rest["volume-owner"], foreignRest["identity"], foreignRest["login"], foreignRest["volume-owner"]} {
 		if !exists(id) {
 			t.Fatalf("setup: %s is not there", id)
 		}
@@ -90,8 +103,8 @@ func TestBootSweepsLeftoverHelpers(t *testing.T) {
 			}
 		}
 		if swept != "" {
-			if swept != `{"count":3}` {
-				t.Errorf("swept %s; want the two helpers and the probe", swept)
+			if swept != `{"count":6}` {
+				t.Errorf("swept %s; want the two cleanup helpers, the probe and one of each other kind", swept)
 			}
 			break
 		}
@@ -101,8 +114,12 @@ func TestBootSweepsLeftoverHelpers(t *testing.T) {
 		time.Sleep(100 * time.Millisecond)
 	}
 
-	// The positive control: both of this instance's helpers are gone.
-	for name, id := range map[string]string{"the stopped helper": stopped, "the running helper": live, "the log probe": probe} {
+	// The positive control: every one of this instance's helpers is gone.
+	swept := map[string]string{"the stopped helper": stopped, "the running helper": live, "the log probe": probe}
+	for kind, id := range rest {
+		swept["the "+kind+" helper"] = id
+	}
+	for name, id := range swept {
 		if exists(id) {
 			t.Errorf("%s survived the boot sweep", name)
 		}
@@ -113,6 +130,9 @@ func TestBootSweepsLeftoverHelpers(t *testing.T) {
 		"a container with the workspace label and the other": both,
 		"another instance's helper":                          foreign,
 		"another instance's log probe":                       foreignProbe,
+		"another instance's identity helper":                 foreignRest["identity"],
+		"another instance's login container":                 foreignRest["login"],
+		"another instance's owner helper":                    foreignRest["volume-owner"],
 	} {
 		if !exists(id) {
 			t.Errorf("the boot sweep removed %s", name)

@@ -132,9 +132,10 @@
 // A failed stop annotates the still-running row (StopFailedDetail), so a list
 // snapshot says it as the live events did; a stop asked again, and a resumed
 // delete, clear their annotation under the lock before the job's first event.
-// SweepHelpers is the boot sweep: after reconciliation, cleanup helpers and
-// docker guard log probes by this instance's labels, skipping any
-// workspace with a job in flight, under the lock.
+// SweepHelpers is the boot sweep: after reconciliation, every helper kind
+// internal/ephemeral knows (ephemeral.SweepAll) by this instance's prefix,
+// sparing what this process is running and any cleanup helper or log probe
+// of a workspace with a job in flight, under the lock.
 //
 // Every job — a create's, start's, rebuild's or approval's run, a stop, a
 // delete, a session server restart — ends with exactly one workspace.job

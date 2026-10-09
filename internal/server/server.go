@@ -202,7 +202,8 @@ func New(ctx context.Context, cfg config.Config, env sys.Env) (*Server, error) {
 	self, _ := os.Executable()
 	containers := container.Manager{Run: subproc.Exec{}, LabelPrefix: cfg.LabelPrefix, CleanupImage: cfg.CleanupImage,
 		ClaudeUID: os.Getuid(), ClaudeGID: os.Getgid(), Guard: &dockerguard.Guard{Binary: self},
-		LocalAddrs: previewLocalAddrs}
+		LocalAddrs: previewLocalAddrs, Clock: env.Clock,
+		Logf: func(f string, a ...any) { fmt.Fprintf(os.Stderr, f+"\n", a...) }}
 	if browserTierBuild {
 		fmt.Fprintln(os.Stderr, "drydock: built for the browser tier (-tags browsertier): a preview container at one of this host's own addresses is dialled. Never a release.")
 	}
@@ -349,7 +350,8 @@ func New(ctx context.Context, cfg config.Config, env sys.Env) (*Server, error) {
 		Timeout: cfg.IdentityCheckTimeout,
 		Source: identity.DockerSource{Run: subproc.Exec{},
 			Image:     claudeImage,
-			FileImage: cfg.CleanupImage, Volume: cfg.ClaudeVolume, LabelPrefix: cfg.LabelPrefix},
+			FileImage: cfg.CleanupImage, Volume: cfg.ClaudeVolume, LabelPrefix: cfg.LabelPrefix, Clock: env.Clock,
+			Logf: func(f string, a ...any) { fmt.Fprintf(os.Stderr, f+"\n", a...) }},
 		Logf: func(f string, a ...any) { fmt.Fprintf(os.Stderr, f+"\n", a...) }}
 	// The supervisor defers to the stored identity the watch keeps (§7.3,
 	// frontend §6.6): a signed-out fleet starts no session server and spends
@@ -678,12 +680,15 @@ func (s *Server) Serve(ctx context.Context) error {
 			fmt.Fprintf(os.Stderr, "drydock: reconcile: %v\n", err)
 			s.Events.Emit(ctx, "", events.Warn, "system.reconcile", reconcileWarning(err), nil)
 		}
-		// Then the cleanup helpers an interrupted delete left (§6): after
-		// reconciliation, whose resumed deletes have finished by now, and by
-		// this instance's cleanup label only — never a workspace container.
+		// Then the helper containers an earlier process left (§6), of every
+		// kind internal/ephemeral knows — cleanup helpers, log probes,
+		// identity reads, login containers, owner helpers: after
+		// reconciliation, whose resumed deletes have finished by now, by this
+		// instance's prefix only, never a workspace container, and sparing
+		// whatever this process is running.
 		if ctx.Err() == nil {
 			if _, err := s.Provisioner.SweepHelpers(ctx); err != nil && ctx.Err() == nil {
-				fmt.Fprintf(os.Stderr, "drydock: sweeping cleanup helpers: %v\n", err)
+				fmt.Fprintf(os.Stderr, "drydock: sweeping helper containers: %v\n", err)
 			}
 			// And any docker guard policy an up killed mid-run left.
 			if err := s.Provisioner.SweepGuardPolicies(ctx); err != nil && ctx.Err() == nil {
@@ -735,20 +740,13 @@ func (s *Server) Serve(ctx context.Context) error {
 	supervisorWork.Go("watch", s.Supervisor.Watch)
 	// The login handshake (§7.2): each login, and everything it starts, in
 	// work. A login container an earlier process left — killed mid-login,
-	// or a crash — is removed by its label first, as reconciliation's sweep
-	// removes cleanup helpers; a login started meanwhile waits for it.
+	// or a crash — goes at the next login's start, and in boot's helper
+	// sweep above, which spares a login this process has begun.
 	loginWork := work.Child("login")
 	s.loginWork.Store(loginWork)
 	if err := s.Login.Start(loginWork); err != nil {
 		fmt.Fprintf(os.Stderr, "drydock: login: %v\n", err)
 	}
-	loginWork.Go("sweep", func(ctx context.Context) {
-		if n, err := s.Login.Sweep(ctx); err != nil && ctx.Err() == nil {
-			fmt.Fprintf(os.Stderr, "drydock: login: sweeping leftover login containers: %v\n", err)
-		} else if n > 0 {
-			fmt.Fprintf(os.Stderr, "drydock: login: removed %d leftover login container(s)\n", n)
-		}
-	})
 	// Memory and disk, on their own cadence (§6 *Resources*): measurements
 	// for the card, published live and never written to the event log.
 	sampling := make(chan struct{})
