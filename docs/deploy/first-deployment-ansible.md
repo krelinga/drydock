@@ -421,18 +421,23 @@ their signing keys, rather than the runbook's `.list` files and `apt_key`-era ke
 
 **If `apt` fails with `402 Payment Required` from `dl.cloudsmith.io`**, Caddy's apt repository is
 unavailable. Make three changes to `roles/drydock/tasks/prerequisites.yml`, then re-run. The first
-removes the repository file an earlier run left behind (otherwise the play's first
-`update_cache: true` still fails on it); the third installs the same package from Caddy's GitHub
-release. This is a variant of the blocks above, so `test/ansible/check.sh` does not extract it.
+removes the repository files an earlier run left behind: the play's first cache refresh is `Install
+the base packages`, which fails on them, so the removal must come before it. The third installs the
+same package from Caddy's GitHub release. This is a variant of the blocks above, so
+`test/ansible/check.sh` does not extract it.
 
-1. Replace the `Add Caddy's apt repository` task with this, **before** the task that refreshes the
-   package lists:
+1. Delete the `Add Caddy's apt repository` task, and add this at the **top** of the file, before
+   `Install the base packages` (it uses `file`, not `deb822_repository`, which needs the
+   `python3-debian` that task installs):
 
    ```yaml
-   - name: Remove Caddy's apt repository (it answers 402)
-     ansible.builtin.deb822_repository:
-       name: caddy-stable
+   - name: Remove Caddy's apt repository, which answers 402
+     ansible.builtin.file:
+       path: "{{ item }}"
        state: absent
+     loop:
+       - /etc/apt/sources.list.d/caddy-stable.sources
+       - /etc/apt/keyrings/caddy-stable.asc
    ```
 
 2. In the `Refresh the package lists` task, delete `or drydock_repo_caddy is changed` from its
