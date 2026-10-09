@@ -120,6 +120,17 @@ The ports panel (frontend §6.3; port forwarding §13 step 4), on the workspace'
   `rel="noopener noreferrer"`. With no preview domain (`previews: false`) the panel offers no switch.
 - **Check the port** is a GET whose answer is the proxy's own sentence; it is the panel's read,
   never entity state. "Show hidden" is a `localStorage` preference.
+- **Discovery is ambient** (port forwarding §8.2, §13 step 5). A port the server's scan finds is an
+  ordinary `port.added`/`port.updated`/`port.retired` (`data.source: "discovery"`), reduced like
+  any other: a row, off, badged *discovered*, saying what it was seen bound to — loopback said
+  plainly — or *Not listening now*. Nothing else moves: no toast, no alert, no announcement, no
+  title (`views/PortsDiscovery.spec.ts` asserts each). **Look for listening ports now** is the
+  rescan, settled by that workspace's `port.scanned` newer than the press (`settlesRescan`), which
+  changes no entity.
+- The card's *"3 listening · 1 previewed"* is `components/PortCount.vue` over `lib/portCount.ts`:
+  counted from the port entities, never stored. On the home view each running card loads its
+  workspace's ports itself (the reducer's `portsLoaded` is per workspace); on the workspace's page
+  the panel loads them and the count only reads.
 
 ## Secrets UI: `src/views/secrets/`, `src/lib/secretRules.ts`
 
@@ -154,6 +165,13 @@ with the `all_repos` confirm, the two-kinds rotate result, delete.
 - It serves the port routes with the server's refusals and one `port.*` event per mutation;
   `seedPorts` (dev:mock's) declares a listening Vite port and a silent one on the running sample,
   `listening` is what a probe finds answering, and `previewDomain: null` is previews off.
+- `scanPorts` is one discovery round as `preview.Scanner` runs it, over `sockets` (each port's bind
+  address; absent, `listening` on 0.0.0.0): listed after two scans, gone after three
+  (`SCAN_GRACE_SCANS`, the server's 15 s at its 5 s cadence). `mocks/discovery.spec.ts` replays the
+  server's golden scenario (`internal/preview/testdata/discovery-events.json`, written by
+  `TestDiscoveryEventsGolden`) and demands the same events at the same scans, so the two cannot
+  drift. `scanMode: 'manual'` leaves a rescan's scan to the spec; dev:mock scans every 5 s, and
+  `drydockMock.listen(port, bind)` / `unlisten(port)` play a server starting and stopping.
 - It checks identity as the watch does (`startIdentityCheck`/`finishIdentityCheck`/
   `intervalIdentityCheck`, `identityCheckMode: 'manual'`): silent for an unchanged interval check,
   `auth.identity_checked` for an unchanged requested one, a press during a check answered by the check queued after it, and

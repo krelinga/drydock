@@ -124,6 +124,11 @@ type Server struct {
 	// workspace's container by label before every dial. Its exported fields
 	// are a test's seam, set between New and Serve.
 	Proxy *preview.Proxy
+	// Discovery is the port discovery scanner (PF §8.2, §13 step 5): every
+	// running workspace's socket table, read from the host every few
+	// seconds, merged onto its port rows, never enabling one. Its Source and
+	// Interval are a test's seam, set between New and Serve.
+	Discovery *preview.Scanner
 	// PreviewUpstream is what a request with a valid preview cookie reaches:
 	// Proxy. A test's seam, read per request, so it may be set between New
 	// and Serve.
@@ -257,6 +262,11 @@ func New(ctx context.Context, cfg config.Config, env sys.Env) (*Server, error) {
 	// job (ResumeAwaitingLogin, wired to the identity watch below).
 	s.Provisioner.SupervisorsAwaitingLogin = s.Supervisor.AwaitingLogin
 	s.Provisioner.SupervisorResume = s.Supervisor.Resume
+	// Discovery reads each running container's socket table through the
+	// container manager, which resolves the container — and its PID, from
+	// the same inspect as the proxy's address — by label on every scan.
+	s.Discovery = &preview.Scanner{Registry: previews, Source: discoverySource{containers}, Clock: env.Clock,
+		Logf: func(f string, a ...any) { fmt.Fprintf(os.Stderr, f+"\n", a...) }}
 	// Step 3's declared ports become the registry's declared rows: listed,
 	// never enabled by it (PF §13 step 4).
 	s.Provisioner.DeclarePorts = func(ctx context.Context, id string, ports []container.DeclaredPort) error {
@@ -409,7 +419,7 @@ func New(ctx context.Context, cfg config.Config, env sys.Env) (*Server, error) {
 	}
 	// The probe dials through the proxy itself — Address, the connect,
 	// Confirm — read per request, so it is the proxy a test configured.
-	for name, h := range (api.PortRoutes{Registry: previews, Prober: proxyProber{s}}).Handlers() {
+	for name, h := range (api.PortRoutes{Registry: previews, Prober: proxyProber{s}, Scanner: s.Discovery}).Handlers() {
 		handlers[name] = h
 	}
 	for name, h := range routes.Handlers() {
@@ -475,6 +485,30 @@ type proxyProber struct{ s *Server }
 
 func (p proxyProber) Probe(ctx context.Context, workspaceID string, port int) preview.ProbeResult {
 	return p.s.Proxy.Probe(ctx, workspaceID, port)
+}
+
+// discoverySource is the discovery scanner's view of the container manager:
+// Listeners, resolved by label every call, with its errors in the scanner's
+// terms — no running container is nothing listening, a read that raced a
+// restart teaches nothing, and the rest (a host-network container, two
+// containers, Docker or /proc unreadable) is discovery unavailable.
+type discoverySource struct{ m container.Manager }
+
+func (d discoverySource) Listeners(ctx context.Context, workspaceID string) ([]preview.Listener, error) {
+	ls, err := d.m.Listeners(ctx, workspaceID)
+	switch {
+	case errors.Is(err, container.ErrNotRunning):
+		return nil, fmt.Errorf("%w: %v", preview.ErrNotRunning, err)
+	case errors.Is(err, container.ErrMoved):
+		return nil, fmt.Errorf("%w: %v", preview.ErrScanRaced, err)
+	case err != nil:
+		return nil, err
+	}
+	out := make([]preview.Listener, len(ls))
+	for i, l := range ls {
+		out[i] = preview.Listener{Port: l.Port, Addr: l.Addr}
+	}
+	return out, nil
 }
 
 // containerResolver is the preview proxy's view of the container manager.
@@ -548,7 +582,8 @@ func apiSocketHandler(gate api.Gate, apiMux *http.ServeMux, ui http.Handler) htt
 //     closes the dangling step;
 //
 //   - the catalog's refresh, whose GitHub calls and transaction end with its
-//     context;
+//     context, and port discovery's scan, whose docker calls (each within
+//     subproc's 5 s WaitDelay) and transaction end with its context too;
 //
 //   - the identity watch's check, which ends with it too but then removes a
 //     cut-off read's helper container under its own 30-second bound;
@@ -668,7 +703,8 @@ func (s *Server) Serve(ctx context.Context) error {
 	// work owns the goroutines of the components that have moved onto
 	// life.Group: shutdown stops it and waits for it before the database
 	// closes. Today that is the provisioner's jobs, the session
-	// supervisors, the catalog, the identity watch and the login handshake;
+	// supervisors, the catalog, port discovery, the identity watch and the
+	// login handshake;
 	// the rest still end on ctx.
 	work := life.NewGroup(ctx)
 	defer work.Stop()
@@ -776,6 +812,11 @@ func (s *Server) Serve(ctx context.Context) error {
 			s.Usage.Run(ctx)
 		}
 	}()
+	// Port discovery (PF §8.2): a scan at once and every few seconds, and
+	// whatever POST …/ports/rescan asks for: one worker, in work.
+	if err := s.Discovery.Start(work.Child("discovery")); err != nil {
+		fmt.Fprintf(os.Stderr, "drydock: port discovery: %v\n", err)
+	}
 	// The repository list, at once and every 15 minutes, and whatever POST
 	// /api/repos/refresh asks for: one worker, in work.
 	if s.Catalog != nil {

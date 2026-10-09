@@ -80,6 +80,27 @@
 // or retired slug, for authorize's Clear grant: that host's /.drydock/session
 // answers it with Clear-Site-Data (PF §10.3). Proxy.Probe is the proxy's own
 // dial, its outcomes and sentences (OutcomeSentence) the failure pages'.
+//
+// Discovery (PF §8.2, §13 step 5, discover.go) is Scanner, a life.Coalescer
+// under Serve's life.Group: every DefaultScanInterval, and on Rescan (POST
+// …/ports/rescan, answered by port.scanned with data.discovery "ok" or
+// "unavailable"), it asks a ListenerSource — internal/container's Listeners,
+// which resolves the container and its PID by label on every call — for each
+// running workspace's listeners, and for every workspace with a row still
+// listening (a stopped one is read as empty). It remembers ports, never a PID
+// or an address. Debounced: a port is listed after AppearAfter (2) scans at
+// one bind address and goes after Grace (15 s) unseen; a bind change takes
+// two scans too. Service.Observe merges by container_port onto live rows only
+// (a retired row stays retired; the port seen again is a new row and a new
+// slug), in one Commit with its events — port.added, port.updated,
+// port.retired, each with data.source "discovery", at info level: discovery
+// is ambient, never a notice. It never writes `enabled`. A stopped port is
+// kept, gone, while enabled, hand-added, declared or hidden holds it, and
+// retired otherwise; MaxObserved (32) bounds discovery's own rows. Port.Loopback
+// is the classification of bind_addr. DeclarePorts' retire rule counts
+// "listening now" and "hidden" as holders. An unreadable table changes
+// nothing (ErrScanRaced, or any error but ErrNotRunning) and is logged once
+// per workspace until it recovers.
 package preview
 
 import (

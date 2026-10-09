@@ -134,7 +134,16 @@
 // network whose driver is bridge (one docker network inspect): macvlan/ipvlan
 // with an approved --ip can name the host or the LAN (ErrNoAddress, as is
 // --network=host); Confirm inspects the same container again after the connect
-// (ErrMoved).
+// (ErrMoved). The same inspect gives the container's PID (.State.Pid), which
+// Confirm does not compare.
+//
+// Listeners (listeners.go, PF §8.2, §13 step 5) is the discovery scan's read:
+// Address — so a container with no bridge address of its own, whose network
+// namespace may be the host's, is never read — then
+// <ProcRoot>/<pid>/net/tcp and tcp6 parsed by ParseNetTCP (LISTEN only,
+// every malformed line an error, never a partial table), then the same
+// container inspected again: still running under the same PID, or ErrMoved
+// and the read is thrown away. The PID is resolved per call and never kept.
 //
 // DeclaredPorts (ports.go, PF §13 step 4) reads the ports a resolved and
 // merged configuration declares — forwardPorts (a number, digits or
@@ -183,6 +192,10 @@ type Manager struct {
 	// returns as a container's (PF §10.6). Nil asks the kernel
 	// (net.InterfaceAddrs), as production does; a test sets it.
 	LocalAddrs func() ([]netip.Addr, error)
+	// ProcRoot is where Listeners reads a container's socket table:
+	// <ProcRoot>/<pid>/net/tcp and tcp6. Empty is /proc, as production
+	// reads it; a test points it at a tree of its own.
+	ProcRoot string
 	// Guard is the docker guard every devcontainer invocation is given as
 	// --docker-path (guard.go). Up refuses to run without one; read-
 	// configuration and exec, which create nothing, run without it only

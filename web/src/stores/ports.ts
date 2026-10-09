@@ -26,6 +26,8 @@ export const portHideKey = (portId: string) => `port:${portId}:hide`
 export const portRetireKey = (portId: string) => `port:${portId}:retire`
 /** The in-flight key for adding a port by number to a workspace. */
 export const portAddKey = (wsId: string, port: number) => `workspace:${wsId}:port:${port}:add`
+/** The in-flight key for asking a workspace's ports to be scanned now. */
+export const portRescanKey = (wsId: string) => `workspace:${wsId}:ports:rescan`
 
 /**
  * What one input says about a port: the row an event carries or the entities
@@ -98,6 +100,17 @@ export function settlesAdd(wsId: string, port: number): (ev: StreamEvent) => boo
   }
 }
 
+/**
+ * What settles a rescan: the port.scanned the scan it asked for writes for
+ * that workspace (internal/preview KindPortScanned) — newer than the press,
+ * since one is written only for a scan asked about — or the workspace going.
+ * No snapshot can show a scan happened, so a rescan whose answer fell in a
+ * resync gap ends as any other press does, on its own slow note.
+ */
+export function settlesRescan(wsId: string, since: number): (ev: StreamEvent) => boolean {
+  return (ev) => ev.workspace_id === wsId && ev.id > since && (ev.kind === 'port.scanned' || ev.kind === 'workspace.gone')
+}
+
 /** The same, asked of the entities: the workspace lists that port. */
 export function addOverIn(wsId: string, port: number): (e: Entities) => boolean {
   return (e) => e.gone[wsId] !== undefined ||
@@ -162,6 +175,25 @@ export const usePortsStore = defineStore('ports', {
     retire(wsId: string, id: string): Promise<void> {
       return this.mutate(portRetireKey(id), settlesPort(wsId, id, OVER_PORT.retired),
         (e) => OVER_PORT.retired(portEntityOutcome(e, wsId, id)), 'DELETE', path(wsId, id))
+    },
+
+    /**
+     * POST …/ports/rescan: look at what the container listens on now rather
+     * than at the next scan. It changes no switch — what it finds is listed,
+     * off — and is settled by port.scanned.
+     */
+    async rescan(wsId: string): Promise<void> {
+      const stream = useStreamStore()
+      const key = portRescanKey(wsId)
+      if (key in stream.inFlight) return
+      stream.begin(key, settlesRescan(wsId, stream.entities.lastEventId))
+      try {
+        await api.send('POST', `${path(wsId)}/rescan`)
+        stream.accepted(key)
+      } catch (e) {
+        stream.end(key)
+        throw e
+      }
     },
 
     /**

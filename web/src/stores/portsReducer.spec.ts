@@ -6,7 +6,7 @@
 import { describe, expect, it } from 'vitest'
 import type { PortList, PortView, StreamEvent } from '../api/types'
 import { emptyEntities, portsOf, reduce, reduceAll, type Action, type Entities } from './reducer'
-import { OVER_PORT, portEntityOutcome, portEventOutcome, settlesAdd, settlesPort } from './ports'
+import { OVER_PORT, portEntityOutcome, portEventOutcome, settlesAdd, settlesPort, settlesRescan } from './ports'
 
 const WS = '01JA0000000000000000000001'
 const OTHER = '01JA0000000000000000000002'
@@ -16,7 +16,7 @@ function port(id: string, n: number, over: Partial<PortView> = {}): PortView {
   return {
     id, workspace_id: WS, container_port: n, slug: `myapp-${n}-abcd`, host: `myapp-${n}-abcd.drydock-preview.test`,
     url: null, label: null, upstream_scheme: 'http', host_header: 'localhost', enabled: false, hidden: false,
-    declared: true, observed: false, manual: false, bind_addr: null, observed_state: null, last_seen_at: null,
+    declared: true, observed: false, manual: false, bind_addr: null, loopback: false, observed_state: null, last_seen_at: null,
     created_at: at(0), ...over,
   }
 }
@@ -141,5 +141,40 @@ describe('what ends a port mark', () => {
     expect(settles(ev(1, 'port.added', { port: port('P1', 5173) }))).toBe(false)
     expect(settles(ev(1, 'port.added', { port: { ...port('Q', 8080), workspace_id: OTHER } }, OTHER))).toBe(false)
     expect(settles(ev(1, 'port.added', { port: port('P8', 8080) }))).toBe(true)
+  })
+})
+describe('discovery (port forwarding §13 step 5)', () => {
+  const found = port('D1', 8080, { declared: false, observed: true, bind_addr: '127.0.0.1', loopback: true, observed_state: 'listening' })
+  it('a row the scan found is a row: upserted, off, with what was seen', () => {
+    const e = play([ev(1, 'port.added', { port: found, source: 'discovery' })])
+    expect(e.ports.D1).toMatchObject({
+      containerPort: 8080, enabled: false, observed: true, bindAddr: '127.0.0.1', loopback: true, observedState: 'listening', at: 1,
+    })
+    const gone = reduce(e, { type: 'event', event: ev(2, 'port.updated', { port: { ...found, observed_state: 'gone' }, source: 'discovery' }) })
+    expect(gone.ports.D1).toMatchObject({ observedState: 'gone', at: 2 })
+    // An older event is a no-op, from discovery as from anyone.
+    expect(reduce(gone, { type: 'event', event: ev(1, 'port.added', { port: found, source: 'discovery' }) }).ports.D1!.observedState).toBe('gone')
+    const retired = reduce(gone, { type: 'event', event: ev(3, 'port.retired', { port_id: 'D1', container_port: 8080, source: 'discovery' }) })
+    expect(retired.ports.D1).toBeUndefined()
+  })
+  it('an observed_state the reducer does not know is read as never seen', () => {
+    const e = play([ev(1, 'port.added', { port: { ...found, observed_state: 'never_seen' } })])
+    expect(e.ports.D1!.observedState).toBeNull()
+    const bogus = { ...found, observed_state: 'bogus' } as unknown as PortView
+    expect(play([ev(1, 'port.added', { port: bogus })]).ports.D1!.observedState).toBeNull()
+  })
+  it('port.scanned changes no entity: it only answers a rescan', () => {
+    const e = play([ev(1, 'port.added', { port: found })])
+    const after = reduce(e, { type: 'event', event: ev(2, 'port.scanned', { discovery: 'ok', source: 'discovery' }) })
+    expect(after.ports).toBe(e.ports)
+    expect(after.feeds[WS]!.map((f) => f.kind)).toEqual(['port.scanned', 'port.added']) // newest first
+  })
+  it("a rescan ends on that workspace's port.scanned newer than the press, or its going", () => {
+    const settles = settlesRescan(WS, 5)
+    expect(settles(ev(5, 'port.scanned', { discovery: 'ok' }))).toBe(false)
+    expect(settles(ev(6, 'port.scanned', { discovery: 'ok' }, OTHER))).toBe(false)
+    expect(settles(ev(6, 'port.added', { port: found }))).toBe(false)
+    expect(settles(ev(6, 'port.scanned', { discovery: 'unavailable' }))).toBe(true)
+    expect(settles(ev(7, 'workspace.gone', {}))).toBe(true)
   })
 })
