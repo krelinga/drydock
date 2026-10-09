@@ -63,7 +63,11 @@
 // organization refusal is awaiting_login; trust and --spawn are degraded, not
 // retried. No environment within GateTimeout is a hang: stopped, then named by
 // its prompt, never answered. A stored identity of blanked or absent starts
-// nothing and spends nothing; Watch resumes on auth.identity. **expired starts
+// nothing and spends nothing. A sign-in resumes the supervisors waiting on one
+// through internal/provision — a supervisor job per workspace (Resume), started
+// by the identity watch's OnChange, never by an event subscription — and a
+// loop about to park when it lands goes round again instead (sup.park).
+// **expired starts
 // the server** — parking every server on it left nothing to refresh (a dead
 // refresh token is blanked, not expired).
 //
@@ -134,6 +138,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -144,7 +149,6 @@ import (
 	"github.com/krelinga/drydock/internal/life"
 	"github.com/krelinga/drydock/internal/subproc"
 	"github.com/krelinga/drydock/internal/sys"
-	"github.com/krelinga/drydock/internal/workspace"
 )
 
 // State is supervisor.state; the database's CHECK constraint holds the set.
@@ -726,52 +730,56 @@ func (m *Manager) Logs(workspaceID string, n int) (lines []Line, truncated, ok b
 	return lines, truncated, true
 }
 
-// Watch follows the event log until ctx ends, and starts every supervisor
-// parked in awaiting_login when the stored identity changes (auth.identity,
-// written by the expiry watch, §7.3) — the operator signed in, and the
-// servers that were waiting for exactly that may run. It starts only
-// supervisors of running workspaces that were waiting on a login; nothing
-// stopped is started (§6).
-func (m *Manager) Watch(ctx context.Context) {
-	if m.Events == nil {
-		return
-	}
-	sub := m.Events.Subscribe()
-	defer m.Events.Cancel(sub)
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case ev, ok := <-sub.C:
-			if !ok {
-				return
-			}
-			if ev.Kind == identity.KindIdentity {
-				m.resumeWaiting(ctx)
-			}
-		}
-	}
-}
-
-func (m *Manager) resumeWaiting(ctx context.Context) {
-	if st, known := m.identity(ctx); known && signedOut(st) {
-		return
-	}
+// AwaitingLogin lists the workspaces whose supervisor is waiting on a sign-in
+// (awaiting_login: signed out, or the organization refusal), sorted: the set
+// internal/provision's ResumeAwaitingLogin gives a job each when the stored
+// identity becomes a live login. Read from memory, so a workspace stopped or
+// deleted since is not in it (a stop drops its supervisor first).
+func (m *Manager) AwaitingLogin() []string {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	var out []string
 	for id, s := range m.sups {
-		if s.running() || s.current() != AwaitingLogin {
-			continue
-		}
-		var state string
-		if err := m.DB.QueryRowContext(ctx, `SELECT state FROM workspace WHERE id = ?`, id).Scan(&state); err != nil ||
-			state != string(workspace.Running) {
-			continue
-		}
-		if err := m.launchLocked(ctx, id); err != nil {
-			m.logf("drydock: workspace %s: restarting the session server after a sign-in: %v", id, err)
+		if s.current() == AwaitingLogin {
+			out = append(out, id)
 		}
 	}
+	slices.Sort(out)
+	return out
+}
+
+// Resume starts the workspace's session server again if its supervisor is
+// waiting on a sign-in and the stored identity is now a live login: the body
+// of the supervisor job internal/provision launches for it (ResumeAwaitingLogin),
+// so it runs only while the provisioner holds the workspace — nothing else
+// starts a server on a sign-in, and no event subscription does (design §8).
+// Anything else — no supervisor, one serving or degraded, a signed-out
+// identity — is left alone, and is not an error.
+//
+// A loop still running when the sign-in lands — launched a moment before,
+// its identity read before the new verdict was stored, about to park — is
+// told rather than replaced: it takes the news at its park (sup.park) and
+// goes round again, so the sign-in is never lost between its read and its
+// park. One that has already parked is replaced, as a parked one is by
+// Start.
+func (m *Manager) Resume(ctx context.Context, workspaceID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.stoppingLocked() {
+		return ErrClosed
+	}
+	if st, known := m.identity(ctx); known && signedOut(st) {
+		return nil
+	}
+	s := m.sups[workspaceID]
+	if s == nil || s.current() != AwaitingLogin {
+		return nil
+	}
+	if s.running() && !s.parked {
+		s.loginSeen = true
+		return nil
+	}
+	return m.launchLocked(ctx, workspaceID)
 }
 
 // identity reads the stored verdict.

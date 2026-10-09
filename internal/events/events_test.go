@@ -230,9 +230,11 @@ func TestCloseEndsSubscriptions(t *testing.T) {
 // Every way a subscription ends — Cancel, Close, falling behind, and being
 // made after Close — closes C exactly once, in any order and however many
 // times each happens. A second close panics, and shutdown is where they meet:
-// the supervisor's Watch, started beside serving, can subscribe after the
-// server has closed the log and then Cancel on its way out. That crashed the
-// v0.4.0 release's test run, and would crash the server on a fast shutdown.
+// a subscriber started beside serving — the supervisor's Watch was one, until
+// the subscriber rule (TestOnlySSESubscribes) left the SSE stream the only
+// one — can subscribe after the server has closed the log and then Cancel on
+// its way out. That crashed the v0.4.0 release's test run, and would crash
+// the server on a fast shutdown.
 //
 // The control is the same subscription made on an open log: it delivers an
 // event before anything ends it, so "closed" is not a subscription that was

@@ -51,8 +51,15 @@
 // database will not take, or an answer whose view cannot be read, is
 // auth.identity_check_failed. The seam's "announced" point follows each
 // answering event. A check nobody is owed an answer by — boot's, the
-// interval's, Check's, a handshake's — stays silent when nothing changed, and
-// the supervisors, which wake on auth.identity, never see the new kind.
+// interval's, Check's, a handshake's — stays silent when nothing changed.
+//
+// **A sign-in reaches the supervisors by a call, not an event**: after a check
+// that announced auth.identity, the watch calls OnChange with the stored view,
+// on its worker, and the server wires that to internal/provision's
+// ResumeAwaitingLogin when the view is a live login — one supervisor job per
+// workspace waiting on a sign-in. Only auth.identity calls it: a check that
+// changed nothing (auth.identity_checked) or failed wakes nobody. Nothing in
+// Drydock subscribes to the event log but the SSE stream.
 //
 // The volume is read through short-lived containers — read-only mount,
 // --network none, only DAC_READ_SEARCH — the file with the pinned busybox (so
@@ -163,7 +170,7 @@ const (
 	// no failure to clear. It is that request's settling event (frontend
 	// §4.2): without it "Check now" stays in flight until a reload. A check
 	// nobody asked for — the interval's, boot's, a handshake's — stays
-	// silent when nothing changed, and the supervisors do not wake on this
+	// silent when nothing changed, and OnChange is not called for this
 	// kind. data: {identity: View}, last_checked_at moved.
 	KindChecked = "auth.identity_checked"
 )
@@ -229,6 +236,16 @@ type Watch struct {
 	// Logf is the service log. It receives Drydock's sentence and a detail
 	// that carries no input bytes.
 	Logf func(string, ...any)
+	// OnChange, when set, is called with the stored view after every check
+	// that announced auth.identity — the verdict, account or expiry changed,
+	// or a failed check recovered — once the row and the event are
+	// committed, on the watch's worker, under the check's context. It is how
+	// a sign-in reaches the session supervisors: the server wires it to
+	// internal/provision's ResumeAwaitingLogin when the view is a live login.
+	// A direct call, so the event log stays the record and the stream, with
+	// no subscriber inside Drydock. It must not wait on the watch (Check,
+	// LoggedIn): it runs on the worker that would answer.
+	OnChange func(ctx context.Context, v View)
 
 	// c runs every check, one at a time, on the goroutine Start gives it:
 	// boot's, the interval's, and every one asked for. An ask says what
@@ -689,6 +706,9 @@ func (w *Watch) store(ctx context.Context, id classify.Identity) (View, bool, er
 	w.failure = nil
 	w.mu.Unlock()
 	if announced {
+		if w.OnChange != nil {
+			w.OnChange(ctx, v)
+		}
 		w.at("announced")
 	}
 	return v, announced, nil
