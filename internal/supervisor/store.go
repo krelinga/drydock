@@ -74,7 +74,8 @@ func (s *sup) announce(ctx context.Context, st State, r Reason, detail string) {
 // state the row no longer holds. Inside Commit the order of commits is the
 // order of events for every writer. The event's from is read from the row in
 // that same transaction, so it is the state the previous commit left,
-// whichever sup — the loop's or a detached one — wrote it.
+// whichever sup — the loop's, one born stopped, or one that only records —
+// wrote it.
 //
 // Memory after the commit, never before it, and under wmu, which every
 // writer of this sup holds from the check for a change to the memory update:
@@ -172,7 +173,7 @@ func (s *sup) write(ctx context.Context, st State, r Reason, detail string, pid 
 			if err != nil {
 				m.logf("drydock: workspace %s: session server event: %v", s.ws, err)
 			} else {
-				s.log.Mark(m.clock().Now(), msg)
+				s.mark(msg)
 			}
 		}
 		return
@@ -180,7 +181,19 @@ func (s *sup) write(ctx context.Context, st State, r Reason, detail string, pid 
 	s.mu.Lock()
 	s.state, s.reason, s.detail = st, r, detail
 	s.mu.Unlock()
-	s.log.Mark(m.clock().Now(), msg)
+	s.mark(msg)
+}
+
+// mark puts a recorded state's sentence in the workspace's log. A sup born
+// stopped for a server no supervisor held has no log until it has something
+// to record (adoptRow), which is when it is given one, under mu.
+func (s *sup) mark(msg string) {
+	s.mu.Lock()
+	log := s.log
+	s.mu.Unlock()
+	if log != nil {
+		log.Mark(s.m.clock().Now(), msg)
+	}
 }
 
 // commit is events.Commit, or a bare transaction for a Manager with no
@@ -250,7 +263,8 @@ func EnvironmentURL(env string) string {
 // app is right when they disagree (§8). The first session a supervisor ever
 // sees is the primary: the pre-created one in the workspace folder. The
 // event carries how many sessions the supervisor has seen. It reports
-// whether it committed: what it did not is recorded by a later window.
+// whether it committed: what it did not is recorded by a later window, or a
+// heartbeat tick.
 func (s *sup) recordDiscovery(ctx context.Context, d *discovered, env string, sessionIDs []string, capChanged bool) bool {
 	m := s.m
 	now := m.clock().Now().UTC().Format(time.RFC3339Nano)
@@ -295,7 +309,13 @@ func (s *sup) recordDiscovery(ctx context.Context, d *discovered, env string, se
 		return []events.Event{e}, err
 	})
 	if err != nil {
-		m.logf("drydock: workspace %s: recording what the session server announced: %v", s.ws, err)
+		// Said once a run: it is tried again on every chunk and heartbeat
+		// tick, and a chatty server against a failing database would
+		// otherwise fill the journal with the same line.
+		if !d.logged {
+			d.logged = true
+			m.logf("drydock: workspace %s: recording what the session server announced (tried again as it prints, and on each heartbeat; said once): %v", s.ws, err)
+		}
 		return false
 	}
 	return true

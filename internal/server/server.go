@@ -565,7 +565,7 @@ func apiSocketHandler(gate api.Gate, apiMux *http.ServeMux, ui http.Handler) htt
 //     KillWait (5 s) — after a docker call it was in winds down within
 //     subproc's 5 s WaitDelay; a stop under way keeps the terminal until it
 //     has decided, and that stop is a job's, cancelled with it: about 10 s;
-//     and a stop of a server hung at a gate, cut off the same way.
+//     and the loop's own stop of a server hung at a gate, cut off the same way.
 //
 // So this is the longest of those and a little more.
 //

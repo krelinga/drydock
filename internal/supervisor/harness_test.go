@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -153,6 +154,12 @@ exit 99
 	t.Cleanup(func() {
 		r.m.Stop(context.Background(), wsID)
 		r.detach(5 * time.Second)
+		// A test that shut the supervisor down first left its server
+		// serving, as shutdown must, and a Stop after shutdown has no owner
+		// to ask: end it here, so no test leaves a process behind.
+		if p := r.pid(); p != 0 && alive(p) {
+			syscall.Kill(p, syscall.SIGKILL)
+		}
 	})
 	return r
 }

@@ -130,8 +130,8 @@ var allowed = []allowance{
 		"the secret values a cancelled step's log tail is redacted with"},
 	{use{"internal/supervisor/supervisor.go", "Manager.Restart", "context.WithoutCancel"}, 0,
 		"the degraded answer to a restart whose start failed, owed after the caller's context ended"},
-	{use{"internal/supervisor/supervisor.go", "Manager.Stop", "context.WithoutCancel"}, 0,
-		"book: the stop's state record, owed after cancellation"},
+	{use{"internal/supervisor/own.go", "sup.settle", "context.WithoutCancel"}, 0,
+		"book: a stop's state record, made by the server's owner and owed once the stop's outcome is known, even if its caller's context then ended"},
 
 	// Per-connection bounds where no request context exists.
 	{use{"internal/broker/broker.go", "Broker.handle", "context.Background"}, 0,

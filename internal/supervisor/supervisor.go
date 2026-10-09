@@ -49,14 +49,32 @@
 // server an earlier Drydock left serving; shutdown — the manager's
 // life.Group stopping (RunIn) — closes terminals and signals nobody — every
 // run's terminal, promptly, including a run still reading after a failed
-// stop (a paused container's, whose context that stop already cancelled), so
-// no supervisor holds shutdown to its bound; a stop under way keeps its
-// terminal until it has decided, since closing it would read to the stop as
-// the server ending. Every goroutine is the group's — each loop, and the
-// stop of a server hung at a gate — so shutdown waits for all of them, and
-// none starts after it. A start records starting (or awaiting_login) before
-// it returns, so a parked state is never left on the card while the loop
-// gets going.
+// stop (a paused container's), so no supervisor holds shutdown to its bound;
+// a stop under way keeps its terminal until it has decided, since closing it
+// would read to the stop as the server ending. Every goroutine is the
+// group's, so shutdown waits for all of them, and none starts after it. A
+// start records starting (or awaiting_login) before it returns, so a parked
+// state is never left on the card while the loop gets going.
+//
+// **One signaller per server** (own.go). Every signal a workspace's server is
+// sent comes from one goroutine, the sup's owner: its supervision loop, or,
+// when no loop holds the server (one an earlier Drydock left, or one beside a
+// loop that parked), a sup born stopped that answers what it is asked and
+// ends. Stop sends the owner a request and waits for its reply; the owner
+// stops the server under Stop's context, records the outcome, and replies.
+// The loop's own stops — of a leftover server before each launch, and of a
+// server hung at a gate — run inline in the loop. So a stop beside a
+// restart, a second stop, or the loop's own stop is answered after the one
+// under way, and by its outcome when that worked: nothing is sent twice.
+// Across sups the rule is a handoff: a replaced sup takes no new request and
+// records nothing more, and its successor sends nothing until it is quiet
+// (answered everything it took, signalling nothing). A run being stopped
+// records nothing from the moment its owner takes the stop: what it reads is
+// recorded under a context that ends then, so a server still talking on a
+// kept terminal after a failed stop reaches no row, even once a Start has
+// replaced the sup. A stop that worked is answered once the terminal is
+// read to its end, so the log holds the server's last words before
+// "stopped".
 //
 // Retries: the registration wait is waiting_registration on a flat retry and
 // never charged to the budget (2 s→60 s, 6 in 10 min, then degraded); the
@@ -120,9 +138,7 @@
 // (internal/provision unpauses before calling Stop, so the server has its
 // SIGTERM and deregisters); one whose server outlived SIGKILL, or whose
 // container stays paused (both sentinels through the StopSupervisor seam),
-// carries on to its container step, which ends it. A run whose stop failed with its terminal still open
-// writes nothing more, even once a Start replaces it: the stop cancelled the
-// context every write of the run's is made under. The supervisor stays registered
+// carries on to its container step, which ends it. The supervisor stays registered
 // after a failed stop, so a retry reaches the same server; Start replaces one
 // still stopping. A stop or restart its caller cancelled records and starts
 // nothing; a start that fails after a good stop writes start_failed.
@@ -312,9 +328,9 @@ type Manager struct {
 	mu   sync.Mutex
 	sups map[string]*sup
 	logs map[string]*Ring
-	// g is the group every loop runs in, and the gate-hang stop each loop
-	// may start (RunIn). Its context ending is shutdown: every run's
-	// terminal closes on it (sup.detached), and nothing starts after it.
+	// g is the group every sup's owner runs in (RunIn): each loop, and each
+	// sup born stopped. Its context ending is shutdown: every run's terminal
+	// closes on it, and nothing starts after it.
 	g *life.Group
 }
 
@@ -330,10 +346,11 @@ type Manager struct {
 // each with one Drydock has a terminal for. Every run's terminal is closed,
 // whatever it is doing: one whose stop failed and which is still reading —
 // a paused container's frozen server, whose terminal the stop kept — is
-// told by the group's context (sup.detached), since its own context was
-// cancelled by that stop and the cancel is news to no one. A stop under way
-// keeps its terminal until it has decided (stopOver). What is still running
-// at the group's deadline is named by its Wait.
+// ended by the loop's context, which is the group's: a stop ends only what
+// the run records, never the loop's context. A stop under way keeps its
+// terminal until it has decided: it runs in the loop, which sees the
+// shutdown only once the stop has returned. What is still running at the
+// group's deadline is named by its Wait.
 func (m *Manager) RunIn(g *life.Group) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -505,9 +522,8 @@ func (m *Manager) answer(ctx context.Context, workspaceID string, st State, r Re
 		// memory, and a fresh sup's zero would reset the cumulative count.
 		m.DB.QueryRowContext(ctx, `SELECT id, restart_count FROM supervisor WHERE workspace_id = ?
 			ORDER BY started_at DESC LIMIT 1`, workspaceID).Scan(&row, &restarts)
-		s = &sup{m: m, ws: workspaceID, row: row, restarts: restarts, log: ring, done: make(chan struct{})}
+		s = m.recordOnly(workspaceID, row, restarts, ring)
 		s.state, _, _ = m.storedState(ctx, row)
-		close(s.done)
 	}
 	m.mu.Unlock()
 	s.announce(ctx, st, r, detail)
@@ -538,22 +554,17 @@ func (m *Manager) Park(ctx context.Context, workspaceID string, r Reason, detail
 	return nil
 }
 
-// detachedLocked is a supervisor with no loop, to record a state on: its row
-// (made if need be), its log, and the state the row holds. m.mu held.
+// detachedLocked is a supervisor with no loop and no owner, only to record a
+// state on (recordOnly): its row (made if need be), its log, and the state
+// the row holds — none for a row made just now, whose placeholder no server
+// ever had, so the first event comes from nothing. m.mu held.
 func (m *Manager) detachedLocked(ctx context.Context, workspaceID string) (*sup, error) {
-	// A row made just now holds ensureRow's placeholder state, which no
-	// server ever had: the first event then comes from nothing ("").
-	var existed bool
-	m.DB.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM supervisor WHERE workspace_id = ?)`, workspaceID).Scan(&existed)
-	row, restarts, err := m.ensureRow(ctx, workspaceID)
+	row, restarts, st, err := m.rowFor(ctx, workspaceID)
 	if err != nil {
 		return nil, err
 	}
-	s := &sup{m: m, ws: workspaceID, row: row, restarts: restarts, log: m.ringLocked(workspaceID), done: make(chan struct{})}
-	if existed {
-		s.state, _, _ = m.storedState(ctx, row)
-	}
-	close(s.done)
+	s := m.recordOnly(workspaceID, row, restarts, m.ringLocked(workspaceID))
+	s.state = st
 	return s, nil
 }
 
@@ -589,12 +600,20 @@ func (m *Manager) launchLocked(ctx context.Context, workspaceID string) error {
 	if err != nil {
 		return err
 	}
+	s := m.newSup(workspaceID, row, restarts, m.ringLocked(workspaceID))
+	s.supervise = true
+	// The sup it replaces is retired — it takes no new stop, and stops
+	// nothing of its own accord — and the new loop sends nothing until it
+	// is quiet (own): a stop it is still making cannot land on the server
+	// the new loop launches.
 	prev := m.sups[workspaceID]
-	s := &sup{m: m, ws: workspaceID, row: row, restarts: restarts, log: m.ringLocked(workspaceID), done: make(chan struct{}),
-		detached: m.g.Ctx().Done()}
 	if prev != nil {
+		prev.retire()
+		prev.mu.Lock()
 		s.state, s.reason, s.detail = prev.state, prev.reason, prev.detail
-	} else {
+		prev.mu.Unlock()
+	}
+	if s.state == "" {
 		s.state, s.reason, s.detail = m.storedState(ctx, row)
 	}
 	loopCtx, cancel := context.WithCancel(m.g.Ctx())
@@ -605,7 +624,7 @@ func (m *Manager) launchLocked(ctx context.Context, workspaceID string) error {
 		st, r, detail = AwaitingLogin, ReasonSignedOut, signedOutSentence(id)
 	}
 	s.set(ctx, st, r, detail, 0)
-	run = func() { s.loop(loopCtx) }
+	run = func() { s.own(loopCtx, prev) }
 	return nil
 }
 
@@ -620,58 +639,96 @@ const launchingSentence = "Starting the session server."
 // earlier Drydock left running — is stopped the same way, through its pid
 // file. Nothing running is not an error.
 //
-// A stop that fails is recorded, never only returned: degraded, with
-// stop_failed when Docker could not be asked and survived_kill when the
-// server outlived SIGKILL, each with the sentence naming the one action that
-// can fix it — written even when it repeats the last, because every press of
-// Restart session server waits for a supervisor.state (frontend §4.2). The
-// supervisor stays registered, so the next stop or restart reaches the same
-// server, through the terminal Drydock may still hold. A stop cut off by its
-// caller (a delete, shutdown) records nothing: that is not a stop that
-// failed, and what cancelled it says what happens next.
+// Stop signals nothing itself. It asks the workspace's owner — the sup's
+// own goroutine (own.go): its supervision loop, or, when no loop is running,
+// a sup born stopped for the purpose — and waits for the reply; the owner
+// stops the server under Stop's context and records the outcome (settle)
+// before it replies. So a Stop beside another Stop, a Restart, or the loop's
+// own stop of a leftover server is answered after that one, never sent
+// beside it. A stop that fails is recorded, never only returned (settle),
+// and the supervisor stays registered, so the next stop or restart reaches
+// the same server, through the terminal Drydock may still hold. A stop cut
+// off by its caller (a delete, shutdown) records nothing: one still queued
+// is taken back and sends no signal, and one under way ends as its context
+// does, with no SIGKILL. Taken back is not undone, though: asking made the
+// supervisor stopping, so its loop launches nothing more and its run records
+// nothing more, as a cancelled stop always left it.
 func (m *Manager) Stop(ctx context.Context, workspaceID string) error {
+	req := &stopReq{ctx: ctx, reply: make(chan error, 1)}
 	m.mu.Lock()
 	s := m.sups[workspaceID]
-	delete(m.sups, workspaceID)
-	m.mu.Unlock()
-	var err error
-	if s != nil {
-		err = s.stop(ctx)
-	} else {
-		_, err = m.terminate(ctx, workspaceID, nil, nil)
-	}
-	book := context.WithoutCancel(ctx)
-	if err == nil {
-		if s != nil {
-			s.set(book, Exited, ReasonStopped, "The session server was stopped.", 0)
-		}
-		return nil
-	}
-	m.logf("drydock: workspace %s: stopping the session server: %v", workspaceID, err)
-	m.mu.Lock()
-	if s == nil && ctx.Err() == nil && !m.stoppingLocked() {
-		ns, nerr := m.detachedLocked(book, workspaceID)
-		if nerr != nil {
+	if s == nil || !s.submit(req) {
+		ns, err := m.bornStoppedLocked(workspaceID, s, req)
+		if err != nil {
 			m.mu.Unlock()
-			return errors.Join(err, nerr)
+			if cerr := ctx.Err(); cerr != nil {
+				return cerr
+			}
+			return err
 		}
 		s = ns
 	}
-	if s != nil && m.sups[workspaceID] == nil {
-		if m.sups == nil {
-			m.sups = map[string]*sup{}
-		}
-		m.sups[workspaceID] = s
-	}
 	m.mu.Unlock()
-	if s != nil && ctx.Err() == nil {
-		r := ReasonStopFailed
-		if errors.Is(err, container.ErrSessionSurvivedKill) {
-			r = ReasonSurvivedKill
+	var err error
+	select {
+	case err = <-req.reply:
+	case <-ctx.Done():
+		if s.withdraw(req) {
+			err = ctx.Err()
+			break
 		}
-		s.announce(book, Degraded, r, stopFailedDetail(r, err))
+		// Taken: under this context, the stop ends as promptly as it does.
+		err = <-req.reply
+	}
+	// A stop that worked drops the supervisor, as does one by a sup that
+	// recorded nothing (born for a server no supervisor held) — but only
+	// once that sup is quiet: its owner may still be stopping the server for
+	// another request, and unregistered, the next Stop would start a second
+	// owner waiting for no one, and two SIGTERMs. Kept, the next Stop queues
+	// on it, or takes it as the sup it waits for. One that failed keeps it,
+	// for the retry.
+	if err == nil || (!s.hasRow() && s.isQuiet()) {
+		m.mu.Lock()
+		if m.sups[workspaceID] == s {
+			delete(m.sups, workspaceID)
+		}
+		m.mu.Unlock()
 	}
 	return err
+}
+
+// bornStoppedLocked registers a sup born stopped for the workspace, with req
+// queued, and starts its owner (m.mu held): a server no running loop holds —
+// one an earlier Drydock left, or one beside a loop that has parked or
+// ended — is stopped by it, through the pid file. It takes over from prev,
+// the sup registered before (its row, its log, the state it knows), and
+// waits for prev to be quiet before sending anything. With no prev it has no
+// row until it has a failure to record (adoptRow). Once Drydock is shutting
+// down nothing is started, and that is ErrClosed.
+func (m *Manager) bornStoppedLocked(workspaceID string, prev *sup, req *stopReq) (*sup, error) {
+	if m.stoppingLocked() {
+		return nil, ErrClosed
+	}
+	var s *sup
+	if prev != nil {
+		prev.retire()
+		prev.mu.Lock()
+		s = m.newSup(workspaceID, prev.row, prev.restarts, prev.log)
+		s.state, s.reason, s.detail = prev.state, prev.reason, prev.detail
+		prev.mu.Unlock()
+	} else {
+		s = m.newSup(workspaceID, "", 0, nil)
+	}
+	close(s.done)
+	s.submit(req) // before its owner runs, which ends once its queue is empty
+	if err := m.g.TryGo("session server "+workspaceID, func(context.Context) { s.own(nil, prev) }); err != nil {
+		return nil, ErrClosed
+	}
+	if m.sups == nil {
+		m.sups = map[string]*sup{}
+	}
+	m.sups[workspaceID] = s
+	return s, nil
 }
 
 // stopFailedSentence is the card's sentence for a stop that failed, naming
@@ -709,9 +766,13 @@ func (m *Manager) Forget(workspaceID string) {
 	defer m.mu.Unlock()
 	delete(m.logs, workspaceID)
 	if s := m.sups[workspaceID]; s != nil {
-		if s.cancel != nil { // nil for one with no loop (detachedLocked)
+		if s.cancel != nil { // nil for one with no loop (born stopped)
 			s.cancel()
 		}
+		// Retired without a handoff: a sup born later for this workspace
+		// has no prev and waits for nothing. Forget follows a delete whose
+		// own stop was answered, so nothing is left to signal.
+		s.retire()
 		delete(m.sups, workspaceID)
 	}
 }
@@ -740,7 +801,7 @@ func (m *Manager) AwaitingLogin() []string {
 	defer m.mu.Unlock()
 	var out []string
 	for id, s := range m.sups {
-		if s.current() == AwaitingLogin {
+		if s.current() == AwaitingLogin && !s.isStopping() {
 			out = append(out, id)
 		}
 	}
@@ -793,7 +854,9 @@ func (m *Manager) Resume(ctx context.Context, workspaceID string) error {
 		return nil
 	}
 	s := m.sups[workspaceID]
-	if s == nil || s.current() != AwaitingLogin {
+	// One being stopped stays registered while its stop runs, still saying
+	// awaiting_login until the stop records: it is not resumed.
+	if s == nil || s.current() != AwaitingLogin || s.isStopping() {
 		return nil
 	}
 	if s.running() && !s.parked {

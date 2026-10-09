@@ -99,13 +99,15 @@ func TestNothingStartsOnceTheGroupStops(t *testing.T) {
 	}
 }
 
-// The stop of a server hung at a gate is the group's, so shutdown waits for
-// it and names it when it outlasts the bound, rather than leaving it to run
-// on unseen after the database has closed. And it is cut off by shutdown
-// like the rest: once released it signals nothing, so the hung server — apart
-// from Drydock, as under real Docker — is left where it is, for the next
-// process to stop. The control is the gate stop itself: before the shutdown
-// it is under way, held at its SIGTERM.
+// The stop of a server hung at a gate is the group's — made by the
+// supervision loop itself, the one goroutine the server is signalled from,
+// which is the group's — so shutdown waits for it and names it (by the loop's
+// name) when it outlasts the bound, rather than leaving it to run on unseen
+// after the database has closed. And it is cut off by shutdown like the rest:
+// once released it signals nothing, so the hung server — apart from Drydock,
+// as under real Docker — is left where it is, for the next process to stop.
+// The control is the gate stop itself: before the shutdown it is under way,
+// held at its SIGTERM.
 func TestTheGateStopIsTheGroups(t *testing.T) {
 	r := newRig(t, func(_ *rig, p *Policy) { p.GateTimeout = 500 * time.Millisecond })
 	r.touch("exec-detaches", "")
@@ -125,7 +127,7 @@ func TestTheGateStopIsTheGroups(t *testing.T) {
 		t.Fatal("control: the gate stop never began")
 	}
 	late := r.detach(time.Second)
-	want := "gate stop " + wsID
+	want := "session server " + wsID
 	if fmt.Sprint(late) != fmt.Sprint([]string{want}) {
 		t.Errorf("shutdown's stragglers %v, want [%s]: the gate stop is not the group's", late, want)
 	}
