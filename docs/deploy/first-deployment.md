@@ -1235,7 +1235,7 @@ iOS or macOS version), and which checks passed.
   turn-off and the sign-out all behaved as above. Record both results — Safari and OS versions,
   pass or fail per step — in an issue or in
   [port forwarding §13.3](../design/port-forwarding/port-forwarding-design.md#133-gates-before-previews-are-declared-done),
-  which says *not yet passed* until both have.
+  which records the result (it passed on iOS and macOS Safari on 10 October 2026).
 
 When you are done, stop the dev server (`sudo docker exec -u vscode "$CID" pkill -f http.server`)
 and, if you like, **Remove…** the port under **More**: its address is retired for good, and a
@@ -1248,12 +1248,6 @@ bookmark of it stops working.
 None of the following is a deployment fault. These are the phases still being built
 ([§14](../design/overall/drydock-design.md#14-build-plan)):
 
-- **Previews find no port by themselves yet (port forwarding steps 1 to 4 are built).** A port is
-  listed when the repository's `devcontainer.json` declares it or when you add it by number
-  ([8.8](#88-preview-a-port-and-the-real-safari-check)); a server that opens a port nobody declared
-  is not noticed until step 5, and nothing says when a dev server listens only on `127.0.0.1`
-  until step 6 (**Check the port** says *Nothing is answering*). Previews are not declared done
-  until the real-Safari check in 8.8 has passed on iOS and macOS.
 - **Phase 6 is partly done.** Stop, rebuild and delete work, and so do the live session count
   (the card's capacity fraction) and the log viewer. These do not exist yet: memory and
   disk per workspace on the card, and the rest of the failure-mode
