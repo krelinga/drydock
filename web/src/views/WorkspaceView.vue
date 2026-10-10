@@ -40,13 +40,14 @@ import PortsPanel from '../components/PortsPanel.vue'
 import PortCount from '../components/PortCount.vue'
 import ResourceLine from '../components/ResourceLine.vue'
 import ReadOnlyNote from '../components/ReadOnlyNote.vue'
+import OpenInVSCode from '../components/OpenInVSCode.vue'
 import { githubAccess } from '../lib/githubAccess'
 import * as api from '../api/client'
 import type { BuildLogBody } from '../api/types'
 import { diskBreakdown } from '../lib/resources'
 import { capacity } from '../lib/capacity'
 import { actionStepTitle, cardStatus, stepTitle, withRoom } from '../lib/workspaceCard'
-import { ACTION_STEPS, failedStep, liveAction, runSteps, stopFailed } from '../stores/reducer'
+import { ACTION_STEPS, becameRunning, failedStep, liveAction, runSteps, stopFailed } from '../stores/reducer'
 import { useStreamStore } from '../stores/stream'
 import { catalogEvent, useCatalogStore } from '../stores/catalog'
 import { deleteKey, rebuildKey, stopKey, useWorkspacesStore } from '../stores/workspaces'
@@ -82,10 +83,12 @@ onMounted(() => {
   if (!stream.entities.catalogLoaded) void catalog.load()
 })
 watch(id, (now) => void workspaces.loadOne(now))
-// The backstop only: a reopened stream or a `resync`. Nothing else here needs
-// a refetch — the move to running and `workspace.adopted` both carry the
-// container id, so the reducer has it from the event (design §6).
-useStreamRefetch({ refetch: () => workspaces.loadOne(id.value) })
+// The backstop — a reopened stream or a `resync` — and one event: the move to
+// running. The move and `workspace.adopted` carry the container id, so the
+// reducer has that from the event (design §6), but the Open in VS Code link
+// names the container the move made, read from Docker by the view, and no
+// event carries it.
+useStreamRefetch({ refetch: () => workspaces.loadOne(id.value), when: (ev) => becameRunning(ev, id.value) })
 // The repository's catalog row (removed, archived) is what the read-only
 // badge and the GitHub access row read: kept current as the home list keeps it.
 useStreamRefetch({ refetch: () => catalog.load(), when: catalogEvent })
@@ -244,6 +247,7 @@ watch(id, () => {
         <ResourceLine :workspace="ws" />
         <PortCount :workspace="ws" :panel="ws.state !== 'deleting'" />
         <ReadOnlyNote :workspace="ws" />
+        <OpenInVSCode :workspace="ws" note />
         <WorkspaceIdentityNote :state="ws.state" part="waiting" />
         <template v-if="openedPreview">
           <p v-if="ws.state !== 'running'" class="note" data-test="preview-not-running">

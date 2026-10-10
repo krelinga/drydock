@@ -58,6 +58,19 @@ type View struct {
 	// (resources.go), filled in by the route from memory, never read from
 	// the database; null when this server measures nothing yet.
 	Resources *Resources `json:"resources"`
+	// VSCode is the card's *Open in VS Code* link (internal/vscode), filled
+	// in by the route from Docker as the view is served, never stored; null
+	// when this server fills none.
+	VSCode *VSCodeLink `json:"vscode"`
+}
+
+// VSCodeLink is a view's *Open in VS Code* state. Configured is whether the
+// server was given the SSH host VS Code reaches it at (`serve
+// --vscode-ssh-host`); URL is the vscode:// link to the workspace's running
+// container, or null when there is none to open.
+type VSCodeLink struct {
+	Configured bool    `json:"configured"`
+	URL        *string `json:"url"`
 }
 
 // Kinds the session supervisor (internal/supervisor, design §8) writes.

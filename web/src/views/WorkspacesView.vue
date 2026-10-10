@@ -24,10 +24,11 @@ import MakeRoom from '../components/MakeRoom.vue'
 import PortCount from '../components/PortCount.vue'
 import ResourceLine from '../components/ResourceLine.vue'
 import ReadOnlyNote from '../components/ReadOnlyNote.vue'
+import OpenInVSCode from '../components/OpenInVSCode.vue'
 import WorkspaceAction from '../components/WorkspaceAction.vue'
 import WorkspaceIdentityNote from '../components/WorkspaceIdentityNote.vue'
 import { catalogEvent, useCatalogStore, type CatalogRow } from '../stores/catalog'
-import type { Workspace } from '../stores/reducer'
+import { becameRunning, type Workspace } from '../stores/reducer'
 import { useStreamStore } from '../stores/stream'
 import { cloneKey, useWorkspacesStore } from '../stores/workspaces'
 import { useStreamRefetch } from '../lib/refetch'
@@ -42,7 +43,10 @@ onMounted(() => {
   void workspaces.loadList()
 })
 useStreamRefetch({ refetch: () => catalog.load(), when: catalogEvent })
-useStreamRefetch({ refetch: () => workspaces.loadList() })
+// The backstop, and a move to running: the Open in VS Code link names the
+// container the move made, read from Docker by the list, and no event
+// carries it.
+useStreamRefetch({ refetch: () => workspaces.loadList(), when: (ev) => becameRunning(ev) })
 
 // The fleet's Claude login (frontend §6.6), from the identity store #37's
 // watch feeds: it overrides the session half of every running card.
@@ -93,6 +97,7 @@ function rowNote(r: CatalogRow): string | null {
           <ResourceLine :workspace="r.workspace" />
           <PortCount :workspace="r.workspace" />
           <ReadOnlyNote :workspace="r.workspace" />
+          <OpenInVSCode :workspace="r.workspace" />
           <WorkspaceIdentityNote :state="r.workspace.state" part="waiting" />
           <p v-if="status(r.workspace).since" class="detail" data-test="waiting-since">
             Waiting since {{ relativeTime(status(r.workspace).since!) }}.

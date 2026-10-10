@@ -171,6 +171,41 @@ func TestNoPolicyRefusesAndRunsNothing(t *testing.T) {
 	}
 }
 
+// The guard checks the command docker will run: its own labels added first,
+// then Check. A policy whose labels would themselves be refused — one under
+// the prefix that is not an id-label, which reconciliation would act on — is
+// refused, and docker never runs; checked before the labels were added, the
+// same run would pass. The control is the spec's labels, which docker runs
+// with, right after `run`.
+func TestTheGuardChecksWhatItRuns(t *testing.T) {
+	dp, dir := guardDir(t)
+	root := filepath.Dir(filepath.Dir(dir))
+	run := []string{"run", "--sig-proxy=false", "img"}
+
+	bad := FixturePolicy(root, nil)
+	bad.Labels = map[string]string{"drydock.cleanup": "x"}
+	if err := WritePolicy(dir, *bad); err != nil {
+		t.Fatal(err)
+	}
+	if d := Check(bad, run); d.Refused {
+		t.Fatalf("the run alone, unlabelled, is refused: %+v", d)
+	}
+	if r := runGuard(t, dp, "", run...); r.ranDocker || r.code != ExitRefused || !strings.Contains(r.stderr, Marker+": "+SettingRunArgs) {
+		t.Errorf("labels refused by Check: docker ran %v, exit %d, stderr %q", r.ranDocker, r.code, r.stderr)
+	}
+
+	good := labelPolicy(root)
+	if err := WritePolicy(dir, *good); err != nil {
+		t.Fatal(err)
+	}
+	r := runGuard(t, dp, "", run...)
+	want := []string{"run", "-l", "devcontainer.config_file=" + good.Labels["devcontainer.config_file"],
+		"-l", "devcontainer.local_folder=" + good.Labels["devcontainer.local_folder"], "--sig-proxy=false", "img"}
+	if !r.ranDocker || !reflect.DeepEqual(r.args, want) {
+		t.Errorf("control: docker ran %v with %q, want %q (stderr %q)", r.ranDocker, r.args, want, r.stderr)
+	}
+}
+
 // A refused command names what it was refused for, on stderr and in the
 // record, and records every refusal of one up.
 func TestRefusalsAreRecorded(t *testing.T) {

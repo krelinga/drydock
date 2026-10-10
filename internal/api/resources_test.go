@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"strings"
 	"testing"
@@ -62,6 +63,45 @@ func TestViewsCarryTheSamplersMeasurements(t *testing.T) {
 	var detail map[string]json.RawMessage
 	if json.Unmarshal(rec.Body.Bytes(), &detail) != nil || string(detail["resources"]) != want {
 		t.Errorf("detail resources: %s", detail["resources"])
+	}
+}
+
+type stubEditors struct{ url string }
+
+func (s stubEditors) Fill(_ context.Context, vs []workspace.View) {
+	for i := range vs {
+		vs[i].VSCode = &workspace.VSCodeLink{Configured: true}
+		if vs[i].State == workspace.Running {
+			u := s.url
+			vs[i].VSCode.URL = &u
+		}
+	}
+}
+
+// TestViewsCarryTheVSCodeLink: with Editors, the list and the detail each
+// carry the field it fills, in the shape the client reads; the control is
+// TestWorkspaceViewsHaveTheContractShape, with none, where it is null.
+func TestViewsCarryTheVSCodeLink(t *testing.T) {
+	const u = "vscode://vscode-remote/attached-container+7b7d@ssh-remote+devbox/workspaces/repo"
+	views := []workspace.View{{ID: "W2", State: workspace.Running}, {ID: "W1", State: workspace.Stopped}}
+	mux := Build(MuxAPI, stubGate{session: true, origin: true, host: true},
+		WorkspaceRoutes{Provisioner: &stubProvisioner{}, Workspaces: stubReader{views: views},
+			Events: stubEvents{}, Editors: stubEditors{url: u}}.Handlers())
+	var list struct{ Workspaces []map[string]json.RawMessage }
+	rec := call(mux, "GET", "/api/workspaces", ``)
+	if err := json.Unmarshal(rec.Body.Bytes(), &list); err != nil || len(list.Workspaces) != 2 {
+		t.Fatalf("%d %s", rec.Code, rec.Body)
+	}
+	if got := string(list.Workspaces[0]["vscode"]); got != `{"configured":true,"url":"`+u+`"}` {
+		t.Errorf("running: %s", got)
+	}
+	if got := string(list.Workspaces[1]["vscode"]); got != `{"configured":true,"url":null}` {
+		t.Errorf("stopped: %s", got)
+	}
+	var detail map[string]json.RawMessage
+	rec = call(mux, "GET", "/api/workspaces/W2", ``)
+	if json.Unmarshal(rec.Body.Bytes(), &detail) != nil || string(detail["vscode"]) != `{"configured":true,"url":"`+u+`"}` {
+		t.Errorf("detail: %s", rec.Body)
 	}
 }
 

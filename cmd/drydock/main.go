@@ -1,11 +1,13 @@
-// Command drydock is the whole server: one binary, five subcommands.
+// Command drydock is the whole server: one binary, six subcommands.
 //
 //	drydock serve         [flags]   run the front door on its two Unix sockets
 //	drydock passwd        [flags]   set the operator password
 //	drydock count-secrets [flags]   print how many secrets are stored (read-only)
 //	drydock check-preview-domain [flags]
 //	                                refuse a preview domain same-site with the UI
-//	drydock version                 print the release this binary was built from
+//	drydock check-vscode-ssh-host [flags]
+//	                                refuse a --vscode-ssh-host serve would refuse
+//	drydock version                print the release this binary was built from
 //
 // Run under the name "docker", by the link a workspace's --docker-path names,
 // it is the docker guard instead: it checks the docker command it was given
@@ -35,8 +37,10 @@
 // exists, which is what keeps an installer re-run from signing everyone out.
 //
 // check-preview-domain --ui-host H --preview-domain D exits 0 only when
-// config.CrossSite passes, 1 naming why, 2 on a malformed call. version is
-// stamped by -ldflags -X main.version=. serve --secrets-key takes the master
+// config.CrossSite passes, 1 naming why, 2 on a malformed call;
+// check-vscode-ssh-host --vscode-ssh-host V likewise asks config.ParseSSHHost,
+// so a value the installer writes into drydock.env is one serve starts with.
+// version is stamped by -ldflags -X main.version=. serve --secrets-key takes the master
 // key's *path*.
 package main
 
@@ -86,6 +90,8 @@ func main() {
 		os.Exit(countSecrets(os.Args[2:], os.Stdout, os.Stderr))
 	case "check-preview-domain":
 		os.Exit(checkPreviewDomain(os.Args[2:], os.Stderr))
+	case "check-vscode-ssh-host":
+		os.Exit(checkVSCodeSSHHost(os.Args[2:], os.Stderr))
 	case "version", "--version":
 		fmt.Println(version)
 	case "-h", "--help", "help":
@@ -104,7 +110,9 @@ func usage(w io.Writer) {
   drydock count-secrets [flags]   print how many secrets are stored (read-only; for the installer)
   drydock check-preview-domain [flags]
                                   refuse a preview domain same-site with the UI host (for the installer)
-  drydock version               print the release this binary was built from
+  drydock check-vscode-ssh-host [flags]
+                                  refuse a --vscode-ssh-host serve would refuse (for the installer)
+  drydock version              print the release this binary was built from
 
 Run any of them with -h for its flags.
 `)
@@ -140,6 +148,7 @@ func serve(args []string) int {
 	fs.DurationVar(&cfg.IdentityCheckTimeout, "identity-check-timeout", cfg.IdentityCheckTimeout, "give up on each read of the shared Claude login after this long")
 	fs.IntVar(&cfg.PreviewMaxConnections, "preview-max-connections", cfg.PreviewMaxConnections, "how many requests the preview socket serves at once, an open websocket counting until it closes; past it, 503")
 	fs.DurationVar(&cfg.PreviewIdleTimeout, "preview-idle-timeout", cfg.PreviewIdleTimeout, "close a preview's websocket after this long with no traffic either way")
+	fs.StringVar(&cfg.VSCodeSSHHost, "vscode-ssh-host", "", "[user@]host[:port] VS Code's Remote-SSH reaches this server at (the user needs Docker access): each running workspace then has an Open in VS Code link")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}

@@ -179,6 +179,20 @@ export interface WorkspaceView {
    * or null when nothing has been. Absent from a server older than it.
    */
   resources?: ResourcesView | null
+  /**
+   * The *Open in VS Code* link (internal/vscode), read from Docker as the
+   * view is served, never stored and never in an event. `configured` is
+   * whether the server was given `--vscode-ssh-host`; `url` is the
+   * vscode:// link to the running container, or null. Null or absent: the
+   * server says nothing about VS Code.
+   */
+  vscode?: VSCodeView | null
+}
+
+/** A view's VS Code state (internal/workspace VSCodeLink). */
+export interface VSCodeView {
+  configured: boolean
+  url: string | null
 }
 
 /** A container's memory as `docker stats` counts it (internal/workspace MemorySample). */

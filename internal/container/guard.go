@@ -108,6 +108,7 @@ func (m Manager) guardPolicy(s UpSpec) dockerguard.Policy {
 		k, v, _ := strings.Cut(kv, "=")
 		p.IDLabels[k] = v
 	}
+	p.Labels = specLabels(s)
 	p.OwnMounts = m.ownMounts(s)
 	for _, a := range s.Approved {
 		p.Approved = append(p.Approved, dockerguard.Setting{Field: a.Field, Value: a.Value})

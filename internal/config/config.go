@@ -15,13 +15,17 @@
 //
 // The shared Claude volume's name (ClaudeVolume, default
 // drydock-claude-config), the Claude image's digest-pinned base, and the
-// identity watch's interval and expiring window live here too.
+// identity watch's interval and expiring window live here too, as does
+// VSCodeSSHHost, the Open in VS Code link's SSH address: ParseSSHHost holds
+// it to [user@]host[:port], since it is spliced into a URL, and the installer
+// asks the same function through `drydock check-vscode-ssh-host`.
 package config
 
 import (
 	"fmt"
 	"net"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -182,6 +186,70 @@ type Config struct {
 	// PreviewIdleTimeout closes an upgraded preview connection after this
 	// long with no byte in either direction (PF §10.7).
 	PreviewIdleTimeout time.Duration
+
+	// VSCodeSSHHost is where the operator's VS Code reaches this server
+	// over Remote-SSH, [user@]host[:port] (ParseSSHHost): with it each
+	// running workspace's card carries an *Open in VS Code* link
+	// (internal/vscode), attached to its container over that connection.
+	// The SSH user needs Docker access on this host. Empty is no link, and
+	// the workspace page says how to enable it.
+	VSCodeSSHHost string
+}
+
+// SSHHost is where VS Code's Remote-SSH reaches the Drydock host: an ssh
+// config alias or a host name, with an optional user and port.
+type SSHHost struct {
+	User string
+	Host string
+	Port int
+}
+
+var (
+	sshUser = regexp.MustCompile(`^[A-Za-z0-9_][A-Za-z0-9_.-]{0,31}$`)
+	// A host name or an ssh config alias: letters, digits, '.', '-', '_',
+	// beginning and ending with a letter or digit — never '-' first, which
+	// ssh would read as an option.
+	sshHostName = regexp.MustCompile(`^[A-Za-z0-9](?:[A-Za-z0-9._-]{0,251}[A-Za-z0-9])?$`)
+	sshPort     = regexp.MustCompile(`^[1-9][0-9]{0,4}$`)
+)
+
+// ParseSSHHost reads VSCodeSSHHost: [user@]host[:port]. Anything else — a
+// scheme, a space, a second '@', an IPv6 literal, a leading '-', a path — is
+// refused rather than guessed at, since the value is spliced into a URL the
+// operator's VS Code opens. The installer asks the same function through
+// `drydock check-vscode-ssh-host`.
+func ParseSSHHost(s string) (SSHHost, error) {
+	var h SSHHost
+	rest := s
+	if u, after, ok := strings.Cut(rest, "@"); ok {
+		if !sshUser.MatchString(u) {
+			return SSHHost{}, fmt.Errorf("the SSH user in %q must be letters, digits, '_', '.' or '-', starting with a letter, digit or '_'", s)
+		}
+		h.User, rest = u, after
+	}
+	if hp, port, ok := strings.Cut(rest, ":"); ok {
+		n, err := strconv.Atoi(port)
+		if !sshPort.MatchString(port) || err != nil || n > 65535 {
+			return SSHHost{}, fmt.Errorf("the SSH port in %q must be a number from 1 to 65535", s)
+		}
+		h.Port, rest = n, hp
+	}
+	if !sshHostName.MatchString(rest) {
+		return SSHHost{}, fmt.Errorf("%q must be [user@]host[:port], the host a name or an ssh config alias (letters, digits, '.', '-', '_')", s)
+	}
+	h.Host = rest
+	return h, nil
+}
+
+func (h SSHHost) String() string {
+	s := h.Host
+	if h.User != "" {
+		s = h.User + "@" + s
+	}
+	if h.Port != 0 {
+		s += ":" + strconv.Itoa(h.Port)
+	}
+	return s
 }
 
 // DefaultClaudeVolume is the shared Claude credential volume's name (§6).
@@ -356,6 +424,11 @@ func (c Config) Validate() error {
 	}
 	if c.PreviewIdleTimeout < time.Minute {
 		return fmt.Errorf("preview idle timeout %s is shorter than a minute: a dev server's HMR socket is quiet between saves", c.PreviewIdleTimeout)
+	}
+	if c.VSCodeSSHHost != "" {
+		if _, err := ParseSSHHost(c.VSCodeSSHHost); err != nil {
+			return fmt.Errorf("--vscode-ssh-host: %w", err)
+		}
 	}
 	return nil
 }

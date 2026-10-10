@@ -73,6 +73,13 @@ func TestTheGuardRefusesWhatTheCheckDidNotSee(t *testing.T) {
 	if got := created(); len(got) != 1 || strings.Contains(got[0], "--privileged") {
 		t.Fatalf("the honest up's docker runs: %q", got)
 	}
+	// The guard labelled it as the dev container VS Code's Reopen in
+	// Container of the clone looks for.
+	repo := filepath.Join(e.root, v.ID, "repo")
+	if got := created()[0]; !strings.HasPrefix(got, "run -l devcontainer.config_file="+filepath.Join(repo, ".devcontainer", "devcontainer.json")+
+		" -l devcontainer.local_folder="+repo+" ") {
+		t.Errorf("the honest up's docker run: %s", got)
+	}
 
 	// The lie: up asks docker for privileged.
 	os.WriteFile(filepath.Join(e.cli.dir, "lie"), []byte("--privileged"), 0o600)

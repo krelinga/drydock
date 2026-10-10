@@ -14,7 +14,19 @@
 // result read by classify.ClassifyContainer. Containers are found with `docker
 // ps -q --filter label=…` for ids and `docker inspect` for structured labels
 // and state — never a table parse. The id-labels carry workspace id,
-// repository id, repo and branch, so a row can be rebuilt from them.
+// repository id, repo and branch, so a row can be rebuilt from them. Given
+// UpSpec.ConfigFile, the container also gets the dev container spec's
+// devcontainer.local_folder (the clone) and devcontainer.config_file (the
+// path VS Code computes for it, ConfigFiles), so VS Code's Reopen in
+// Container of the clone finds this container instead of building a second,
+// Drydock-unaware one (design §6, "Opening a workspace in VS Code"). They are
+// plain labels, never id-labels: the docker guard adds them to the docker run
+// it lets up make (the policy's Labels), so the CLI's container matching and
+// ${devcontainerId} — a hash of the id-labels — are what they were. A
+// container gets them when it is created. Nothing here finds a container by
+// them: List, Find, Stop and Remove go by the prefix's workspace label. Found
+// carries each container's Name and Mounts, which internal/vscode builds the
+// Open in VS Code link from (Of reads one workspace's).
 //
 // read-configuration is parsed too (one JSON object; an unparseable
 // devcontainer.json exits 0, so "names no image" is checked here), run with
@@ -49,7 +61,8 @@
 // binary, with real-docker beside it linking the docker the Manager itself
 // runs; the pair goes among the CLI's options, before exec's --. Up refuses to
 // run with no guard (ErrNoGuard) or a TMPDIR other than TempDirFor(folder)
-// (<id>/.drydock/tmp), writes the guard's policy.json — the four id-labels,
+// (<id>/.drydock/tmp), writes the guard's policy.json — the four id-labels, the spec's two
+// labels the guard adds to the container (specLabels),
 // Drydock's two --mount values (ownMounts, the same strings Args passes), the
 // clone, the TMPDIR, UpSpec.ConfigDir and UpSpec.Approved — removes it after,
 // and reads the guard's refused.json before the CLI's result: a refusal is
@@ -162,6 +175,7 @@ import (
 	"io"
 	"net/netip"
 	"os"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strconv"
@@ -217,6 +231,47 @@ const (
 	LabelRepo         = "repo"
 	LabelBranch       = "branch"
 )
+
+// The dev container spec's own two labels, not under the prefix: what the
+// devcontainer CLI and VS Code's Dev Containers extension put on a container
+// when they are given no --id-label, and look for at the next `up` or
+// *Reopen in Container* of the same folder (CLI 0.89.0's
+// findContainerAndIdLabels, and the extension's copy of it: both labels;
+// then local_folder alone, for a container from before config_file existed,
+// which — lacking config_file — `up --remove-existing-container` removes, so
+// Drydock always sets both). Drydock passes its own id-labels, and the CLI
+// then sets only those: without these two, *Reopen in Container* of the
+// clone over Remote-SSH found nothing and built a second, Drydock-unaware
+// container — no broker, no secrets, no approval. With them it finds
+// Drydock's (measured in test/container). They are set by the docker guard,
+// not as id-labels (specLabels). Nothing in Drydock finds a container by
+// them; reconciliation, Find, Stop and Remove go by the prefix's workspace
+// label alone.
+const (
+	LabelLocalFolder = "devcontainer.local_folder"
+	LabelConfigFile  = "devcontainer.config_file"
+)
+
+// ConfigFiles are the two paths the devcontainer CLI, and VS Code, look for a
+// folder's configuration at, in the order they look: the first that is a file
+// is the folder's configuration, and with neither the first is the path they
+// label a container with (CLI 0.89.0: getDevContainerConfigPathIn, and
+// getDefaultDevContainerConfigPath when --override-config supplies the
+// configuration — Drydock's case for a repository with none, measured: a
+// later `up --workspace-folder` with no id-labels, after a
+// .devcontainer/devcontainer.json is added, finds that container).
+func ConfigFiles(folder string) [2]string {
+	return [2]string{
+		filepath.Join(folder, ".devcontainer", "devcontainer.json"),
+		filepath.Join(folder, ".devcontainer.json"),
+	}
+}
+
+// validConfigFile: one of folder's two ConfigFiles.
+func validConfigFile(folder, file string) bool {
+	c := ConfigFiles(folder)
+	return file == c[0] || file == c[1]
+}
 
 func (m Manager) key(k string) string { return m.LabelPrefix + "." + k }
 
@@ -274,6 +329,15 @@ type UpSpec struct {
 	// ConfigDir is the directory of the configuration file up reads, which
 	// an approved relative build context is resolved against.
 	ConfigDir string
+	// ConfigFile is the configuration path VS Code computes for Folder — the
+	// first of ConfigFiles(Folder) that is a file, or the first when neither
+	// is (Drydock's override) — and with it the docker guard gives a
+	// container this up creates LabelLocalFolder=Folder and
+	// LabelConfigFile=ConfigFile, so *Reopen in Container* of the clone finds
+	// it. Empty sets neither. Labels, not id-labels (specLabels): a start
+	// reattaches to a container made without them exactly as before, and it
+	// gets them whenever it is next created.
+	ConfigFile string
 }
 
 const (
@@ -332,6 +396,12 @@ func (m Manager) Args(s UpSpec) ([]string, error) {
 			return nil, fmt.Errorf("container: broker directory %q must be absolute and free of ',' and '='", s.BrokerDir)
 		}
 	}
+	if strings.ContainsAny(s.Folder, "\n\x00") {
+		return nil, fmt.Errorf("container: folder %q is not one line", s.Folder)
+	}
+	if s.ConfigFile != "" && !validConfigFile(s.Folder, s.ConfigFile) {
+		return nil, fmt.Errorf("container: config file %q is not where the CLI looks in %q", s.ConfigFile, s.Folder)
+	}
 	if s.ClaudeVolume != "" && !config.ValidVolumeName(s.ClaudeVolume) {
 		return nil, fmt.Errorf("container: %q is not a volume name", s.ClaudeVolume)
 	}
@@ -370,7 +440,9 @@ func (m Manager) Args(s UpSpec) ([]string, error) {
 }
 
 // idLabels are up's id-labels, key=value: what finds the container again,
-// and what reconciliation rebuilds a row from.
+// and what reconciliation rebuilds a row from. The CLI hashes every one into
+// ${devcontainerId}, which is why the spec's two labels are not among them
+// (specLabels).
 func (m Manager) idLabels(s UpSpec) []string {
 	return []string{
 		m.key(LabelWorkspace) + "=" + s.WorkspaceID,
@@ -378,6 +450,19 @@ func (m Manager) idLabels(s UpSpec) []string {
 		m.key(LabelRepo) + "=" + s.FullName,
 		m.key(LabelBranch) + "=" + s.Branch,
 	}
+}
+
+// specLabels are the dev container spec's two labels for s, which the docker
+// guard adds to the container up creates (dockerguard.Policy.Labels), or
+// none without a ConfigFile. Not id-labels: given as --id-label they would
+// change ${devcontainerId} — a docker-in-docker volume named with it would
+// come up empty after the next rebuild — and up would no longer match a
+// container made without them.
+func specLabels(s UpSpec) map[string]string {
+	if s.ConfigFile == "" {
+		return nil
+	}
+	return map[string]string{LabelLocalFolder: s.Folder, LabelConfigFile: s.ConfigFile}
 }
 
 // ownMounts are the --mount values Drydock gives up: the broker directory
@@ -522,6 +607,24 @@ func (m Manager) Up(ctx context.Context, s UpSpec) (classify.Container, []byte, 
 	return c, stderr.Bytes(), nil
 }
 
+// Of is the containers carrying one workspace's label, inspected: Find, then
+// docker inspect of what it found. The Open in VS Code link of one
+// workspace's page reads this rather than List.
+func (m Manager) Of(ctx context.Context, workspaceID string) ([]Found, error) {
+	ids, err := m.Find(ctx, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	return m.inspect(ctx, ids)
+}
+
+// Mount is one of a container's mounts, as docker inspect reports it.
+type Mount struct {
+	Type        string
+	Source      string
+	Destination string
+}
+
 // Found is a container carrying this manager's workspace label.
 type Found struct {
 	ContainerID  string
@@ -535,6 +638,12 @@ type Found struct {
 	// as a file, as a Drydock before the directory mount made it, and needs
 	// a rebuild (Manager.LegacyBrokerMount).
 	LegacyBrokerMount bool
+	// Name is docker's name for the container, leading "/" included: what
+	// VS Code's attached-container authority names (internal/vscode). A
+	// rebuild changes it, so it is read when it is needed, never kept.
+	Name string
+	// Mounts are the container's mounts.
+	Mounts []Mount
 }
 
 // List finds every container, running or not, carrying this prefix's
@@ -595,6 +704,7 @@ func (m Manager) LegacyBrokerMount(ctx context.Context, workspaceID string) (boo
 
 type inspect struct {
 	ID    string `json:"Id"`
+	Name  string
 	State struct {
 		Status  string
 		Running bool
@@ -602,10 +712,7 @@ type inspect struct {
 	Config struct {
 		Labels map[string]string
 	}
-	Mounts []struct {
-		Type        string
-		Destination string
-	}
+	Mounts []Mount
 }
 
 func (m Manager) parseInspect(b []byte) ([]Found, error) {
@@ -630,6 +737,7 @@ func (m Manager) parseInspect(b []byte) ([]Found, error) {
 			ContainerID: c.ID, WorkspaceID: ws, RepositoryID: repoID,
 			Repo: c.Config.Labels[m.key(LabelRepo)], Branch: c.Config.Labels[m.key(LabelBranch)],
 			Running: c.State.Running, Status: c.State.Status, LegacyBrokerMount: legacy,
+			Name: c.Name, Mounts: c.Mounts,
 		})
 	}
 	return found, nil

@@ -90,8 +90,10 @@ describe('the workspace detail', () => {
     await settle()
     expect(wrapper.find('[data-test="ws-state"]').text()).toBe('Running')
     expect(wrapper.find('[data-step="up"] [data-test="step-status"]').text()).toBe('done')
-    // The move to running carries the container id: no refetch to learn it.
-    expect(reads(b, WS_FAILED)).toBe(before)
+    // The move to running carries the container id, so nothing refetches to
+    // learn it; the one read it asks for is the Open in VS Code link's,
+    // which names the container from Docker and rides no event.
+    expect(reads(b, WS_FAILED)).toBe(before + 1)
     expect(wrapper.text()).toContain('Container')
     expect(wrapper.text()).toContain('feedfacecafe')
   })

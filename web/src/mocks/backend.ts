@@ -206,6 +206,12 @@ export interface MockBackend {
   ports: Record<string, MockPort>
   /** The preview domain; null is a Drydock with previews off (no --preview-domain). */
   previewDomain: string | null
+  /**
+   * `serve --vscode-ssh-host`, as internal/vscode reads it: a string is
+   * configured, null is a Drydock without it, and undefined a server that
+   * says nothing about VS Code (the views carry no `vscode` field).
+   */
+  vscodeHost?: string | null
   /** Per workspace, the container ports something listens on: what a probe finds answering. */
   listening: Record<string, number[]>
   /**
@@ -719,12 +725,37 @@ export function workspaceView(b: MockBackend, w: MockWorkspace): WorkspaceView {
     last_action: w.last_action ? { ...w.last_action } : null,
     approval: w.approval ? structuredClone(w.approval) : null,
     ...(w.resources !== undefined ? { resources: structuredClone(w.resources) } : {}),
+    ...(b.vscodeHost !== undefined ? { vscode: vscodeView(b.vscodeHost, w) } : {}),
     ...(b.supervisor ? {
       supervisor: w.supervisor ? { ...w.supervisor } : null,
       session: w.session ? { ...w.session } : null,
       environment_id: w.environment_id ?? null,
     } : {}),
   }
+}
+
+const hex = (s: string) => Array.from(new TextEncoder().encode(s), (c) => c.toString(16).padStart(2, '0')).join('')
+
+/**
+ * internal/vscode's link for a mock workspace: Remote-SSH's authority as the
+ * Dev Containers extension writes one (a bare lowercase host, else hex JSON),
+ * and the attached-container authority naming a container the mock calls
+ * /mock_<repo>, at /workspaces/<repo> — a link only while running, as the
+ * server reads a running container from Docker.
+ */
+export function vscodeURLFor(host: string, container: string, folder: string): string {
+  const m = /^(?:([^@]+)@)?([^:]+)(?::(\d+))?$/.exec(host)
+  const [, user, name, port] = m ?? [undefined, undefined, host, undefined]
+  const plain = user === undefined && port === undefined && name === name!.toLowerCase()
+  const ssh = plain ? name! : hex(JSON.stringify({ hostName: name, ...(user ? { user } : {}), ...(port ? { port: Number(port) } : {}) }))
+  return `vscode://vscode-remote/attached-container+${hex(JSON.stringify({ containerName: container }))}@ssh-remote+${ssh}${folder}`
+}
+
+function vscodeView(host: string | null, w: MockWorkspace): { configured: boolean; url: string | null } {
+  if (host === null) return { configured: false, url: null }
+  if (w.state !== 'running') return { configured: true, url: null }
+  const repo = String(w.repository_id)
+  return { configured: true, url: vscodeURLFor(host, `/mock_${repo}`, `/workspaces/repo${repo}`) }
 }
 
 /** The cap and the occupied count, as internal/workspace CapacityOf counts the list's rows. */

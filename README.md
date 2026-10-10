@@ -57,7 +57,10 @@ What the installer needs, and what it will not do:
 
 Previews of web apps running in a workspace are served from a **separate registrable domain** with a
 wildcard certificate, and are optional. Add them on any run with `--preview-domain`,
-`--preview-cert` and `--preview-key`; take them away with `--no-preview`. `--version vX.Y.Z` installs
+`--preview-cert` and `--preview-key`; take them away with `--no-preview`. If you use VS Code with
+Remote-SSH into the server, `--vscode-ssh-host [user@]host[:port]` (the address Remote-SSH uses; that
+user needs Docker access) gives each running workspace an **Open in VS Code** link;
+`--no-vscode-ssh-host` removes it. `--version vX.Y.Z` installs
 a specific release, and `--help` lists the rest.
 
 **The repository list needs the GitHub App.** Create it as described in the design (§9.3 lists the

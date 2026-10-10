@@ -663,7 +663,7 @@ sudo -u drydock drydock passwd --db /var/lib/drydock/drydock.db
 | user and group `drydock` | system | The service account. Member of `docker`. No login shell. |
 | `caddy` user | (from the package) | Gains supplementary group `drydock` through the drop-in, so it can reach the socket. |
 | `/usr/local/bin/drydock` | root `0755` | The binary. `drydock.previous` appears after an upgrade. |
-| `/etc/drydock/drydock.env` | root `0644` | Settings: hostnames, cert paths, the `--ca-cert` path, App ID. Nothing secret. Parsed by the installer, never `source`d. |
+| `/etc/drydock/drydock.env` | root `0644` | Settings: hostnames, cert paths, the `--ca-cert` path, App ID, the `--vscode-ssh-host` address. Nothing secret. Parsed by the installer, never `source`d. |
 | `/etc/drydock/github-app.pem` | drydock `0400` | The App key. Passed to Drydock as a path. |
 | `/etc/drydock/secrets.key` | drydock `0400` | The secrets master key: 32 raw bytes, the file given to `--secrets-key` or generated. **[Keep a copy](#6-the-secrets-master-key-supply-it-or-back-it-up).** |
 | `/etc/systemd/system/drydock.service` | root `0644` | `drydock serve …` as `drydock`, `ProtectSystem=strict`, the fixed `PATH`. `.previous` is kept for rollback. |
@@ -1241,6 +1241,52 @@ iOS or macOS version), and which checks passed.
 When you are done, stop the dev server (`sudo docker exec -u vscode "$CID" pkill -f http.server`)
 and, if you like, **Remove…** the port under **More**: its address is retired for good, and a
 bookmark of it stops working.
+
+### 8.9 Optional: opening a workspace in VS Code
+
+If you use VS Code with **Remote-SSH** into this server, each running workspace's card and page can
+carry an **Open in VS Code** link: it opens your own VS Code attached to that workspace's container,
+over the SSH connection Remote-SSH already makes. Until it is set, the workspace page says how to
+turn it on instead.
+
+- [ ] **On your laptop**, VS Code needs the *Remote - SSH* and *Dev Containers* extensions, and
+  Remote-SSH must already connect to this server (*Remote-SSH: Connect to Host…*).
+- [ ] **The SSH user needs Docker access on the server**: VS Code runs `docker` there as that user to
+  attach. That means membership of the `docker` group, which is root on this host by another name —
+  give it only to an account that may already do anything here.
+  ```sh
+  sudo usermod -aG docker <your-ssh-user>      # then log out and back in
+  ```
+- [ ] **Re-run the installer, v0.10.0 or later, with the address VS Code uses for this server** (an
+  older installer stops at the flag with `unknown option`): `[user@]host[:port]`,
+  or the `Host` alias from your `~/.ssh/config` — exactly what you would type into
+  *Remote-SSH: Connect to Host…*:
+  ```sh
+  curl -fsSL https://github.com/krelinga/drydock/releases/latest/download/install.sh \
+    | sudo bash -s -- --vscode-ssh-host <your-ssh-user>@<server>
+  ```
+  It is kept in `/etc/drydock/drydock.env` as `DRYDOCK_VSCODE_SSH_HOST` and passed to
+  `drydock serve --vscode-ssh-host`; a value that is not `[user@]host[:port]` is refused
+  (`--vscode-ssh-host refused: …`) before anything changes. `--no-vscode-ssh-host` turns the link off
+  again.
+- [ ] **Press Open in VS Code** on a running workspace. VS Code asks to confirm opening the link (an
+  external application opening a remote folder), then connects over Remote-SSH and opens the
+  repository inside the container. The link carries only the container's name, the SSH address
+  and the folder: no token and no secret. A stopped workspace has no link — start it in Drydock
+  first, so it has its broker.
+- [ ] **Never use VS Code's own *Rebuild Container*** on a Drydock workspace: it would replace
+  Drydock's container with one Drydock does not know — no broker, no secrets, no approval. Use
+  Drydock's **Rebuild**.
+
+Drydock's containers also carry the two labels the Dev Containers extension finds a folder's
+container by, `devcontainer.local_folder` (the clone, `/srv/drydock/ws/<id>/repo`) and
+`devcontainer.config_file`, so *Reopen in Container* on the clone in a Remote-SSH window attaches
+to Drydock's container instead of building a second one. A container gets them when Drydock next
+creates it — a **Rebuild**, or a **Start** of a failed workspace — so one made by an earlier release
+has none until then; a plain Start of it works as before. Nothing else about the container
+changes: they are plain labels, not the dev container id-labels, so a volume a configuration names
+with `${devcontainerId}` (docker-in-docker's `/var/lib/docker`, for one) is the same volume after
+the rebuild, and rolling back to an earlier release leaves the labelled containers working.
 
 ---
 

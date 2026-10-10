@@ -90,7 +90,7 @@ const REFUSALS: Record<string, { status: number; message: string; detail?: strin
 }
 
 export async function startMockWorker(): Promise<void> {
-  const backend = newBackend({ supervisor: true })
+  const backend = newBackend({ supervisor: true, vscodeHost: 'owner@devbox.lan' })
   seedPorts(backend)
   const worker = setupWorker(...handlersFor(backend))
   await worker.start({ onUnhandledFrame: 'bypass', quiet: true })

@@ -76,6 +76,7 @@ import (
 	"github.com/krelinga/drydock/internal/supervisor"
 	"github.com/krelinga/drydock/internal/sys"
 	"github.com/krelinga/drydock/internal/usage"
+	"github.com/krelinga/drydock/internal/vscode"
 	"github.com/krelinga/drydock/internal/web"
 	"github.com/krelinga/drydock/internal/workspace"
 )
@@ -411,6 +412,18 @@ func New(ctx context.Context, cfg config.Config, env sys.Env) (*Server, error) {
 	}
 	routes := api.WorkspaceRoutes{Provisioner: s.Provisioner, Workspaces: s.Workspaces, Events: s.Events,
 		BuildLogs: s.Provisioner}
+	// The Open in VS Code link (design §6), read from Docker per view. Validate
+	// has already refused a host ParseSSHHost would.
+	editors := vscode.Linker{Containers: containers, Root: cfg.WorkspaceRoot, Clock: env.Clock,
+		Logf: func(f string, a ...any) { fmt.Fprintf(os.Stderr, f+"\n", a...) }}
+	if cfg.VSCodeSSHHost != "" {
+		h, err := config.ParseSSHHost(cfg.VSCodeSSHHost)
+		if err != nil {
+			return nil, err
+		}
+		editors.Host = &h
+	}
+	routes.Editors = editors
 	if env.Disk != nil {
 		s.Usage = &usage.Sampler{Workspaces: s.Workspaces, Containers: containers, Disk: env.Disk, Clock: env.Clock, Random: env.Random,
 			Root: cfg.WorkspaceRoot, LimitPercent: cfg.DiskLimitPercent,
