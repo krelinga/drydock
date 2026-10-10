@@ -60,8 +60,11 @@
 // Reopen in Container finds a folder's container by — are the one thing the
 // guard adds to argv (WithLabels, before the check), to every run and create:
 // labels, not id-labels, so the CLI's container matching and
-// ${devcontainerId} are untouched. A start of a container carrying one with
-// another value is refused; one without them, made before, starts.
+// ${devcontainerId} are untouched. A start of a container whose local_folder
+// is not the clone, or whose config_file is neither path the CLI looks at in
+// it, is refused (startableLabel: the label was fixed at create, and the
+// repository may have moved its configuration since); one without them,
+// made before, starts.
 //
 // Builds: -f/context inside the clone or TMPDIR (symlinks followed) or
 // approved, --build-context only the CLI's own in its TMPDIR, --cache-from

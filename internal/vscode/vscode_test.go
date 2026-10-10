@@ -172,16 +172,26 @@ func TestFillIsBoundedAndTheDetailReadsOneWorkspace(t *testing.T) {
 	vs := []workspace.View{{ID: a, State: workspace.Running}, {ID: "01JBBBBBBBBBBBBBBBBBBBBBBB", State: workspace.Running}}
 	done := make(chan struct{})
 	go func() { l.Fill(context.Background(), vs); close(done) }()
+	// Fill sets its bound on the clock; one that sets none never does.
+	giveUp := time.After(5 * time.Second)
 	for clock.WaitingFor(2*time.Second) == 0 {
 		select {
 		case <-done:
 			t.Fatal("Fill returned before its bound passed")
+		case <-giveUp:
+			t.Fatal("Fill set no 2s bound on the injected clock")
 		default:
 			time.Sleep(time.Millisecond)
 		}
 	}
 	clock.Advance(2 * time.Second)
-	<-done
+	// Returned once the bound passed on the injected clock — a Fill that
+	// waited on Docker regardless fails here, not at go test's deadline.
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Fill did not return once its bound passed")
+	}
 	for _, v := range vs {
 		if v.VSCode == nil || !v.VSCode.Configured || v.VSCode.URL != nil {
 			t.Errorf("%s after the bound: %+v", v.ID, v.VSCode)

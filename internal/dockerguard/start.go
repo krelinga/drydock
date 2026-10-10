@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
@@ -187,7 +188,7 @@ func CheckStarted(p *Policy, ids []string, inspectJSON []byte, daemonLog func() 
 					if w, ok := p.IDLabels[k]; !ok || w != v {
 						c.refuse(SettingRunArgs, "a container labelled "+k+" that is not one of its id-labels")
 					}
-				} else if w, ok := p.Labels[k]; ok && w != v {
+				} else if w, ok := p.Labels[k]; ok && w != v && !startableLabel(p, k, v) {
 					// Absent is a container made before the guard set it.
 					c.refuse(SettingRunArgs, "a container whose label "+k+" has a value other than Drydock's")
 				}
@@ -198,6 +199,31 @@ func CheckStarted(p *Policy, ids []string, inspectJSON []byte, daemonLog func() 
 	sort.Strings(d.Why)
 	return d
 }
+
+// startableLabel: a label of a container being started that differs from the
+// policy's but is still this clone's. The policy's config_file is computed
+// from the clone this run, and a container's label was fixed when it was
+// created — so a repository that has since moved its configuration, or added
+// one after running on Drydock's minimal config, carries the other of the two
+// paths the CLI looks at. On start, config_file may be either of the two in
+// the policy's local_folder; local_folder itself must be exact. A run is
+// held to the exact values (Check).
+func startableLabel(p *Policy, k, v string) bool {
+	if k != LabelConfigFile {
+		return false
+	}
+	folder, ok := p.Labels[LabelLocalFolder]
+	if !ok || !filepath.IsAbs(folder) {
+		return false
+	}
+	return v == filepath.Join(folder, ".devcontainer", "devcontainer.json") || v == filepath.Join(folder, ".devcontainer.json")
+}
+
+// The dev container spec's two labels, as the policy's Labels carries them.
+const (
+	LabelLocalFolder = "devcontainer.local_folder"
+	LabelConfigFile  = "devcontainer.config_file"
+)
 
 // zero: null, false, 0, "", [] or {}.
 func zero(raw json.RawMessage) bool {

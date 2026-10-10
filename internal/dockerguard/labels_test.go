@@ -85,19 +85,21 @@ func TestTheGuardsLabelsCannotBeOverridden(t *testing.T) {
 	}
 
 	c, id := recordedInspect(t, "image", root)
-	labelled := func(local string) []byte {
+	clone := p.Labels["devcontainer.local_folder"]
+	labelledAs := func(local, cfg string) []byte {
 		b, _ := json.Marshal(c)
 		var cp map[string]any
 		json.Unmarshal(b, &cp)
 		ls := cp["Config"].(map[string]any)["Labels"].(map[string]any)
 		if local != "" {
 			ls["devcontainer.local_folder"] = local
-			ls["devcontainer.config_file"] = p.Labels["devcontainer.config_file"]
+			ls["devcontainer.config_file"] = cfg
 		}
 		out, _ := json.Marshal([]any{cp})
 		return out
 	}
-	if d := CheckStarted(p, []string{id}, labelled(p.Labels["devcontainer.local_folder"]), nil); d.Refused {
+	labelled := func(local string) []byte { return labelledAs(local, p.Labels["devcontainer.config_file"]) }
+	if d := CheckStarted(p, []string{id}, labelled(clone), nil); d.Refused {
 		t.Fatalf("control, a start of a container labelled as the policy says: %+v", d)
 	}
 	if d := CheckStarted(p, []string{id}, labelled(""), nil); d.Refused {
@@ -106,5 +108,34 @@ func TestTheGuardsLabelsCannotBeOverridden(t *testing.T) {
 	if d := CheckStarted(p, []string{id}, labelled("/home/owner/project"), nil); !d.Refused ||
 		!reflect.DeepEqual(d.Settings, []string{SettingRunArgs}) {
 		t.Errorf("a start of a container labelled for another folder: %+v", d)
+	}
+
+	// The repository moved its configuration since the container was made
+	// (here: it ran on Drydock's minimal config, labelled with the default
+	// path, and then added a root .devcontainer.json, which the policy now
+	// names): the container's config_file is the clone's other path, and a
+	// plain start of it starts. Only on start: a run is held to the policy's
+	// value exactly. The control is the same moved config_file in another
+	// folder, and a config_file that is no path the CLI looks at.
+	moved := labelledAs(clone, filepath.Join(clone, ".devcontainer.json"))
+	if d := CheckStarted(p, []string{id}, moved, nil); d.Refused {
+		t.Errorf("a start after the configuration moved: %+v", d)
+	}
+	p2 := labelPolicy(root)
+	p2.Labels["devcontainer.config_file"] = filepath.Join(clone, ".devcontainer.json")
+	if d := CheckStarted(p2, []string{id}, labelled(clone), nil); d.Refused {
+		t.Errorf("a start after a root config was removed: %+v", d)
+	}
+	for name, b := range map[string][]byte{
+		"the other path, in another folder": labelledAs("/home/owner/project", "/home/owner/project/.devcontainer.json"),
+		"a config_file in another folder":   labelledAs(clone, "/home/owner/project/.devcontainer.json"),
+		"a config_file no CLI computes":     labelledAs(clone, filepath.Join(clone, ".devcontainer", "python", "devcontainer.json")),
+	} {
+		if d := CheckStarted(p, []string{id}, b, nil); !d.Refused || !reflect.DeepEqual(d.Settings, []string{SettingRunArgs}) {
+			t.Errorf("%s: %+v", name, d)
+		}
+	}
+	if d := Check(p, insert(run, 5, "-l", "devcontainer.config_file="+filepath.Join(clone, ".devcontainer.json"))); !d.Refused {
+		t.Error("a run carrying the clone's other config path passed: a run is held exactly")
 	}
 }
