@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.10.0](https://github.com/krelinga/drydock/compare/v0.9.2...v0.10.0) (2026-10-10)
+
+
+### Features
+
+* open a workspace in VS Code, and label its container as a dev container ([#135](https://github.com/krelinga/drydock/issues/135)) ([955b4cf](https://github.com/krelinga/drydock/commit/955b4cff54ec2552c03cb499c15f51a5db0e9c1c))
+
 ## [0.9.2](https://github.com/krelinga/drydock/compare/v0.9.1...v0.9.2) (2026-10-09)
 
 
