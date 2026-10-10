@@ -53,8 +53,12 @@
 // still resolves inside it (staysPut: the container could have made it a link
 // to /). --privileged, --cap-add (but SYS_PTRACE), --security-opt (but
 // seccomp=unconfined), -p (as the CLI renders appPort), --gpus need their
-// field approved; -e/--build-arg without a value and a label under the prefix
-// that is not an id-label are refused.
+// field approved; -e/--build-arg without a value, a label under the prefix
+// that is not an id-label, and an id-label off the prefix (the spec's
+// devcontainer.local_folder and devcontainer.config_file, which VS Code finds
+// a container by) with a value other than the policy's are refused — on run
+// and on start alike. The policy's id-labels are every --id-label up was
+// given, the spec's two included, since ${devcontainerId} hashes them all.
 //
 // Builds: -f/context inside the clone or TMPDIR (symlinks followed) or
 // approved, --build-context only the CLI's own in its TMPDIR, --cache-from
@@ -480,6 +484,11 @@ func (c *checker) option(o parsed) {
 			if want, ok := c.p.IDLabels[k]; !ok || want != v {
 				c.refuse(SettingRunArgs, "a label under Drydock's prefix that is not one of its id-labels: "+k)
 			}
+		} else if want, ok := c.p.IDLabels[k]; ok && want != v {
+			// An id-label off the prefix — the spec's devcontainer.local_folder
+			// and config_file — with another value: what VS Code would find
+			// another folder's container by, docker keeping the last -l.
+			c.refuse(SettingRunArgs, "an id-label with a value other than Drydock's: "+k)
 		}
 	case kMount:
 		if !c.mountAllowed(o.value) {

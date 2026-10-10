@@ -54,6 +54,13 @@ What it covers:
   approved, the same workspace comes up `Privileged=true`; and with the approval narrowed and the
   tag moved back, `docker start` of that privileged container is refused.
 - **Lifecycle**: provision → stop → start → rebuild → delete.
+- **Reopen in Container** (`vscode_test.go`): Drydock's guarded `up` labels the container
+  `devcontainer.local_folder`/`devcontainer.config_file`, and a plain `devcontainer up
+  --workspace-folder <clone>` with no id-labels — what VS Code computes — reports that container
+  and makes no other, for a repository with a configuration and one running Drydock's minimal one
+  once a configuration is added; the Open in VS Code link names Docker's real name and
+  `/workspaces/repo`; a start of a stopped container, labelled or from before the labels,
+  reattaches. The control: a container made the old way, which the same command does not find.
 
 ## Network-bound steps are bounded
 

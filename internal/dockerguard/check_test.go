@@ -573,3 +573,61 @@ func TestAContextTheCLIHasNotMadeYet(t *testing.T) {
 		}
 	}
 }
+
+// The spec's two labels, which VS Code finds a container by, are id-labels
+// off the prefix: a run carrying them as the policy has them passes, and one
+// carrying either with another value — docker keeps the last -l, so a second
+// one would win — is refused, on run and on start. The control for "off the
+// prefix passes" is the same label under a policy that names no such
+// id-label, as a pre-upgrade container's start has.
+func TestSpecLabelsAreHeldToTheirIDLabelValues(t *testing.T) {
+	root := t.TempDir()
+	clone := filepath.Join(root, "repo")
+	cfg := filepath.Join(clone, ".devcontainer", "devcontainer.json")
+	p := FixturePolicy(root, nil)
+	p.IDLabels = map[string]string{}
+	for k, v := range FixtureLabels {
+		p.IDLabels[k] = v
+	}
+	p.IDLabels["devcontainer.local_folder"] = clone
+	p.IDLabels["devcontainer.config_file"] = cfg
+	run := command(t, Recorded(t, "image", root), "run")
+	own := insert(run, 1, "-l", "devcontainer.local_folder="+clone, "-l", "devcontainer.config_file="+cfg)
+	if d := Check(p, own); d.Refused {
+		t.Fatalf("control, the labels as the policy has them: %+v", d)
+	}
+	for name, extra := range map[string][]string{
+		"another local_folder":       {"-l", "devcontainer.local_folder=/home/owner/project"},
+		"another config_file":        {"--label", "devcontainer.config_file=" + filepath.Join(clone, ".devcontainer.json")},
+		"another local_folder, =":    {"--label=devcontainer.local_folder=/srv/drydock/ws/OTHER/repo"},
+		"an empty local_folder":      {"-l", "devcontainer.local_folder="},
+		"local_folder with no value": {"-l", "devcontainer.local_folder"},
+	} {
+		d := Check(p, insert(own, 1, extra...))
+		if !d.Refused || !reflect.DeepEqual(d.Settings, []string{SettingRunArgs}) {
+			t.Errorf("%s: %+v, want refused naming %s", name, d, SettingRunArgs)
+		}
+		if d := Check(FixturePolicy(root, nil), insert(run, 1, extra...)); d.Refused {
+			t.Errorf("%s, under a policy without the id-label: refused %+v", name, d)
+		}
+	}
+
+	c, id := recordedInspect(t, "image", root)
+	labelled := func(local string) []byte {
+		b, _ := json.Marshal(c)
+		var cp map[string]any
+		json.Unmarshal(b, &cp)
+		ls := cp["Config"].(map[string]any)["Labels"].(map[string]any)
+		ls["devcontainer.local_folder"] = local
+		ls["devcontainer.config_file"] = cfg
+		out, _ := json.Marshal([]any{cp})
+		return out
+	}
+	if d := CheckStarted(p, []string{id}, labelled(clone), nil); d.Refused {
+		t.Fatalf("control, a start of a container labelled as the policy says: %+v", d)
+	}
+	if d := CheckStarted(p, []string{id}, labelled("/home/owner/project"), nil); !d.Refused ||
+		!reflect.DeepEqual(d.Settings, []string{SettingRunArgs}) {
+		t.Errorf("a start of a container labelled for another folder: %+v", d)
+	}
+}

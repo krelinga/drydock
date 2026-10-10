@@ -422,6 +422,31 @@ check "drydock serve refuses a mixed-case origin at startup" grep -q "must be lo
 check "before it opens a database" [ ! -e /tmp/never.db ]
 check "control: the installed service is serving" [ "$(status "https://$UI/api/auth/session")" = 401 ]
 
+section "the Open in VS Code link's SSH address (--vscode-ssh-host)"
+cmdline() { tr '\0' ' ' </proc/"$(mainpid drydock)"/cmdline; }
+check "control: none is set yet" grep -qx "DRYDOCK_VSCODE_SSH_HOST=" /etc/drydock/drydock.env
+check "and drydock is given an empty one, which is off" grep -q -- "--vscode-ssh-host= " <<<"$(cmdline)"
+conf_before=$(sha256sum /etc/drydock/drydock.env /etc/systemd/system/drydock.service)
+pid_v=$(mainpid drydock)
+for bad in "ssh://owner@devbox" "-oProxyCommand=sh" "owner@devbox/x" "owner@devbox:0"; do
+	install v0.0.2 --vscode-ssh-host "$bad"
+	check "$bad is refused" refused_saying "--vscode-ssh-host refused"
+done
+check "and the refusals changed no file" [ "$(sha256sum /etc/drydock/drydock.env /etc/systemd/system/drydock.service)" = "$conf_before" ]
+check "and restarted nothing" [ "$(mainpid drydock)" = "$pid_v" ]
+install v0.0.2 --vscode-ssh-host owner@devbox.lan:2222
+check "control: a [user@]host[:port] is accepted" [ "$rc" = 0 ] || printf '%s\n' "$out"
+check "it is kept in drydock.env" grep -qx "DRYDOCK_VSCODE_SSH_HOST=owner@devbox.lan:2222" /etc/drydock/drydock.env
+check "drydock was restarted with it" grep -q -- "--vscode-ssh-host=owner@devbox.lan:2222 " <<<"$(cmdline)"
+pid_v=$(mainpid drydock)
+install v0.0.2
+check "a re-run with no flags keeps it" grep -qx "DRYDOCK_VSCODE_SSH_HOST=owner@devbox.lan:2222" /etc/drydock/drydock.env
+check "and restarts nothing" [ "$(mainpid drydock)" = "$pid_v" ]
+install v0.0.2 --no-vscode-ssh-host
+check "--no-vscode-ssh-host succeeds" [ "$rc" = 0 ] || printf '%s\n' "$out"
+check "and forgets it" grep -qx "DRYDOCK_VSCODE_SSH_HOST=" /etc/drydock/drydock.env
+check "drydock was restarted without it" grep -q -- "--vscode-ssh-host= " <<<"$(cmdline)"
+
 section "a master key that is not a key is refused, never replaced"
 cp -p "$SK" /root/secrets.key.good
 head -c 31 /dev/urandom >"$SK"

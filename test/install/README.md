@@ -23,6 +23,9 @@ What it covers:
 - a mixed-case `--ui-host` (lowercased, sign-in works, an old `drydock.env` repaired,
   `drydock serve` refusing one); a preview domain under or beside the UI host (refused, nothing
   changed);
+- `--vscode-ssh-host` (four malformed values refused with nothing changed or restarted; a good one
+  kept in `drydock.env` and on drydock's command line, kept by a no-flag re-run that restarts
+  nothing, and forgotten by `--no-vscode-ssh-host`);
 - previews on — a preview certificate without the wildcard failing the final check, then every
   preview URL `401` over the wildcard verified with `--cacert` whatever it carries (the UI
   session, a token, a forged preview cookie, the right password), two labels deep no host at all —

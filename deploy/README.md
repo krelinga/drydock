@@ -53,6 +53,11 @@ and verifies the release tarball and runs the copy inside; from the tarball it i
   `drydock.env`. A preview domain on the UI host's registrable domain — child, parent or sibling —
   is refused before anything is installed, by asking the bundle's own binary
   (`drydock check-preview-domain`) rather than reimplementing the Public Suffix List in shell.
+- `--vscode-ssh-host [user@]host[:port]` (the *Open in VS Code* link's SSH address) is kept in
+  `drydock.env` as `DRYDOCK_VSCODE_SSH_HOST` and passed to `drydock serve --vscode-ssh-host` (empty is
+  off); `--no-vscode-ssh-host` forgets it. A value serve would refuse is refused before anything is
+  installed, by the bundle's own binary (`drydock check-vscode-ssh-host`), never a shell copy of
+  the rule.
 - **The final check** — a `401` from `/api/auth/session` through Caddy, and with previews on a
   `302` from `https://drydock-check.<preview-domain>/` to its own `/.drydock/denied` (curl's
   `%{redirect_url}`), since `drydock-check` is never a slug — verifies TLS against `--ca-cert` (a

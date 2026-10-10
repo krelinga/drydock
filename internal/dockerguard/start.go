@@ -187,6 +187,8 @@ func CheckStarted(p *Policy, ids []string, inspectJSON []byte, daemonLog func() 
 					if w, ok := p.IDLabels[k]; !ok || w != v {
 						c.refuse(SettingRunArgs, "a container labelled "+k+" that is not one of its id-labels")
 					}
+				} else if w, ok := p.IDLabels[k]; ok && w != v {
+					c.refuse(SettingRunArgs, "a container whose id-label "+k+" has a value other than Drydock's")
 				}
 			}
 		}

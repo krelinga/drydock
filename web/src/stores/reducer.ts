@@ -274,6 +274,21 @@ export interface Workspace {
    * event that stopped the run carries it, every other one carries none.
    */
   approval: ApprovalView | null
+  /**
+   * The *Open in VS Code* state, from the views alone (no event carries
+   * it), or null when no view has said anything. `url` was validated
+   * (`vscodeURL`) before it was stored; read it through `vscodeLink`, which
+   * also hides one older than the state it would open.
+   */
+  vscode: VSCode | null
+  /** The snapshot position that last wrote `vscode`. */
+  vscodeAt: number
+}
+
+/** A workspace's VS Code link (internal/vscode): validated, never taken raw. */
+export interface VSCode {
+  configured: boolean
+  url: string | null
 }
 
 /** The latest action sub-step, versioned like any field. */
@@ -710,7 +725,57 @@ function stub(id: string): Workspace {
     steps: {}, containerId: null, createdAt: null, adopted: false, stateAt: 0, stepAt: 0, containerAt: 0,
     action: null, lastAction: null, stateEventId: 0,
     supervisor: null, supervisorAt: 0, supervisorKnown: false, session: null, sessionAt: 0, approval: null,
+    vscode: null, vscodeAt: 0,
   }
+}
+
+/**
+ * The shape internal/vscode builds, and nothing else: the attached-container
+ * authority's hex JSON, Remote-SSH's authority (a bare host or hex JSON), and
+ * a percent-encoded absolute path. An href is a capability to send the user
+ * somewhere, so anything else — another scheme, another authority, a quote —
+ * is no link.
+ */
+const VSCODE_URL = /^vscode:\/\/vscode-remote\/attached-container\+[0-9a-f]+@ssh-remote\+[A-Za-z0-9._-]+(?:\/[A-Za-z0-9._~%-]*)+$/
+
+/** A view's VS Code URL if it is one internal/vscode could have built, or null. */
+export function vscodeURL(u: unknown): string | null {
+  return typeof u === 'string' && VSCODE_URL.test(u) ? u : null
+}
+
+function toVSCode(v: unknown): VSCode | null {
+  if (v === null || typeof v !== 'object') return null
+  const o = v as Record<string, unknown>
+  if (typeof o.configured !== 'boolean') return null
+  return { configured: o.configured, url: o.configured ? vscodeURL(o.url) : null }
+}
+
+/**
+ * The *Open in VS Code* link to show for w, or null: only for a running
+ * workspace, and only from a view no older than the state and container it
+ * would open — a rebuild renames the container, so a link read before the
+ * latest state or container change names one that may be gone.
+ */
+export function vscodeLink(w: Workspace): string | null {
+  const v = w.vscode
+  if (v === null || v.url === null || w.state !== 'running') return null
+  if (w.vscodeAt < w.stateAt || w.vscodeAt < w.containerAt) return null
+  return v.url
+}
+
+/**
+ * A workspace (id, or any) moving to running: what makes a view refetch, since
+ * the VS Code link names the container the move just made and no event
+ * carries it.
+ */
+export function becameRunning(ev: StreamEvent, id?: string): boolean {
+  return ev.kind === 'workspace.state' && ev.data?.state === 'running' &&
+    (id === undefined || ev.workspace_id === id)
+}
+
+/** Whether the server has the VS Code link configured; null when it has not said. */
+export function vscodeConfigured(w: Workspace): boolean | null {
+  return w.vscode === null ? null : w.vscode.configured
 }
 
 const ENV_ID = /^env_[A-Za-z0-9]+$/
@@ -1125,8 +1190,17 @@ function mergeView(cur: Workspace | undefined, at: number, v: WorkspaceView): Wo
       : toSession(v.session as unknown as Record<string, unknown>, env)
     sessionAt = at
   }
+  // VS Code: only views write it, so the newest view wins. A body without
+  // the field (an older server) says nothing either way.
+  let vscode = base.vscode
+  let vscodeAt = base.vscodeAt
+  if (v.vscode !== undefined && base.vscodeAt <= at) {
+    vscode = toVSCode(v.vscode)
+    vscodeAt = at
+  }
   return {
     ...base,
+    vscode, vscodeAt,
     supervisor, supervisorAt, supervisorKnown, session, sessionAt,
     action: staleRun ? null : base.action,
     lastAction,

@@ -385,6 +385,14 @@ func TestRepositoryWithAConfigReachesRunning(t *testing.T) {
 	if got := flag(up, "--override-config"); got != nil {
 		t.Errorf("a repository with its own config got --override-config %v", got)
 	}
+	// Drydock's four id-labels, then the spec's two, which VS Code finds the
+	// container by: the clone, and the configuration it holds.
+	repo := filepath.Join(e.root, v.ID, "repo")
+	if got, want := flag(up, "--id-label"), []string{"drydock.test.provision.workspace=" + v.ID, "drydock.test.provision.repository-id=101",
+		"drydock.test.provision.repo=krelinga/alpha", "drydock.test.provision.branch=main", "devcontainer.local_folder=" + repo,
+		"devcontainer.config_file=" + filepath.Join(repo, ".devcontainer", "devcontainer.json")}; strings.Join(got, " ") != strings.Join(want, " ") {
+		t.Errorf("--id-label\n got %v\nwant %v", got, want)
+	}
 	if got := flag(e.cli.callsTo(t, "read-configuration")[0], "--override-config"); got != nil {
 		t.Errorf("read-configuration got --override-config %v", got)
 	}
@@ -450,6 +458,16 @@ func TestRepositoryWithoutAConfigGetsTheMinimalOne(t *testing.T) {
 	}
 	// The repository is untouched: nothing was written into the clone.
 	repo := filepath.Join(e.root, v.ID, "repo")
+	// Its container is labelled as the CLI labels one it makes for an
+	// --override-config with no id-labels, the default path (container.
+	// ConfigFiles): what VS Code finds once a configuration is added there.
+	for _, c := range e.cli.callsTo(t, "up") {
+		labels := strings.Join(flag(c, "--id-label"), " ")
+		if !strings.Contains(labels, "devcontainer.local_folder="+repo+" ") ||
+			!strings.Contains(labels, "devcontainer.config_file="+filepath.Join(repo, ".devcontainer", "devcontainer.json")) {
+			t.Errorf("up's id-labels: %s", labels)
+		}
+	}
 	if _, err := os.Lstat(filepath.Join(repo, ".devcontainer")); !errors.Is(err, fs.ErrNotExist) {
 		t.Errorf(".devcontainer appeared in the clone: %v", err)
 	}

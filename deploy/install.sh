@@ -89,6 +89,12 @@ Install or upgrade Drydock. Run as root.
   --preview-cert PATH   a wildcard certificate for *.D          } three or none
   --preview-key PATH    its private key                         }
   --no-preview          stop serving previews (removes the preview site)
+  --vscode-ssh-host USER@HOST
+                        the SSH address your VS Code's Remote-SSH reaches this
+                        server at ([user@]host[:port], or an ssh config alias):
+                        each running workspace then has an Open in VS Code link.
+                        That user needs Docker access here. Kept for later runs.
+  --no-vscode-ssh-host  forget a --vscode-ssh-host given earlier (no link)
   --github-app-id ID    the GitHub App's numeric App ID (not its Client ID)  } for the
   --github-app-key PATH its private key (.pem); copied to                  } repository
                         /etc/drydock/github-app.pem, mode 0400, owned by     } list; the
@@ -192,8 +198,12 @@ load_config() {
 		DRYDOCK_PREVIEW_KEY) : "${PREVIEW_KEY:=$value}" ;;
 		DRYDOCK_GITHUB_APP_ID) : "${APP_ID:=$value}" ;;
 		DRYDOCK_CA_CERT) : "${CA_CERT:=$value}" ;;
+		DRYDOCK_VSCODE_SSH_HOST) : "${VSCODE_SSH_HOST:=$value}" ;;
 		esac
 	done <"$CONF"
+	if [ "${NO_VSCODE_SSH_HOST:-0}" = 1 ]; then
+		VSCODE_SSH_HOST=""
+	fi
 	if [ "${NO_PREVIEW:-0}" = 1 ]; then
 		PREVIEW_DOMAIN="" PREVIEW_CERT="" PREVIEW_KEY=""
 	fi
@@ -270,6 +280,16 @@ validate_config() {
 			die "$CA_CERT holds a private key; --ca-cert takes the CA's certificate, never its key"
 		grep -q -- '-----BEGIN CERTIFICATE-----' "$CA_CERT" ||
 			die "$CA_CERT is not a PEM certificate (--ca-cert takes the CA's certificate, the file that begins -----BEGIN CERTIFICATE-----)"
+	fi
+
+	# The Open in VS Code link's SSH address goes into a URL the operator's
+	# VS Code opens, and serve refuses one it would not build. The bundle's own
+	# binary decides, by the rule serve uses, so a value written to drydock.env
+	# is one drydock starts with.
+	if [ -n "${VSCODE_SSH_HOST:-}" ]; then
+		local why_ssh
+		why_ssh=$("$here/drydock" check-vscode-ssh-host --vscode-ssh-host "$VSCODE_SSH_HOST" 2>&1) ||
+			die "--vscode-ssh-host refused: ${why_ssh#drydock check-vscode-ssh-host: }"
 	fi
 
 	if [ -n "${APP_ID:-}" ]; then
@@ -550,6 +570,7 @@ DRYDOCK_PREVIEW_CERT=${PREVIEW_CERT:-}
 DRYDOCK_PREVIEW_KEY=${PREVIEW_KEY:-}
 DRYDOCK_GITHUB_APP_ID=${APP_ID:-}
 DRYDOCK_CA_CERT=${CA_CERT:-}
+DRYDOCK_VSCODE_SSH_HOST=${VSCODE_SSH_HOST:-}
 EOF
 }
 
@@ -581,6 +602,7 @@ ExecStart=/usr/local/bin/drydock serve \\
   --ui-origin=https://\${DRYDOCK_UI_HOST} \\
   --ui-host=\${DRYDOCK_UI_HOST} \\
   --preview-domain=\${DRYDOCK_PREVIEW_DOMAIN} \\
+  --vscode-ssh-host=\${DRYDOCK_VSCODE_SSH_HOST} \\
   --socket-group=drydock \\
   --secrets-key=$SECRETS_KEY$app_flags
 # /run/drydock holds the sockets: group drydock, so Caddy (a supplementary
@@ -951,6 +973,8 @@ main() {
 		--no-preview) NO_PREVIEW=1; shift ;;
 		--ca-cert) CA_CERT="${2:?--ca-cert needs a value}"; shift 2 ;;
 		--no-ca-cert) NO_CA_CERT=1; shift ;;
+		--vscode-ssh-host) VSCODE_SSH_HOST="${2:?--vscode-ssh-host needs a value}"; shift 2 ;;
+		--no-vscode-ssh-host) NO_VSCODE_SSH_HOST=1; shift ;;
 		--github-app-id) APP_ID="${2:?--github-app-id needs a value}"; shift 2 ;;
 		--github-app-key) APP_KEY_SRC="${2:?--github-app-key needs a value}"; shift 2 ;;
 		--secrets-key) SECRETS_KEY_SRC="${2:?--secrets-key needs a value}"; shift 2 ;;
@@ -989,6 +1013,8 @@ main() {
 	[ "${NO_PREVIEW:-0}" = 1 ] && args+=(--no-preview)
 	[ -n "${CA_CERT:-}" ] && args+=(--ca-cert "$CA_CERT")
 	[ "${NO_CA_CERT:-0}" = 1 ] && args+=(--no-ca-cert)
+	[ -n "${VSCODE_SSH_HOST:-}" ] && args+=(--vscode-ssh-host "$VSCODE_SSH_HOST")
+	[ "${NO_VSCODE_SSH_HOST:-0}" = 1 ] && args+=(--no-vscode-ssh-host)
 	[ -n "${APP_ID:-}" ] && args+=(--github-app-id "$APP_ID")
 	[ -n "${APP_KEY_SRC:-}" ] && args+=(--github-app-key "$APP_KEY_SRC")
 	[ -n "${SECRETS_KEY_SRC:-}" ] && args+=(--secrets-key "$SECRETS_KEY_SRC")

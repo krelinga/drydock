@@ -48,6 +48,13 @@ type Resources interface {
 	HostDisk() *workspace.HostDisk
 }
 
+// Editors fills each view's vscode field — the *Open in VS Code* link —
+// from Docker as it is served (internal/vscode.Linker), never from the
+// database: a rebuild renames the container.
+type Editors interface {
+	Fill(ctx context.Context, vs []workspace.View)
+}
+
 // detailEvents is how many events GET /api/workspaces/{id} carries.
 const detailEvents = 50
 
@@ -67,6 +74,9 @@ type WorkspaceRoutes struct {
 	// BuildLogs holds each workspace's latest failed `up` (provision.BuildLog).
 	// Nil answers every build log as not held.
 	BuildLogs BuildLogs
+	// Editors, when set, fills each view's vscode field. Nil serves it as
+	// null: this server says nothing about VS Code.
+	Editors Editors
 }
 
 // BuildLogs is what the build-log route needs from internal/provision.
@@ -148,6 +158,9 @@ func (wr WorkspaceRoutes) list(w http.ResponseWriter, r *http.Request) {
 		}
 		list.Disk = wr.Resources.HostDisk()
 	}
+	if wr.Editors != nil {
+		wr.Editors.Fill(r.Context(), list.Workspaces)
+	}
 	writeJSON(w, http.StatusOK, list)
 }
 
@@ -188,6 +201,11 @@ func (wr WorkspaceRoutes) read(w http.ResponseWriter, r *http.Request) {
 	}
 	if wr.Resources != nil {
 		v.Resources = wr.Resources.Of(v.ID)
+	}
+	if wr.Editors != nil {
+		one := []workspace.View{v}
+		wr.Editors.Fill(r.Context(), one)
+		v = one[0]
 	}
 	writeJSON(w, http.StatusOK, WorkspaceDetail{View: v, Events: evs})
 }

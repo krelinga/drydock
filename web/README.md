@@ -100,6 +100,18 @@ event id. Unknown is *"—"*, never 0; stale says so; memory only for `running`.
   continue* (sends the request's own hash) and *Cancel* — on the card, the catalog row and the
   detail view alike; the request is the reducer's `approval`, written only by `workspace.state`
   events and the views.
+- *Open in VS Code* is `components/OpenInVSCode.vue`, a plain `<a href>` on the running card and
+  the workspace page. Its state is the views' `vscode` field (`{configured, url}`, read from
+  Docker by the server as it serves the view; no event carries it), reduced into
+  `Workspace.vscode`/`vscodeAt`. The URL is kept only when it matches the shape internal/vscode
+  builds (`vscodeURL`: `vscode://vscode-remote/attached-container+<hex>@ssh-remote+<host>/<path>`),
+  and `vscodeLink` shows it only while running and only from a view no older than the latest
+  state or container change — a rebuild renames the container. So both views refetch on a
+  `workspace.state` to `running` (`becameRunning`). With no `--vscode-ssh-host`
+  (`configured: false`) the workspace page of a running workspace says how to turn it on; the
+  card says nothing (one setting, one message) and nothing is ever shown disabled. A view
+  without the field says nothing. The mock's `vscodeHost` plays it (`dev:mock` sets one; specs
+  default to a server that says nothing).
 - `components/ClaudeLogin.vue` is the login handshake (frontend §6.2) in Settings' Claude section,
   its state the reducer's `login` field (the GET's `login` and `auth.login`); on Settings the fleet
   banner drops its link, so its button is the one *Sign in to Claude*. The code is one component

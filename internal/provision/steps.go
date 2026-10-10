@@ -43,6 +43,11 @@ type runState struct {
 	// docker guard").
 	approved  []container.HostSetting
 	configDir string
+	// configFile is the configuration path VS Code computes for the clone
+	// (container.UpSpec.ConfigFile): the container's devcontainer.config_file
+	// label, beside devcontainer.local_folder, so Reopen in Container of the
+	// clone finds Drydock's container.
+	configFile string
 }
 
 // dir is the workspace's directory: /srv/drydock/ws/<id>.
@@ -98,11 +103,20 @@ func (r *runState) resolveConfig(ctx context.Context, w workspace.Workspace) err
 	if err != nil {
 		return workspace.Public("Drydock could not stop the workspace's container before reading its configuration.", err)
 	}
+	// The first of the two that is there is also the path VS Code labels a
+	// container for the clone with; with neither — Drydock's minimal
+	// config — it is the first, as the CLI computes it for an
+	// --override-config (container.ConfigFiles).
 	has := false
-	for _, rel := range []string{".devcontainer/devcontainer.json", ".devcontainer.json"} {
-		ok, err := exists(filepath.Join(w.HostPath, rel))
+	candidates := container.ConfigFiles(w.HostPath)
+	r.configFile = candidates[0]
+	for _, p := range candidates {
+		ok, err := exists(p)
 		if err != nil {
 			return workspace.Public("Drydock could not read the clone.", err)
+		}
+		if ok && !has {
+			r.configFile = p
 		}
 		has = has || ok
 	}
@@ -373,6 +387,7 @@ func (r *runState) up(ctx context.Context, w workspace.Workspace) error {
 		Rebuild:        r.removeExisting,
 		Approved:       r.approved,
 		ConfigDir:      r.configDir,
+		ConfigFile:     r.configFile,
 	})
 	if res.ContainerID != "" {
 		if err := r.p.Workspaces.SetContainer(context.WithoutCancel(ctx), w.ID, res.ContainerID); err != nil {
