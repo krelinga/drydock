@@ -504,11 +504,11 @@ Small enough to be one phase, ordered so the risky part is first. This slots in 
 | **1 — Front door** | Second socket, second mux, wildcard Caddy block, wildcard cert in place. Preview mux returns 401 for everything. **Done** — see *As built* below. | ✅ Every preview URL returns 401 from a device on the LAN, and no preview URL can reach an API route. |
 | **2 — Handshake** | `/preview/authorize`, one-time tokens, `preview_session`, cookie stripping. **Done** — see *As built* below. | ✅ A signed-in device reaches a hardcoded upstream; an unsigned-in one is bounced to sign-in and returned. Revoke-all closes it. |
 | **3 — Proxy** | Container IP resolution, dial, websocket upgrade, `Host` handling, `X-Forwarded-*`. **Done** — see *As built* below. | ✅ Vite with HMR works end to end — in the container tier through the real preview socket, and in Chromium through real Caddy (§13.4). On a phone it waits for step 4, which can enable a port. |
-| **4 — Registry** | `forwarded_port`, declared-port parsing from the resolved config, the ports UI, probe endpoint. **Built** — see *As built* below; the real-Safari gate is not yet passed. | ✅ Enable a port from the card, open it, disable it, and watch it close — in Chromium through real Caddy (§13.5). ⏳ A real iOS and macOS Safari run the handshake end to end (§13.3): the runbook step is written (first deployment §8.8), and the run is the owner's. |
+| **4 — Registry** | `forwarded_port`, declared-port parsing from the resolved config, the ports UI, probe endpoint. **Built** — see *As built* below; the real-Safari gate passed (§13.3). | ✅ Enable a port from the card, open it, disable it, and watch it close — in Chromium through real Caddy (§13.5). ✅ A real iOS and macOS Safari run the handshake end to end (§13.3), passed on the owner's deployment. |
 | **5 — Discovery** | The `/proc/<pid>/net/*` scanner, debounce, merge onto declared rows, the loopback classification, the ambient count on the card. **Built** — see *As built* below. | ✅ Start a server on an undeclared port with the panel already open; it appears, disabled, correctly labelled — and nothing is pushed at you: in a spec against the mock (held to the server's events by a golden file), over the real server's socket with a fake socket table, and through a real container's `/proc` (§13.6). |
 | **6 — Diagnosis** | The §11 table, wired to what §8.2 already knows. **Done** — see *As built* below. | ✅ Binding a dev server to `127.0.0.1` produces the sentence that tells you to use `--host 0.0.0.0`, and no dial is ever attempted — counted at the resolver and the dial, over the real sockets, and in Chromium through real Caddy with a dev server a dial would have reached (§13.7). |
 
-**Previews are done, but for the real-Safari gate (§13.3)**, which stays *not yet passed* until the owner reports a run.
+**Previews are done.** The real-Safari gate (§13.3) passed on 10 October 2026.
 
 Step 1 before anything else, for the same reason §14 puts the front door before the skeleton: retrofitting auth onto a proxy that already works is how open proxies happen.
 
@@ -554,12 +554,14 @@ What step 2 inherits: the fallback is the one place to turn into §7's redirect;
 
 - **A real Safari runs the handshake end to end** — iOS Safari and macOS Safari, on the deployed preview domain, a click from the UI to an enabled port's preview: through `/preview/authorize`, `/.drydock/session` and the landing, holding the preview cookie and served on the next request without a handshake; and after *Sign out everywhere*, bounced. It runs at **step 4**, when a port can be enabled from the UI, and the runbook gains its step then. Until it passes, previews are not done, whatever the steps' own *Done when* say. The reason it is a gate rather than a hope: the redirect chain's last hop — a cookie set on a cross-site-initiated redirect and sent back on the next — is exactly where engines differ, and `SameSite` behaviour Chromium never shows has shipped broken once already (v0.2.1's `Origin: null`).
 
-  **Status: not yet passed.** Step 4 built what it needs, and the runbook's step is
+  **Status: passed** (10 October 2026, on v0.9.2). The owner ran the runbook's step on their
+  deployment in iOS Safari and in macOS Safari, and every step passed on both; the Safari versions
+  were not recorded. The runbook's step is
   [first deployment §8.8](../../deploy/first-deployment.md#88-preview-a-port-and-the-real-safari-check):
   on each Safari, *Preview this port* from the workspace's Ports panel, open the address, two
   reloads served with no trip through the UI host (Web Inspector shows the cookie on the Mac),
   *Turn off preview* ending on the denied page, and *Sign out everywhere* bouncing the next
-  request to sign-in. Record each Safari's version and result here when it has run.
+  request to sign-in.
 
 ### 13.4 As built — step 3
 

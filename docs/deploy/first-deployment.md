@@ -1091,7 +1091,7 @@ preview URL is signed in to that preview and proxied to the dev server listening
 inside the workspace's container — page, assets, server-sent events and the dev server's
 live-reload websocket alike, with nothing published on the server. A port is listed when the
 repository's `devcontainer.json` declares it (`forwardPorts` or `appPort`), or when you add it by
-number; finding ports a server opens by itself is step 5, not built yet. This section sets up the
+number, and a port a server opens by itself is found within a few seconds and listed, off. This section sets up the
 certificate, the DNS and Caddy's preview site; [8.8](#88-preview-a-port-and-the-real-safari-check)
 previews a port. Below, `<preview-domain>` is your preview domain.
 
@@ -1178,8 +1178,9 @@ and forgets the three settings; afterwards a preview name gets no TLS answer at 
 Needs [8.7](#87-optional-enable-previews) and a running workspace — B from
 [8.1](#81-clone-and-watch) will do. **This is also a gate**
 ([port forwarding §13.3](../design/port-forwarding/port-forwarding-design.md#133-gates-before-previews-are-declared-done)):
-previews are not declared done until a real Safari, on iOS and on macOS, has run the handshake end
-to end on your deployment. The automated tests run it in Chromium only: the last hop — a cookie set
+previews were not declared done until a real Safari, on iOS and on macOS, had run the handshake end
+to end on a deployment; that passed on 10 October 2026 (v0.9.2), and re-running it after an upgrade is
+worthwhile. The automated tests run it in Chromium only: the last hop — a cookie set
 on a redirect that began on another site, and sent back on the next request — is where browser
 engines differ, and no test here can run Apple's Safari. Do every step below once on an iPhone or
 iPad in Safari and once on a Mac in Safari, and write down for each the Safari version (and the
@@ -1235,7 +1236,7 @@ iOS or macOS version), and which checks passed.
   turn-off and the sign-out all behaved as above. Record both results — Safari and OS versions,
   pass or fail per step — in an issue or in
   [port forwarding §13.3](../design/port-forwarding/port-forwarding-design.md#133-gates-before-previews-are-declared-done),
-  which says *not yet passed* until both have.
+  which records the 10 October 2026 result.
 
 When you are done, stop the dev server (`sudo docker exec -u vscode "$CID" pkill -f http.server`)
 and, if you like, **Remove…** the port under **More**: its address is retired for good, and a
@@ -1248,12 +1249,6 @@ bookmark of it stops working.
 None of the following is a deployment fault. These are the phases still being built
 ([§14](../design/overall/drydock-design.md#14-build-plan)):
 
-- **Previews find no port by themselves yet (port forwarding steps 1 to 4 are built).** A port is
-  listed when the repository's `devcontainer.json` declares it or when you add it by number
-  ([8.8](#88-preview-a-port-and-the-real-safari-check)); a server that opens a port nobody declared
-  is not noticed until step 5, and nothing says when a dev server listens only on `127.0.0.1`
-  until step 6 (**Check the port** says *Nothing is answering*). Previews are not declared done
-  until the real-Safari check in 8.8 has passed on iOS and macOS.
 - **Phase 6 is partly done.** Stop, rebuild and delete work, and so do the live session count
   (the card's capacity fraction) and the log viewer. These do not exist yet: memory and
   disk per workspace on the card, and the rest of the failure-mode
