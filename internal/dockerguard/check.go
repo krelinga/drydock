@@ -34,7 +34,7 @@
 // (IsGuard); it reads policy.json from the directory of the path it was run as
 // — absolute, or it runs nothing — and either refuses (one
 // `drydock-docker-guard: refused: …` stderr line, refused.json beside it, exit
-// 77, docker never run) or execves real-docker with argv untouched, so stdin,
+// 77, docker never run) or execves real-docker with argv untouched but for WithLabels, so stdin,
 // stdout, stderr, signals and the exit status are docker's own.
 //
 // **Fail closed:** with no readable policy every command that creates a
@@ -54,11 +54,14 @@
 // to /). --privileged, --cap-add (but SYS_PTRACE), --security-opt (but
 // seccomp=unconfined), -p (as the CLI renders appPort), --gpus need their
 // field approved; -e/--build-arg without a value, a label under the prefix
-// that is not an id-label, and an id-label off the prefix (the spec's
-// devcontainer.local_folder and devcontainer.config_file, which VS Code finds
-// a container by) with a value other than the policy's are refused — on run
-// and on start alike. The policy's id-labels are every --id-label up was
-// given, the spec's two included, since ${devcontainerId} hashes them all.
+// that is not an id-label, and one of the policy's Labels with another value
+// are refused. Those Labels — the dev container spec's
+// devcontainer.local_folder and devcontainer.config_file, which VS Code's
+// Reopen in Container finds a folder's container by — are the one thing the
+// guard adds to argv (WithLabels, before the check), to every run and create:
+// labels, not id-labels, so the CLI's container matching and
+// ${devcontainerId} are untouched. A start of a container carrying one with
+// another value is refused; one without them, made before, starts.
 //
 // Builds: -f/context inside the clone or TMPDIR (symlinks followed) or
 // approved, --build-context only the CLI's own in its TMPDIR, --cache-from
@@ -141,6 +144,14 @@ type Policy struct {
 	// and deletes by label.
 	LabelPrefix string            `json:"label_prefix"`
 	IDLabels    map[string]string `json:"id_labels"`
+	// Labels are labels the guard itself adds to every container this up
+	// creates (WithLabels) and that are not id-labels: the dev container
+	// spec's devcontainer.local_folder and devcontainer.config_file, which
+	// VS Code finds a folder's container by. Not id-labels, so the CLI's
+	// container matching and ${devcontainerId} are what they were. A run
+	// carrying one with another value, or a start of a container that does,
+	// is refused.
+	Labels map[string]string `json:"labels,omitempty"`
 	// OwnMounts are the --mount values Drydock passes to up: the broker
 	// directory and the credential volume.
 	OwnMounts []string `json:"own_mounts"`
@@ -484,11 +495,12 @@ func (c *checker) option(o parsed) {
 			if want, ok := c.p.IDLabels[k]; !ok || want != v {
 				c.refuse(SettingRunArgs, "a label under Drydock's prefix that is not one of its id-labels: "+k)
 			}
-		} else if want, ok := c.p.IDLabels[k]; ok && want != v {
-			// An id-label off the prefix — the spec's devcontainer.local_folder
-			// and config_file — with another value: what VS Code would find
-			// another folder's container by, docker keeping the last -l.
-			c.refuse(SettingRunArgs, "an id-label with a value other than Drydock's: "+k)
+		} else if want, ok := c.p.Labels[k]; ok && want != v {
+			// One of the guard's own labels — the spec's
+			// devcontainer.local_folder and config_file — with another value:
+			// what VS Code would find another folder's container by, and
+			// docker keeps the last -l.
+			c.refuse(SettingRunArgs, "a label the guard sets, with a value other than Drydock's: "+k)
 		}
 	case kMount:
 		if !c.mountAllowed(o.value) {

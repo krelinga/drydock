@@ -236,6 +236,36 @@ func recordRefusal(dir string, d Decision) error {
 	return writeFile(dir, RefusalName, b)
 }
 
+// WithLabels is args with the policy's Labels added, as -l key=value in key
+// order, right after `run` or `create` (or `container run`/`create`) — among
+// the options, before the image. Any other command, or no policy, is args
+// as given. They are labels and not id-labels: the CLI never sees them, so
+// they change neither which container up matches nor ${devcontainerId}.
+func WithLabels(p *Policy, args []string) []string {
+	if p == nil || len(p.Labels) == 0 || len(args) == 0 {
+		return args
+	}
+	at := 0
+	switch {
+	case args[0] == "run" || args[0] == "create":
+		at = 1
+	case len(args) > 1 && args[0] == "container" && (args[1] == "run" || args[1] == "create"):
+		at = 2
+	default:
+		return args
+	}
+	keys := make([]string, 0, len(p.Labels))
+	for k := range p.Labels {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	out := append([]string(nil), args[:at]...)
+	for _, k := range keys {
+		out = append(out, "-l", k+"="+p.Labels[k])
+	}
+	return append(out, args[at:]...)
+}
+
 func union(a, b []string) []string {
 	m := map[string]bool{}
 	for _, s := range append(append([]string(nil), a...), b...) {
@@ -255,7 +285,8 @@ func union(a, b []string) []string {
 // exit status is ExitRefused. Any other command replaces this process with
 // the real docker (execve), so its argv, stdin, stdout, stderr, signals and
 // exit status are docker's own, exactly. Main returns only when it does not
-// exec.
+// exec. The one change it makes to argv is WithLabels: the policy's Labels
+// added to a run or create, which is then checked as docker will run it.
 func Main(argv0 string, args []string, stderr io.Writer) int {
 	if !filepath.IsAbs(argv0) {
 		// Without its own path the guard can find neither its policy nor
@@ -270,6 +301,9 @@ func Main(argv0 string, args []string, stderr io.Writer) int {
 		p = nil
 	}
 	real := filepath.Join(dir, RealName)
+	// The policy's labels are added to a run or create before it is
+	// checked, so what is checked is what docker runs.
+	args = WithLabels(p, args)
 	d := Check(p, args)
 	if !d.Refused && len(d.Start) > 0 {
 		// The containers a start names are held to the policy as they were

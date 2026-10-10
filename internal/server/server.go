@@ -414,7 +414,7 @@ func New(ctx context.Context, cfg config.Config, env sys.Env) (*Server, error) {
 		BuildLogs: s.Provisioner}
 	// The Open in VS Code link (design §6), read from Docker per view. Validate
 	// has already refused a host ParseSSHHost would.
-	editors := vscode.Linker{Containers: containers, Root: cfg.WorkspaceRoot,
+	editors := vscode.Linker{Containers: containers, Root: cfg.WorkspaceRoot, Clock: env.Clock,
 		Logf: func(f string, a ...any) { fmt.Fprintf(os.Stderr, f+"\n", a...) }}
 	if cfg.VSCodeSSHHost != "" {
 		h, err := config.ParseSSHHost(cfg.VSCodeSSHHost)

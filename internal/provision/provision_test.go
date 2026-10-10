@@ -385,12 +385,11 @@ func TestRepositoryWithAConfigReachesRunning(t *testing.T) {
 	if got := flag(up, "--override-config"); got != nil {
 		t.Errorf("a repository with its own config got --override-config %v", got)
 	}
-	// Drydock's four id-labels, then the spec's two, which VS Code finds the
-	// container by: the clone, and the configuration it holds.
-	repo := filepath.Join(e.root, v.ID, "repo")
+	// Drydock's four id-labels and no other: the spec's two are the guard's
+	// to add (TestTheGuardRefusesWhatTheCheckDidNotSee), so they move
+	// neither up's container matching nor ${devcontainerId}.
 	if got, want := flag(up, "--id-label"), []string{"drydock.test.provision.workspace=" + v.ID, "drydock.test.provision.repository-id=101",
-		"drydock.test.provision.repo=krelinga/alpha", "drydock.test.provision.branch=main", "devcontainer.local_folder=" + repo,
-		"devcontainer.config_file=" + filepath.Join(repo, ".devcontainer", "devcontainer.json")}; strings.Join(got, " ") != strings.Join(want, " ") {
+		"drydock.test.provision.repo=krelinga/alpha", "drydock.test.provision.branch=main"}; strings.Join(got, " ") != strings.Join(want, " ") {
 		t.Errorf("--id-label\n got %v\nwant %v", got, want)
 	}
 	if got := flag(e.cli.callsTo(t, "read-configuration")[0], "--override-config"); got != nil {
@@ -428,6 +427,8 @@ func TestRepositoryWithoutAConfigGetsTheMinimalOne(t *testing.T) {
 	e.cli.readConfig = "cat <<'EOF'\n" + fixture(t, "read-configuration-merged-override.json") + "\nEOF\n"
 	e.cli.exec = strings.ReplaceAll(e.cli.exec, "/krelinga/alpha.git", "/krelinga/plain.git")
 	e.cli.exec = strings.ReplaceAll(e.cli.exec, "/workspaces/repo", "/workspaces/plain2")
+	// up runs its docker run through the guard, as the real CLI does.
+	e.cli.up = lyingUp(e.cli.dir)
 	e.wire(t)
 	v := e.create(t, plain, "")
 
@@ -458,14 +459,26 @@ func TestRepositoryWithoutAConfigGetsTheMinimalOne(t *testing.T) {
 	}
 	// The repository is untouched: nothing was written into the clone.
 	repo := filepath.Join(e.root, v.ID, "repo")
-	// Its container is labelled as the CLI labels one it makes for an
-	// --override-config with no id-labels, the default path (container.
-	// ConfigFiles): what VS Code finds once a configuration is added there.
+	// Its container is labelled, by the guard, as the CLI labels one it makes
+	// for an --override-config with no id-labels: the default path
+	// (container.ConfigFiles), what VS Code finds once a configuration is
+	// added there. Not as id-labels.
+	runs := 0
+	for _, c := range e.cli.calls(t) {
+		if len(c) > 1 && c[0] == "docker" && c[1] == "run" && contains(c, "--sig-proxy=false") {
+			runs++
+			if j := strings.Join(c, " "); !strings.Contains(j, "-l devcontainer.local_folder="+repo+" ") ||
+				!strings.Contains(j, "-l devcontainer.config_file="+filepath.Join(repo, ".devcontainer", "devcontainer.json")+" ") {
+				t.Errorf("docker run: %s", j)
+			}
+		}
+	}
+	if runs != 1 {
+		t.Errorf("%d docker runs", runs)
+	}
 	for _, c := range e.cli.callsTo(t, "up") {
-		labels := strings.Join(flag(c, "--id-label"), " ")
-		if !strings.Contains(labels, "devcontainer.local_folder="+repo+" ") ||
-			!strings.Contains(labels, "devcontainer.config_file="+filepath.Join(repo, ".devcontainer", "devcontainer.json")) {
-			t.Errorf("up's id-labels: %s", labels)
+		if l := strings.Join(flag(c, "--id-label"), " "); strings.Contains(l, "devcontainer.") {
+			t.Errorf("up's id-labels: %s", l)
 		}
 	}
 	if _, err := os.Lstat(filepath.Join(repo, ".devcontainer")); !errors.Is(err, fs.ErrNotExist) {

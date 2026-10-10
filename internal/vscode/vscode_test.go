@@ -10,9 +10,11 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/krelinga/drydock/internal/config"
 	"github.com/krelinga/drydock/internal/container"
+	"github.com/krelinga/drydock/internal/sys"
 	"github.com/krelinga/drydock/internal/workspace"
 )
 
@@ -103,7 +105,7 @@ func TestAttachURLRefusesWhatCouldInject(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.HasSuffix(u, "@ssh-remote+devbox/w/a@b%3Fc%23d") || strings.Count(u, "?")+strings.Count(u, "#") != 0 {
+	if !strings.HasSuffix(u, "@ssh-remote+devbox/w/a%40b%3Fc%23d") || strings.Count(u, "?")+strings.Count(u, "#") != 0 {
 		t.Errorf("folder escaped as %s", u)
 	}
 	if _, err := AttachURL(config.SSHHost{}, "/x", "/w"); err == nil {
@@ -115,11 +117,86 @@ type fakeContainers struct {
 	found []container.Found
 	err   error
 	calls int
+	of    []string
+	// hang, when set, makes each read wait for its context to end, as a
+	// docker CLI against a wedged daemon does once it is killed.
+	hang bool
 }
 
-func (f *fakeContainers) List(context.Context) ([]container.Found, error) {
+func (f *fakeContainers) List(ctx context.Context) ([]container.Found, error) {
 	f.calls++
+	if f.hang {
+		<-ctx.Done()
+		return nil, context.Cause(ctx)
+	}
 	return f.found, f.err
+}
+
+func (f *fakeContainers) Of(ctx context.Context, id string) ([]container.Found, error) {
+	f.of = append(f.of, id)
+	found, err := f.List(ctx)
+	var mine []container.Found
+	for _, c := range found {
+		if c.WorkspaceID == id {
+			mine = append(mine, c)
+		}
+	}
+	return mine, err
+}
+
+// Every link this builds is one the UI accepts (reducer.ts's vscodeURL
+// pattern, copied here), whatever a folder holds: no link goes missing in the
+// browser for a character the server let through.
+func TestEveryLinkHasTheShapeTheUIAccepts(t *testing.T) {
+	ui := regexp.MustCompile(`^vscode://vscode-remote/attached-container\+[0-9a-f]+@ssh-remote\+[A-Za-z0-9._-]+(?:/[A-Za-z0-9._~%-]*)+$`)
+	for _, h := range []string{"devbox", "owner@DevBox:2222"} {
+		for _, folder := range []string{"/workspaces/repo", "/w/a@b:c+d=e!$&'()*,;", "/ü/x y", "/"} {
+			u, err := AttachURL(host(t, h), "/x", folder)
+			if err != nil || !ui.MatchString(u) {
+				t.Errorf("%s %q: %s %v", h, folder, u, err)
+			}
+		}
+	}
+}
+
+// A wedged Docker costs the link, never the page: Fill gives up when its
+// bound passes on the injected clock, and every view says configured with
+// no link. The page's own read is that workspace's containers (Of), never
+// the whole list.
+func TestFillIsBoundedAndTheDetailReadsOneWorkspace(t *testing.T) {
+	const a = "01JAAAAAAAAAAAAAAAAAAAAAAA"
+	h := host(t, "devbox")
+	clock := sys.NewFakeClock(time.Date(2026, 10, 10, 0, 0, 0, 0, time.UTC))
+	fc := &fakeContainers{hang: true}
+	l := Linker{Host: &h, Containers: fc, Root: "/srv/drydock/ws", Clock: clock, Timeout: 2 * time.Second}
+	vs := []workspace.View{{ID: a, State: workspace.Running}, {ID: "01JBBBBBBBBBBBBBBBBBBBBBBB", State: workspace.Running}}
+	done := make(chan struct{})
+	go func() { l.Fill(context.Background(), vs); close(done) }()
+	for clock.WaitingFor(2*time.Second) == 0 {
+		select {
+		case <-done:
+			t.Fatal("Fill returned before its bound passed")
+		default:
+			time.Sleep(time.Millisecond)
+		}
+	}
+	clock.Advance(2 * time.Second)
+	<-done
+	for _, v := range vs {
+		if v.VSCode == nil || !v.VSCode.Configured || v.VSCode.URL != nil {
+			t.Errorf("%s after the bound: %+v", v.ID, v.VSCode)
+		}
+	}
+
+	// The page: one view, read with Of for that id.
+	fc = &fakeContainers{found: []container.Found{{WorkspaceID: a, Running: true, Name: "/a",
+		Mounts: []container.Mount{{Type: "bind", Source: "/srv/drydock/ws/" + a + "/repo", Destination: "/workspaces/repo"}}}}}
+	l.Containers = fc
+	one := []workspace.View{{ID: a, State: workspace.Running}}
+	l.Fill(context.Background(), one)
+	if one[0].VSCode.URL == nil || len(fc.of) != 1 || fc.of[0] != a || fc.calls != 1 {
+		t.Errorf("the page's read: %+v, Of %v", one[0].VSCode, fc.of)
+	}
 }
 
 // Fill: unconfigured says so on every view and asks Docker nothing; once

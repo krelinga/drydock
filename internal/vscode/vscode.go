@@ -42,7 +42,9 @@
 //
 // Docker is the truth: the name and the folder are read by label each time a
 // view is served (Linker.Fill), never stored — a rebuild renames the
-// container. The folder is the destination of the clone's bind mount, which is
+// container — within a bound on the injected clock (DefaultTimeout), so a
+// wedged daemon costs the link and never the page; one workspace's page
+// reads that workspace's containers alone (Containers.Of). The folder is the destination of the clone's bind mount, which is
 // the workspace folder the CLI reports for every configuration that does not
 // set workspaceFolder (measured: /workspaces/<basename>); one that sets it
 // inside its mount opens at the mount. Only a running container gets a link:
@@ -55,14 +57,15 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net/url"
 	"path"
 	"path/filepath"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/krelinga/drydock/internal/config"
 	"github.com/krelinga/drydock/internal/container"
+	"github.com/krelinga/drydock/internal/sys"
 	"github.com/krelinga/drydock/internal/workspace"
 )
 
@@ -106,7 +109,7 @@ func AttachURL(h config.SSHHost, name, folder string) (string, error) {
 		if seg == "" {
 			continue
 		}
-		p.WriteString("/" + url.PathEscape(seg))
+		p.WriteString("/" + escapeSegment(seg))
 	}
 	if p.Len() == 0 {
 		p.WriteString("/")
@@ -114,10 +117,35 @@ func AttachURL(h config.SSHHost, name, folder string) (string, error) {
 	return "vscode://vscode-remote/attached-container+" + hex.EncodeToString(cfg) + "@" + Authority(h) + p.String(), nil
 }
 
-// Containers is what Fill reads: container.Manager.List.
+// escapeSegment percent-encodes every byte of a path segment but RFC 3986's
+// unreserved ones (letters, digits, '-', '.', '_', '~') — stricter than
+// url.PathEscape, which leaves '@', ':', '+' and others, so that every link
+// this builds has the shape the UI accepts (reducer.ts vscodeURL), and none
+// goes missing for a folder that merely has an odd character.
+func escapeSegment(s string) string {
+	var b strings.Builder
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if c >= 'A' && c <= 'Z' || c >= 'a' && c <= 'z' || c >= '0' && c <= '9' || c == '-' || c == '.' || c == '_' || c == '~' {
+			b.WriteByte(c)
+			continue
+		}
+		fmt.Fprintf(&b, "%%%02X", c)
+	}
+	return b.String()
+}
+
+// Containers is what Fill reads: container.Manager's List (every workspace
+// container) and Of (one workspace's).
 type Containers interface {
 	List(ctx context.Context) ([]container.Found, error)
+	Of(ctx context.Context, workspaceID string) ([]container.Found, error)
 }
+
+// DefaultTimeout bounds Fill's reads of Docker. The views it fills are the
+// home screen's and every resync's, so a wedged daemon must cost the link,
+// never the page.
+const DefaultTimeout = 3 * time.Second
 
 // Linker fills each view's vscode field as the view is served.
 type Linker struct {
@@ -128,6 +156,11 @@ type Linker struct {
 	Containers Containers
 	// Root is the workspace root: a workspace's clone is <Root>/<id>/repo.
 	Root string
+	// Clock and Timeout bound each Fill's read of Docker (sys.WithTimeout,
+	// on the injected clock); a nil Clock is the real one, a zero Timeout
+	// DefaultTimeout. A read cut off is a view with no link.
+	Clock   sys.Clock
+	Timeout time.Duration
 	// Logf is the service log, told when docker could not be read; nil
 	// drops it. The views then carry no link, never an error.
 	Logf func(string, ...any)
@@ -135,30 +168,44 @@ type Linker struct {
 
 // Fill sets vs[i].VSCode on every view: not configured, or configured with
 // the link for a running workspace whose one running container Docker has
-// now, and no link otherwise.
+// now, and no link otherwise. One view (the workspace's page) reads that
+// workspace's containers alone; more read the list once.
 func (l Linker) Fill(ctx context.Context, vs []workspace.View) {
-	if l.Host == nil {
-		for i := range vs {
-			vs[i].VSCode = &workspace.VSCodeLink{}
+	running := 0
+	for i := range vs {
+		vs[i].VSCode = &workspace.VSCodeLink{Configured: l.Host != nil}
+		if vs[i].State == workspace.Running {
+			running++
 		}
+	}
+	if l.Host == nil || running == 0 {
 		return
 	}
+	clock, d := l.Clock, l.Timeout
+	if clock == nil {
+		clock = sys.RealClock{}
+	}
+	if d <= 0 {
+		d = DefaultTimeout
+	}
+	rctx, cancel := sys.WithTimeout(ctx, clock, d)
+	defer cancel()
 	var found []container.Found
-	listed := false
+	var err error
+	if len(vs) == 1 {
+		found, err = l.Containers.Of(rctx, vs[0].ID)
+	} else {
+		found, err = l.Containers.List(rctx)
+	}
+	if err != nil {
+		if l.Logf != nil {
+			l.Logf("drydock: reading containers for the VS Code links: %v", err)
+		}
+		return // a partial or late answer is no truth to link from
+	}
 	for i := range vs {
-		vs[i].VSCode = &workspace.VSCodeLink{Configured: true}
 		if vs[i].State != workspace.Running {
 			continue
-		}
-		if !listed {
-			var err error
-			if found, err = l.Containers.List(ctx); err != nil {
-				found = nil // a partial list is no truth to link from
-				if l.Logf != nil {
-					l.Logf("drydock: reading containers for the VS Code links: %v", err)
-				}
-			}
-			listed = true
 		}
 		if u, ok := l.link(vs[i].ID, found); ok {
 			vs[i].VSCode.URL = &u

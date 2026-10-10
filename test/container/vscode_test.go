@@ -31,9 +31,11 @@ import (
 // container and its workspace folder.
 //
 // The control is the up Drydock made before the labels: there the same
-// command builds a second, Drydock-unaware container. And a start (not a
-// rebuild) of either container reattaches to it — the labels it was made
-// with, not the ones a new one would get — rather than making another.
+// command builds a second, Drydock-unaware container. A start (not a
+// rebuild) of either container reattaches to it rather than making another,
+// since the labels are the guard's and not id-labels; and a pre-label
+// container rebuilt gets them with its ${devcontainerId} unchanged — the
+// volume a configuration names with it is the same volume.
 //
 // Every container here carries this test's own prefix, and each
 // devcontainer.local_folder is under this test's own temporary directory, so
@@ -156,7 +158,7 @@ func TestReopenInContainerFindsDrydocksContainer(t *testing.T) {
 		t.Errorf("the link names %s; docker calls it %s", b, real)
 	}
 
-	// A start of it, stopped, reattaches with the labels it was made with.
+	// A start of it, stopped, reattaches.
 	exec.Command("docker", "stop", id).Run()
 	a.Rebuild = false
 	if got := up(a); got != id {
@@ -187,8 +189,8 @@ func TestReopenInContainerFindsDrydocksContainer(t *testing.T) {
 	if _, ok := labels(id3)[container.LabelLocalFolder]; ok {
 		t.Fatal("control: the old up labelled the container")
 	}
-	// Its start, given the labels now, still reattaches: up is given what
-	// the container was made with — none.
+	// Its start, by a Drydock that labels, reattaches: the labels are not
+	// id-labels, so up matches it as before (and docker start adds none).
 	exec.Command("docker", "stop", id3).Run()
 	c.Rebuild, c.ConfigFile = false, container.ConfigFiles(c.Folder)[0]
 	if got := up(c); got != id3 {
@@ -199,5 +201,34 @@ func TestReopenInContainerFindsDrydocksContainer(t *testing.T) {
 	}
 	if ids := byFolder(c.Folder); len(ids) != 1 {
 		t.Errorf("control: containers labelled for the clone: %v", ids)
+	}
+
+	// A container made before the labels, rebuilt by a Drydock that labels:
+	// the new container has them, and ${devcontainerId} is what it was — the
+	// configuration's ${devcontainerId} volume is the same volume, so a
+	// docker-in-docker /var/lib/docker keeps its contents.
+	d := workspace("01JVSCDE000000000000000004", true)
+	os.WriteFile(d.ConfigFile, []byte(`{"image":"`+image+`","mounts":["source=ddvs-${devcontainerId},target=/data,type=volume"]}`), 0o600)
+	volumeOf := func(id string) string {
+		out, _ := exec.Command("docker", "inspect", "--format", `{{range .Mounts}}{{if eq .Destination "/data"}}{{.Name}}{{end}}{{end}}`, id).Output()
+		return strings.TrimSpace(string(out))
+	}
+	d.Rebuild, d.ConfigFile = true, ""
+	id4 := up(d)
+	vol := volumeOf(id4)
+	t.Cleanup(func() { exec.Command("docker", "volume", "rm", "-f", vol).Run() })
+	if !strings.HasPrefix(vol, "ddvs-") {
+		t.Fatalf("the ${devcontainerId} volume: %q", vol)
+	}
+	d.ConfigFile = container.ConfigFiles(d.Folder)[0]
+	id5 := up(d)
+	if id5 == id4 {
+		t.Fatal("the rebuild kept the container")
+	}
+	if l := labels(id5); l[container.LabelLocalFolder] != d.Folder || l[container.LabelConfigFile] != d.ConfigFile {
+		t.Errorf("rebuilt by a labelling Drydock: labels %v", l)
+	}
+	if got := volumeOf(id5); got != vol {
+		t.Errorf("the rebuild moved ${devcontainerId}: volume %q, was %q", got, vol)
 	}
 }

@@ -1228,8 +1228,9 @@ it is this play's to do:
   with one Drydock does not know. Use Drydock's **Rebuild**.
 - A container an earlier release made gets the `devcontainer.local_folder` and
   `devcontainer.config_file` labels — what *Reopen in Container* on the clone finds it by, instead
-  of building a second container — only at its next **Rebuild**, which also changes its
-  `${devcontainerId}`: a volume a configuration names with it starts empty.
+  of building a second container — when Drydock next creates it: a **Rebuild**, or a **Start** of a
+  failed workspace. They are plain labels, so `${devcontainerId}`, and every volume named with it,
+  is unchanged.
 
 ---
 

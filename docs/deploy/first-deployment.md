@@ -1280,10 +1280,12 @@ turn it on instead.
 Drydock's containers also carry the two labels the Dev Containers extension finds a folder's
 container by, `devcontainer.local_folder` (the clone, `/srv/drydock/ws/<id>/repo`) and
 `devcontainer.config_file`, so *Reopen in Container* on the clone in a Remote-SSH window attaches
-to Drydock's container instead of building a second one. A container made by an earlier release
-gets them only at its next **Rebuild**. That first rebuild also changes the container's
-`${devcontainerId}`, so a volume a configuration names with it (docker-in-docker's
-`/var/lib/docker`, for one) starts empty; the old volume is left, unused.
+to Drydock's container instead of building a second one. A container gets them when Drydock next
+creates it — a **Rebuild**, or a **Start** of a failed workspace — so one made by an earlier release
+has none until then; a plain Start of it works as before. Nothing else about the container
+changes: they are plain labels, not the dev container id-labels, so a volume a configuration names
+with `${devcontainerId}` (docker-in-docker's `/var/lib/docker`, for one) is the same volume after
+the rebuild, and rolling back to an earlier release leaves the labelled containers working.
 
 ---
 

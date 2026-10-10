@@ -60,7 +60,8 @@ What it covers:
   and makes no other, for a repository with a configuration and one running Drydock's minimal one
   once a configuration is added; the Open in VS Code link names Docker's real name and
   `/workspaces/repo`; a start of a stopped container, labelled or from before the labels,
-  reattaches. The control: a container made the old way, which the same command does not find.
+  reattaches; and a pre-label container rebuilt gets the labels with the same `${devcontainerId}`
+  volume. The control: a container made the old way, which the same command does not find.
 
 ## Network-bound steps are bounded
 
