@@ -1256,7 +1256,8 @@ turn it on instead.
   ```sh
   sudo usermod -aG docker <your-ssh-user>      # then log out and back in
   ```
-- [ ] **Re-run the installer with the address VS Code uses for this server**: `[user@]host[:port]`,
+- [ ] **Re-run the installer, v0.10.0 or later, with the address VS Code uses for this server** (an
+  older installer stops at the flag with `unknown option`): `[user@]host[:port]`,
   or the `Host` alias from your `~/.ssh/config` — exactly what you would type into
   *Remote-SSH: Connect to Host…*:
   ```sh

@@ -166,9 +166,10 @@ ansible-playbook drydock.yml --ask-become-pass --ask-vault-pass
 Set these in `group_vars/drydock/vars.yml`. **`drydock_version` is pinned**, not "latest", so a
 re-run installs the same release until you change it. Use a release that is *published*
 ([runbook step 2](first-deployment.md#2-cut-a-release)): a draft's assets do not download, and the
-download task fails rather than installing something else. The pin below is the release
-[the runbook deploys](first-deployment.md#0-known-issues--read-these-first); if
-`gh release view v0.4.2 --repo krelinga/drydock` says `release not found`, it has not been cut yet
+download task fails rather than installing something else. The pin below is v0.10.0, the first
+release whose installer takes `--vscode-ssh-host` and `--no-vscode-ssh-host`, one of which the play
+always passes (an older installer stops at either with `unknown option`); if
+`gh release view v0.10.0 --repo krelinga/drydock` says `release not found`, it has not been cut yet
 ([runbook step 2](first-deployment.md#2-cut-a-release)). `drydock_secrets_key_src` needs
 **v0.3.0 or later**: an older installer stops at `--secrets-key` with `unknown option`. Use
 **v0.4.2 or later** with it on an upgrade: an earlier installer that refuses the key has already
@@ -176,7 +177,7 @@ replaced the binary ([below](#5-install)).
 
 ```yaml
 # file: group_vars/drydock/vars.yml
-drydock_version: v0.4.2
+drydock_version: v0.10.0
 # Lowercase, fully qualified, with a dot (runbook §1.2).
 drydock_ui_host: drydock.example.com
 
@@ -697,9 +698,8 @@ the same reason: emptying the variable turns the link off rather than leaving an
 address in `drydock.env`. Either way an unchanged value rewrites nothing and restarts nothing, so
 the task stays unchanged on a re-run. The installer refuses a value that is not
 `[user@]host[:port]` before it changes anything (`--vscode-ssh-host refused: …`). An installer from
-before the link has neither flag and stops at either with `unknown option`, so the play first asks the
-unpacked `install.sh` whether it has them: with an older `drydock_version` it passes neither, and
-refuses a set `drydock_vscode_ssh_host` with a message naming the release. A port is
+before v0.10.0 has neither flag and stops at either with `unknown option`, which is why
+`drydock_version` must be v0.10.0 or later. A port is
 previewed from the workspace's page in the UI, never from the playbook
 ([runbook §8.7](first-deployment.md#87-optional-enable-previews)). The runbook's real-Safari check
 ([§8.8](first-deployment.md#88-preview-a-port-and-the-real-safari-check)) is done by hand on an
@@ -863,23 +863,6 @@ installed binary is the upgrade, so it gets an upgrade's backup first; the backu
         name: drydock
         state: started
 
-# An installer from before the Open in VS Code link stops at either flag with
-# `unknown option`, so the play asks the unpacked one which it is.
-- name: Ask whether this release's installer takes --vscode-ssh-host
-  ansible.builtin.command:
-    argv: [grep, -qe, "--no-vscode-ssh-host)", "{{ drydock_release_dir }}/drydock/install.sh"]
-  register: drydock_installer_vscode
-  changed_when: false
-  failed_when: drydock_installer_vscode.rc > 1
-
-- name: Check drydock_vscode_ssh_host is set only for a release that takes it
-  ansible.builtin.assert:
-    that: drydock_installer_vscode.rc == 0
-    fail_msg: >-
-      drydock_vscode_ssh_host needs a release whose installer has --vscode-ssh-host
-      (the release after v0.9.2 or later); {{ drydock_version }} does not.
-  when: drydock_vscode_ssh_host | length > 0
-
 - name: Checksum the installed App key (not its contents)
   ansible.builtin.stat:
     path: /etc/drydock/github-app.pem
@@ -943,7 +926,7 @@ installed binary is the upgrade, so it gets an upgrade's backup first; the backu
                 '--preview-key', drydock_preview_key_path]
                if drydock_preview_domain | length > 0 else ['--no-preview'])
             + (['--vscode-ssh-host', drydock_vscode_ssh_host] if drydock_vscode_ssh_host | length > 0
-               else (['--no-vscode-ssh-host'] if drydock_installer_vscode.rc == 0 else []))
+               else ['--no-vscode-ssh-host'])
             + (['--take-over-caddy'] if drydock_take_over_caddy | bool else [])
           }}
       register: drydock_installer
