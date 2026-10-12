@@ -28,10 +28,18 @@ host*, *The docker guard*, *Opening a workspace in VS Code*), §7.1, §13.4 and 
   `--runtime=sysbox-runc`, and every other workspace stays on `runc`. That closes the zero-exploit
   hole for the repositories that need docker-in-docker. It keeps every path, uid, address and
   `/proc` read Drydock relies on today, because the daemon stays rootful and Sysbox ID-maps the
-  bind mounts. The cost is a modest change to the guard and the approval, an operator-installed
-  third-party runtime, and some UI text. Sysbox as the *default* runtime for every workspace is the
-  natural second step. It turns every container-escape bug from "host root" into "an unprivileged
-  subuid", at the price of a wider compatibility risk.
+  bind mounts. The cost is real but bounded:
+  - The guard learns a *substitutive* argv rewrite. Today its only edit is additive (`WithLabels`),
+    so this changes its character (§3.6).
+  - The approval records the runtime as part of `privileged`'s value (§3.7).
+  - The operator installs a third-party runtime, which costs one daemon restart and a `daemon.json`
+    edit (§3.10).
+  - Some UI text changes.
+
+  Sysbox as the *default* runtime for every workspace container is the natural second step. It turns
+  a container-escape bug from "host root" into "an unprivileged subuid" **for the host**. Sysbox CE
+  maps every container to one common range, so an escape still reaches the other Sysbox workspaces.
+  The price is a wider compatibility risk.
 - **Defer rootless Docker.** It is the only option that also takes host root away from a
   compromised *Drydock* (and from `initializeCommand`, the devcontainer CLI and the docker guard).
   It costs the most by a wide margin. It breaks the preview proxy's dial, the clone's ownership
@@ -46,7 +54,8 @@ host*, *The docker guard*, *Opening a workspace in VS Code*), §7.1, §13.4 and 
   measured against neither.
 - **What none of them closes**, and the doc says so plainly rather than leaving it implied: a
   compromised Drydock still holds every repository's GitHub access (the App key) and every secret.
-  Escaping one workspace still reaches the other workspaces on the same daemon. The VS Code user
+  Escaping one workspace still reaches the other workspaces on the same daemon. That includes Sysbox
+  CE, whose user-ID mapping is common to all its containers. The VS Code user
   still controls whatever daemon they attach to.
 
 ---
@@ -88,13 +97,14 @@ signed-in browser can do everything Drydock can. One container reaches the share
 credential. Repository secrets are readable by the agent (§10.4).
 
 > [!NOTE]
-> **§13.4 dismisses rootless Docker in one sentence, and part of the reason given is wrong.** It says
+> **§13.4 dismisses rootless Docker in one sentence, and part of its reasoning overstates the cost.** It says
 > rootless "breaks the path identity §1 relies on (the clone and the broker socket are bind-mounted
 > by path)". A rootless daemon resolves bind sources in RootlessKit's mount namespace, which is the
 > host's tree. The exceptions are **`/etc` and `/run`, which are copied up** (measured: the
 > `docker:dind-rootless` entrypoint passes `--copy-up=/etc --copy-up=/run`). So the clone under
-> `/srv/drydock/ws` keeps its path. The broker directory under `/run/drydock/sock` is the real path
-> problem (§3.2), and it has a fix: move it out of `/run`. The sentence's other reason,
+> `/srv/drydock/ws` keeps its path. The broker directory under `/run/drydock/sock` does break
+> (§3.2). That is real, but fixable: move it out of `/run`. So "path identity" is a cost to pay,
+> not a reason the design cannot work. The sentence's other reason,
 > `updateRemoteUserUID`, holds, and §3.1 measures it. If an option here is adopted, §13.4 is
 > rewritten in the same change.
 
@@ -146,12 +156,20 @@ fixed path, `0660`).
 - *Closes:* H1, H2 and H3 for the host, as in (a). An escape lands as `drydock-docker`, which
   **cannot read the App key, the master key or the database**. That is a real inner boundary §13.4
   says "no packaging choice would add", and it is the strongest security result in this document.
+  It has a price that is easy to miss: **the daemon becomes hostile input to the process that holds
+  the keys**. An escapee who owns the daemon also controls what `docker inspect`, `devcontainer up`'s
+  JSON result, `container.Address` and the `State.Pid` behind `container.Listeners` tell Drydock. It
+  could steer the preview proxy's dial to any address Drydock can reach, point the `/proc` read at
+  any PID, and fabricate labelled containers for reconciliation to adopt. In (b), every parser of
+  daemon output becomes part of the boundary that keeps the keys in, and none was written to that
+  standard. Today the daemon is trusted, because it is root.
 - *Leaves:* an escape as `drydock-docker` controls the daemon, so it controls **every workspace
   container**: every clone, every running agent, and, through each container's mount, **every
   workspace's broker socket**. For the daemon to bind-mount `/run/drydock/sock/<id>`, that user must
   be able to traverse to it, which today's `0700` parent forbids (§6 step 5). So the escapee can
   mint a token for every repository *with a running workspace* and read every running workspace's
-  granted secrets. That is less than the App key (every repository in the installation) and less
+  granted secrets. The daemon user must likewise traverse the `0700` `/srv/drydock/ws` (§13.4) to
+  mount a clone. That is less than the App key (every repository in the installation) and less
   than the master key (every secret), but not much less on a busy server.
 - *Costs the most.* The clone belongs to Drydock on the host and must be writable by the daemon
   user's subuid range in the container. Drydock is neither root nor that user, so it cannot `chown`,
@@ -227,19 +245,41 @@ second container engine under the guard.
 [Sysbox](https://github.com/nestybox/sysbox) is an OCI runtime (`sysbox-runc`, plus `sysbox-mgr` and
 `sysbox-fs` daemons) that always runs containers in a user namespace and emulates enough of `/proc`
 and `/sys` that **systemd, dockerd and Kubernetes run inside without `--privileged`**. Bind mounts
-are ID-mapped (kernel ≥ 5.12) or go through shiftfs, so *"files owned by users in [0:65536] show up
+are ID-mapped by the kernel or go through the shiftfs module, so *"files owned by users in [0:65536] show up
 with the same ownership inside"*. Container root writing to a bind mount *"will do so as if it were
 the root user on the host"* (Sysbox docs, `user-guide/storage.md`). The Sysbox limitations page says
 `--privileged`, `--userns=host`, `--pid=host` and `--net=host` *"do not work"* with it, and that
-*"Sysbox must run as root"*: **it is a rootful-daemon runtime, not a rootless one**. The project is
+*"Sysbox must run as root"*: **it is a rootful-daemon runtime, not a rootless one**. Kernel:
+shiftfs is required below 5.12 and recommended from 5.12 up to 6.3, and only from 6.3 is it
+unnecessary (`install-package.md`; `distro-compat.md` says 5.19, so take the stricter figure until
+P3 measures it). Installing it is not free on a live host:
+- The install guide recommends *"stopping and removing all Docker containers"* first.
+- The package adds a `runtimes` entry to `/etc/docker/daemon.json` and restarts dockerd. It skips
+  the restart only if `bip` or `default-address-pools` is already set there.
+- Docker installed as a snap is unsupported.
+
+**Sysbox CE's uid mapping is common to all containers**, and that is documented, not a question.
+Its `security.md` says *"the root user in all containers is mapped to the same user-ID on the
+host"*, and that *"container-to-container is not as strong as it could be"*. Exclusive per-container
+ranges are an Enterprise Edition feature. The project is
 Docker-sponsored since 2022 and supported best-effort. Releases: v0.6.6 (2025-01), v0.6.7 (2025-05),
 v0.7.0 (2026-06), v0.7.1 (2026-07-31, which fixes Ubuntu 24.04 on kernel 6.8+).
 
 - *Closes:* **H1** for every repository whose `privileged` exists only to run dockerd inside, which
-  is docker-in-docker, the reason `privileged` is in the approval list. **H2** for every container
-  put on it. An escape lands as an unprivileged subuid. Whether Sysbox CE gives each container its
-  own range or one shared range is unmeasured, and it decides whether an escape reaches the other
-  workspaces.
+  is docker-in-docker, the reason `privileged` is in the approval list. **H2 for the host** for
+  every container put on it: an escape lands as an unprivileged subuid. That subuid is **the same
+  for every Sysbox container**, so an escape from one Sysbox workspace reaches every other Sysbox
+  workspace's processes and files.
+- *Not closed by the translation:* a workspace whose configuration uses **Compose**. The guard
+  approves `dockerComposeFile` as a whole and passes Compose's commands (`check.go`), and Compose
+  creates containers through the API, so there is no `--privileged` in argv to translate. A
+  privileged Compose workspace keeps today's meaning, host root, and its approval must say so.
+- *A non-escape path that remains:* container root on an ID-mapped bind mount writes **as host
+  root** (quoted above). So an approved DinD container under Sysbox can still plant host-uid-0
+  files, setuid-root binaries included, in its clone and its broker directory. That is parity with
+  runc today, not a regression, and such a file still needs something on the host to run it. Drydock's
+  unit has `NoNewPrivileges=yes`, but the VS Code SSH user and that user's `initializeCommand` do
+  not. Mounting the workspace root `nosuid` is a cheap hardening that stands on its own (§6).
 - *Leaves:* **H3** unchanged (rootful daemon, `docker` group). `initializeCommand` and the CLI are
   unchanged.
 - *Breaks little:* the daemon, its addresses, PIDs, `/proc`, `docker stats`, labels and storage stay
@@ -254,20 +294,20 @@ v0.7.0 (2026-06), v0.7.1 (2026-07-31, which fixes Ubuntu 24.04 on kernel 6.8+).
 
 | | Rootless, Drydock's uid | Rootless, dedicated uid | `userns-remap` | Rootless Podman | **Sysbox (privileged-only, then default)** |
 |---|---|---|---|---|---|
-| **H1** approved `privileged` = host root | Closed for the host. The escapee holds the keys. | Closed. The escapee holds the daemon. | **Open**: `privileged` needs `--userns=host` (measured) | As rootless Docker | **Closed** for DinD, if the Feature runs (unmeasured) |
-| **H2** escape = host root | Closed for the host | Closed | Closed only with a non-Drydock mapped uid | As rootless Docker | Closed for containers on Sysbox |
+| **H1** approved `privileged` = host root | Closed for the host. The escapee holds the keys. | Closed. The escapee holds the daemon. | **Open**: `privileged` needs `--userns=host` (measured) | As rootless Docker | **Closed** for `docker run` DinD, if the Feature runs (unmeasured). Open for Compose. Container root still writes host-root files on its bind mounts. |
+| **H2** escape = host root | Closed for the host | Closed | Closed only with a non-Drydock mapped uid | As rootless Docker | Closed **for the host**, for containers on Sysbox |
 | **H3** `docker` group = root | Closed | Closed, and the keys are out of the escapee's reach | Open | Closed | Open |
 | An escape reaches the App key / master key | Yes (same uid) | **No** | Yes | Per uid choice | No (subuid), unless it then finds a kernel bug |
-| An escape reaches other workspaces | Yes | Yes (daemon + every mounted broker socket) | Yes (shared range) | Per uid choice | Unmeasured (per-container ranges?) |
+| An escape reaches other workspaces | Yes | Yes (daemon + every mounted broker socket) | Yes (shared range) | Per uid choice | **Yes**, the other Sysbox ones (CE's common mapping, documented) |
 | Clone ownership / `updateRemoteUserUID` | **Breaks**: needs helpers or a non-root mapping | **Breaks**, worse | **Breaks** (measured), or remapped to `drydock` | Works via `keep-id`, but the guard refuses it | **Unchanged** (ID-mapped mounts, unmeasured on Drydock) |
 | Preview dial to the container IP | **Breaks**: IP lives in RootlessKit's netns | **Breaks**, and Drydock cannot `nsenter` another uid's namespace | Works (measured) | Breaks (rootless netns) | Unchanged |
 | Discovery `/proc/<pid>/net` | Probably works (host PIDs, no PID namespace in RootlessKit's flags; unmeasured) | Same | Works (measured) | Probably works | Unmeasured (sysbox-fs emulates `/proc`, but this is the host's `/proc`) |
 | `docker stats` / `pause` | Needs cgroup v2 + delegation (memory delegated by default) | Same | Works (measured) | Same | Unmeasured |
 | Broker dir under `/run` | **Breaks**: `/run` is copied up (§3.2) | Breaks, and needs group traversal | Works | Breaks the same way | Works |
 | docker guard | Same argv, `privileged` means less | Same | Must allow nothing new (`--userns=host` stays `runArgs`) | **Second dialect** | Translate `--privileged`; allow `Runtime: sysbox-runc` |
-| Migration | New daemon: rebuild everything, re-login | Same | Data root moves: rebuild, re-login | New engine | **None** for runc workspaces. A privileged one is rebuilt once. |
-| Host changes | uidmap, subuid, AppArmor profile, linger or `Delegate=`, rootless extras | Same plus a user and group | One `daemon.json` key | Podman, the same userns plumbing | Sysbox package (systemd units), kernel ≥ 5.12 |
-| Code + docs + tests (rough, §4) | ~4–6k lines, many PRs | ~6–9k lines | ~2–3k lines, for little | ~5–8k lines | **~1–1.5k lines**, then ~0.5k for default-on |
+| Migration | New daemon: rebuild everything, re-login | Same | Data root moves: rebuild, re-login | New engine | One dockerd restart with every workspace stopped. Images, volumes and the login are kept. A privileged workspace is rebuilt once. |
+| Host changes | uidmap, subuid, AppArmor profile, linger or `Delegate=`, rootless extras | Same plus a user and group | One `daemon.json` key | Podman, the same userns plumbing | Sysbox package (systemd units), `daemon.json` edited (`runtimes`, maybe `bip`/`default-address-pools`), kernel ≥ 6.3 to avoid shiftfs, no snap Docker |
+| Code + docs + tests (rough, §4) | ~4–6k lines, many PRs | ~6–9k lines | ~2–3k lines, for little | ~5–8k lines | **~1.6–2.2k lines**, then ~0.5k for default-on |
 
 ---
 
@@ -314,10 +354,12 @@ Today `/run/drydock/sock/<id>` is bind-mounted, a directory, so a restarted Dryd
 seen (§6 step 5). `RuntimeDirectoryPreserve=yes` keeps it across restarts.
 
 - **Rootless:** RootlessKit copies up `/run` (measured in `docker:dind-rootless`'s entrypoint). The
-  daemon sees a tmpfs populated from `/run` *as it was when the daemon started*. Whether a
-  `/run/drydock/sock/<id>` made after that resolves to the real directory depends on how copy-up
-  links entries, which is unmeasured. Drydock's unit starts after Docker, so `/run/drydock` itself
-  may not exist yet when the copy-up happens. **The fix is to move the directory out of `/run`**
+  daemon sees a tmpfs populated from `/run` *as it was when the daemon started*. RootlessKit's
+  default copy-up driver, `tmpfs+symlink`, replaces each top-level entry of `/run` with a symlink
+  into a bind of the original, so a *child* of an entry that existed at daemon start stays live,
+  while a *new top-level entry* is invisible. That is the documented mechanism, not measured here.
+  Drydock's unit starts after Docker, so `/run/drydock` itself may well be such a new top-level
+  entry, and then every broker mount fails. P4 probes both orders. **The fix is to move the directory out of `/run`**
   (e.g. `/var/lib/drydock/sock`, or beside the workspace root). That loses the "tmpfs, gone at
   reboot" property the delete step's note leans on (`broker_socket`: *"stays until the next reboot
   — the directory is on a tmpfs"*). With a dedicated daemon uid, the `0700` parent must open to that
@@ -329,7 +371,11 @@ seen (§6 step 5). `RuntimeDirectoryPreserve=yes` keeps it across restarts.
 
 - **Atomic `mkdir`:** a local volume is a plain directory on the data root's filesystem under every
   option, so Spike 00's guarantee holds. A concurrent `mkdir` race is measured only trivially under
-  remap (the second `mkdir` failed with *File exists*). Rootless's data root must not be NFS. That
+  remap (the second `mkdir` failed with *File exists*). **Under Sysbox-for-privileged the volume is
+  shared between runtimes.** Sysbox and runc workspaces race the `.oauth_refresh.lock` and
+  `.claude.json.lock` `mkdir` against each other, and the 0600 credential must show the same owner
+  to both. Sysbox without ID-mapping on volumes shows foreign-owned files as `nobody:nogroup`, which
+  would sign every Sysbox workspace out (P5). Rootless's data root must not be NFS. That
   is Docker's own rule, and the Feature's `fuse.*`/`nfs*` refusal still catches a data root on one.
   Rootless with `fuse-overlayfs` affects image layers, not volumes (unmeasured).
 - **Ownership:** the owner helper (`internal/container/volumeowner.go`) `chown`s to `DRYDOCK_UID`
@@ -398,15 +444,42 @@ fields (`internal/dockerguard/start.go`). That table accepts `Runtime` of `""` o
 - **Rootless:** same argv. The policy is unchanged, but **`privileged` means less**, and the
   approval wording, which keys off the field name (`HostAccessApproval.vue`), must change with the
   deployment.
-- **Sysbox (privileged-only):** two changes. First, on `run`/`create`, when the policy says
-  `privileged` is approved *and* the deployment maps it to Sysbox, the guard **replaces
-  `--privileged` with `--runtime=sysbox-runc`** before checking. That would be its second argv edit,
-  beside the dev-container labels (§6, *They are labels…*), and it needs the same "check the command
-  as docker will run it" care. Second, on `start`, it accepts `Runtime: sysbox-runc` exactly when
-  the policy allows it, and holds `Privileged` to `false` for such a container. Sysbox's `MaskedPaths`
-  and `ReadonlyPaths` must be recorded, since Sysbox sets its own. **Sysbox as default:** the
-  daemon's `default-runtime` fills `HostConfig.Runtime` at create (unmeasured), so every `start`
-  check must accept it, and `--runtime=runc` in argv becomes the opt-out to refuse.
+- **Sysbox (privileged-only): the guard becomes a transformer, not only a filter.** Today it
+  makes one argv edit, and that edit is *additive*. `WithLabels` (`internal/dockerguard/guard.go`)
+  inserts the policy's `devcontainer.local_folder` and `devcontainer.config_file` labels right after
+  `run`/`create`. `Main` then runs `Check` on the result and `execve`s the real docker with it
+  (`check.go`'s package comment: *"argv untouched but for WithLabels"*). Design §6 says the same in
+  *Opening a workspace in VS Code*: *"the one change it makes to an argv"*. Swapping `--privileged`
+  for `--runtime=sysbox-runc` is a different kind of edit: it **removes** an option the CLI wrote
+  and **substitutes** another. That makes the guard decide what the container is, not only whether
+  it may exist. Its design needs:
+  - **Rewrite only inside the option region the parser has already delimited**, between `run` (or
+    `create`, or `container run`/`create`) and the image. The same table-driven pass `Check` makes
+    (the `runFlags` table, with its arities) finds the region. A `--privileged` after the image is the
+    container's command and must stay exactly as it is.
+  - **Every spelling the parser accepts.** `--privileged` is a bool option, so `--privileged`,
+    `--privileged=true` and `--privileged=false` all parse. Only a true value is swapped. `=false` is
+    dropped or left alone, never turned into a runtime. A second `--privileged` is resolved by
+    docker's last-wins rule, the way the parser reads it.
+  - **Refuse an existing `--runtime`** in the same argv. It is not on the allowlist today (it would
+    be `runArgs`), and with the swap it must never be both approved and substituted.
+  - **Check the rewritten argv as a second pass** against a policy in which `privileged` is not
+    approved but the Sysbox runtime is. The command docker will run is held to the rules, not only
+    the command the CLI wrote, as `WithLabels` is today.
+  - **`exec --privileged`** (`check.go`'s `exec` rule) into a Sysbox container is either refused or
+    passed without the flag. Which one Sysbox needs is unmeasured (P8).
+  - **`start`** accepts `Runtime: sysbox-runc` exactly when the policy's `privileged` is the Sysbox
+    value (§3.7), and holds `Privileged` to `false` for such a container. Sysbox's own `MaskedPaths`
+    and `ReadonlyPaths` are recorded (P10) and allowed only beside that runtime.
+  - **Docs:** §6 *The docker guard* ("replaces itself with the real docker by `execve`, so argv … are
+    docker's own, exactly", and the *Opening a workspace in VS Code* paragraph's "the one change it
+    makes"), §13.5's guard sentence, CLAUDE.md's `internal/dockerguard` row, and the package comment
+    all say "one additive edit" today, and all change in the same PR.
+
+  **Sysbox as default:** the daemon's `default-runtime` fills `HostConfig.Runtime` at create
+  (unmeasured), so every `start` check must accept it, and `--runtime=runc` in argv becomes the
+  opt-out to refuse. The ephemeral helpers are created by Drydock directly, not through the guard,
+  and stay `runc` explicitly (§6).
 - **Podman:** a second dialect (2.3). Not recommended.
 
 ### 3.7 The host-access approval and its words
@@ -416,8 +489,24 @@ reach."* Under Sysbox-for-privileged it would say something like *"privileged ru
 in a Sysbox container: it is not root on the host, but a kernel bug would make it so"*. **The
 approval has to record which meaning it was given under.** An approval of `privileged`-as-Sysbox
 must not quietly become `privileged`-as-host-root if the operator later uninstalls Sysbox or turns
-the mapping off. So the deployment's mapping goes into the approval's subset hash, or a mode change
-supersedes approvals, and the next start asks again (`internal/workspace/approval.go`). Under
+the mapping off.
+
+That is decided where runs are allowed, not in the subset hash. Step 3 allows a run with
+`container.Covered(approved, current)` (`internal/container/policy.go`), which compares settings by
+field and source and then by canonical value. At `up`, the guard enforces the approved *settings*
+it reads from `policy.json`. A mode recorded only in the hash would change neither of them. A
+Sysbox-era approval would still pass `Covered` after the flag flipped, and the guard would pass
+`--privileged` to runc: exactly the silent widening this section forbids. So **the mode is part of
+the setting's value**:
+- Step 3 computes `privileged`'s current value as `"sysbox"` when the deployment maps it, and as
+  `true` otherwise.
+- `Covered`'s value comparison then refuses across modes, in both directions, and the operator is
+  asked again, with the change shown as `true → "sysbox"`.
+- The guard reads the same value from `policy.json` and swaps only for `"sysbox"`.
+- A start of an existing container is checked against the same value (§3.6).
+
+An approval given before the feature existed (`true`) keeps meaning host root, and turning Sysbox
+on asks again rather than reinterpreting it. Under
 rootless, the honest sentence is *"privileged is root over every workspace and, if Drydock runs the
 daemon itself, Drydock's keys"*.
 
@@ -439,8 +528,12 @@ daemon itself, Drydock's keys"*.
   *rootful* inner dockerd in a rootless privileged container (cgroup v2 nesting, overlay2 in a user
   namespace on kernel ≥ 5.11) is unmeasured. Under Sysbox the Feature runs *without* `privileged`
   (Drydock removed it), which is exactly what Sysbox is for. But the Feature's scripts are
-  unmeasured there, and if they refuse, the fallback is a Drydock-maintained Feature option or a
-  documented `"privileged": false` override, which would be a repository-side change.
+  unmeasured there. **A repository cannot turn the Feature's `privileged` off.** The merged
+  configuration's `privileged` is true if any source sets it (§6 step 3, *measured*: `privileged`
+  merges as a boolean), so `"privileged": false` in `devcontainer.json` does nothing. If the
+  Feature's scripts refuse to run under Sysbox, the fallbacks are a Feature option upstream, a
+  Drydock-maintained fork of the Feature, or extra work in the guard's translation. That is why P8
+  must run the CLI's real argv with only the guard's swap applied.
 
 ### 3.9 Open in VS Code (`internal/vscode`)
 
@@ -469,7 +562,15 @@ whatever daemon that user's docker CLI reaches.
   - *Sysbox:* detect `sysbox-runc` in `docker info`'s runtimes and refuse the setting when it is
     absent. Installing Sysbox stays the operator's job, as Docker is today: a `.deb` from the
     release, pinned by SHA-256 in the runbook. That is roughly a new flag plus one `drydock.env`
-    key.
+    key. The runbook must say what the Sysbox package does to the host:
+    - it edits `/etc/docker/daemon.json`, adding `runtimes` and possibly `bip` and
+      `default-address-pools`;
+    - it restarts dockerd unless one of those keys is already there;
+    - Sysbox recommends stopping and removing every container first;
+    - snap Docker is unsupported.
+
+    That is a daemon-wide change to the owner's host, the same objection raised against remap below,
+    except that here nothing moves: the data root, the images and the volumes stay.
   - *Rootless:* `uidmap`, `/etc/subuid` and `/etc/subgid` ranges, `docker-ce-rootless-extras`, an
     AppArmor profile for `rootlesskit` on Ubuntu 24.04+, then **either** `loginctl enable-linger`
     and a user unit for a system account with no shell, **or** a system unit with `User=` and
@@ -486,10 +587,18 @@ whatever daemon that user's docker CLI reaches.
   and `test/ansible`.
 - **Migration** of a live install, for any option that changes the daemon or its data root: stop
   every workspace on the old daemon, keep the clones (they are on host disk and survive, §6), switch,
-  sign Claude in again (new credential volume), and **Rebuild** each workspace. Under Sysbox-for-
-  privileged only the approved-`privileged` workspaces need a rebuild (the first start after the
-  switch: the guard refuses a `start` of a privileged runc container that the policy now maps to
-  Sysbox, and the start from `failed` recreates it). The old daemon's images, volumes, including
+  sign Claude in again (new credential volume), and **Rebuild** each workspace. **Sysbox is not
+  migration-free either**:
+  1. Stop every workspace from Drydock, and stop Drydock.
+  2. Install the package. This edits `daemon.json` and restarts dockerd, and Sysbox's guide
+     recommends removing all containers first.
+  3. Start Drydock and sign Claude in. Stopped workspaces start again on their existing containers,
+     because Drydock's containers are recreated from the clone anyway, so removing them loses
+     nothing but each container's writable layer.
+
+  Images, volumes and the credential volume stay. Turning the mapping on then changes
+  `privileged`'s value (§3.7). So each approved-`privileged` workspace asks for approval again, and
+  its approved start recreates the container under Sysbox. The old daemon's images, volumes, including
   each docker-in-docker workspace's inner `/var/lib/docker` volume, and the old credential volume
   stay where they were. Drydock removes none of them (§6 step 4, §6 *Delete*), and the runbook
   would have to say how the operator removes them by hand.
@@ -506,16 +615,17 @@ from the size of the files named, not from building anything.
 | Item | Where | Size |
 |---|---|---|
 | Config: `--privileged-runtime=sysbox-runc` (off by default), `Validate`, a check against `docker info` at startup | `internal/config`, `cmd/drydock` | ~100 |
-| Guard: translate `--privileged`, accept `Runtime`, record Sysbox's masked paths, new fixtures | `internal/dockerguard`, `test/fixtures/devcontainer` | ~300–400 |
-| Approval: record the runtime mode in the subset or supersede on change, plus the diff text | `internal/workspace`, `internal/container/policy.go` | ~200 |
+| Guard: the substitutive rewrite inside the parsed option region (every `--privileged` spelling, a refused existing `--runtime`, a second check of the rewritten argv), `exec --privileged`, `start` accepting `Runtime` and Sysbox's masked paths, recorded fixtures, mutation-checked negative tests (testing §4.1), and the §6, §13.5, CLAUDE.md and package-comment text that says "one additive edit" today | `internal/dockerguard`, `test/fixtures/devcontainer`, docs | ~700–1,000 |
+| Approval: `privileged`'s value carries the mode (`true` or `"sysbox"`) in step 3, `Covered`, `policy.json` and the guard; the diff shows `true → "sysbox"` | `internal/container/policy.go`, `internal/workspace`, `internal/dockerguard` | ~250 |
 | UI wording, both meanings, tests, `dist` rebuild | `web/` | ~80 |
 | Installer flag, detection, env key, runbook and Ansible | `deploy/`, `docs/deploy/` | ~150 + docs |
 | Container-tier tests (§5) | `test/container` | ~300 |
 | Design doc updates (§6, §13.4, §13.5, CLAUDE.md invariants) | `docs/` | ~100 |
-| **Total** | 3–4 PRs | **~1.2–1.5k** |
+| **Total** | 4–5 PRs | **~1.6–2.2k** |
 | *Then Sysbox as default runtime* | guard start check, opt-out refusal, ephemeral helpers stay `runc` explicitly | ~400–600 |
 
-*Ongoing:* a third-party runtime on the critical path. Every kernel or Docker upgrade on the dev
+*Ongoing:* the guard is now a transformer, and every later rule has to be read against the rewrite
+as well as the original argv. There is also a third-party runtime on the critical path. Every kernel or Docker upgrade on the dev
 server is a Sysbox compatibility question. The §11.2 ritual (CLI or Docker bump) grows a Sysbox row,
 and a Sysbox release that lags a kernel blocks the kernel.
 
@@ -568,7 +678,8 @@ for a directory created after daemon start.
 | Container root maps to an unprivileged host uid: a file created by container root on a bind mount is owned by a non-zero host uid, and a host-root `0400` canary on a bind mount is unreadable | container | The same test on a `runc` container in the same run sees uid 0 and reads the canary. Without that control, a broken mount would pass. |
 | An approved `privileged` docker-in-docker workspace under Sysbox cannot read a host block device (`mknod` + read-only `dd` of the first sector, never a write) | container | Its inner `docker run hello-world` succeeds (the DinD actually works), and a `runc --privileged` control container *can* read the sector |
 | The guard turns `--privileged` into `--runtime=sysbox-runc` only when policy and deployment both say so | unit (`internal/dockerguard`) | The same argv with Sysbox off passes `--privileged` unchanged, and with no approval is refused |
-| An approval given under Sysbox does not cover a run without it | unit (`internal/workspace`) | The same subset under the same mode runs without asking |
+| An approval given under Sysbox does not cover a run without it, at step 3 (`container.Covered`) **and** at the guard (`policy.json`'s value) | unit (`internal/container`, `internal/dockerguard`) | The same value under the same mode runs without asking, and the guard swaps it |
+| The rewrite touches only the option region: a `--privileged` after the image is passed unchanged; `--privileged=false` is never a runtime; an existing `--runtime` is refused | unit (`internal/dockerguard`) | `--privileged` and `--privileged=true` before the image are swapped, and the rewritten argv passes the second check |
 | `start` of a Sysbox container accepts `Runtime: sysbox-runc` and refuses `Privileged: true` beside it | unit, from a recorded `inspect` | A `runc` container recorded beside it is held to today's table |
 | Clone round-trip: the agent writes, Drydock reads the lockfile, the cleanup helper empties the tree | container | Unchanged from today's tests, run on the new runtime |
 | Preview dial and discovery reach the container (rootless only) | container | A port not listening is reported closed, not "unreachable" |
@@ -587,7 +698,14 @@ control for every probe), `remap`, `remap-keepid`, `rootless-self`, `rootless-de
 RootlessKit, Sysbox, devcontainer CLI 0.89.0, Feature versions). Every container it creates carries
 `drydock-spike06=<run id>` and is removed by that label on exit (`trap`). It never prunes and never
 touches the host's other containers. Modes that need host changes (`rootless-*`, `sysbox`) refuse to
-run unless `SPIKE06_DISPOSABLE_HOST=1`, meaning a CI runner VM or a scratch VM.
+run unless `SPIKE06_DISPOSABLE_HOST=1`, meaning a CI runner VM or a scratch VM. **P9 needs that flag
+in every mode, `rootful` included**, because it reads a raw block device. **Controls run in the same
+run**: Sysbox and runc share one daemon, so the `sysbox` mode runs each probe's runc twin beside it
+and records both, rather than leaning on a separate `rootful` results file (testing §4.1).
+
+The `remap` and `remap-keepid` modes reproduce §7's measurements. Until the harness lands, those
+"measured" labels point at commands run by hand, not at anything re-runnable, and the report that
+lands with the harness supersedes them.
 
 | Probe | Question |
 |---|---|
@@ -595,11 +713,11 @@ run unless `SPIKE06_DISPOSABLE_HOST=1`, meaning a CI runner VM or a scratch VM.
 | P2 | Host-root `0400` canary on a bind mount: readable by container root? |
 | P3 | Real `devcontainer up` of the minimal config with the clone mounted: `updateRemoteUserUID` result, agent write, host read and write, a stale lockfile rewritten by the CLI on the host, the cleanup helper's delete |
 | P4 | A directory under `/run` (and under `/var/lib`) created *after* the daemon started, bind-mounted with `--mount`: visible, and a socket in it connectable from the container? |
-| P5 | Credential volume: 32 concurrent `mkdir` of one lock from two containers, exactly one winner per round; filesystem type as the Feature sees it |
+| P5 | Credential volume: 32 concurrent `mkdir` of one lock from two containers (in `sysbox`, one Sysbox and one runc), exactly one winner per round; filesystem type, and the owner of a `0600` file each container sees (`nobody` is red) |
 | P6 | Host-side `connect()` to the container's bridge IP; host-side read of `/proc/<pid>/net/tcp6` |
 | P7 | `docker stats` memory non-zero; `pause`/`unpause`; `inspect --size` |
-| P8 | devcontainers docker-in-docker Feature (pinned version): `up` succeeds, the inner `docker run hello-world`, inner storage driver. Under `sysbox`: without `privileged` |
-| P9 | Privileged container: read the first sector of the host's root block device (read-only) |
+| P8 | devcontainers docker-in-docker Feature (pinned version): `up` succeeds, the inner `docker run hello-world`, and the inner storage driver on the Feature's `${devcontainerId}` `/var/lib/docker` volume. Under `sysbox`, `privileged` is removed **the way Phase B would**: the CLI's real argv, through a `record.sh dockerargv`-style shim that swaps exactly the one `--privileged` token for `--runtime=sysbox-runc`. A hand-written `docker run`, or a config override (which cannot unset a Feature's `privileged` anyway), would measure something else. An inner driver of **`vfs` is red**: it works, but its disk use is huge. Sysbox requires that volume to be mounted in one container at a time, and a rebuild must respect that. `exec --privileged` into the container: refused or not? |
+| P9 | Privileged container: read the first sector of the host's root block device (read-only; `SPIKE06_DISPOSABLE_HOST=1` in every mode) |
 | P10 | `docker inspect` `HostConfig` of P3's and P8's containers, saved as fixtures and fed through `dockerguard`'s start check by a Go test |
 | P11 | The argv `up` produces, recorded through `record.sh dockerargv`'s shim |
 | P12 | After the switch, what of the old daemon's images, volumes and containers is visible |
@@ -617,11 +735,17 @@ worth running only if the owner wants rootless kept on the table after reading �
    unchanged) and P10 (what the guard must accept).
 2. **Phase B, if A is green: Sysbox for approved `privileged`, behind a flag.** This closes H1 for
    docker-in-docker repositories, which is the hole that needs no bug and that this repository
-   itself opens. Approvals record the mode. The UI says what `privileged` now means. The installer
-   detects but does not install Sysbox. Runbook and Ansible go in the same change.
+   itself opens. Compose workspaces are outside it (§2.4). `privileged`'s approved value carries
+   the mode (§3.7). The guard's substitutive rewrite is designed and documented as such (§3.6). The
+   UI says what `privileged` now means. The installer detects but does not install Sysbox, and the
+   runbook says what installing it does to the host (§3.10). Runbook and Ansible go in the same
+   change.
 3. **Phase C, after B has run for a while: Sysbox as the default runtime** for every workspace
-   container, with the ephemeral helpers pinned to `runc` (they need host-root-equivalent
-   `DAC_OVERRIDE` on Drydock's own directories). This closes H2 for everything. Keep a
+   container. The ephemeral helpers stay pinned to `runc`: the cleanup and volume-owner helpers
+   need host-root `DAC_OVERRIDE` on Drydock's own directories, and the login and identity helpers
+   run the real `claude` against the credential volume. This closes H2 **for the host** for every
+   workspace container, though not for those helpers. It does **not** separate workspaces from each
+   other: CE's common mapping means an escape from any of them reaches all the others. Keep a
    per-repository escape back to `runc` as an *approval* (it widens host access), never a silent
    fallback.
 4. **Defer rootless Docker.** Reopen it if the owner decides H3 matters: the dev server holds
@@ -632,7 +756,12 @@ worth running only if the owner wants rootless kept on the table after reading �
 5. **Do not pursue `userns-remap`** (it does nothing for H1, its clone fix undoes H2, and it is
    daemon-wide on the owner's host) **or Podman** (a second engine under the guard).
 
-Independent of all of this, two cheap hardenings stand on their own and could ship first:
+Independent of all of this, three cheap hardenings stand on their own and could ship first:
+
+- **Mount the workspace root `nosuid`** (`/srv/drydock/ws`, the runbook's filesystem step). Today a
+  container root writes the clone as host root, and so would a Sysbox container through its
+  ID-mapped mount. `nosuid` stops a planted setuid-root file from meaning anything to a host user
+  who runs it, such as the VS Code SSH user.
 
 - The approval card's text for **`initializeCommand`** could say what §6 already says (*"runs on the
   host as Drydock, which can read its keys and is root through Docker"*). Today the card's general
@@ -669,8 +798,11 @@ throwaway `--privileged` containers labelled for removal and removed afterwards:
   `--security-opt label=disable` and, for a non-root remote user, `--userns=keep-id` are added.
 - **Not measured, and named as such where used:** everything about Sysbox, rootless Docker's
   behaviour beyond what failed to start, rootless Podman, `/run` copy-up semantics, the
-  docker-in-docker Feature under anything but today's rootful daemon, GitHub runner userns policy,
-  and Sysbox CE's per-container range allocation.
+  docker-in-docker Feature under anything but today's rootful daemon, and GitHub runner userns
+  policy. Sysbox CE's common uid mapping is taken from its documentation (`security.md`), not
+  measured.
+- **No checked-in harness yet.** These were run by hand. Spike 06's `remap` and `remap-keepid`
+  modes are specified to re-produce them (§5.3).
 
 ---
 
@@ -682,14 +814,20 @@ throwaway `--privileged` containers labelled for removal and removed afterwards:
    closes the Drydock route. Which do you want to pay for?
 2. **Is a third-party runtime acceptable on the dev server?** Sysbox is Docker-sponsored but
    best-effort, and it ties kernel upgrades to its releases. Which distro and kernel does the
-   server run (ID-mapped mounts want ≥ 5.12)?
+   server run? Sysbox wants kernel ≥ 6.3 to need no shiftfs, and native Docker, not a snap. Installing
+   it edits `daemon.json` and restarts dockerd once, with every workspace stopped (§3.10).
 3. **Do any of your repositories ask for `privileged` for something other than docker-in-docker**
-   (KVM, a device, `--net=host`)? Sysbox refuses those, and they would stay `runc` with today's
-   meaning.
-4. **Sysbox for approved `privileged` only, or for every workspace?** The second closes the escape
-   hole everywhere, at a wider compatibility risk.
+   (KVM, a device, `--net=host`), or **use Compose with `privileged`**? Sysbox refuses the first
+   kind, and the guard cannot translate the second. Both would stay `runc`, with today's meaning.
+4. **Sysbox for approved `privileged` only, or for every workspace?** The second turns every
+   container escape from host root into an unprivileged uid, at a wider compatibility risk. But
+   Sysbox CE maps **all** its containers to one common uid range (documented in its `security.md`;
+   per-container ranges are Enterprise-only). So an escape from one workspace still reaches every
+   other Sysbox workspace's processes and files. Is "the host is safe, the workspaces are not safe
+   from each other" worth it to you?
 5. **Is a one-time rebuild of every workspace and one more Claude sign-in acceptable** for an option
-   that changes the daemon? Sysbox-for-privileged needs neither except for the DinD workspaces.
+   that changes the daemon? Sysbox needs neither, but it does need a dockerd restart with everything
+   stopped, plus a re-approval and recreate of each DinD workspace.
 6. **Would you keep *Open in VS Code* under rootless**, knowing the attaching user would then be
    the `drydock` user, keys included (same-uid form)?
 7. **May Spike 06 run on a CI runner via `workflow_dispatch`**, or only on a scratch VM you
