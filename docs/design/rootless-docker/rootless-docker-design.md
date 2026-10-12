@@ -307,7 +307,7 @@ v0.7.0 (2026-06), v0.7.1 (2026-07-31, which fixes Ubuntu 24.04 on kernel 6.8+).
 | docker guard | Same argv, `privileged` means less | Same | Must allow nothing new (`--userns=host` stays `runArgs`) | **Second dialect** | Translate `--privileged`; allow `Runtime: sysbox-runc` |
 | Migration | New daemon: rebuild everything, re-login | Same | Data root moves: rebuild, re-login | New engine | One dockerd restart with every workspace stopped. Images, volumes and the login are kept. A privileged workspace is rebuilt once. |
 | Host changes | uidmap, subuid, AppArmor profile, linger or `Delegate=`, rootless extras | Same plus a user and group | One `daemon.json` key | Podman, the same userns plumbing | Sysbox package (systemd units), `daemon.json` edited (`runtimes`, maybe `bip`/`default-address-pools`), kernel ≥ 6.3 to avoid shiftfs, no snap Docker |
-| Code + docs + tests (rough, §4) | ~4–6k lines, many PRs | ~6–9k lines | ~2–3k lines, for little | ~5–8k lines | **~1.6–2.2k lines**, then ~0.5k for default-on |
+| Code + docs + tests (rough, §4) | ~4–6k lines, many PRs | ~6–9k lines | ~2–3k lines, for little | ~5–8k lines | **~1.8–2.4k lines**, then ~0.5k for default-on |
 
 ---
 
@@ -506,7 +506,38 @@ the setting's value**:
 - A start of an existing container is checked against the same value (§3.6).
 
 An approval given before the feature existed (`true`) keeps meaning host root, and turning Sysbox
-on asks again rather than reinterpreting it. Under
+on asks again rather than reinterpreting it.
+
+**The new value is not safe on its own, because of how the guard reads values today.** `Policy.has`
+(`internal/dockerguard/check.go`) treats any approved value that is not literally `false` as
+approved. So `"sysbox"` would pass the existing `privileged` rules unchanged: `run`'s `--privileged`
+check, `exec --privileged`, and `start`'s *"a container created --privileged"*
+(`internal/dockerguard/start.go`). Nothing would refuse a runc container with `Privileged: true`.
+The migration path reaches exactly that case:
+- A workspace stopped before the switch still has its runc `--privileged` container.
+- An approval continues the stopped run with the request's own `RemoveExisting`
+  (`internal/provision/provision.go`, `removeExisting = pending.RemoveExisting`), which is `false`
+  for a start from `stopped`.
+- So `up` would `start` the old container, and the guard's start check would pass it.
+
+That is host root under an approval the operator was told meant Sysbox. Four changes close it:
+1. **The `privileged` rules accept only the literal `true`.** Every `has("privileged")` in
+   `run`/`create`, `exec` and `start` compares the value with `true`, not "not false". `"sysbox"`
+   matches only the Sysbox rules of §3.6. The same audit applies to every other caller of `has` as
+   values gain shapes.
+2. **`start` refuses a runc container with `Privileged: true` when the approved value is
+   `"sysbox"`.** The refusal names the mode change, and it is recorded in `refused.json` like any
+   other. It also refuses a Sysbox container when the approved value is `true`, which is the reverse
+   switch.
+3. **A mode change forces a recreate.** When the approval being granted differs from the
+   repository's previous one in `privileged`'s value, provisioning passes `RemoveExisting = true`
+   whatever the request carried, so `up` runs `docker run` under the swap. This adds no new state,
+   because the diff is already computed for the card.
+4. **Belt and braces:** if a start still reaches the guard with the old container, the refusal in
+   (2) fails the run. That ends it `failed`, and the next start from `failed` passes
+   `--remove-existing-container` (provision.go, `removeExisting := rebuild || w.State ==
+   workspace.Failed`), which recreates under Sysbox. The operator sees one refused start rather than
+   a host-root container. Under
 rootless, the honest sentence is *"privileged is root over every workspace and, if Drydock runs the
 daemon itself, Drydock's keys"*.
 
@@ -588,17 +619,32 @@ whatever daemon that user's docker CLI reaches.
 - **Migration** of a live install, for any option that changes the daemon or its data root: stop
   every workspace on the old daemon, keep the clones (they are on host disk and survive, §6), switch,
   sign Claude in again (new credential volume), and **Rebuild** each workspace. **Sysbox is not
-  migration-free either**:
+  migration-free either**, though it keeps the daemon, so it needs no new sign-in:
   1. Stop every workspace from Drydock, and stop Drydock.
-  2. Install the package. This edits `daemon.json` and restarts dockerd, and Sysbox's guide
-     recommends removing all containers first.
-  3. Start Drydock and sign Claude in. Stopped workspaces start again on their existing containers,
-     because Drydock's containers are recreated from the clone anyway, so removing them loses
-     nothing but each container's writable layer.
+  2. Install the package. This edits `daemon.json` and restarts dockerd.
+  3. Start Drydock.
 
-  Images, volumes and the credential volume stay. Turning the mapping on then changes
-  `privileged`'s value (§3.7). So each approved-`privileged` workspace asks for approval again, and
-  its approved start recreates the container under Sysbox. The old daemon's images, volumes, including
+  The images, the named volumes and the credential volume stay, so the Claude login survives and
+  no one signs in again.
+
+  **Whether to remove the containers is the operator's choice, and the two choices differ.**
+  - *Keeping them*, against Sysbox's advice: each stopped workspace starts again on its own
+    container. Runc workspaces are unaffected.
+  - *Removing them*, as Sysbox recommends: each workspace's next start fails at `up`, since the
+    container is gone and the row says `stopped`. It then needs a **Rebuild**, or a start from
+    `failed`, which recreates it from the clone.
+
+  A recreate keeps the clone and the named volumes, the Feature's `${devcontainerId}`
+  `/var/lib/docker` included. It **loses the container's writable layer**: packages installed after
+  create, everything in the remote user's `$HOME` outside the clone and the mounted credential
+  directory (shell history, tool caches such as `~/.cache`, `~/.npm`, `~/go/pkg`), and anything
+  written to `/tmp` or `/var`. A `postCreateCommand` re-runs. Whether that matters depends on how
+  much state the agents leave outside the clone, and the runbook should say so before recommending
+  removal.
+
+  Turning the mapping on changes `privileged`'s value (§3.7). So each approved-`privileged`
+  workspace asks for approval again, and the approval forces the recreate under Sysbox (§3.7,
+  change 3). The old daemon's images, volumes, including
   each docker-in-docker workspace's inner `/var/lib/docker` volume, and the old credential volume
   stay where they were. Drydock removes none of them (§6 step 4, §6 *Delete*), and the runbook
   would have to say how the operator removes them by hand.
@@ -616,12 +662,12 @@ from the size of the files named, not from building anything.
 |---|---|---|
 | Config: `--privileged-runtime=sysbox-runc` (off by default), `Validate`, a check against `docker info` at startup | `internal/config`, `cmd/drydock` | ~100 |
 | Guard: the substitutive rewrite inside the parsed option region (every `--privileged` spelling, a refused existing `--runtime`, a second check of the rewritten argv), `exec --privileged`, `start` accepting `Runtime` and Sysbox's masked paths, recorded fixtures, mutation-checked negative tests (testing §4.1), and the §6, §13.5, CLAUDE.md and package-comment text that says "one additive edit" today | `internal/dockerguard`, `test/fixtures/devcontainer`, docs | ~700–1,000 |
-| Approval: `privileged`'s value carries the mode (`true` or `"sysbox"`) in step 3, `Covered`, `policy.json` and the guard; the diff shows `true → "sysbox"` | `internal/container/policy.go`, `internal/workspace`, `internal/dockerguard` | ~250 |
+| Approval: `privileged`'s value carries the mode (`true` or `"sysbox"`) in step 3, `Covered`, `policy.json` and the guard; the diff shows `true → "sysbox"`; the guard's `privileged` rules accept only the literal `true`, and `start` refuses a cross-mode container; a mode change forces `RemoveExisting` | `internal/container/policy.go`, `internal/workspace`, `internal/dockerguard`, `internal/provision` | ~400 |
 | UI wording, both meanings, tests, `dist` rebuild | `web/` | ~80 |
 | Installer flag, detection, env key, runbook and Ansible | `deploy/`, `docs/deploy/` | ~150 + docs |
 | Container-tier tests (§5) | `test/container` | ~300 |
 | Design doc updates (§6, §13.4, §13.5, CLAUDE.md invariants) | `docs/` | ~100 |
-| **Total** | 4–5 PRs | **~1.6–2.2k** |
+| **Total** | 4–5 PRs | **~1.8–2.4k** |
 | *Then Sysbox as default runtime* | guard start check, opt-out refusal, ephemeral helpers stay `runc` explicitly | ~400–600 |
 
 *Ongoing:* the guard is now a transformer, and every later rule has to be read against the rewrite
@@ -681,6 +727,8 @@ for a directory created after daemon start.
 | An approval given under Sysbox does not cover a run without it, at step 3 (`container.Covered`) **and** at the guard (`policy.json`'s value) | unit (`internal/container`, `internal/dockerguard`) | The same value under the same mode runs without asking, and the guard swaps it |
 | The rewrite touches only the option region: a `--privileged` after the image is passed unchanged; `--privileged=false` is never a runtime; an existing `--runtime` is refused | unit (`internal/dockerguard`) | `--privileged` and `--privileged=true` before the image are swapped, and the rewritten argv passes the second check |
 | `start` of a Sysbox container accepts `Runtime: sysbox-runc` and refuses `Privileged: true` beside it | unit, from a recorded `inspect` | A `runc` container recorded beside it is held to today's table |
+| Under an approved `"sysbox"`, the guard refuses `start` of a runc container with `Privileged: true`, `exec --privileged` into it, and a `run` whose `--privileged` it did not swap; `has`-style "not false" never approves `privileged` | unit (`internal/dockerguard`) | The same three under an approved `true` pass as today, and under `"sysbox"` a Sysbox-runtime container's `start` passes |
+| Approving a request whose `privileged` value changed mode (`true → "sysbox"`) recreates the container even when the stopped run's `RemoveExisting` was `false`; and a guard refusal on that start ends `failed`, whose next start recreates | component (`internal/provision`, fake devcontainer) | An approval with the value unchanged keeps `RemoveExisting = false` and reattaches, as today |
 | Clone round-trip: the agent writes, Drydock reads the lockfile, the cleanup helper empties the tree | container | Unchanged from today's tests, run on the new runtime |
 | Preview dial and discovery reach the container (rootless only) | container | A port not listening is reported closed, not "unreachable" |
 
@@ -826,8 +874,10 @@ throwaway `--privileged` containers labelled for removal and removed afterwards:
    other Sysbox workspace's processes and files. Is "the host is safe, the workspaces are not safe
    from each other" worth it to you?
 5. **Is a one-time rebuild of every workspace and one more Claude sign-in acceptable** for an option
-   that changes the daemon? Sysbox needs neither, but it does need a dockerd restart with everything
-   stopped, plus a re-approval and recreate of each DinD workspace.
+   that changes the daemon? Sysbox needs no new sign-in. It does need a dockerd restart with
+   everything stopped, a re-approval and recreate of each DinD workspace, and, if you follow Sysbox's
+   advice to remove containers first, a rebuild of every workspace. A rebuild loses whatever the
+   agents left outside the clone (§3.10).
 6. **Would you keep *Open in VS Code* under rootless**, knowing the attaching user would then be
    the `drydock` user, keys included (same-uid form)?
 7. **May Spike 06 run on a CI runner via `workflow_dispatch`**, or only on a scratch VM you
