@@ -630,9 +630,10 @@ whatever daemon that user's docker CLI reaches.
   **Whether to remove the containers is the operator's choice, and the two choices differ.**
   - *Keeping them*, against Sysbox's advice: each stopped workspace starts again on its own
     container. Runc workspaces are unaffected.
-  - *Removing them*, as Sysbox recommends: each workspace's next start fails at `up`, since the
-    container is gone and the row says `stopped`. It then needs a **Rebuild**, or a start from
-    `failed`, which recreates it from the clone.
+  - *Removing them*, as Sysbox recommends: each workspace's container is recreated from the clone
+    on its next start. `up` finds no container carrying the id-label and creates one, and nothing
+    in provisioning refuses a start from `stopped` whose container is gone. That is read from the
+    CLI's behaviour and the code, not measured, and Spike 06's P12 checks it.
 
   A recreate keeps the clone and the named volumes, the Feature's `${devcontainerId}`
   `/var/lib/docker` included. It **loses the container's writable layer**: packages installed after
@@ -768,7 +769,7 @@ lands with the harness supersedes them.
 | P9 | Privileged container: read the first sector of the host's root block device (read-only; `SPIKE06_DISPOSABLE_HOST=1` in every mode) |
 | P10 | `docker inspect` `HostConfig` of P3's and P8's containers, saved as fixtures and fed through `dockerguard`'s start check by a Go test |
 | P11 | The argv `up` produces, recorded through `record.sh dockerargv`'s shim |
-| P12 | After the switch, what of the old daemon's images, volumes and containers is visible |
+| P12 | After the switch, what of the old daemon's images, volumes and containers is visible. Under `sysbox`: a Drydock-made workspace whose container was removed during the install, started from `stopped`, is recreated by `up` (not failed) |
 
 Run it at least in `rootful`, `remap` and `sysbox` on a disposable VM. The `rootless-*` modes are
 worth running only if the owner wants rootless kept on the table after reading §6.
@@ -876,8 +877,8 @@ throwaway `--privileged` containers labelled for removal and removed afterwards:
 5. **Is a one-time rebuild of every workspace and one more Claude sign-in acceptable** for an option
    that changes the daemon? Sysbox needs no new sign-in. It does need a dockerd restart with
    everything stopped, a re-approval and recreate of each DinD workspace, and, if you follow Sysbox's
-   advice to remove containers first, a rebuild of every workspace. A rebuild loses whatever the
-   agents left outside the clone (§3.10).
+   advice to remove containers first, every workspace's container recreated on its next start.
+   A recreate loses whatever the agents left outside the clone (§3.10).
 6. **Would you keep *Open in VS Code* under rootless**, knowing the attaching user would then be
    the `drydock` user, keys included (same-uid form)?
 7. **May Spike 06 run on a CI runner via `workflow_dispatch`**, or only on a scratch VM you
