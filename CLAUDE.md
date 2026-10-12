@@ -10,7 +10,8 @@ working in that package, and keep it current when you change the package.**
 The design: `docs/design/overall/drydock-design.md`, supplemented by port forwarding
 (`docs/design/port-forwarding/`, "PF"), testing (`docs/design/testing/`) and the Vue frontend
 (`docs/design/frontend/`); a settled brand mark (`docs/design/brand/`, v1.1, with the shipping icon
-assets); an adversarial security review (`docs/design/security-review.md`); and five spikes with
+assets); an adversarial security review (`docs/design/security-review.md`); an exploration of running on
+non-root Docker (`docs/design/rootless-docker/`, unbuilt); and five spikes with
 re-runnable harnesses under `docs/design/spikes/`. Read the overall design before making
 architectural decisions — most "why is it like this?" questions are answered there. When a change
 contradicts it, update the doc in the same change.
