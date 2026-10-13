@@ -31,6 +31,26 @@
   "contributes": {
     "commands": [
       {
+        "command": "drydock.go",
+        "title": "Go to Workspace…",
+        "category": "Drydock"
+      },
+      {
+        "command": "drydock.clone",
+        "title": "Clone Repository…",
+        "category": "Drydock"
+      },
+      {
+        "command": "drydock.connect",
+        "title": "Connect to Workspace…",
+        "category": "Drydock"
+      },
+      {
+        "command": "drydock.refreshRepositories",
+        "title": "Refresh Repositories",
+        "category": "Drydock"
+      },
+      {
         "command": "drydock.signIn",
         "title": "Sign In",
         "category": "Drydock"
@@ -49,6 +69,13 @@
         "command": "drydock.showLog",
         "title": "Show Log",
         "category": "Drydock"
+      }
+    ],
+    "keybindings": [
+      {
+        "command": "drydock.go",
+        "key": "ctrl+alt+shift+d",
+        "mac": "cmd+alt+shift+d"
       }
     ],
     "configuration": {

@@ -59,6 +59,20 @@ export interface Prompter {
   message(level: Level, text: string, actions?: readonly string[]): Promise<string | undefined>
   /** An input box. Resolves to undefined on Escape or focus loss. */
   input(opts: { prompt: string; password?: boolean; ignoreFocusOut?: boolean; placeHolder?: string }): Promise<string | undefined>
+  /** A quick pick. Resolves to the picked item's value, or undefined on Escape. */
+  pick<T>(items: readonly PickItem<T>[], opts: { placeHolder: string }): Promise<T | undefined>
+  /**
+   * A progress notification (never focused) for as long as `run` runs. `run`
+   * is told each message to show and whether the operator dismissed it.
+   */
+  progress(title: string, run: (report: (message: string) => void, dismissed: () => boolean) => Promise<void>): Promise<void>
+}
+
+export interface PickItem<T> {
+  label: string
+  description?: string
+  detail?: string
+  value: T
 }
 
 /** The window this instance runs in (§8 rule 1). */
@@ -69,9 +83,20 @@ export interface Window {
   focused(): boolean
 }
 
-/** Hands a URL to the operating system (the browser). */
+/** Hands a URL to the operating system (the browser), and a remote folder to VS Code. */
 export interface Opener {
   openExternal(url: string): Promise<void>
+  /**
+   * `vscode.openFolder` on a `vscode-remote://` URI, in a new window
+   * (§7.1). Never `openExternal` on the `vscode://` link.
+   */
+  openFolder(uri: string): Promise<void>
+}
+
+/** The extensions Connect needs (§7.3): checked when it runs, never declared as dependencies. */
+export interface Extensions {
+  installed(id: string): boolean
+  install(id: string): Promise<void>
 }
 
 /** The extension's output channel. Every line passes `redact` first (log.ts). */

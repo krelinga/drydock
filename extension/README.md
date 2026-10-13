@@ -31,6 +31,19 @@ what it covers are `test/extension/README.md`.
   only relative imports into `src/`, the two JSON files and `web/src/core` from the pure layer, and
   nowhere a TLS bypass, a child process, a webview or a triple-slash directive.
 
+## E1 so far
+
+`drydock.signIn`, `signOut`, `openInBrowser`, `showLog`; and (4a) `drydock.go` (the hub, bound to
+`ctrl+alt+shift+d` / `cmd+alt+shift+d` with no `when`), `clone`, `connect` and
+`refreshRepositories`, over `src/live.ts` (the window's reducer, marks and stream, held while a
+command, a follow or a mark needs it and closed five minutes after nothing does) and
+`src/flows.ts`. A follow is a progress notification; its end is a notification whose primary
+action is Connect (`drydock.connectWhenReady` connects without asking). Connect reads the view now,
+rewrites only the scheme of the server's own link, checks Remote - SSH and Dev Containers, and
+hands VS Code `vscode.openFolder` in a new window. The status bar (`src/status.ts`) is the running
+count, the stream's phase, and the one thing to act on: a token near expiry or a version mismatch.
+`test/fakeDrydock.ts` is a Drydock in memory for these flows' specs.
+
 ## Rules the code holds (design §4, §8)
 
 - **The token is bound to its origin.** `src/credential.ts` stores `{origin, token}` in
