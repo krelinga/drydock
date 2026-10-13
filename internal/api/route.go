@@ -30,6 +30,14 @@
 // only kinds the credential may see (MaySee: events.Scopes, failing closed),
 // a hidden event sent as its id alone so the position still moves.
 //
+// A credential store the gate cannot read is no verdict on the credential:
+// it answers 503 unavailable with Retry-After (AuthUnavailable), for a cookie
+// as for a token, on AuthRequired, AuthRedirect and Unrouted alike — never the
+// 401 or sign-in redirect that sign the web UI out. Mutation-checked
+// (TestSessionStoreFailureIsNot401): the cookie's store error answered 401,
+// the AuthRedirect 503 removed, a failing slide refusing, and ErrNoSession
+// marked unavailable each fail by name.
+//
 // PUT /api/secrets/:name is one route with two meanings: create-or-replace, or
 // with `If-None-Match: *` a create that refuses a stored name `412
 // secret_exists` (any other If-None-Match is bad_request). A route refused

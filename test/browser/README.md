@@ -23,7 +23,9 @@ The `__Host-` cookie and its illegal variants, the `SameSite=Lax` split, the `Or
 cross-origin reads, framing both ways, the CSP as served, SSE through Caddy's `encode`, the
 browser's own `Last-Event-ID` replay, sign-in with `return`, the mid-session `401`, a wrong-host
 certificate refused, Settings' API tokens (`tokens.spec.ts`: a token minted on the page reads
-`GET /api/meta` as a bearer with no cookie at the server, and is `401` once revoked there), and the preview handshake (`preview.spec.ts`: a signed-in click to a preview
+`GET /api/meta` as a bearer with no cookie at the server, and is `401` once revoked there; then the token is in no file under the root — Caddy's log and
+`drydock.log`, Drydock's stderr, included — with a canary planted in each log found by the same
+search), and the preview handshake (`preview.spec.ts`: a signed-in click to a preview
 host lands, after three redirects observed at both taps, on the hardcoded upstream with only the
 host-only preview cookie in the jar there and the token in no file under the root; not signed in,
 sign-in and back; *Sign out everywhere* bounces the next preview request; forged cookies and

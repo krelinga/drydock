@@ -165,6 +165,7 @@ func (r *running) export(t *testing.T, ws string) (env, stderr string, code int)
 // found by the same sweep in the database, the SSE transcript and the list.
 func TestSecretsCanarySweep(t *testing.T) {
 	dir := t.TempDir()
+	captureStderr(t, dir) // the server's stderr is in the tree it sweeps
 	masterKey := make([]byte, 32)
 	rand.Read(masterKey)
 	r := secretsServer(t, dir, masterKey)

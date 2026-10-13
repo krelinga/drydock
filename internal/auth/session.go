@@ -79,6 +79,12 @@ func (s *Sessions) Create(ctx context.Context, label, ip string) (cookie string,
 // Lookup resolves a cookie to a live session and slides its idle window.
 // An expired session is deleted on sight, so the table does not accumulate
 // dead rows and a device list never shows one.
+//
+// ErrNoSession is the only verdict on the cookie; any other error is the
+// store failing, which the gate answers 503, never the 401 that signs the
+// browser out (api.AuthUnavailable). The slide is best-effort, as a token's
+// last_used_at is: a busy database costs the idle window one request's
+// slide, never the request.
 func (s *Sessions) Lookup(ctx context.Context, cookie string) (Session, error) {
 	if cookie == "" {
 		return Session{}, ErrNoSession
@@ -93,9 +99,8 @@ func (s *Sessions) Lookup(ctx context.Context, cookie string) (Session, error) {
 		_, _ = s.DB.ExecContext(ctx, `DELETE FROM auth_session WHERE id = ?`, id)
 		return Session{}, ErrNoSession
 	}
-	sess.LastSeenAt = now
-	if _, err := s.DB.ExecContext(ctx, `UPDATE auth_session SET last_seen_at = ? WHERE id = ?`, ts(now), id); err != nil {
-		return Session{}, fmt.Errorf("slide session: %w", err)
+	if _, err := s.DB.ExecContext(ctx, `UPDATE auth_session SET last_seen_at = ? WHERE id = ?`, ts(now), id); err == nil {
+		sess.LastSeenAt = now
 	}
 	return sess, nil
 }

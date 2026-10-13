@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -263,15 +264,53 @@ func readUntil(t *testing.T, resp *http.Response, line string) string {
 	}
 }
 
+// captureStderr points this process's fd 2 at <dir>/stderr.log until the
+// test ends, so a canary sweep of dir reads what the server wrote to stderr —
+// the journal, in production — as the browser tier reads drydock.log. The
+// server runs in-process and writes os.Stderr from several packages; fd 2 is
+// the one place all of them (and the log package, and any child that
+// inherits it) meet, and swapping the descriptor races with nothing, where
+// assigning os.Stderr would race with every goroutine reading it. Nothing in
+// the package runs in parallel. On the way out what was captured is copied to
+// the real stderr; a crash before then leaves it in the file, whose path is
+// printed first.
+func captureStderr(t *testing.T, dir string) {
+	t.Helper()
+	path := filepath.Join(dir, "stderr.log")
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	saved, err := syscall.Dup(2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fmt.Fprintf(os.Stderr, "%s: the server's stderr is in %s until the test ends\n", t.Name(), path)
+	if err := syscall.Dup3(int(f.Fd()), 2, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		syscall.Dup3(saved, 2, 0)
+		syscall.Close(saved)
+		f.Close()
+		if b, _ := os.ReadFile(path); len(b) > 0 {
+			os.Stderr.Write(b)
+		}
+	})
+}
+
 // TestTokenCanarySweep (testing §4.2, vscode-extension §10.0a): a token
 // minted through the API and then used — meta, a list, the stream, a
 // refusal for scope, revoking itself — is found nowhere under the server's
 // temp root in any encoded form, nor in any process's argv. The one place it
 // travelled is the mint's response (the control: the sweep's needle is in
 // that body), and its SHA-256 is in the database (the expected hit, asserted
-// present).
+// present). The tree includes the server's stderr (captureStderr), and a
+// canary written there is found by the same walk: the control that the walk
+// reads it.
 func TestTokenCanarySweep(t *testing.T) {
 	dir := t.TempDir()
+	captureStderr(t, dir)
 	r := startIn(t, dir)
 	cookie := r.signIn(t)
 	tok, _, body := r.mintToken(t, cookie, "sweep", "read", "lifecycle")
@@ -288,6 +327,8 @@ func TestTokenCanarySweep(t *testing.T) {
 		t.Fatalf("self-revoke = %d", resp.StatusCode)
 	}
 	r.stop()
+	planted := "CANARY_" + randomAlnum(24)
+	fmt.Fprintln(os.Stderr, "drydock: a planted line", planted)
 
 	sum := sha256.Sum256([]byte(tok))
 	dbBytes := ""
@@ -301,6 +342,7 @@ func TestTokenCanarySweep(t *testing.T) {
 	needles := forms(tok)
 	needles["the random part"] = strings.TrimPrefix(tok, "drydock_")
 	var files int
+	var plantedIn []string
 	filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
 		if err != nil || d.IsDir() || d.Type()&fs.ModeSocket != 0 {
 			return nil
@@ -310,6 +352,9 @@ func TestTokenCanarySweep(t *testing.T) {
 			return nil
 		}
 		files++
+		if strings.Contains(string(b), planted) {
+			plantedIn = append(plantedIn, filepath.Base(p))
+		}
 		for form, n := range needles {
 			if strings.Contains(string(b), n) {
 				t.Errorf("%s holds the token (%s)", p, form)
@@ -319,6 +364,9 @@ func TestTokenCanarySweep(t *testing.T) {
 	})
 	if files < 2 {
 		t.Fatalf("control: the sweep read %d files", files)
+	}
+	if len(plantedIn) != 1 || plantedIn[0] != "stderr.log" {
+		t.Fatalf("control: a canary written to the server's stderr was found in %v; want [stderr.log]", plantedIn)
 	}
 	procs, _ := os.ReadDir("/proc")
 	for _, d := range procs {
