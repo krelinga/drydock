@@ -12,5 +12,6 @@ directory points at it:
 | 6 | *workspace settings cannot move drydock.url …* | `6-application-scope-workspace` |
 | 7 | *VS Code's default keybindings can be read …* | `7-default-keybindings` |
 
-Run it as the report's *Reproducing* says. The items the report marks for the laptop ritual are not
-measured here.
+Run it as the report's *Reproducing* says. The items the report marks for the laptop ritual are
+measured by hand, by [`test/rituals/`](../../../../test/rituals/README.md)'s `vscode-connect.md` and
+`vscode-keymap.md`.

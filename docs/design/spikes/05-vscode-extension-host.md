@@ -94,6 +94,23 @@ private key deleted as soon as the three leaves are signed; its directory made b
 `0700`, and trusted before it is handed to the invoking user. `run.sh host` refuses a trusted CA
 without the constraint, or with its key still on disk.
 
-The items marked *laptop ritual* belong to `test/rituals/vscode-bump.md` and
-`test/rituals/vscode-connect.md` (§12.11), which E1's last PRs write; until then they stay open in
-the design's §14.
+The items marked *laptop ritual* are measured by hand on the owner's laptop (§12.11):
+
+- [`test/rituals/vscode-connect.md`](../../../test/rituals/vscode-connect.md):
+  - part 1's 1.5 and 1.8 measure #3;
+  - part 2 measures #2, #4 (native dialogs), #5 and #6's remote half, with a throwaway probe
+    extension ([`test/rituals/vscode-probe/`](../../../test/rituals/vscode-probe/)) installed only into a
+    throwaway container.
+- [`test/rituals/vscode-keymap.md`](../../../test/rituals/vscode-keymap.md) measures #8 on macOS
+  and Windows.
+- [`test/rituals/vscode-bump.md`](../../../test/rituals/vscode-bump.md) re-runs all of it, and the
+  CI half above, when the pin or the Remote extensions move.
+
+Until a run is recorded below, those items stay open in the design's §14.
+
+## Laptop ritual runs
+
+Each run's record, pasted as the ritual's last step, newest first. A run changes the *Answers so
+far* row of every item it measured.
+
+*None yet.*
