@@ -1,0 +1,87 @@
+{
+  "name": "drydock",
+  "displayName": "Drydock",
+  "description": "Clone a repository into a Drydock workspace and connect to it, from the command palette.",
+  "publisher": "krelinga",
+  "version": "0.12.1",
+  "private": true,
+  "license": "UNLICENSED",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/krelinga/drydock"
+  },
+  "engines": {
+    "vscode": "^1.105.0",
+    "node": ">=22.12.0"
+  },
+  "extensionKind": [
+    "ui"
+  ],
+  "categories": [
+    "Other"
+  ],
+  "main": "./dist/extension.js",
+  "activationEvents": [],
+  "drydock": {
+    "apiRange": [
+      1,
+      1
+    ]
+  },
+  "contributes": {
+    "commands": [
+      {
+        "command": "drydock.signIn",
+        "title": "Sign In",
+        "category": "Drydock"
+      },
+      {
+        "command": "drydock.signOut",
+        "title": "Sign Out",
+        "category": "Drydock"
+      },
+      {
+        "command": "drydock.openInBrowser",
+        "title": "Open in Drydock",
+        "category": "Drydock"
+      },
+      {
+        "command": "drydock.showLog",
+        "title": "Show Log",
+        "category": "Drydock"
+      }
+    ],
+    "configuration": {
+      "title": "Drydock",
+      "properties": {
+        "drydock.url": {
+          "type": "string",
+          "default": "",
+          "scope": "application",
+          "ignoreSync": true,
+          "markdownDescription": "The address of your Drydock, exactly as its web UI is reached: `https://` and a lowercase host, such as `https://drydock.example.com`. Changing it signs you out of the old one."
+        },
+        "drydock.connectWhenReady": {
+          "type": "boolean",
+          "default": false,
+          "scope": "application",
+          "ignoreSync": true,
+          "markdownDescription": "Connect to a workspace this window cloned as soon as it is running, without asking."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json && tsc -p src/tsconfig.pure.json",
+    "test": "vitest run",
+    "bundle": "node scripts/bundle.mjs",
+    "check": "npm run typecheck && npm run test && npm run bundle"
+  },
+  "devDependencies": {
+    "@types/node": "24.19.1",
+    "@types/vscode": "1.105.0",
+    "esbuild": "0.28.2",
+    "typescript": "6.0.3",
+    "vitest": "5.0.3"
+  }
+}

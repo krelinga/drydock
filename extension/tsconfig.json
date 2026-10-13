@@ -1,0 +1,22 @@
+{
+  // The whole extension: the adapter (src/adapter, the only code that sees
+  // `vscode`), the Node glue (src/node), and the pure layer, which
+  // src/tsconfig.pure.json compiles again with no ambient types at all.
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "lib": ["ES2023"],
+    "types": ["node", "vscode"],
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "noImplicitOverride": true,
+    "noFallthroughCasesInSwitch": true,
+    "isolatedModules": true,
+    "verbatimModuleSyntax": true,
+    "resolveJsonModule": true,
+    "skipLibCheck": true,
+    "noEmit": true
+  },
+  "include": ["src/**/*.ts", "test/**/*.ts", "scripts/**/*.mjs", "vitest.config.mts"]
+}

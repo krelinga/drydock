@@ -49,6 +49,28 @@ jobs:
       # internal/web/dist is exactly what these sources build.
       - run: npm run check
 
+  # The VS Code extension's unit and manifest tiers (vscode-extension §12.2,
+  # §12.3): plain Node, no editor. Types (with the pure layer compiled again
+  # with no ambient types), the specs, and the bundle within its budget. The
+  # client and extension-host tiers join this job as they land, in the
+  # Playwright image the browser job uses (§12.12). Not yet a required check.
+  extension:
+    runs-on: ubuntu-latest
+    # Under a minute.
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: extension
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: extension/package-lock.json
+      - run: npm ci
+      - run: npm run check
+
   # The browser tier (testing §10): real Chromium, real Caddy on the shipped
   # Caddyfile, the real `drydock serve`, and a throwaway CA trusted through
   # NSS — never ignoreHTTPSErrors.

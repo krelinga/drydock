@@ -471,6 +471,14 @@ Its tests: `internal/api` `scope_test.go` (the scope meta-tests), `bearer_test.g
 
 `signIn` (paste a token), `signOut` (the token revokes itself), `go`, `clone`, `connect`, `reviewApproval`, `approve`, `decline`, `refreshRepositories`, `openInBrowser`, `showLog`. The tree views, status bar and handshake. Requires phase T. The `core/` split lands first, as its own PR, now including `lib/approval.ts` and the format-character escape for the web card.
 
+**As built: the PR sequence.** (1) The `core/` split (#153). (2) The `extension/` skeleton and its pure client: the layers and their boundary, the ports, the HTTP client, the SSE parser and stream, the token and `drydock.url` rules, `mayMutate` and the dispatcher, the handshake, link → URI, `signIn`/`signOut`/`openInBrowser`/`showLog`, the manifest spec, `contract.json` with `TestExtensionContract`, release-please's `extra-files` with its `test/docs` check, and a CI `extension` job (unit and manifest only). (3) The stack, the shared harness and the client tier. (4) The hub, catalog, clone, follow, connect, the tree views and status bar, with the extension-host tier and Spike 05. (5) The review document and approval, and the recommended baseline check. (6) The `.vsix` asset. Where (2) settled what this document left open:
+
+- **A third layer, `src/node/`**: Node's `fetch` as the `Transport`, importing no `vscode`, so the client tier runs the production transport with no editor. The pure layer is compiled with `types: []` and `noResolve` (as core is), so `fetch`, timers and `console` are all ports.
+- **`drydock.signIn` is mutating** (rule 1): it replaces the credential every window uses, and nothing needs it from a container window.
+- **A 401 on a freshly pasted token** says it was revoked or expired, *or* the server is older than tokens: the extension cannot tell them apart, and §9.1's single "older server" reading would mislabel the common case.
+- **`TestExtensionContract` checks kinds against `events.Scopes`** (the registry's own table, which `TestKindRegistry` holds complete) and requires scope `read`, so a kind moved to `session` fails too; routes must be `AuthRequired` on the API mux with a scope a token can hold.
+- **`extra-files` landed with the skeleton**, not with the `.vsix`: `extension/package.json` carries Drydock's version from its first commit, and `test/docs`'s `TestExtensionVersionIsTheRelease` fails on drift or on a lost `extra-files` entry.
+
 **Size.** Approval adds to E1:
 - the review document provider and its three commands (a few hundred lines);
 - `lib/approval.ts` in core, with the web card moved onto it;

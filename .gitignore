@@ -12,3 +12,5 @@
 
 # The browser tier's Playwright output: traces of failed tests, uploaded by CI.
 /test/browser/test-results/
+/extension/node_modules/
+/extension/dist/
