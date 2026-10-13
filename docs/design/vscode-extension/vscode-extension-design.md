@@ -19,7 +19,7 @@
 | Where it runs | The laptop's extension host (`extensionKind: ["ui"]`). It works before any remote window exists and can open new windows. | §3.1 |
 | How it reaches Drydock | HTTPS to Caddy at the UI origin, like a browser. Never the Unix socket. | §3.2 |
 | Auth, v1 | **(a) Password sign-in, with the session cookie in `SecretStorage`.** No server change. The extension never stores the password and never retries a sign-in on its own. | §4 |
-| Auth, later | **(b) Scoped, revocable API tokens, before E2** (revised from "before E3" after review): once the extension can stop and delete, the credential a container window sits beside (§2.3) should be one whose scope the server limits. With a token, "the extension cannot approve" is enforced by the server, not just by the client choosing not to. | §4.5 |
+| Auth, later | **(b) Scoped, revocable API tokens, before E3.** They are no longer on E1's or E2's critical path. Approving is an **explicit `approve` scope**, granted when the token is minted, shown on its row and recorded as the approver. Secrets and *Sign out everywhere* are never in an extension token's scope. | §4.5 |
 | Settings | `drydock.url` is **`application`-scoped with `ignoreSync`**: user settings on the laptop only, never taken from a remote's or a workspace's settings, which a repository can write. The stored secret is `{origin, cookie}` and is sent to that origin alone, so changing the URL means signing in again. | §6.4 |
 | `Origin` | The extension sends the literal UI origin on every mutation. This forges nothing: the check defends browsers against third-party pages, and a client that already holds the credential was never inside its threat model. The server does not change. | §4.3 |
 | State | **The web UI's reducer, unchanged, shared as source** from a DOM-free `web/src/core/`. The extension follows "the frontend invents no state" with the same code. | §5 |
@@ -28,7 +28,8 @@
 | Commands as attack surface | Code in an attached container can run commands in that window, ours included. **The primary control: outside an allowlist of window kinds (local, `ssh-remote`), the extension does not mutate at all.** Depth: commands ignore arguments that could cause a mutation, return nothing, and E2's lifecycle mutations confirm in a modal. The extension cannot make a container window safer than the attach itself (§8.2). | §8 |
 | Version skew | A new authenticated `GET /api/meta` returns `{version, api}`. The extension declares the `api` range it speaks. A Go test pins the routes the extension uses, and the client tier checks the event kinds it reads were actually emitted. Outside the range, a mutation is replaced by *Install the matching extension*. | §9.1 |
 | Release | A `.vsix` uploaded to every Drydock release under a fixed name (`drydock-vscode.vsix`) by the existing release-please flow. Not the Marketplace, at least at first. | §9.2 |
-| Phasing | **E1**: sign-in, catalog, clone, follow, connect. **E2**: start, stop, rebuild, delete, logs, Claude status. **E3**: the Claude login, ports. **Approvals and secrets stay in the web UI** unless §10's conditions are met. | §10 |
+| Approvals | **In E1** (the owner's decision: docker-in-docker repositories stop at `needs_approval` right after clone, so clone → connect dead-ends without it). They come from a read-only **review document** showing exactly what the web card shows, and are confirmed by **typing the repository's full name**. They are allowed only from local and SSH windows. The approval sends the hash of the request that document rendered, never a hash it did not show. | §10.4 |
+| Phasing | **E1**: sign-in, catalog, clone, follow, **host-access approval**, connect. **E2**: start, stop, rebuild, delete, logs, Claude status. **E3**: the Claude login, ports. **Secrets stay in the web UI.** | §10 |
 | Testing | Unit (Vitest, no `vscode`) · manifest contract · **client tier** (the protocol client against real Drydock behind real Caddy, no VS Code) · **extension-host tier** (`@vscode/test-cli`, headless under xvfb, running the bundle unpacked from the `.vsix`) · a nightly keyboard smoke test on the installed `.vsix` · Spike 05 for the VS Code behaviour this design assumes and has not measured · and rituals for the real Remote-SSH attach, which CI cannot reach. | §12 |
 
 ## 1. Problem & goals
@@ -39,7 +40,8 @@ The operator spends the working day in VS Code on a laptop, connected over Remot
 
 - **E1, the first iteration:** see the repositories the GitHub App can reach (`GET /api/repos`), clone one (`POST /api/workspaces`), follow its eight steps to `running`, and connect: open the running container in a new VS Code window at the clone's folder. Also: the running workspaces, *Connect* to any of them, and *Open in Drydock* (the web UI page) for anything the extension does not do itself.
 - **From the keyboard alone.** Every action is a command. The hub is one quick pick reachable by one shortcut, and the whole of E1's flow (shortcut, type part of a name, Enter, Enter) needs no mouse.
-- **Eventually, most of the web UI.** E2 and E3 add the workspace lifecycle, logs, the Claude identity and login, and ports (§10). Host-access approvals and secrets are argued separately and may never come (§10.4).
+- **Host-access approval in E1.** A repository that uses docker-in-docker asks for `privileged`, and its first clone stops at `needs_approval` before any container exists (overall §6, step 3). Without approval in the extension, the E1 flow would end with *go to the browser* for exactly the repositories the owner uses most (§10.4).
+- **Eventually, most of the web UI.** E2 and E3 add the workspace lifecycle, logs, the Claude identity and login, and ports (§10). Secrets stay web-only (§10.6).
 - **Never a second opinion about state.** What the extension shows is what the server's event stream says, through the same reducer the web UI runs (§5). A clone pressed on the phone shows up in the editor, and the reverse.
 
 ### Non-goals
@@ -129,14 +131,14 @@ There are two options. Both leave the gate's order, the `Origin` rule and the si
 - **Server change: none.** The handlers already serve a non-browser client: `204` with the cookie, or `200` with a `SignInNotice` (`failed_attempts`, `failed_sources`). The extension must show that notice once, as the web UI does (design §12, *Repeated failed sign-ins*).
 - **Lockout and rate limit: unchanged and shared.** The sign-in goes through the same `auth.Limiter`, keyed on the laptop's address as Caddy forwards it. The extension never retries a sign-in by itself. A `429 locked_out` shows `Retry-After` and stops. A stale cookie is a `401` on an ordinary route, which counts as no sign-in attempt and no failure, so an expired session can never lock the operator out.
 - **Expiry and revocation: the browser's.** 30 days absolute, 14 idle, sliding (`internal/auth/session.go`). Any `401` from any route clears the stored cookie and offers *Sign In* (frontend §4.4's one 401 path). The session appears in Settings' device list, and *Sign out everywhere* ends it. The SSE stream re-checks its session on every heartbeat (`EventRoutes.Alive`), so a revoked extension loses its stream within 20 s.
-- **What it holds: a full operator session.** That is the browser row of overall §13.4 ("everything Drydock can do"), now on a second device. `SecretStorage` uses the OS keychain on macOS and Windows. On Linux it uses libsecret or kwallet when present, and otherwise falls back to a weak *basic* store. The laptop is the operator's own, and the session is no more powerful than the browser beside it. The real cost is that a client which chooses not to approve anything still *could*. §8 and §4.5 deal with that.
+- **What it holds: a full operator session.** That is the browser row of overall §13.4 ("everything Drydock can do"), now on a second device. `SecretStorage` uses the OS keychain on macOS and Windows. On Linux it uses libsecret or kwallet when present, and otherwise falls back to a weak *basic* store. The laptop is the operator's own, and the session is no more powerful than the browser beside it. It can approve host access, which E1 needs (§10.4). It can also reach secrets and *Sign out everywhere*, which the extension never offers. Only a scoped token (§4.2) makes that a property of the server rather than of the extension's code.
 
 ### 4.2  Option (b): a revocable API token minted in the web UI
 
 Settings gains *VS Code tokens*: *Create* shows a random 32-byte token once, with a label. The table stores only `sha256(token)` (as `auth_session` does), plus the label, timestamps and a **scope**. The extension sends it as `Authorization: Bearer <token>`. `SessionGate.Authenticate` accepts the cookie *or* a bearer token and attaches the same session shape, with the scope.
 
 - **Cleaner revocation and audit.** One token per laptop, a label that says "VS Code on krelinga-mbp", and no password typed into the editor.
-- **Least privilege becomes possible.** A scope (`read`, `lifecycle`, …) that leaves out `workspaces.approve`, `workspaces.decline`, `secrets.*` and *Sign out everywhere* is enforced in the gate, per route, by the table. The route table would gain a `Scope` column, and a meta-test would walk it as the existing ones do. *Sign out everywhere* is today the same route as signing out this device (`auth.session.delete`, distinguished only by `?all=true`), and a scope keyed on route names cannot tell them apart. So the token work splits it into a route of its own (`auth.session.delete_all`, `DELETE /api/auth/sessions`), which the web UI moves to and the extension's scope leaves out. That is better than a scope that reads query strings, which is a second matching rule for a meta-test to get wrong.
+- **Least privilege becomes possible.** Scopes are enforced in the gate, per route, by the table: `read`, `lifecycle` and, granted only by a separate checkbox when the token is minted, **`approve`** (`workspaces.approve`, `workspaces.decline`), with the web card's sentence about what approving means beside the checkbox. The approve scope is shown on the token's row in Settings, and each approval records the token as `approved_by` (today the session id, `internal/workspace/approval.go`), so the history says which laptop approved. `secrets.*` and *Sign out everywhere* are in no scope an extension token can have. A token without `approve` gets `403` on the approve route, and the extension replaces *Approve* with *Review in Drydock*. The route table would gain a `Scope` column, and a meta-test would walk it as the existing ones do. *Sign out everywhere* is today the same route as signing out this device (`auth.session.delete`, distinguished only by `?all=true`), and a scope keyed on route names cannot tell them apart. So the token work splits it into a route of its own (`auth.session.delete_all`, `DELETE /api/auth/sessions`), which the web UI moves to and the extension's scope leaves out. That is better than a scope that reads query strings, which is a second matching rule for a meta-test to get wrong.
 - **It is a new credential kind.** That means a design §4 schema row, a §13.2 row, a route pair to mint and revoke tokens (authenticated by cookie, `Mutating`, from the web UI only), the canary sweep extended to the token, and an addition to CLAUDE.md's invariant *Store no credential but the App private key* (it already allows `auth_session`'s hash, and a token hash is the same kind of thing).
 - **Lockout.** Token guesses never touch the sign-in route, so the password lockout does not apply. It does not need to: 256 random bits make guessing infeasible, and a bearer lookup costs the same as the cookie lookup every request already makes, which is not rate-limited either.
 
@@ -163,12 +165,17 @@ The extension sends `Origin: https://drydock.example.com`, byte for byte the con
 
 ### 4.5  Recommendation
 
-**E1: option (a).** It costs no server change, no schema change and no change to the auth invariants, and it holds exactly what the operator's browser holds. E1's surface (catalog, clone, connect) is what a browser session does anyway, and E1's one real mutation, clone, does no more than any clone: a host-access setting still stops at the approval gate (overall §6), though the repository's image build runs, as it does from the web UI.
+**E1 and E2: option (a).** It costs no server change, no schema change and no change to the auth invariants, and it holds exactly what the operator's browser holds. E1 now includes approving host access (§10.4), which a browser session can do anyway. What keeps an approval from being anyone's but the operator's is §8's window rule, the review document and the typed confirmation, not the credential.
 
-**Before E2: option (b), scoped** (revised from "before E3"). Two reasons, both from §2.3:
+**Before E3: option (b), scoped**, with `approve` as an explicit grant. An earlier draft put tokens before E2 so that a scope could forbid approving. With approvals in E1 by the owner's decision, that argument is gone. What tokens still buy is real but not urgent:
+- no password typed into the editor;
+- one named, revocable credential per laptop;
+- secrets and *Sign out everywhere* out of reach by the server's rule;
+- an approval history that names the token.
 
-- As long as the extension holds a full session, "the extension does not approve" is a promise its own code keeps. §8's rule 1 makes that promise hold against callers in a container window, but a scope that leaves the approve route out makes it a property of the server, tested by a meta-test. That is the only form of it worth relying on once the extension can also stop and delete.
-- If Spike 05 finds a container window can reach a local terminal, the laptop is compromised by any hostile repository the operator attaches to. A scoped token does not save the laptop: its browser holds a full cookie, and with libsecret unprompted or the `basic` store the extension's secret is readable too. What it does is cap the damage the *extension's* credential adds: a stolen extension token cannot approve, read secret metadata or sign other devices out.
+E3's login code is the next credential-adjacent surface, so tokens land before it. If Spike 05 finds a container window can reach a local terminal (§2.3), the laptop is compromised by any hostile repository the operator attaches to. A scoped token does not save the laptop: its browser holds a full cookie. What it does is cap what the extension's own credential adds.
+
+**Step-up authentication for approvals** (re-enter the password to approve) was considered and rejected. Overall §13.5 refuses re-authentication on destructive routes because it trains habituation, not care, and an approval is a reading problem, not an identity problem. The typed confirmation (§10.4) asks the reading question.
 
 **The residual risk, plainly:** attaching to a container whose repository you do not trust gives that repository's code the workbench of that window, and possibly the laptop. That is true today of the web UI's *Open in VS Code* and of attaching by hand. The extension neither causes nor fixes it, and must not claim to. It only promises not to add its own commands to what that code can drive (§8).
 
@@ -215,7 +222,7 @@ A directory, **`web/src/core/`**, holds everything above marked shareable, plus 
 
 Every mutation the extension sends follows frontend §4.2 to the letter: begin a mark, send, discard the `202` body, and end the mark on the settling event or on a snapshot showing the action over. **Correction to the earlier sketch:** not every mark ends on `workspace.job`. A job action (start, rebuild, stop, delete, approve, supervisor) does, through `settlesJob`. **A clone does not.** The client has no workspace id until the `202` body names one, and reading that body is what §4.2 forbids. So a clone settles on the create's first `workspace.state` carrying its `repository_id` (`settlesClone`), which is *the row exists*, not *it is running*. Decline has no job and settles on the request disappearing.
 
-So E1's *clone and follow* is two things. The mark ends quickly, and following to `running` is plain entity state: the workspace's `state` and step timeline from the reducer, shown in a `withProgress` notification until `running` (then *Connect*), `failed` (the failed step's sentence and *Open in Drydock*), or `stopped` with an `approval` (*This workspace is waiting for a host-access approval* and *Open in Drydock*, §10.4). The workspace id is learned from that same `workspace.state` event, never from the `202`. A clone of the same repository from another device settles the press too, and is followed the same way.
+So E1's *clone and follow* is two things. The mark ends quickly, and following to `running` is plain entity state: the workspace's `state` and step timeline from the reducer, shown in a `withProgress` notification until `running` (then *Connect*), `failed` (the failed step's sentence and *Open in Drydock*), or `stopped` with an `approval` (*krelinga/alpha needs host-access approval* and **Review**, which opens the review document, §10.4). After an approval the follow continues: the approve job resumes the run, and the same notification carries it to `running` and *Connect*. The workspace id is learned from that same `workspace.state` event, never from the `202`. A clone of the same repository from another device settles the press too, and is followed the same way.
 
 ### 5.5  One stream per window, held while something needs it
 
@@ -225,7 +232,7 @@ Each VS Code window has its own local extension host, and so its own stream and 
 
 - a Drydock view is visible;
 - a mark is in flight;
-- **a follow is active**: a workspace this window cloned, started or rebuilt, until it reaches `running`, `failed` or a stopped-with-approval state. A clone's *mark* ends when the row exists (`settlesClone`), but an image build can take many minutes after that, and the progress notification and the *Connect* offer depend on the stream for all of it. A follow survives a reconnect, since the stream's own `Last-Event-ID` replay or `resync` closes the gap, and it ends only on one of those states, on `workspace.gone`, or when the operator dismisses the notification.
+- **a follow is active**: a workspace this window cloned, started, rebuilt or approved, until it reaches `running`, `failed` or a stopped-with-approval state. A clone's *mark* ends when the row exists (`settlesClone`), but an image build can take many minutes after that, and the progress notification and the *Connect* offer depend on the stream for all of it. A follow survives a reconnect, since the stream's own `Last-Event-ID` replay or `resync` closes the gap, and it ends only on one of those states, on `workspace.gone`, or when the operator dismisses the notification.
 
 Activation is `onView:drydock.*` plus the implicit `onCommand`, so a window that never touches Drydock never makes a request. Ten idle windows hold no streams.
 
@@ -243,6 +250,9 @@ Every action is a command with id `drydock.<verb>`, category *Drydock*, listed i
 | `drydock.go` — *Go to Workspace…* | E1 | **The hub.** One quick pick: running workspaces first (Enter connects), then other workspaces (Enter opens their actions), then repositories without a workspace (Enter clones). Same ordering and actions as the web UI's home, computed by `lib/workspaceCard.ts`'s `rowAction`/`cardStatus` from core. |
 | `drydock.clone` — *Clone Repository…* | E1 | Pick a repository → `POST /api/workspaces` → follow (§5.4). At the cap, the item says *At the cap (N): stop a workspace first*, and Enter opens *Stop…* (E2) or, in E1, the web UI. Never a disabled item. |
 | `drydock.connect` — *Connect to Workspace…* | E1 | Pick a running workspace → §7. |
+| `drydock.reviewApproval` — *Review Host Access…* | E1 | Pick a workspace with a pending request (or take the tree item's id: opening a read-only document is not a mutation) → the review document (§10.4). |
+| `drydock.approve` — *Approve Host Access…* | E1 | Only on the active review document's snapshot: the typed full name → `POST …/config-approval` with that snapshot's hash. No keybinding, never in the hub. |
+| `drydock.decline` — *Cancel Host-Access Request* | E1 | On the active review document: modal → `DELETE …/config-approval`. |
 | `drydock.refreshRepositories` | E1 | `POST /api/repos/refresh`, settled by `repo.refreshed`/`repo.refresh_failed`. |
 | `drydock.openInBrowser` — *Open in Drydock* | E1 | `env.openExternal(<ui-origin>/ws/<id>)` or the home page. The escape hatch for everything the extension does not do. |
 | `drydock.showLog` | E1 | The extension's own output channel (redacted, §12.8). |
@@ -272,7 +282,7 @@ An earlier draft popped a *Connect now* quick pick. That was wrong: it arrives m
 
 - **An activity-bar container, *Drydock*,** with two tree views, *Workspaces* and *Repositories*. Items carry `contextValue` (`workspace.running`, `workspace.stopped`, `repo.clonable`, …) for `view/item/context` menus, and a default command on Enter (connect, or open actions). A `viewsWelcome` shows *Sign In* when signed out and *Connect Drydock* (set `drydock.url`) before configuration.
 - **A status bar item**: `Drydock: 2 running`, with the stream's phase: the web UI's quiet marker after 5 s disconnected, and *idle* once the stream has closed (§5.5), so a stale count never looks live. **The fleet identity override (frontend §6.6) lives here**: a `blanked` login is one status-bar warning, *Signed out. Sign in again.*, with one action. Ten tree items each offering *Restart session server* would be the mistake §6.6 exists to prevent. `absent` gets its own sentence, *No one has signed in yet.*
-- **Never a disabled item.** An action that cannot work is replaced by the one that can (frontend §6.6): a `needs_approval` workspace shows *Review in Drydock…*, and a server outside the `api` range shows *Install the matching extension* (§9.1).
+- **Never a disabled item.** An action that cannot work is replaced by the one that can (frontend §6.6): a `needs_approval` workspace shows *Review host access…* (§10.4), or *Review in Drydock* when the extension's token lacks `approve`, and a server outside the `api` range shows *Install the matching extension* (§9.1).
 
 ### 6.4  Settings
 
@@ -326,10 +336,10 @@ Instead, *Connect* checks `vscode.extensions.getExtension('ms-vscode-remote.remo
 
 ### 8.1  The rules
 
-1. **Primary control: outside an allowlist of window kinds, the extension does not mutate.** Each window's local extension host runs its own instance of our extension, and a command invoked from a window's remote host is served by *that window's* local instance. So the instance can decide from its own window what it may do. `mayMutate(vscode.env.remoteName)` is true only for `undefined` (a local window) and `ssh-remote` (whose remote host runs as the operator's own SSH user, who already has Docker and so the host). For anything else (`attached-container`, `dev-container`, `tunnel`, `codespaces`, a name VS Code adds later), every mutating command is replaced by *Do this from a local or SSH window, or in Drydock*, with *Open in Drydock*. It is an allowlist, so an unknown kind of window fails closed. This closes the path from container code to our mutations completely, whatever the caller passes and whatever it can accept. Reading, the hub and connect still work there, since moving to another workspace is the common case.
+1. **Primary control: outside an allowlist of window kinds, the extension does not mutate.** Each window's local extension host runs its own instance of our extension, and a command invoked from a window's remote host is served by *that window's* local instance. So the instance can decide from its own window what it may do. `mayMutate(vscode.env.remoteName)` is true only for `undefined` (a local window) and `ssh-remote` (whose remote host runs as the operator's own SSH user, who already has Docker and so the host). For anything else (`attached-container`, `dev-container`, `tunnel`, `codespaces`, a name VS Code adds later), every mutating command, **host-access approval above all**, is replaced by *Do this from a local or SSH window, or in Drydock*, with *Open in Drydock*. It is an allowlist, so an unknown kind of window fails closed. This closes the path from container code to our mutations completely, whatever the caller passes and whatever it can accept. Reading, the hub and connect still work there, since moving to another workspace is the common case.
 2. **Depth: a mutating command takes no meaningful arguments.** `drydock.stop(id)` called with an id ignores it and shows its own pick, so the operator, not the caller, chooses the target. Read and connect commands may take an id from a tree item.
 3. **Depth: every command returns `undefined`.** No caller can read back the workspace list, the repositories or a link.
-4. **Depth: E2's lifecycle mutations confirm in a modal.** Start, stop, rebuild and restart session show `showWarningMessage(…, { modal: true })`. Delete requires the typed full name. **E1's clone, sign out, refresh and *Check now* are not modal-confirmed**: they rely on rule 1 alone. Clone takes a slot and runs that repository's build, which is never more than any clone does: a host-access setting still stops at the approval gate (overall §6). The others are cheap to undo. Quick picks are not a confirmation by themselves, since the workbench's quick-input accept commands can be called by other extensions.
+4. **Depth: E2's lifecycle mutations confirm in a modal.** Start, stop, rebuild and restart session show `showWarningMessage(…, { modal: true })`. Delete requires the typed full name. **Approve is confirmed by typing, not a modal** (§10.4). **E1's clone, sign out, refresh and *Check now* are not modal-confirmed**: they rely on rule 1 alone. Clone takes a slot and runs that repository's build, which is never more than any clone does: a host-access setting still stops at the approval gate (overall §6). The others are cheap to undo. Quick picks are not a confirmation by themselves, since the workbench's quick-input accept commands can be called by other extensions.
    **What the modal claim rests on:** that no command accepts a VS Code modal. That is believed, not measured. A native dialog has no workbench command, but `window.dialogStyle: "custom"` renders it in the DOM, and whether anything can press it there is unknown. Spike 05 measures it under both dialog styles (§12.9). Until then rule 4 is depth on top of rule 1, not a control in its own right.
 5. **No ambient credential anywhere.** No webview ever holds the cookie or makes Drydock requests. All HTTP comes from one client module in the extension host, which sends the cookie only to the origin it was minted by (§4.1), validates the path against the route patterns it knows, and never follows a redirect to another origin with it.
 
@@ -384,15 +394,21 @@ The extension lives in **`extension/`** (beside `web/` and `feature/`) and is ve
 
 Each phase states when it is done, as overall §14 does.
 
-### 10.1  E1: sign in, catalog, clone, follow, connect
+### 10.1  E1: sign in, catalog, clone, follow, approve, connect
 
-`signIn`, `signOut`, `go`, `clone`, `connect`, `refreshRepositories`, `openInBrowser`, `showLog`. The tree views, status bar and handshake. Server changes: `GET /api/meta` and the device label (§11). The `core/` split lands first, as its own PR.
+`signIn`, `signOut`, `go`, `clone`, `connect`, `reviewApproval`, `approve`, `decline`, `refreshRepositories`, `openInBrowser`, `showLog`. The tree views, status bar and handshake. Server changes: `GET /api/meta` and the device label (§11). The `core/` split lands first, as its own PR, now including `lib/approval.ts` and the format-character escape for the web card.
 
-**Done when:** from a fresh VS Code on the laptop, with the keyboard only, the operator signs in, clones a testbed repository, watches it reach `running`, and lands in a new window attached to its container at the clone's folder. The connect ritual (§12.11) has passed once. The extension-host tier passes in CI.
+**Size.** Approval adds to E1:
+- the review document provider and its three commands (a few hundred lines);
+- `lib/approval.ts` in core, with the web card moved onto it;
+- the stack's docker-in-docker fixture repository;
+- the approval rows in the tests (§12).
+
+It is the largest single addition to E1 after the test stack, and it is what makes E1 usable for docker-in-docker repositories.
+
+**Done when:** from a fresh VS Code on the laptop, with the keyboard only, the operator signs in, clones a testbed repository, watches it reach `running`, and lands in a new window attached to its container at the clone's folder. The same works for a docker-in-docker repository through *Review*, the document and the typed name. The connect ritual (§12.11) has passed once. The extension-host tier passes in CI.
 
 ### 10.2  E2: the lifecycle
-
-**Before E2: option (b) scoped tokens** (§4.5), with a scope for the extension that covers the lifecycle and leaves out approvals, secrets and signing other devices out.
 
 `start`, `stop`, `rebuild`, `restartSession`, `delete` (typed name), the two logs, `checkClaudeLogin`, the fleet identity override in the status bar, and *Make room* at the cap. Every mutation follows §8.
 
@@ -402,23 +418,56 @@ Each phase states when it is done, as overall §14 does.
 
 The login handshake (frontend §6.2): `POST /api/auth/claude/login`, show the authorize URL (`env.openExternal` to open it), and take the code in `showInputBox({ password: true })`. A login code is a credential, so it is never shown back and never logged, and it is a canary in the sweep. Ports: list, enable, disable, open. Opening a preview goes through the browser's own preview handshake (`/preview/authorize`), which needs the *browser's* session. The extension's cookie never reaches a browser.
 
-E3 widens the extension's token scope to the login and ports, still leaving out approvals and secrets.
+**Before E3: option (b) scoped tokens** (§4.5). The extension's token gets `read`, `lifecycle` and the login and ports, plus `approve` when the operator ticks it at mint. Secrets and *Sign out everywhere* stay out.
 
-### 10.4  Approvals and secrets: web-only, and why
+### 10.4  Host-access approvals, in E1
 
-**Host-access approval is the most security-sensitive surface Drydock has.** Approving `privileged` gives a repository host root (overall §13.4), and frontend §6.5a spends a section making sure the button cannot be pressed without reading. An editor is the worst place to read it. The approval is asked for because of a change *in the repository the operator has open in that same editor*, possibly made by the agent, and the reflex is to approve and get back to work.
+**Why E1.** The owner uses docker-in-docker in many projects. Docker-in-docker asks for `privileged`, and a clone of such a repository stops at step 3, `resolve config`, as `stopped` with a pending request, before any `up` (overall §6). Without approval in the extension, E1's clone → connect flow would end with *go to the browser* for exactly the repositories the owner uses most, which is a regression from VS Code's own *Reopen in Container*. The cost is bounded by how often it happens. An approval is recorded **per repository** and a later run is asked again only when its subset goes beyond what was approved (`container.Covered`), so the prompt comes once per docker-in-docker repository and again when its configuration's host access changes, not on every clone. E2's start and rebuild can stop for approval too, and use the same flow.
 
-**Recommendation: the extension never approves.** A `needs_approval` workspace shows *Review the host-access request in Drydock* (`openInBrowser` to `/ws/<id>`) where its action would be. With option (b), the extension's token scope leaves out `workspaces.approve`, so that is a server property, tested by the scope meta-test.
+**Still the most security-sensitive surface Drydock has.** Approving `privileged` gives the repository host root (overall §13.4), and frontend §6.5a spends a section making sure the button is not pressed without reading. The request often arises *because of a change in the repository the operator has open in that same editor*, possibly made by the agent. The design below keeps every property of the web card and adds two the editor needs.
 
-If the owner decides otherwise, the extension's version must keep everything frontend §6.5a requires, and more:
+#### What the API does today (verified)
 
-- **The full subset, always**: new, changed (both values) and no longer asked for, each with its source, as JSON, in a read-only virtual document the operator must have open. Never a summary line in a notification.
-- **The warning** in the modal's own text: *root on the host* whenever `privileged` is in the request.
-- **Never one keystroke.** No keybinding, no quick-pick item that approves, no notification button. A native modal whose default button is *Cancel* (VS Code always gives a modal a *Cancel*), opened only from the document's own action.
-- **The hash shown is the hash sent**, and `409 approval_stale` re-opens the document on the new request.
-- **Never from a container window** (§8, rule 1), and only with a token scoped to include it.
+- A run that stops for approval writes the request on the workspace row (`pending_approval`). The view and the `workspace.state` event carry an `ApprovalView`: `{hash, added, changed, removed}` (`internal/workspace/approval.go`). The **hash is of the whole requested subset** (`Settings`, canonical JSON, which the client never receives). `added`/`changed`/`removed` are its difference from the repository's current approval, which is what the operator is shown.
+- `POST /api/workspaces/{id}/config-approval` with `{"hash": "sha256:…"}` (`workspaces.approve`). `Store.Approve` refuses any hash but the pending one with `409 approval_stale`, re-checks it inside the transaction (so two approvals, or an approval racing a move, cannot both record), supersedes the repository's previous approval, records `approved_by` (the session id), writes `config.approved`, and the provisioner continues the run as an `approve` job. `DELETE` on the same path declines (`workspaces.decline`).
+- The web card (`web/src/components/HostAccessApproval.vue`) renders that view and sends `req.hash`, the hash of the very object it rendered.
 
-**Secrets stay web-only for a simpler reason:** the value would be typed into the editor, where clipboard managers, extensions that observe input, and settings sync are all nearby. The web UI's form is the place this repository has made safe (frontend §6.4). Reading secret *metadata* in the extension (names, reach, grants) is harmless, but it is also not useful enough to justify the scope.
+#### What the extension shows: the review document
+
+*Review host access…* opens a **read-only virtual document** (`drydock-approval:/<workspace id>`, a `TextDocumentContentProvider`, never a webview, §8 rule 5) beside the editor. It has exactly the web card's content:
+
+- the title, *Needs approval: this configuration asks for host access*, with the repository and branch;
+- **the warning**: what approving lets the container do, as the drydock user or as root, and that anything in the container, an agent included, can then use it without changing the configuration again;
+- **`privileged` is root on the host: Drydock's keys and every other workspace are in reach**, when `privileged` is new or changed;
+- **`initializeCommand` runs on this server, not in the container, as the drydock user, which can read Drydock's keys and is root through Docker**, when it is new or changed (the sentence PR #141 adds to the web card);
+- *New*, *Changed since the last approval* (was / now) and *No longer asked for*, each setting with its source (*the repository's devcontainer.json* or *a Feature or the image*) and its value as JSON text, never the whole configuration.
+
+**One source for both clients.** The sentences and the grouping move into core as `lib/approval.ts` (`approvalSections(req)`), and both `HostAccessApproval.vue` and the extension's document provider render it. A warning added to one client is then in the other, and the web's existing `views/HostAccessApproval.spec.ts` keeps its sentences. **Values are shown as data, never interpreted.** `JSON.stringify` already escapes newlines and control characters, so a value cannot forge a line of the document. Core also escapes Unicode format characters (bidi overrides, zero-width characters) as `\uXXXX`, so a container-written value cannot visually reorder what the operator reads. That applies to the web card too, and lands in the core PR.
+
+#### How it is confirmed: typing the repository's full name
+
+From the review document (an editor-title action, or `drydock.approve` while that document is the active editor), *Approve and continue* opens an input box. Its prompt repeats the root sentences that apply, and it asks for the repository's full name (`krelinga/alpha`), compared exactly as delete's confirm is. Enter with anything else does nothing. Escape or focus loss (`ignoreFocusOut: false`) cancels.
+
+**Why typing, not a modal.** A VS Code modal's primary button is the first non-*Cancel* item, so Enter approves: one keystroke from a stray Enter (documented as `isCloseAffordance`'s semantics; Spike 05 #4 measures it). `showWarningMessage` has no way to make *Cancel* the default. Typing the name is the friction overall §13.5 already chose for the other irreversible action, it cannot be satisfied by a keystroke meant for something else, and it names the repository being trusted. This is stricter than the web card's one click, which is open question 2.
+
+**Never one keystroke, anywhere.** No keybinding, no hub or quick-pick item that approves, and no notification button that approves. The notification's action is **Review**, which only opens the document. *Cancel* (decline) is a plain modal: declining leaves the workspace stopped and is safe.
+
+#### Approve exactly what was shown
+
+The client cannot recompute the hash, since it never sees `Settings`. So the binding is this: **the hash sent is the one that arrived in the same `ApprovalView` the document rendered.**
+
+- The provider renders from a snapshot `{workspaceId, hash, view, version}` taken from the reducer's `approval` entity, versioned with the state (the same rule that stops a late event reviving a request, frontend §6.5a). The approve command reads the workspace id and hash **only from the active document's snapshot**. It never reads them from the entity at send time, and never from command arguments (§8 rule 2).
+- If the entity's request changes while the document is open (a new hash, or none), the document re-renders from the new snapshot and any input box in progress is cancelled. The operator must read again and type again.
+- A race the client cannot see (the request changed after the last event it applied) is the server's `409 approval_stale`. The extension then refetches the workspace and re-opens the document on the new request, with the server's sentence: *the configuration changed after it was shown, so nothing was approved*.
+
+This is the web card's property (it sends `req.hash` from the object it rendered) made explicit, because in the extension the text and the confirmation are separate pieces of UI.
+
+#### Who may approve
+
+- **Only from local and SSH windows** (§8 rule 1). An attached container's extension host cannot approve its own workspace's host access, or any other's, through our commands. That is the attack the approval gate exists to stop: a container granting itself host access. Rule 1 is the control, and the typed name is depth.
+- **Arguments are ignored** (rule 2): a caller cannot pre-select a workspace, a hash or a subset. `drydock.approve` with no active review document opens a pick of pending requests and then the document, never the input box.
+- **With a token** (from E3): only one carrying `approve` (§4.2). Without it, *Review in Drydock*.
+- The approve and decline marks end on `workspace.job` `approve` and on the request disappearing (`settlesApprove`, `settlesDecline`), as in the web UI.
 
 ### 10.5  Parity: every web UI surface, and where it lands
 
@@ -441,8 +490,12 @@ The owner asked for eventual parity. This is the inventory (`web/src/routes.ts`,
 | Ports panel: list, enable, disable, hide, relabel, host header, rescan, probe, diagnosis | `drydock.ports…`; diagnosis sentences from core's `lib/portDiagnosis.ts` | E3 |
 | Preview link | `openExternal`; the browser's own preview handshake | E3 |
 | Settings: signed-in devices, *Sign out* (this device), *Sign out everywhere* (there is no per-device revoke in the API: `DELETE /api/auth/session` ends the caller's session or, with `?all=true`, all of them) | Read-only device list in E2; `signOut` ends the extension's own session (E1); *Sign out everywhere* stays web-only, outside the token scope (§4.2) | E1 / E2 (read) |
-| Host-access approval (`HostAccessApproval.vue`) | *Review in Drydock* only | never, by recommendation (§10.4) |
-| Secrets (`/secrets`, new, edit, grants) | *Open in Drydock* only | never, by recommendation (§10.4) |
+| Host-access approval (`HostAccessApproval.vue`): the request, the warnings (`privileged`, `initializeCommand`), *Approve and continue*, *Cancel* | The review document from core's `lib/approval.ts`, typed-name approve, modal decline (§10.4) | **E1** |
+| Secrets (`/secrets`, new, edit, grants) | *Open in Drydock* only | never, by recommendation (§10.6) |
+
+### 10.6  Secrets: web-only
+
+The owner's decision on approvals does not extend to secrets, and nothing argues for moving them. The value would be typed into the editor, where clipboard managers, extensions that observe input and settings sync are all nearby, and the web UI's form is the place this repository has made safe (frontend §6.4). Reading secret *metadata* (names, reach, grants) would be harmless but is not useful enough to justify the scope. An extension token never carries a secrets scope (§4.2).
 
 ## 11. Required server changes
 
@@ -451,12 +504,13 @@ The owner asked for eventual parity. This is the inventory (`web/src/routes.ts`,
 | `GET /api/meta` → `{version, api}`, `AuthRequired`. `version` threaded from `main.version` into `config.Config`. | E1 | `internal/api` route table + handler, `cmd/drydock`, overall §5 |
 | `TestExtensionContract` over `extension/contract.json` | E1 | `internal/api` |
 | `deviceLabel` recognises a `Drydock-VSCode/<version>` user-agent token → *VS Code on Mac*. The extension sends `User-Agent: Drydock-VSCode/<v> (<platform>)`. | E1 | `internal/api/session_routes.go` |
-| Release: `extra-files`, the `.vsix` asset, `verify`'s list | E1 | `release-please-config.json`, `.github/workflows/release-please.yml` |
-| Scoped API tokens: schema row, mint/revoke routes, `Authenticate` with a bearer, a `Scope` column in the route table, its meta-test, *Sign out everywhere* split into its own route (`DELETE /api/auth/sessions`, §4.2), the Settings UI, the CLAUDE.md invariant wording | before E2 | `internal/auth`, `internal/api`, `internal/store`, `web/`, overall §4 and §13.2 |
+| Release: `extra-files`, the `.vsix` asset, `verify`'s list | E1 |
+| Not the server, but in the same E1 core PR: the web card renders from core's `lib/approval.ts`, and container-written values have Unicode format characters escaped (§10.4) | E1 | `web/src/core`, `web/src/components/HostAccessApproval.vue` | `release-please-config.json`, `.github/workflows/release-please.yml` |
+| Scoped API tokens: schema row, mint/revoke routes, `Authenticate` with a bearer, a `Scope` column in the route table (`read`, `lifecycle`, `approve`), its meta-test, the token as `approved_by`, *Sign out everywhere* split into its own route (`DELETE /api/auth/sessions`, §4.2), the Settings UI with the `approve` checkbox, the CLAUDE.md invariant wording | before E3 | `internal/auth`, `internal/api`, `internal/store`, `web/`, overall §4 and §13.2 |
 
 Optional, and not a prerequisite: a registry of event kinds in `internal/events`, which would make the event half of the contract static (§9.1).
 
-Beyond the tokens, nothing in E1 or E2 needs a new mutating route, a new event or a change to an existing response.
+Nothing in E1 or E2 needs a new mutating route, a new event or a change to an existing response.
 
 ## 12. Testing
 
@@ -494,6 +548,8 @@ Specs worth naming:
 - **Link → URI**: every case `internal/vscode`'s tests pin (bare host, user, port, capitals, encoded path), read from **the Go test's own table**, as `lib/capacity.spec.ts` reads `Occupying`. Every shape the web's `vscodeURL` refuses, the extension refuses too.
 - **The update URL**: a `meta.version` that is not `^v\d+\.\d+\.\d+$` builds no URL.
 - **Command logic over a fake `Prompter`**: the clone flow's every exit (cancelled pick, `409 in_progress`, `409 at_capacity` with its detail, `507 disk_full`, `503 app_not_configured`), each producing the sentence `api/messages.ts` gives the web UI.
+- **The approval binding** (§10.4): `drydock.approve` sends the workspace id and hash of the active review document's snapshot and nothing else. With the entity moved on to hash B while the document still shows A, it sends A (and lets the server refuse). It ignores a hash or workspace passed as an argument. A new snapshot cancels an open input box. The typed name is compared exactly: case, whitespace and the short name all refuse. The control: the right name for the snapshot shown sends one `POST`. Mutation-checked by reading the hash from the entity at send time.
+- **`lib/approval.ts`** (core): the sections and warnings for each mix of `privileged` and `initializeCommand` (new, changed, only removed, which earns no warning). Values with a newline, a control character and a bidi override render as escaped text. The control: plain ASCII renders unchanged. The web spec and the extension's provider spec both run against it.
 - **The stream's holds** (§5.5): a follow keeps the stream past five idle minutes on a fake clock, through a reconnect, and releases it on `running`, `failed`, approval or `workspace.gone`.
 
 ### 12.3  The manifest is a tested artifact
@@ -521,7 +577,7 @@ This is the tier that does the most work, and it is cheap because it is plain No
 - `githubtest.New` and `EnableGit` take a `testing.TB` (`internal/github/githubtest/fake.go`, `git.go`).
 - `server.New` builds one `container.Manager` and hands *copies* to the provisioner and to the `vscode.Linker` (`internal/server/server.go`). So the walking-skeleton test's trick of setting `srv.Provisioner.Containers.Run` afterwards (`internal/server/workspace_test.go`) never reaches the link, and a clone's view would carry none.
 
-So the stack is **a long-running `go test`**: `test/extension/stack/stack_test.go`, `TestServeStack`, skipped unless `DRYDOCK_EXTENSION_STACK` names a config file, which the harness writes. Inside it, `githubtest` gets its `testing.TB`. It sets `cfg.GitHubAPI` before `server.New`, and `Provisioner.Cloner.BaseURL` after it (`Cloner` is a pointer, so that assignment does reach the cloner). It replaces **no Go seam for containers**. Instead, `devcontainer` and `docker` are **fake executables first on `PATH`**, since `subproc.Exec` resolves both by name, so every copy of the manager runs them. That is the browser tier's stand-in `docker` extended, plus a stand-in `devcontainer` that answers `read-configuration` and prints the one JSON object `up` prints. It also tests the argv Drydock really builds, which CLAUDE.md prefers to a Go mock. It serves on the real Unix socket, behind the real Caddy on `deploy/Caddyfile`, until the harness stops it. The harness runs it with `go test -timeout 0` (the default 10-minute timeout would kill a long session), and the test `signal.Notify`s for `SIGTERM` and *returns* when one arrives, so `t.Cleanup` runs: the server shuts down, `githubtest`'s server closes and the temp root is left in a state the sweep can read. An un-handled `SIGTERM` would kill the test binary with none of that.
+So the stack is **a long-running `go test`**: `test/extension/stack/stack_test.go`, `TestServeStack`, skipped unless `DRYDOCK_EXTENSION_STACK` names a config file, which the harness writes. Inside it, `githubtest` gets its `testing.TB`. It sets `cfg.GitHubAPI` before `server.New`, and `Provisioner.Cloner.BaseURL` after it (`Cloner` is a pointer, so that assignment does reach the cloner). It replaces **no Go seam for containers**. Instead, `devcontainer` and `docker` are **fake executables first on `PATH`**, since `subproc.Exec` resolves both by name, so every copy of the manager runs them. That is the browser tier's stand-in `docker` extended, plus a stand-in `devcontainer` that answers `read-configuration` and prints the one JSON object `up` prints. One seeded repository, `krelinga/dind`, gets a configuration asking for `privileged` (and a second variant adding `initializeCommand`, switched by a file the harness can rewrite), so step 3 stops it for approval as a real docker-in-docker repository would. The stack's own test is the control that the stop happens. It also tests the argv Drydock really builds, which CLAUDE.md prefers to a Go mock. It serves on the real Unix socket, behind the real Caddy on `deploy/Caddyfile`, until the harness stops it. The harness runs it with `go test -timeout 0` (the default 10-minute timeout would kill a long session), and the test `signal.Notify`s for `SIGTERM` and *returns* when one arrives, so `t.Cleanup` runs: the server shuts down, `githubtest`'s server closes and the temp root is left in a state the sweep can read. An un-handled `SIGTERM` would kill the test binary with none of that.
 
 What the stand-ins must answer is exactly what the eight steps and the link ask: the volume checks, `read-configuration`, `up`, the `ps`/`inspect` that find the container by label and read its name and clone mount, and the `exec` that runs `fakeclaude` for step 8. The stack's own Go test records their argv and is its positive control: the catalog lists the seeded repositories, a clone reaches `running`, and its view carries a link. It does **not** test the docker guard. `--docker-path` names the test binary, which the stand-in `devcontainer` never runs. The guard is the container tier's. This stack is the largest piece of test infrastructure E1 needs, and the plan should be sized for it.
 
@@ -541,6 +597,8 @@ What the stand-ins must answer is exactly what the eight steps and the link ask:
 | **Clone and follow, end to end**: `POST /api/workspaces` → the mark ends on `settlesClone` → the reducer reaches `running` → the refetched view carries a `vscode.url` that `vscodeURL` accepts | |
 | **The event kinds the extension reads were all seen** (§9.1): every kind received is recorded, and each kind `contract.json` lists as read and not `unexercised` is among them | The recorded set is non-empty and contains `workspace.state` |
 | `GET /api/meta` answers the stack's `{version, api}` | |
+| **Approval, as the API does it**: clone `krelinga/dind` → `stopped` with an `approval` carrying `privileged` → `POST …/config-approval` with that hash → `config.approved` with the same hash → `running` | |
+| **A stale hash is refused**: decline, switch the fixture to the `initializeCommand` variant, start again → a new request B. Approve with A → `409 approval_stale`, nothing recorded | Approve with B → `202` |
 
 The fake transport in the unit tier is checked against this tier: the recorded responses it replays are captured here, so the fake can never claim a shape the server does not produce (testing §6.1, *no fake without a contract test*).
 
@@ -568,6 +626,9 @@ The fake transport in the unit tier is checked against this tier: the recorded r
 - **Every E2 mark ends on its settling event**, including after the stack forces a `resync` (an event-log gap past the replay window). This is the extension's copy of `inflightResync.spec.ts`, run against the real server.
 - **Workspace and folder settings cannot move `drydock.url`**: a `.vscode/settings.json` in the test workspace setting it to the second Caddy site changes nothing, and the second site's tap records no request. The control: the same value in user settings does move it, and is then refused the cookie (origin binding).
 - **Keybinding conflicts**: read VS Code's default keybindings and parse them. No default binding uses `ctrl+alt+shift+d`. Control: `ctrl+shift+p` is found as `workbench.action.showCommands`. *How* to read them is unmeasured: `openTextDocument(vscode://defaultsettings/keybindings.json)` from an extension may not resolve, and the fallback is `workbench.action.openDefaultKeybindingsFile` and reading the active editor. Spike 05 decides.
+- **E1's docker-in-docker flow**: clone `krelinga/dind` → the notification offers **Review** (and no approve) → the review document's text equals core's `approvalSections` for the request, `privileged` sentence included → scripted typed name → the `POST` carries the document's hash → the follow continues to `running` → the recorded `Opener` URI.
+- **Rule 1 for approve**: with `window` reporting `attached-container`, the scripted operator typing the right name sends nothing, and the document offers *Do this from a local or SSH window*. The control is `undefined`, which sends.
+- **Approve exactly what was shown**: the document is open on A, with the scripted operator at the input box. A second client declines and restarts with the `initializeCommand` variant. When B's event lands, the input box closes and no `POST` is sent, and the document now shows the `initializeCommand` sentence. Typing again sends B's hash. **And the race the client cannot see**: the harness holds the SSE relay at the tap, so the extension has not seen B, and the scripted operator confirms A. The `POST` carries A, the server answers `409 approval_stale`, and the extension refetches and reopens the document on B. The control in the same test is the unheld run approving A → `202`.
 - **Version skew** (§12.7).
 
 ### 12.6  UI-level tests: evaluated, and kept small
@@ -581,7 +642,8 @@ The fake transport in the unit tier is checked against this tier: the recorded r
 The contract tier and the extension-host tier cover nearly everything a UI robot would, at a fraction of the cost and with no DOM to drift. What only a robot can see is **real input**. So there is a small `wdio-vscode-service` suite (chosen over ExTester for the lighter runner and real key events), on the **installed `.vsix` in Production mode**:
 
 - *Keyboard-only connect*: sign in by typing, the chord reaches `drydock.go`, typing filters, Enter clones, and the notification's `notification.acceptPrimaryAction` connects. That ends in a window VS Code tries and fails to resolve, since there is no SSH. The spec asserts the attempt from VS Code's log, the one place a Production build reveals the URI it opened.
-- *The hostile extension against the real modal* (§12.8), after the suite's typed sign-in, so the modal really opens.
+- *Docker-in-docker by keys*: clone `krelinga/dind`, `notification.acceptPrimaryAction` on **Review**, the document opens, the editor-title action by its command, the name typed, Enter, `running`, connect.
+- *The hostile extension against the real modal and the approval input* (§12.8), after the suite's typed sign-in, so both really open.
 
 It runs **nightly in its own workflow** (`.github/workflows/extension-nightly.yml`, in the Playwright image), not inside `stress.yml`: that job runs on a bare runner without Xvfb, and its tests stop at minute 52 of a 60-minute job. It runs on demand too, and is **not a required check**. A flake files an issue the way the stress job does (`flake: extension-ui …`). It is promoted to CI only after a month without a flake. If it never gets there, the connect ritual covers the same path by hand.
 
@@ -613,6 +675,13 @@ It runs **nightly in its own workflow** (`.github/workflows/extension-nightly.ym
   5. The suite presses Escape (*Cancel*): the dialog is gone and the tap is still empty.
   6. **The positive control**: `drydock.stop` again, the suite presses Enter on *Stop*, and the tap records the `POST`.
 - Mutation-checked by letting `drydock.stop` honour its argument and skip its modal (step 2 then fails by name).
+- **The same spec against approval**, with `krelinga/dind` stopped for approval and its review document active (opened by the suite, as an operator would). The fixture fires `drydock.approve` unawaited, with `{ hash, workspace }` arguments: first a forged hash, then the real one. The test hands the fixture the real one, which makes the test stronger than any real attacker could be. It loops the accept-like commands, plus `type` with the repository's full name followed by each accept, timestamping each call, until the suite signals. The suite asserts:
+  1. the approval input box opened (in the DOM);
+  2. at least one full round landed after it appeared;
+  3. the tap has no `POST …/config-approval`;
+  4. Escape leaves it so.
+
+  The positive control: the suite types the name and presses Enter, and the tap records the `POST` with the document's hash. Mutation-checked by accepting the hash argument. If Spike 05 finds `type` can fill another extension's input box, rule 1 is still the control, and this case says so by failing.
 - This proves "no command accepts the modal" for the custom dialog style only, and nightly only. The native style is Spike 05 #4's, measured on the laptop, where a blocked window can be closed by hand. On a PR, the depth rules are checked only by the Test-mode run's argument and return-value cases. The window rule (§8 rule 1), which is the primary control, is checked on every PR.
 
 **TLS and `Origin`**: the wrong-host certificate and the `Origin` pair live in the client tier (§12.4). The extension-host tier repeats the wrong-host case once with VS Code's own HTTP stack in play, since VS Code patches Node's `https` and `fetch` for proxies and system certificates. That run also asserts `http.proxyStrictSSL` is not `false` in the test profile, since a test profile that disabled it would quietly pass the wrong-host case.
@@ -647,6 +716,10 @@ Every item below is a belief about undocumented or unmeasured VS Code behaviour 
 | TLS validation never off | unit + client + extension host | `boundary.spec.ts` text rule; wrong-host cert refused | Right-host cert accepted |
 | No mutation outside local and SSH windows (rule 1, primary) | unit + extension host | `mayMutate` table; every mutating handler consults it; a reported `attached-container` sends nothing | The same under `undefined` and `ssh-remote` sends |
 | Commands cannot be driven by another extension (depth) | extension host (arguments, returns) + keyboard smoke (modal) | Hostile fixture with every accept-like command, after the modal is seen open | The operator's real Enter on the modal, in the same spec (nightly) |
+| Approve only from local and SSH windows | unit + extension host | `mayMutate`; a reported `attached-container` with the right name typed sends nothing | `undefined` sends |
+| Approve exactly what was shown | unit + client + extension host | Snapshot-only hash; held-stream race → `409`; a new request cancels the input | The shown hash approves |
+| The extension shows what the web card shows | core | Both render `lib/approval.ts` | The web spec's sentences |
+| No one-keystroke approve | manifest + keyboard smoke | No keybinding or hub item for `drydock.approve`; hostile `type` + accept sends nothing | The operator's typed name sends |
 | Lazy activation, no request without use | extension host | Tap empty after start | View open → request |
 | The link is the server's, rewritten only in scheme | unit + extension host | Go table cases; recorded `Opener` URI | |
 | Skew is detected in both directions | client + extension host | §12.7 | In-range server works fully |
@@ -656,7 +729,7 @@ Every item below is a belief about undocumented or unmeasured VS Code behaviour 
 
 **The real attach cannot run in CI.** It needs a real SSH host with Docker, Remote-SSH and Dev Containers in the profile, and a way to observe the window they open, which the extension that asked for it does not have. (The extensions' licence restricts them to Microsoft's builds, which CI's pinned VS Code is, so the licence is not the obstacle.) So CI stops at the boundary and asserts it exactly: the URI and the command handed to VS Code (§12.5). Everything past that is a ritual, a file in `test/rituals/` with a checklist and commands (testing §11):
 
-- **`vscode-connect.md`** — the E1 done-when on the real laptop and server: install the release's `.vsix`, sign in, and, with the keyboard only, clone `krelinga/drydock-testbed-a`, follow it, connect. In the new window: the folder is the clone, `git push` of a `drydock/` branch succeeds through the broker, *Reopen in Container* of the clone on the host finds Drydock's container rather than building one (design §6), and the device list shows *VS Code on Mac*. Then, from that container window: a mutating command says to do it elsewhere (§8, rule 1). And with `drydock.url` set to another origin in the container's `customizations.vscode.settings` (and the workspace rebuilt), the extension still talks to the right Drydock. Run before each release that changes `extension/`, and as part of the release smoke test (testing §11.4).
+- **`vscode-connect.md`** — the E1 done-when on the real laptop and server: install the release's `.vsix`, sign in, and, with the keyboard only, clone `krelinga/drydock-testbed-a`, follow it, connect. Then do the same for a docker-in-docker repository of the owner's: Review, read, type, `running`, connect, and in the container `docker run hello-world` works (the approval did what it said). In the new window: the folder is the clone, `git push` of a `drydock/` branch succeeds through the broker, *Reopen in Container* of the clone on the host finds Drydock's container rather than building one (design §6), and the device list shows *VS Code on Mac*. Then, from that container window: a mutating command says to do it elsewhere (§8, rule 1). And with `drydock.url` set to another origin in the container's `customizations.vscode.settings` (and the workspace rebuilt), the extension still talks to the right Drydock. Run before each release that changes `extension/`, and as part of the release smoke test (testing §11.4).
 - **`vscode-bump.md`** — triggered by a bump of the pinned VS Code, or when Remote-SSH or Dev Containers update past the version `internal/vscode` was read from (0.470.0): re-run Spike 05, re-read the attached-container authority in the Dev Containers extension (the procedure `internal/vscode`'s comment describes), re-run the connect ritual, and move the pins in the same commit.
 - **`vscode-keymap.md`** — triggered by changing a default keybinding or bumping the pinned VS Code: on macOS and Windows, open *Keyboard Shortcuts*, search the hub's chord and `notification.acceptPrimaryAction`'s, and confirm only the expected command holds each. Check the OS's own shortcut list too.
 
@@ -672,15 +745,16 @@ Every item below is a belief about undocumented or unmeasured VS Code behaviour 
 
 - **No reach beyond the LAN.** The extension reaches Drydock where the browser does (§2.1).
 - **No auto-update** without the operator pressing *Install*. Skew is detected and named instead (§9).
-- **No approvals, no secrets** in the extension, by recommendation (§10.4).
+- **No secrets** in the extension, by recommendation (§10.6).
+- **A stricter approval than the web card's.** The web card approves with one click. The extension asks for the repository's name to be typed (§10.4).
 - **No proof in CI that a window actually attaches.** The URI handed over is proven exactly, and the attach is a ritual (§12.11).
 - **No defence against the container window itself.** The extension keeps its commands and credential out of a container's reach, and claims nothing more (§8.2).
 - **No webview UI.** Quick picks, trees, notifications and virtual documents only. That costs some presentation (the step timeline is a progress notification and a tree, not the web UI's timeline) and buys §8's *no ambient credential*.
 
 ## 14. Open questions
 
-1. **Auth: is (a) acceptable for E1**, with (b) scoped tokens landing before E2 (§4.5)? Or should (b) come first, so the extension never holds a full session at all? Weigh it with §2.3: if Spike 05 shows a container window can reach a local terminal, a hostile repository you attach to owns the laptop, browser cookie included. A scoped token then limits only what the extension's own credential adds.
-2. **Approvals and secrets: confirm they stay web-only** (§10.4), with the extension's token scope enforcing it from E2. Or name the conditions under which the extension may approve.
+1. **Auth: is (a), the cookie session, acceptable for E1 and E2**, approvals included, with (b) scoped tokens (and an explicit `approve` grant) landing before E3 (§4.5)? Or should tokens come first, so the extension never holds a full session at all? Weigh it with §2.3: if Spike 05 shows a container window can reach a local terminal, a hostile repository you attach to owns the laptop, browser cookie included, and no credential choice changes that.
+2. **The approval's confirmation**: typing the repository's full name (§10.4) is stricter than the web card's one click. Is that the right friction for a docker-in-docker repository approved once per configuration change? The alternative is a modal whose default is *Cancel*, which `showWarningMessage` does not appear to offer (Spike 05 #4 confirms what Enter does in a modal).
 3. **Container windows**: is "mutations only from local and SSH windows" (§8, rule 1) the right line, or too strict? It also refuses **WSL windows** (`remoteName` `wsl`) and tunnels: if the owner ever drives Drydock from a WSL window, `wsl` would need adding to the allowlist, and a WSL distro's extension host is the laptop user's own code, much as an SSH host is. The cost: stopping workspace B from inside workspace A's window means the palette says *do this from a local or SSH window*. It is the primary control, so loosening it means relying on modals whose safety Spike 05 has yet to measure.
 4. **The default keybinding**: `ctrl+alt+shift+d` / `cmd+alt+shift+d` for the hub, and no others (§6.2). Or a different chord, or none at all?
 5. **Where the `.vsix` comes from for updates**: GitHub releases (§9.2), or **the Drydock server serving its own `.vsix`** at an authenticated route, which removes GitHub from the update path and can never be mismatched. That would grow the binary by a few hundred KB and add a route.
