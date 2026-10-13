@@ -6,11 +6,14 @@
 import { describe, expect, it } from 'vitest'
 import { DrydockClient } from './client'
 import { CredentialStore } from './credential'
-import { CREATE_TOKEN, FORGET_ANYWAY, PASTE_TOKEN, TOKEN_REFUSED, notRevoked, retireStale, signIn, signOut, type SessionDeps } from './session'
+import {
+  CREATE_TOKEN, FORGET_ANYWAY, KEEP, PASTE_TOKEN, SETTLE_MS, StaleTokenWatch, TOKEN_REFUSED, notRevoked, signIn, signOut, signOutOf,
+  staleSentence, type SessionDeps,
+} from './session'
 import { SERVER_NEWER } from './handshake'
 import { originOf } from './settings'
 import {
-  FakeTransport, MemoryLog, MemorySecrets, ORIGIN, RecordingOpener, ScriptedPrompter, TOKEN, TOKEN2, errorResponse,
+  FakeClock, FakeTransport, FakeWindow, MemoryLog, flush, MemorySecrets, ORIGIN, RecordingOpener, ScriptedPrompter, TOKEN, TOKEN2, errorResponse,
   jsonResponse, settingsOf,
 } from '../test/fakes'
 
@@ -176,35 +179,111 @@ describe('no live token left behind', () => {
     expect(t.transport.requests.map((r) => r.method)).toEqual(['GET'])
   })
 
-  it('a changed drydock.url revokes the stored token at its origin and forgets it; an unchanged one is left alone (control)', async () => {
-    const same = setup()
-    same.secrets.value = JSON.stringify({ origin: ORIGIN, token: TOKEN })
-    expect(await retireStale(same.d)).toBe(false)
-    expect(same.transport.requests).toEqual([])
-    expect(same.secrets.value).toContain(TOKEN)
+  it('a sign-in whose revocation of the old token fails still forgets it, and says where to revoke it by hand', async () => {
+    const t = setup('https://new.test')
+    t.secrets.value = JSON.stringify({ origin: ORIGIN, token: TOKEN2 })
+    t.transport.route = (req) => {
+      if (req.method === 'DELETE') throw new Error('down')
+      return jsonResponse(200, META)
+    }
+    t.prompter.answers = [PASTE_TOKEN]
+    t.prompter.typed = [TOKEN]
+    await signIn(t.d)
+    expect(JSON.parse(t.secrets.value!)).toEqual({ origin: 'https://new.test', token: TOKEN })
+    expect(t.prompter.texts()).toContain(notRevoked(ORIGIN))
+  })
+})
 
-    const moved = setup('https://new.test')
-    moved.secrets.value = JSON.stringify({ origin: ORIGIN, token: TOKEN })
-    moved.transport.route = ok204
-    expect(await retireStale(moved.d)).toBe(true)
-    expect(moved.transport.requests.map((r) => [r.method, r.url])).toEqual([['DELETE', `${ORIGIN}/api/auth/token`]])
-    expect(moved.secrets.value).toBeUndefined()
+describe('a token for an origin drydock.url no longer names', () => {
+  const ok204 = () => ({ status: 204, headers: { get: () => null }, text: async () => '' })
 
-    const unset = setup('')
-    unset.secrets.value = JSON.stringify({ origin: ORIGIN, token: TOKEN })
-    unset.transport.route = ok204
-    expect(await retireStale(unset.d)).toBe(true)
-    expect(unset.secrets.value).toBeUndefined()
+  function watch(url: string, opts: { remote?: string; focused?: boolean; answer?: string } = {}) {
+    const t = setup(url)
+    t.secrets.value = JSON.stringify({ origin: ORIGIN, token: TOKEN })
+    t.transport.route = ok204
+    const clock = new FakeClock()
+    const w = new StaleTokenWatch({ ...t.d, window: new FakeWindow(opts.remote, opts.focused ?? true), clock })
+    t.prompter.message = async function (level, text, actions = []) {
+      this.shown.push({ level, text, actions })
+      return text.startsWith('drydock.url now names') ? opts.answer : undefined
+    }
+    return { ...t, clock, w }
+  }
+
+  it('typed a keystroke at a time, it asks nothing until the value holds still, then asks once', async () => {
+    const t = watch(ORIGIN)
+    const target = 'https://new.test'
+    for (let i = 1; i <= target.length; i++) {
+      t.settings.set(target.slice(0, i))
+      t.w.changed()
+      t.clock.advance(200)
+      await flush()
+    }
+    expect(t.prompter.shown).toEqual([])
+    expect(t.transport.requests).toEqual([])
+    t.clock.advance(SETTLE_MS)
+    await flush()
+    expect(t.prompter.shown.map((s) => s.actions)).toEqual([[signOutOf(ORIGIN), KEEP]])
+    expect(t.prompter.texts()[0]).toBe(staleSentence(ORIGIN, target))
+    // Dismissed: nothing was sent, the token is kept.
+    expect(t.transport.requests).toEqual([])
+    expect(t.secrets.value).toContain(TOKEN)
   })
 
-  it('a revocation that fails still forgets the token, and says where to revoke it by hand', async () => {
-    const t = setup('https://new.test')
-    t.secrets.value = JSON.stringify({ origin: ORIGIN, token: TOKEN })
-    t.transport.route = () => {
-      throw new Error('down')
+  it('an empty or invalid value does nothing; the same valid origin does nothing (controls for the prompt below)', async () => {
+    for (const url of ['', 'https://', 'https://New.test', 'http://new.test', ORIGIN]) {
+      const t = watch(url)
+      expect(await t.w.check(), url).toBe('nothing')
+      expect(t.prompter.shown, url).toEqual([])
+      expect(t.transport.requests, url).toEqual([])
     }
-    await retireStale(t.d)
+  })
+
+  it('a different valid origin asks once, however often it is checked', async () => {
+    const t = watch('https://new.test')
+    expect(await t.w.check()).toBe('kept')
+    expect(await t.w.check()).toBe('nothing')
+    t.w.changed()
+    t.clock.advance(SETTLE_MS)
+    await flush()
+    expect(t.prompter.shown).toHaveLength(1)
+  })
+
+  it('Sign out revokes the token at its own origin and forgets it', async () => {
+    const t = watch('https://new.test', { answer: signOutOf(ORIGIN) })
+    expect(await t.w.check()).toBe('signed_out')
+    expect(t.transport.requests.map((r) => [r.method, r.url, r.headers.Authorization])).toEqual(
+      [['DELETE', `${ORIGIN}/api/auth/token`, `Bearer ${TOKEN}`]])
     expect(t.secrets.value).toBeUndefined()
-    expect(t.prompter.texts()).toContain(notRevoked(ORIGIN))
+  })
+
+  it('Keep sends nothing and keeps the token', async () => {
+    const t = watch('https://new.test', { answer: KEEP })
+    expect(await t.w.check()).toBe('kept')
+    expect(t.transport.requests).toEqual([])
+    expect(t.secrets.value).toContain(TOKEN)
+  })
+
+  it('only the focused window, and only a local or SSH one, asks (the controls are the cases above)', async () => {
+    for (const opts of [{ focused: false }, { remote: 'attached-container' }, { remote: 'dev-container' }]) {
+      const t = watch('https://new.test', { ...opts, answer: signOutOf(ORIGIN) })
+      expect(await t.w.check(), JSON.stringify(opts)).toBe('nothing')
+      expect(t.prompter.shown).toEqual([])
+      expect(t.transport.requests).toEqual([])
+    }
+    const ssh = watch('https://new.test', { remote: 'ssh-remote', answer: signOutOf(ORIGIN) })
+    expect(await ssh.w.check()).toBe('signed_out')
+  })
+
+  it('a token replaced while the question was open is not the one signed out', async () => {
+    const t = watch('https://new.test')
+    t.prompter.message = async function (level, text, actions = []) {
+      this.shown.push({ level, text, actions })
+      t.secrets.value = JSON.stringify({ origin: 'https://new.test', token: TOKEN2 })
+      return signOutOf(ORIGIN)
+    }
+    expect(await t.w.check()).toBe('nothing')
+    expect(t.transport.requests).toEqual([])
+    expect(t.secrets.value).toContain(TOKEN2)
   })
 })

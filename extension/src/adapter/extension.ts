@@ -13,10 +13,9 @@ import { DrydockClient } from '../client'
 import { Dispatcher, type Handler } from '../dispatch'
 import { redacting } from '../log'
 import type { Log, Opener, Prompter, Secrets, Settings, Window } from '../ports'
-import { openInBrowser, retireStale, signIn, signOut, type SessionDeps } from '../session'
+import { StaleTokenWatch, openInBrowser, signIn, signOut, type SessionDeps } from '../session'
 import { originOf } from '../settings'
 import { nodeTransport } from '../node/transport'
-import { mayMutate } from '../windowRule'
 
 /** The one SecretStorage key: `{origin, token}` (credential.ts). */
 const SECRET_KEY = 'drydock.credential'
@@ -42,7 +41,7 @@ export function activate(context: vscode.ExtensionContext): void {
       placeHolder: opts.placeHolder,
     })),
   }
-  const window: Window = { remoteName: () => vscode.env.remoteName }
+  const window: Window = { remoteName: () => vscode.env.remoteName, focused: () => vscode.window.state.focused }
   const opener: Opener = {
     openExternal: async (url) => {
       await vscode.env.openExternal(vscode.Uri.parse(url, true))
@@ -74,17 +73,21 @@ export function activate(context: vscode.ExtensionContext): void {
     context.subscriptions.push(vscode.commands.registerCommand(c.id, dispatcher.run(c.id)))
   }
 
-  // A token whose origin drydock.url no longer names is revoked there and
-  // forgotten (session.ts retireStale): when the setting changes, and once
-  // now, for a change made while the extension was not running. Like every
-  // mutation, only from a local or SSH window (§8 rule 1).
-  const retire = () => {
-    if (mayMutate(window.remoteName())) void retireStale(session).catch((e: unknown) => log.warn(`retiring a stale token: ${String(e)}`))
+  // A token whose origin drydock.url no longer names: the operator is
+  // asked, once the setting holds still (session.ts StaleTokenWatch), and
+  // once now, for a change made while the extension was not running.
+  const clock = {
+    now: () => Date.now(),
+    after: (ms: number, fn: () => void) => {
+      const t = setTimeout(fn, ms)
+      return () => clearTimeout(t)
+    },
   }
+  const stale = new StaleTokenWatch({ ...session, window, clock })
   context.subscriptions.push(vscode.workspace.onDidChangeConfiguration((e) => {
-    if (e.affectsConfiguration('drydock.url')) retire()
+    if (e.affectsConfiguration('drydock.url')) stale.changed()
   }))
-  retire()
+  void stale.check().catch((e: unknown) => log.warn(`stale token: ${String(e)}`))
 }
 
 export function deactivate(): void {}

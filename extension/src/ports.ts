@@ -65,6 +65,8 @@ export interface Prompter {
 export interface Window {
   /** `vscode.env.remoteName`: undefined in a local window. */
   remoteName(): string | undefined
+  /** Whether this window has the focus (`vscode.window.state.focused`). */
+  focused(): boolean
 }
 
 /** Hands a URL to the operating system (the browser). */

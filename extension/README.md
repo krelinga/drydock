@@ -35,10 +35,12 @@ npm ci && npm run check   # types (twice: whole, and the pure layer alone), spec
   on every mutation, never following a redirect. A 401 is the one 401 path (the entry is cleared);
   a `403 forbidden_scope` and a 503 are not. A network failure keeps its cause's name and code
   (`ECONNREFUSED`, `CERT_…`) for Show Log, never its message.
-- **No live token is left behind** (`src/session.ts`): Sign Out revokes the token at the origin it
-  was stored for; a sign-in that replaces a token, and a `drydock.url` that no longer names the
-  stored token's origin (on the setting's change and on activation), revoke the old one there, best
-  effort, and forget it.
+- **No token is left live by accident** (`src/session.ts`): Sign Out revokes the token at the
+  origin it was stored for, and a sign-in that replaces a token revokes the old one there, best
+  effort, and forgets it. A `drydock.url` that no longer names the stored token's origin revokes
+  nothing by itself (the field is written on every keystroke): `StaleTokenWatch` waits for the
+  value to hold still, and if it is a different valid origin, the focused local or SSH window asks
+  once, *Sign out of <old>* or *Keep*. Meanwhile the token is sent nowhere.
 - **Mutations only from local and SSH windows** (`src/windowRule.ts`, `src/dispatch.ts`): every
   command runs through the dispatcher, which refuses a `mutating` command in any other window,
   ignores arguments and returns `undefined`. `mutating` is required in the registry.

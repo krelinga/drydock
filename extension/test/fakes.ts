@@ -134,9 +134,12 @@ export class ScriptedPrompter implements Prompter {
 }
 
 export class FakeWindow implements Window {
-  constructor(public name: string | undefined = undefined) {}
+  constructor(public name: string | undefined = undefined, public hasFocus = true) {}
   remoteName() {
     return this.name
+  }
+  focused() {
+    return this.hasFocus
   }
 }
 

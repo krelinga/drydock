@@ -14,11 +14,10 @@
 // origin it was stored for, whatever drydock.url says now.
 //
 // No live token is left behind when the credential is replaced: a sign-in
-// with a new token, and a drydock.url that no longer names the stored
-// token's origin (`retireStale`, run when the setting changes and on
-// activation), each revoke the old token at its own origin, best effort, and
-// then forget it. A revocation that fails is said, with where to revoke it
-// by hand.
+// with a new token revokes the old one at its own origin, best effort, and
+// then forgets it; a revocation that fails is said, with where to revoke it
+// by hand. A drydock.url that no longer names the stored token's origin
+// revokes nothing by itself: StaleTokenWatch asks.
 
 import { ApiError } from '../../web/src/core/errors'
 import { describeError } from '../../web/src/core/messages'
@@ -26,8 +25,9 @@ import type { DrydockClient } from './client'
 import { checkPaste, type Credential, type CredentialStore } from './credential'
 import { parseMeta, skew, type Meta } from './handshake'
 import { errorLine } from './log'
-import type { Log, Opener, Prompter, Settings } from './ports'
+import type { Clock, Log, Opener, Prompter, Settings, Window } from './ports'
 import { originOf } from './settings'
+import { mayMutate } from './windowRule'
 
 export const CREATE_TOKEN = 'Create a token in Drydock'
 export const PASTE_TOKEN = 'Paste a token'
@@ -142,19 +142,80 @@ async function retire(d: SessionDeps, old: Credential): Promise<void> {
 export const notRevoked = (origin: string) =>
   `The previous Drydock token could not be revoked at ${origin}, and is forgotten here. Revoke it in that Drydock's Settings.`
 
+export const KEEP = 'Keep'
+export const signOutOf = (origin: string) => `Sign out of ${origin}`
+export const staleSentence = (stored: string, now: string) =>
+  `drydock.url now names ${now}, but this VS Code is signed in to ${stored}. That token is not sent anywhere while drydock.url names another Drydock.`
+
+/** How long drydock.url must hold still before a change is acted on: the Settings editor writes on every keystroke. */
+export const SETTLE_MS = 3_000
+
+export interface StaleDeps extends SessionDeps {
+  window: Window
+  clock: Clock
+}
+
 /**
- * After drydock.url changed (and on activation): a stored token for an
- * origin the setting no longer names is revoked there and forgotten. One for
- * the configured origin is left alone. Resolves to whether one was retired.
+ * A stored token whose origin drydock.url no longer names (vscode-extension
+ * §6.4). Nothing is revoked automatically: the client already sends the
+ * token nowhere while the setting names another origin (client.ts), and a
+ * changed setting may be a half-typed one, or a switch the operator means to
+ * undo. So, once the setting has held still for SETTLE_MS and names a valid
+ * origin other than the token's, the operator is asked once — Sign out of
+ * the old Drydock (revoke there, best effort, and forget) or Keep (nothing
+ * sent) — and only:
+ *
+ *   - from a local or SSH window (§8 rule 1: signing out is a mutation);
+ *   - in the focused window, so one change is one question however many
+ *     windows are open;
+ *   - once per (token origin, new origin) pair in this window, and never
+ *     while a question is already open.
+ *
+ * An empty or invalid value does nothing: it names no other Drydock.
  */
-export async function retireStale(d: SessionDeps): Promise<boolean> {
-  const stored = await d.credentials.read()
-  if (stored === null) return false
-  const o = originOf(d.settings.url())
-  if (o.ok && o.origin === stored.origin) return false
-  await retire(d, stored)
-  await d.prompter.message('info', `drydock.url no longer names ${stored.origin}, so this VS Code signed out of it.`)
-  return true
+export class StaleTokenWatch {
+  #cancel: (() => void) | null = null
+  #asking = false
+  readonly #asked = new Set<string>()
+
+  constructor(private readonly d: StaleDeps) {}
+
+  /** drydock.url changed: act once it has held still for SETTLE_MS. */
+  changed(): void {
+    this.#cancel?.()
+    this.#cancel = this.d.clock.after(SETTLE_MS, () => {
+      this.#cancel = null
+      void this.check().catch((e: unknown) => this.d.log.warn(`stale token: ${errorLine(e)}`))
+    })
+  }
+
+  /** Asks now, if there is anything to ask. Resolves to what was done. */
+  async check(): Promise<'nothing' | 'kept' | 'signed_out'> {
+    const d = this.d
+    if (!mayMutate(d.window.remoteName()) || !d.window.focused() || this.#asking) return 'nothing'
+    const o = originOf(d.settings.url())
+    if (!o.ok) return 'nothing'
+    const stored = await d.credentials.read()
+    if (stored === null || stored.origin === o.origin) return 'nothing'
+    const pair = `${stored.origin} ${o.origin}`
+    if (this.#asked.has(pair)) return 'nothing'
+    this.#asked.add(pair)
+    this.#asking = true
+    let ans: string | undefined
+    try {
+      ans = await d.prompter.message('info', staleSentence(stored.origin, o.origin), [signOutOf(stored.origin), KEEP])
+    } finally {
+      this.#asking = false
+    }
+    if (ans !== signOutOf(stored.origin)) return 'kept'
+    // The entry may have changed while the question was open: retire only
+    // the token that was asked about.
+    const now = await d.credentials.read()
+    if (now === null || now.origin !== stored.origin || now.token !== stored.token) return 'nothing'
+    await retire(d, stored)
+    await d.prompter.message('info', `Signed out of ${stored.origin}. Sign in to ${o.origin} with a token from its Settings.`)
+    return 'signed_out'
+  }
 }
 
 /** drydock.openInBrowser: Drydock's home page, in the browser. */
