@@ -38,7 +38,7 @@ function commandErrors(m: Manifest): string[] {
 }
 
 /** Context keys a `when` may use: the ones this extension sets (none yet) and VS Code documents for views. */
-const WHEN_KEYS = new Set(['focusedView', 'view', 'viewItem'])
+const WHEN_KEYS = new Set(['focusedView', 'view', 'viewItem', 'resourceScheme'])
 /** Commands that must never be one keystroke away (§10.4): no keybinding, ever. */
 const NEVER_BOUND = new Set(['drydock.approve', 'drydock.decline', 'drydock.signOut', 'drydock.clone'])
 

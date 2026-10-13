@@ -47,6 +47,14 @@ hands VS Code `vscode.openFolder` in a new window. The status bar (`src/status.t
 count, the stream's phase, and the one thing to act on: a token near expiry or a version mismatch.
 `test/fakeDrydock.ts` is a Drydock in memory for these flows' specs.
 
+(5) Host-access approvals (`src/review.ts`): *Review Host Access…* opens a read-only
+`drydock-approval:/<id>` document with exactly the web card's content (core's `lib/approval.ts`);
+*Approve Host Access…* (from that document or its title bar) asks for the repository's full name,
+typed exactly, and sends the hash of the snapshot the document showed — never one read at send
+time or from an argument; a new request cancels the box and re-renders the document; a stale hash
+reopens it. *Cancel Host-Access Request* is a modal. No keybinding, hub item or notification
+approves.
+
 (4b) The activity bar's *Drydock* container holds two tree views (`src/tree.ts`): *Workspaces*,
 each with its steps as children, Enter connecting to a running one and opening any other in
 Drydock; and *Repositories* without a workspace, cloned from the context menu. A shown view holds

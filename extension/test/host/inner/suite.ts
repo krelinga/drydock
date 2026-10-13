@@ -17,6 +17,7 @@ import { COMMANDS } from '../../../src/commands'
 import { CONNECT } from '../../../src/flows'
 import { PASTE_TOKEN } from '../../../src/session'
 import { ELSEWHERE } from '../../../src/windowRule'
+import { PRIVILEGED_SENTENCE } from '../../../../web/src/core/lib/approval'
 import { FakeWindow, RecordingOpener, ScriptedPrompter } from '../../fakes'
 
 const CTL = process.env.DRYDOCK_CTL ?? ''
@@ -180,6 +181,39 @@ export async function run(): Promise<void> {
     assert.ok(p.progresses.length >= 1, 'the follow was a progress notification')
     const creates = (await ctl<TapRecord[]>('GET', '/tap')).filter((t) => t.method === 'POST' && t.path === '/api/workspaces')
     assert.equal(creates.length, 1)
+  })
+
+  await spec("E1's docker-in-docker flow: clone, Review opens the document, the typed name approves its hash, and it runs to Connect", async () => {
+    // A token that may approve: signing in with it revokes the first.
+    const approver = await ctl<{ token: string }>('POST', '/mint', { scopes: ['read', 'lifecycle', 'approve'], label: 'VS Code (host tier, approve)' })
+    seam.window = new FakeWindow(undefined)
+    seam.prompter = scripted({ answer: (_t, a) => (a.includes(PASTE_TOKEN) ? PASTE_TOKEN : undefined), typed: [approver.token] })
+    await vscode.commands.executeCommand('drydock.signIn')
+
+    const opener = new RecordingOpener()
+    seam.opener = opener
+    const p = scripted({
+      pick: (labels) => labels.findIndex((l) => l.endsWith('drydock-fixture/dind')),
+      answer: (t, a) => (a.includes('Review') ? 'Review' : t.includes(' is running.') ? CONNECT : undefined),
+    })
+    seam.prompter = p
+    await vscode.commands.executeCommand('drydock.go')
+    // The follow ended at the request; Review opened the document, and nothing approved.
+    const doc = vscode.window.activeTextEditor?.document
+    assert.equal(doc?.uri.scheme, 'drydock-approval')
+    const text = doc!.getText()
+    assert.ok(text.includes(PRIVILEGED_SENTENCE), text)
+    const shown = /^Request: +(sha256:[0-9a-f]{64})$/m.exec(text)?.[1]
+    assert.ok(shown, text)
+    assert.equal(await ctl('GET', '/approved'), null)
+
+    // The typed full name approves exactly the hash the document showed.
+    p.typed = ['drydock-fixture/dind']
+    await vscode.commands.executeCommand('drydock.approve')
+    assert.equal(await ctl('GET', '/approved'), shown)
+    await until('connected', () => opener.folders.length > 0)
+    const links = await ctl<Record<string, string | null>>('GET', '/links')
+    assert.deepEqual(opener.folders, [links['drydock-fixture/dind']!.replace('vscode://vscode-remote/', 'vscode-remote://')])
   })
 
   await spec("VS Code's default keybindings can be read, none uses the hub's chord, and ctrl+shift+p is found (the control)", async () => {

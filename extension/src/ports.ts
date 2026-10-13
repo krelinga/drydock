@@ -57,8 +57,13 @@ export type Level = 'info' | 'warning' | 'error'
 export interface Prompter {
   /** A notification; resolves to the action pressed, or undefined when dismissed. */
   message(level: Level, text: string, actions?: readonly string[]): Promise<string | undefined>
-  /** An input box. Resolves to undefined on Escape or focus loss. */
-  input(opts: { prompt: string; password?: boolean; ignoreFocusOut?: boolean; placeHolder?: string }): Promise<string | undefined>
+  /**
+   * An input box. Resolves to undefined on Escape, on focus loss (unless
+   * ignoreFocusOut), or when `cancel` fires: the box closes.
+   */
+  input(opts: { prompt: string; password?: boolean; ignoreFocusOut?: boolean; placeHolder?: string; cancel?: Cancel }): Promise<string | undefined>
+  /** A modal warning with one action besides Cancel; true only when that action was chosen. */
+  confirm(text: string, action: string): Promise<boolean>
   /** A quick pick. Resolves to the picked item's value, or undefined on Escape. */
   pick<T>(items: readonly PickItem<T>[], opts: { placeHolder: string }): Promise<T | undefined>
   /**
@@ -66,6 +71,11 @@ export interface Prompter {
    * is told each message to show and whether the operator dismissed it.
    */
   progress(title: string, run: (report: (message: string) => void, dismissed: () => boolean) => Promise<void>): Promise<void>
+}
+
+/** Something that can call off a prompt in progress. */
+export interface Cancel {
+  onCancel(fn: () => void): void
 }
 
 export interface PickItem<T> {

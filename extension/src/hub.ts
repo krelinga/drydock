@@ -22,6 +22,8 @@ import type { PickItem } from './ports'
 export type HubAction =
   | { kind: 'connect'; id: string }
   | { kind: 'open'; id: string }
+  /** A workspace waiting on a host-access request: Enter opens its review document, never an approval. */
+  | { kind: 'review'; id: string }
   | { kind: 'clone'; repoId: number }
   | { kind: 'make_room' }
 
@@ -63,11 +65,9 @@ export function hubItems(e: Entities, ready: ReadonlySet<string> = new Set(), fl
   }
   for (const w of others) {
     const s = cardStatus(w, fleet)
-    items.push({
-      label: `$(vm) ${nameOf(w, e)}`,
-      description: w.approval !== null ? 'Needs host-access approval: open in Drydock' : `${s.line}: open in Drydock`,
-      value: { kind: 'open', id: w.id },
-    })
+    items.push(w.approval !== null && w.state === 'stopped'
+      ? { label: `$(shield) ${nameOf(w, e)}`, description: 'Needs host-access approval: review it', value: { kind: 'review', id: w.id } }
+      : { label: `$(vm) ${nameOf(w, e)}`, description: `${s.line}: open in Drydock`, value: { kind: 'open', id: w.id } })
   }
   const cap = capacity(e)
   for (const id of e.repoOrder) {

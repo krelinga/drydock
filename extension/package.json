@@ -54,6 +54,24 @@
         "icon": "$(refresh)"
       },
       {
+        "command": "drydock.reviewApproval",
+        "title": "Review Host Access…",
+        "category": "Drydock",
+        "icon": "$(shield)"
+      },
+      {
+        "command": "drydock.approve",
+        "title": "Approve Host Access…",
+        "category": "Drydock",
+        "icon": "$(check)"
+      },
+      {
+        "command": "drydock.decline",
+        "title": "Cancel Host-Access Request",
+        "category": "Drydock",
+        "icon": "$(close)"
+      },
+      {
         "command": "drydock.signIn",
         "title": "Sign In",
         "category": "Drydock"
@@ -139,12 +157,29 @@
           "group": "inline"
         },
         {
+          "command": "drydock.reviewApproval",
+          "when": "view == drydock.workspaces && viewItem == workspace.needsApproval",
+          "group": "inline"
+        },
+        {
           "command": "drydock.openInBrowser",
           "when": "view == drydock.workspaces && viewItem =~ /^workspace\\./"
         },
         {
           "command": "drydock.clone",
           "when": "view == drydock.repositories && viewItem == repo.clonable"
+        }
+      ],
+      "editor/title": [
+        {
+          "command": "drydock.approve",
+          "when": "resourceScheme == drydock-approval",
+          "group": "navigation@1"
+        },
+        {
+          "command": "drydock.decline",
+          "when": "resourceScheme == drydock-approval",
+          "group": "navigation@2"
         }
       ]
     },

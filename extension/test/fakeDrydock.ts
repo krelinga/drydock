@@ -10,6 +10,7 @@ import type { CatalogView, StreamEvent, WorkspaceView } from '../../web/src/core
 import { DrydockClient } from '../src/client'
 import { CredentialStore } from '../src/credential'
 import { Live } from '../src/live'
+import { Reviews, reviewApproval, type DocumentsPort } from '../src/review'
 import type { FlowDeps } from '../src/flows'
 import type { HttpRequest, HttpResponse } from '../src/ports'
 import { originOf } from '../src/settings'
@@ -37,6 +38,9 @@ export class FakeDrydock {
   cap: number | null = 10
   api = 1
   version = 'v0.12.2'
+  scopes = ['read', 'lifecycle', 'approve', 'self']
+  /** The request the server holds (what the approve route checks a hash against), or null. */
+  pending: { id: string; hash: string } | null = null
   nextId = 100
   /** What a POST /api/workspaces writes to the stream: the create's own state event, by default. */
   onCreate: (repoId: number) => StreamEvent[] = (repoId) => [event(this.nextId++, 'workspace.state', NEW_WS, { state: 'pending', repository_id: repoId, branch: 'main' })]
@@ -67,7 +71,7 @@ export class FakeDrydock {
     const path = new URL(req.url).pathname
     if (req.method === 'GET') {
       if (path === '/api/meta') {
-        return jsonResponse(200, { version: this.version, api: this.api, credential: { kind: 'token', label: 'VS Code', scopes: ['read', 'lifecycle', 'self'], expires_at: '2099-01-01T00:00:00Z' } })
+        return jsonResponse(200, { version: this.version, api: this.api, credential: { kind: 'token', label: 'VS Code', scopes: this.scopes, expires_at: '2099-01-01T00:00:00Z' } })
       }
       if (path === '/api/repos') return jsonResponse(200, this.catalog)
       if (path === '/api/workspaces') {
@@ -86,6 +90,26 @@ export class FakeDrydock {
       queueMicrotask(() => this.emit(...events))
       // A decoy id: the extension must learn the workspace from the stream, never the 202 (§5.4).
       return jsonResponse(202, { id: '01JA00000000000000000DECOY' })
+    }
+    const ap = /^\/api\/workspaces\/([^/]+)\/config-approval$/.exec(path)
+    if (ap) {
+      if (!this.scopes.includes('approve')) return errorResponse(403, 'forbidden_scope')
+      if (this.pending === null || this.pending.id !== ap[1]) return errorResponse(409, 'approval_not_pending')
+      if (req.method === 'POST') {
+        const { hash } = JSON.parse(req.body ?? '{}') as { hash: string }
+        if (hash !== this.pending.hash) return errorResponse(409, 'approval_stale')
+        const id = ap[1]!
+        this.pending = null
+        queueMicrotask(() => this.emit(
+          event(this.nextId++, 'config.approved', id, { repository_id: 3, hash }),
+          event(this.nextId++, 'workspace.state', id, { state: 'building', from: 'stopped' }),
+        ))
+        return jsonResponse(202, {})
+      }
+      const id = ap[1]!
+      this.pending = null
+      queueMicrotask(() => this.emit(event(this.nextId++, 'workspace.state', id, { state: 'stopped', from: 'stopped', detail: 'declined' })))
+      return jsonResponse(202, {})
     }
     if (req.method === 'DELETE' && path === '/api/auth/token') return { status: 204, headers: { get: () => null }, text: async () => '' }
     if (req.method === 'POST' && path === '/api/repos/refresh') {
@@ -128,6 +152,52 @@ export function flowWorld(remote: string | undefined = undefined): FlowWorld {
     extensions: { installed: (id) => installed.has(id), install: async (id) => { installed.add(id) } },
     connectWhenReady: () => connectNow.value,
   }
+}
+
+/** A DocumentsPort that records what was shown and what changed, with a settable active document. */
+export class FakeDocuments implements DocumentsPort {
+  shown: string[] = []
+  changes: string[] = []
+  active: string | undefined
+  async show(uri: string) {
+    this.shown.push(uri)
+    this.active = uri
+  }
+  activeUri() {
+    return this.active
+  }
+  changed(uri: string) {
+    this.changes.push(uri)
+  }
+}
+
+export interface ReviewWorld extends FlowWorld {
+  documents: FakeDocuments
+  reviews: Reviews
+}
+
+/** The review documents over a flow world (review.ts), wired as the adapter wires them. */
+export function reviewWorld(f: FlowWorld): ReviewWorld {
+  const documents = new FakeDocuments()
+  const r = { ...f, documents } as ReviewWorld
+  r.reviews = new Reviews(r)
+  r.review = f.review = (id) => reviewApproval(r, id)
+  return r
+}
+
+/** A stopped workspace waiting on a request, on the fake server. */
+export const DIND_WS = '01JA0000000000000000000077'
+export const HASH_A = 'sha256:' + 'a'.repeat(64)
+export const HASH_B = 'sha256:' + 'b'.repeat(64)
+export const REQ_A = { hash: HASH_A, added: [{ field: 'privileged', source: 'feature_or_image', value: true }], changed: [], removed: [] }
+export const REQ_B = { hash: HASH_B, added: [{ field: 'privileged', source: 'feature_or_image', value: true }, { field: 'initializeCommand', source: 'repository', value: 'make host-setup' }], changed: [], removed: [] }
+
+export function withPending(f: FlowWorld, req = REQ_A): void {
+  f.server.workspaces.push({
+    ...wsView({ id: DIND_WS, repository_id: 3, full_name: 'drydock-fixture/dind', branch: 'main', state: 'stopped', container_id: null }),
+    approval: req,
+  } as WorkspaceView)
+  f.server.pending = { id: DIND_WS, hash: req.hash }
 }
 
 export { CLONE_OK, WS }

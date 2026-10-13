@@ -53,6 +53,8 @@ export interface FlowDeps {
   connectWhenReady: () => boolean
   /** Workspaces this window followed to running: the hub's *ready* (§6.2). */
   ready: Set<string>
+  /** Opens a workspace's host-access review document (review.ts), when the window has one. */
+  review?: (id: string) => Promise<void>
 }
 
 const nameOf = (e: Entities, w: Workspace | null | undefined, fallback = 'The workspace') =>
@@ -145,6 +147,8 @@ async function act(d: FlowDeps, a: HubAction): Promise<void> {
       return connect(d, a.id)
     case 'open':
       return openInDrydock(d, a.id)
+    case 'review':
+      return d.review !== undefined ? d.review(a.id) : openInDrydock(d, a.id)
     case 'clone':
       return clone(d, a.repoId)
     case 'make_room':
@@ -283,9 +287,13 @@ async function ending(d: FlowDeps, id: string, name: string, end: FollowEnd): Pr
       const s = w !== undefined ? cardStatus(w) : null
       return offerDrydock(d, 'error', `${name}: ${s?.line ?? 'Failed'}.${s?.note ? ` ${s.note}` : ''}`, id)
     }
-    case 'approval':
-      return offerDrydock(d, 'warning',
-        `${name} needs host-access approval: its configuration asks for access to this server. Review it in Drydock.`, id)
+    case 'approval': {
+      const sentence = `${name} needs host-access approval: its configuration asks for access to this server.`
+      // Review only opens the document; nothing here approves (§10.4).
+      if (d.review === undefined) return offerDrydock(d, 'warning', `${sentence} Review it in Drydock.`, id)
+      if ((await d.prompter.message('warning', sentence, ['Review'])) === 'Review') await d.review(id)
+      return
+    }
     case 'stopped':
       return offerDrydock(d, 'info', `${name} stopped.`, id)
     case 'gone':

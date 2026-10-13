@@ -67,6 +67,15 @@ async function answer(stack: ExtensionStack, method: string, path: string, body:
       }
       return out
     }
+    case 'GET /approved': {
+      // The hash config.approved recorded for the docker-in-docker workspace, if any.
+      const r = await stack.direct('GET', '/api/workspaces')
+      const list = JSON.parse(r.body) as { workspaces: Array<{ id: string; full_name: string }> }
+      const w = list.workspaces.find((x) => x.full_name === 'drydock-fixture/dind')
+      if (w === undefined) return null
+      const v = JSON.parse((await stack.direct('GET', `/api/workspaces/${w.id}`)).body) as { events?: Array<{ kind: string; data?: { hash?: string } }> }
+      return v.events?.find((e) => e.kind === 'config.approved')?.data?.hash ?? null
+    }
     case 'POST /wrongcert': {
       const c = await stack.otherCaddy(`wrong-${others.length}`, { uiCert: stack.otherCert() })
       others.push(c)
