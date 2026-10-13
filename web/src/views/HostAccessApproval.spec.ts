@@ -2,7 +2,8 @@
 // backend: a rebuild whose configuration asks for host access stops, stopped,
 // with the request on the card; Approve and continue sends the request's own
 // hash and stays in flight until the build it continues ends; a stale hash is
-// refused by code; Cancel takes the request away and leaves Start. Every
+// refused by code; Cancel takes the request away and leaves Start;
+// privileged and initializeCommand each get a sentence of their own. Every
 // negative assertion sits beside a positive control.
 
 import { describe, expect, it } from 'vitest'
@@ -66,6 +67,28 @@ describe('Host-access approval', () => {
     const panel = card(wrapper).find('[data-test="approval"]')
     expect(panel.exists()).toBe(true)
     expect(panel.find('[data-test="approval-privileged"]').exists()).toBe(false)
+  })
+
+  it('initializeCommand gets its own sentence: it runs on the host as drydock', async () => {
+    const { wrapper } = await askedOnRebuild([
+      { field: 'initializeCommand', source: 'repository', value: 'make host-setup' },
+    ])
+    const panel = card(wrapper).find('[data-test="approval"]')
+    const sentence = panel.find('[data-test="approval-initialize-command"]')
+    expect(sentence.exists()).toBe(true)
+    expect(sentence.text()).toContain('runs on this server, not in the container')
+    expect(sentence.text()).toContain("can read Drydock's keys and is root through Docker")
+    // It is not the privileged sentence.
+    expect(panel.find('[data-test="approval-privileged"]').exists()).toBe(false)
+  })
+
+  it('a request without initializeCommand does not say it runs on the host (control)', async () => {
+    // DIND asks for privileged and runArgs: its own sentence shows, this one does not.
+    const { wrapper } = await askedOnRebuild()
+    const panel = card(wrapper).find('[data-test="approval"]')
+    expect(panel.find('[data-test="approval-privileged"]').exists()).toBe(true)
+    expect(panel.find('[data-test="approval-initialize-command"]').exists()).toBe(false)
+    expect(panel.text()).not.toContain('initializeCommand runs on this server')
   })
 
   it('Approve and continue sends the shown hash and settles when the build ends, not on the 202', async () => {

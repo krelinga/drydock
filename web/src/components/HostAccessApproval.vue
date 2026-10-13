@@ -30,11 +30,19 @@ const SOURCE: Record<string, string> = {
 }
 const source = (s: string) => SOURCE[s] ?? s
 const json = (v: unknown) => JSON.stringify(v)
-const privileged = computed(() => {
+// Whether a setting is new or changed in this request. What is no longer
+// asked for is informational and earns no warning.
+const asks = (field: string) => {
   const r = req.value
   if (r === null) return false
-  return [...r.added, ...r.changed].some((s: HostSettingView | HostSettingChange) => s.field === 'privileged')
-})
+  return [...r.added, ...r.changed].some((s: HostSettingView | HostSettingChange) => s.field === field)
+}
+// The two settings that are host root by themselves get a sentence each
+// (overall §6, "What approval means — honestly"): privileged runs the
+// container as root on the host, and initializeCommand runs on the host
+// itself, as the drydock user, before any container exists.
+const privileged = computed(() => asks('privileged'))
+const initializeCommand = computed(() => asks('initializeCommand'))
 </script>
 
 <template>
@@ -47,6 +55,9 @@ const privileged = computed(() => {
         Anything running in the container — an agent included — can then use it, without changing the configuration again.
         <strong v-if="privileged" data-test="approval-privileged">
           privileged is root on the host: Drydock's keys and every other workspace are in reach.
+        </strong>
+        <strong v-if="initializeCommand" data-test="approval-initialize-command">
+          initializeCommand runs on this server, not in the container, as the drydock user — which can read Drydock's keys and is root through Docker.
         </strong>
         Approve only what you trust for this repository. It is recorded, and asked again if it changes.
       </span>
