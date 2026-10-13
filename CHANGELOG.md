@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.13.0](https://github.com/krelinga/drydock/compare/v0.12.2...v0.13.0) (2026-10-13)
+
+
+### Features
+
+* the VS Code extension's skeleton: sign in with a token, and its client ([#156](https://github.com/krelinga/drydock/issues/156)) ([10f64ab](https://github.com/krelinga/drydock/commit/10f64abee8e4b47ca8194c11b1f9cbd71b65b2a0))
+
 ## [0.12.2](https://github.com/krelinga/drydock/compare/v0.12.1...v0.12.2) (2026-10-13)
 
 
