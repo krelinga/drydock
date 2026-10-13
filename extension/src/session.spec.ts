@@ -138,6 +138,31 @@ describe('a credential change reaches the window before anything is shown', () =
   })
 })
 
+describe('a failed window refresh is not a failed sign-in', () => {
+  it('`applied` throws: Sign In and Sign Out still say they succeeded, and Show Log says why the window did not refresh; no throw logs nothing (control)', async () => {
+    for (const fails of [true, false]) {
+      const t = setup()
+      t.d.applied = async () => {
+        if (fails) throw new Error('setContext failed')
+      }
+      t.prompter.answers = [PASTE_TOKEN]
+      t.prompter.typed = [TOKEN]
+      expect((await signIn(t.d))?.credential.label).toBe('VS Code on laptop')
+      expect(JSON.parse(t.secrets.value!).token).toBe(TOKEN)
+      t.transport.route = () => ({ status: 204, headers: { get: () => null }, text: async () => '' })
+      await signOut(t.d)
+      expect(t.secrets.value).toBeUndefined()
+      const texts = t.prompter.texts()
+      expect(texts.some((x) => x.startsWith('Signed in to Drydock')), String(fails)).toBe(true)
+      expect(texts.at(-1)).toBe('Signed out of Drydock. The token is revoked.')
+      expect(t.prompter.shown.filter((m) => m.level === 'error')).toEqual([])
+      const refresh = t.log.lines.filter((l) => l.includes('refreshing this window after the credential changed'))
+      expect(refresh, String(fails)).toHaveLength(fails ? 2 : 0)
+      expect(t.log.lines.join('\n')).not.toContain(TOKEN)
+    }
+  })
+})
+
 describe('Sign Out', () => {
   it('the token revokes itself, then is forgotten', async () => {
     const t = setup()
@@ -275,10 +300,20 @@ describe('a token for an origin drydock.url no longer names', () => {
 
   it('Sign out revokes the token at its own origin and forgets it', async () => {
     const t = watch('https://new.test', { answer: signOutOf(ORIGIN) })
-    expect(await t.w.check()).toBe('signed_out')
+    // The window learns of the change once the token is forgotten, before the sentence saying so.
+    const order: string[] = []
+    t.d.applied = async () => { order.push(`applied:${t.secrets.value === undefined ? 'none' : 'stored'}`) }
+    const message = t.prompter.message.bind(t.prompter)
+    t.prompter.message = async (level, text, actions) => {
+      order.push(`message:${text.slice(0, 11)}`)
+      return message(level, text, actions)
+    }
+    const w = new StaleTokenWatch({ ...t.d, window: new FakeWindow(undefined, true), clock: t.clock })
+    expect(await w.check()).toBe('signed_out')
     expect(t.transport.requests.map((r) => [r.method, r.url, r.headers.Authorization])).toEqual(
       [['DELETE', `${ORIGIN}/api/auth/token`, `Bearer ${TOKEN}`]])
     expect(t.secrets.value).toBeUndefined()
+    expect(order).toEqual(['message:drydock.url', 'applied:none', 'message:Signed out '])
   })
 
   it('Keep sends nothing and keeps the token', async () => {
