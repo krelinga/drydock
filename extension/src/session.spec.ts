@@ -275,6 +275,34 @@ describe('a token for an origin drydock.url no longer names', () => {
     expect(await ssh.w.check()).toBe('signed_out')
   })
 
+  it('a settle no focused window saw is asked when a window gains the focus; losing it asks nothing (control)', async () => {
+    const t = watch('https://new.test')
+    const win = new FakeWindow(undefined, false)
+    const w = new StaleTokenWatch({ ...t.d, window: win, clock: t.clock })
+    w.changed()
+    t.clock.advance(SETTLE_MS)
+    await flush()
+    expect(t.prompter.shown).toEqual([])
+    w.focusChanged(false)
+    await flush()
+    expect(t.prompter.shown).toEqual([])
+    win.hasFocus = true
+    w.focusChanged(true)
+    await flush()
+    expect(t.prompter.shown).toHaveLength(1)
+  })
+
+  it('dispose cancels a pending settle', async () => {
+    const t = watch('https://new.test')
+    t.w.changed()
+    expect(t.clock.pending()).toBe(1)
+    t.w.dispose()
+    expect(t.clock.pending()).toBe(0)
+    t.clock.advance(SETTLE_MS)
+    await flush()
+    expect(t.prompter.shown).toEqual([])
+  })
+
   it('a token replaced while the question was open is not the one signed out', async () => {
     const t = watch('https://new.test')
     t.prompter.message = async function (level, text, actions = []) {

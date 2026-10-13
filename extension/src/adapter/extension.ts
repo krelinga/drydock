@@ -84,9 +84,13 @@ export function activate(context: vscode.ExtensionContext): void {
     },
   }
   const stale = new StaleTokenWatch({ ...session, window, clock })
-  context.subscriptions.push(vscode.workspace.onDidChangeConfiguration((e) => {
-    if (e.affectsConfiguration('drydock.url')) stale.changed()
-  }))
+  context.subscriptions.push(
+    stale,
+    vscode.workspace.onDidChangeConfiguration((e) => {
+      if (e.affectsConfiguration('drydock.url')) stale.changed()
+    }),
+    vscode.window.onDidChangeWindowState((s) => stale.focusChanged(s.focused)),
+  )
   void stale.check().catch((e: unknown) => log.warn(`stale token: ${String(e)}`))
 }
 

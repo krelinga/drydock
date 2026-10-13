@@ -694,6 +694,16 @@ What the stand-ins must answer is exactly what the eight steps and the link ask:
 | **Approval, as the API does it**: clone `drydock-fixture/dind` → `stopped` with an `approval` carrying `privileged` → `POST …/config-approval` with that hash → `config.approved` with the same hash → `running` | |
 | **A stale hash is refused**: decline, switch the fixture to the `initializeCommand` variant, start again → a new request B. Approve with A → `409 approval_stale`, nothing recorded | Approve with B → `202` |
 
+**As built (PR 3).** Where the code settled what this section left open:
+
+- **The specs live in `extension/test/client/`**, not `test/extension/client/`: Vitest resolves `vitest` and the extension's modules from the importing file, and `extension/` is where they are. `test/extension/` holds the stack (`stack/`, the Go test, and `stack.ts`, which starts it) and `run.sh`; `test/harness/` holds the pieces the browser tier now shares (Caddy, the CA, the tap, the process helpers).
+- **The stack runs as its compiled test binary** (`go test -c`, then `-test.run ^TestServeStack$ -test.timeout 0`), not under `go test`, so the harness's SIGTERM reaches the test and `t.Cleanup` runs.
+- **The fakes are the test binary itself**, run through two wrapper scripts on `PATH` that name which (`DRYDOCK_STACK_FAKE`, in `TestMain`): Go rather than shell, and no build of their own. `read-configuration` answers from the corpus's own recordings, docker-in-docker's for the `drydock-fixture/dind` repository (a marker file in its clone). `TestStackControl` runs in the ordinary `go test` as the stack's positive control.
+- **The CA is made by Vitest's global setup**, before the workers fork, since `NODE_EXTRA_CA_CERTS` is read once at a process's start; each spec file then starts its own stack around it.
+- **The `extension` CI job stays on the bare runner** for now, with Go, the pinned Caddy and the `/etc/hosts` line; it moves into the Playwright image when the extension-host tier needs Electron.
+- **A revoked token's stream** is tested by dropping the connection (a Caddy restart) rather than waiting out the server's 20 s heartbeat, which `internal/server`'s tests already hold to `Alive`: what this tier proves is the client's reconnect meeting the `401` and taking the one 401 path.
+- **Not yet here:** the replay-window `resync` (it needs an event-log gap the stack cannot yet force), committed recordings for the unit tier (the payloads are written under the run's root), and §12.7's skew rows, which are the extension-host tier's.
+
 The fake transport in the unit tier is checked against this tier: the recorded responses it replays are captured here, so the fake can never claim a shape the server does not produce (testing §6.1, *no fake without a contract test*).
 
 ### 12.5  The extension-host tier: commands in a real VS Code
