@@ -482,13 +482,22 @@ the mount and **warns** if an option is missing, but never refuses:
   ```sh
   sudo install -d -m 0755 /srv/drydock
   sudo install -d -m 0700 /srv/drydock/ws   # the installer makes it drydock's; the mode is the same
-  echo '/srv/drydock/ws /srv/drydock/ws none bind,nosuid,nodev 0 0' | sudo tee -a /etc/fstab
-  sudo systemctl daemon-reload && sudo mount /srv/drydock/ws
+  line='/srv/drydock/ws /srv/drydock/ws none bind,nosuid,nodev 0 0'
+  grep -qxF "$line" /etc/fstab || echo "$line" | sudo tee -a /etc/fstab
+  sudo systemctl daemon-reload
+  findmnt --mountpoint /srv/drydock/ws >/dev/null || sudo mount /srv/drydock/ws
   findmnt -n -o OPTIONS --target /srv/drydock/ws   # must include nosuid and nodev
   ```
   The bind is the same directory, so nothing in it moves, and systemd mounts it at boot before
   Docker or Drydock start. Inside a container the clone is `nosuid,nodev` too, because a bind mount
-  keeps the flags of its source. A working tree needs neither.
+  keeps the flags of its source. A working tree needs neither. The block is safe to run again: it
+  adds the line and mounts only once. If `/etc/fstab` already has a line for `/srv/drydock/ws`,
+  edit that one instead of adding a second, since systemd refuses two entries for one mount point.
+
+  The line has no `nofail`, on purpose. If the line is wrong, or its directory is gone, the boot
+  stops in emergency mode instead of starting Docker and Drydock on an unprotected root. That is
+  awkward on a headless server, so check the line with `findmnt` as above before you reboot, and
+  remove it if you uninstall ([10.4](#104-uninstall)).
 
 **On a server that already runs Drydock**, the same commands work while it runs, and Drydock needs
 no restart. A workspace that is running keeps its old mount until it next starts, so **Stop** and
@@ -1465,7 +1474,7 @@ sudo rm -rf /etc/caddy/drydock.d
 sudo systemctl daemon-reload && sudo systemctl restart caddy
 # 5. Data and keys. Save the DB, and secrets.key unless your secret store has it, if you might come back.
 #    First undo 3.5's bind mount, line and all: a line left for a missing directory stops the next boot.
-findmnt --mountpoint /srv/drydock/ws >/dev/null && sudo umount /srv/drydock/ws
+if findmnt --mountpoint /srv/drydock/ws >/dev/null; then sudo umount /srv/drydock/ws; fi
 sudo sed -i '\#^/srv/drydock/ws /srv/drydock/ws #d' /etc/fstab && sudo systemctl daemon-reload
 sudo rm -rf /srv/drydock/ws /var/lib/drydock
 sudo shred -u /etc/drydock/secrets.key /etc/drydock/github-app.pem

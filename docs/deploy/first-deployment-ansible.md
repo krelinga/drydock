@@ -492,9 +492,22 @@ Needs `community.general` ([requirements.yml](#requirements-and-layout)).
 [Runbook §3.5](first-deployment.md#35-the-workspace-root-nosuid-and-nodev). The same `/etc/fstab`
 line as the runbook: `/srv/drydock/ws` bind-mounted onto itself with `nosuid,nodev`, so a
 setuid-root file or a device node a container leaves in a clone means nothing on the host. It is
-mounted before the installer runs, which then has nothing to warn about. Set
-`drydock_ws_bind_mount: false` when `/srv/drydock/ws` is its own filesystem and its own `fstab`
-entry already says `nosuid,nodev`.
+mounted before the installer runs. Set `drydock_ws_bind_mount: false` when `/srv/drydock/ws` is its
+own filesystem, and give that filesystem's own `fstab` entry `nosuid,nodev`.
+
+The installer only *warns* about a missing option, on stderr, which a green play never shows. So
+the play **checks the live mount itself and fails** unless it is `nosuid,nodev`, whatever
+`drydock_ws_bind_mount` says. It never edits an `fstab` entry that is already there:
+
+- With `drydock_ws_bind_mount: true` and an entry that mounts **another filesystem** at
+  `/srv/drydock/ws` (a dedicated LV, say), it fails rather than append a second entry for the same
+  mount point, which systemd refuses at every boot. Add `nosuid,nodev` to that entry, remount it,
+  and set the variable to `false`.
+- An existing self-bind line is left as it is, extra options and all. If it lacks either option,
+  the check fails. Fix the line, and remount with
+  `sudo mount -o remount,bind,nosuid,nodev /srv/drydock/ws`.
+- Setting the variable back to `false` removes nothing: the line stays in `/etc/fstab`, and the
+  check still applies.
 
 On a server that already runs Drydock, the mount goes in under it without a restart. A running
 workspace keeps its old mount until its next **Stop** and **Start**, or **Rebuild**.
@@ -511,15 +524,32 @@ workspace keeps its old mount until its next **Stop** and **Start**, or **Rebuil
     - {path: /srv/drydock/ws, mode: "0700"}
   when: drydock_ws_bind_mount | bool
 
+- name: Read the fstab entries for the workspace root
+  ansible.builtin.command: findmnt --fstab -n -o SOURCE --mountpoint /srv/drydock/ws
+  register: drydock_ws_fstab_sources
+  changed_when: false
+  failed_when: drydock_ws_fstab_sources.rc not in [0, 1]
+
+- name: Refuse to add a bind over another filesystem's entry (runbook §3.5)
+  ansible.builtin.fail:
+    msg: >-
+      /etc/fstab already mounts {{ drydock_ws_fstab_sources.stdout_lines | join(', ') }} at
+      /srv/drydock/ws. Give that entry nosuid,nodev, remount it, and set
+      drydock_ws_bind_mount: false (runbook §3.5).
+  when:
+    - drydock_ws_bind_mount | bool
+    - drydock_ws_fstab_sources.stdout_lines | reject('equalto', '/srv/drydock/ws') | list | length > 0
+
 - name: Bind-mount the workspace root onto itself, nosuid and nodev, at boot (runbook §3.5)
   ansible.builtin.lineinfile:
     path: /etc/fstab
-    regexp: '^/srv/drydock/ws\s+/srv/drydock/ws\s'
     line: /srv/drydock/ws /srv/drydock/ws none bind,nosuid,nodev 0 0
     create: true
     mode: "0644"
   register: drydock_ws_fstab
-  when: drydock_ws_bind_mount | bool
+  when:
+    - drydock_ws_bind_mount | bool
+    - drydock_ws_fstab_sources.stdout_lines | length == 0
 
 - name: And now (systemd's unit for the fstab line)
   ansible.builtin.systemd_service:
@@ -527,6 +557,24 @@ workspace keeps its old mount until its next **Stop** and **Start**, or **Rebuil
     state: started
     daemon_reload: "{{ drydock_ws_fstab is changed }}"
   when: drydock_ws_bind_mount | bool
+
+- name: Read the workspace root's live mount options
+  ansible.builtin.command: findmnt -n -o OPTIONS --target /srv/drydock/ws
+  register: drydock_ws_mount
+  changed_when: false
+  failed_when: false
+
+- name: Check the workspace root is mounted nosuid and nodev (runbook §3.5)
+  ansible.builtin.assert:
+    that:
+      - drydock_ws_mount.rc == 0
+      - "'nosuid' in drydock_ws_mount.stdout.split(',')"
+      - "'nodev' in drydock_ws_mount.stdout.split(',')"
+    fail_msg: >-
+      /srv/drydock/ws is not mounted nosuid,nodev (options: {{ drydock_ws_mount.stdout }}).
+      A container writes its clone as root, so a setuid file or device node left there works on
+      this host. See runbook §3.5.
+    quiet: true
 ```
 
 ---
