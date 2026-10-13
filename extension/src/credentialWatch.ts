@@ -6,10 +6,13 @@
 // The change is learned two ways, and both come here: SecretStorage's
 // onDidChange (another window signed in or out, or the client's 401 path
 // cleared the entry), which VS Code delivers some time after the write; and
-// this window's own Sign In and Sign Out, which `check` before their command
-// returns. Without the second, a command run straight after a sign-in took
-// its hold on the old stream, and the late close stopped the stream under
-// it: a clone then waited for an event nothing would carry.
+// this window's own Sign In and Sign Out, which `check` right after they
+// write or clear (session.ts `applied`), before they show anything: the
+// "Signed in" notification's promise settles only when it is closed, so the
+// operator's next command can run while it is still open. Without that, a
+// command run after a sign-in took its hold on the old stream, and the late
+// close stopped the stream under it: a clone then waited for an event
+// nothing would carry.
 //
 // So a check acts only on a credential other than the one it last acted on:
 // the late notification of a change already applied finds nothing new and

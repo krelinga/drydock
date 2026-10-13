@@ -114,6 +114,30 @@ describe('Sign In', () => {
   })
 })
 
+describe('a credential change reaches the window before anything is shown', () => {
+  it('Sign In and Sign Out call `applied` after the write or clear and before their message; a refused paste calls nothing (control)', async () => {
+    const t = setup()
+    const order: string[] = []
+    t.d.applied = async () => { order.push(`applied:${t.secrets.value === undefined ? 'none' : JSON.parse(t.secrets.value).token}`) }
+    t.prompter.message = async function (level, text, actions = []) {
+      this.shown.push({ level, text, actions })
+      order.push(`message:${text.slice(0, 10)}`)
+      return actions.includes(PASTE_TOKEN) ? PASTE_TOKEN : undefined
+    }
+    t.prompter.typed = ['not a token']
+    await signIn(t.d)
+    expect(order.filter((o) => o.startsWith('applied'))).toEqual([])
+    order.length = 0
+    t.prompter.typed = [TOKEN]
+    await signIn(t.d)
+    expect(order).toEqual(['message:Sign in wi', `applied:${TOKEN}`, 'message:Signed in '])
+    order.length = 0
+    t.transport.route = () => ({ status: 204, headers: { get: () => null }, text: async () => '' })
+    await signOut(t.d)
+    expect(order).toEqual(['applied:none', 'message:Signed out'])
+  })
+})
+
 describe('Sign Out', () => {
   it('the token revokes itself, then is forgotten', async () => {
     const t = setup()

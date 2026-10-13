@@ -129,7 +129,8 @@ export function activate(context: vscode.ExtensionContext): Seam | undefined {
   }
   const credentials = new CredentialStore(secrets)
   const client = new DrydockClient({ transport: nodeTransport, credentials, origin: () => originOf(settings.url()) })
-  const session: SessionDeps = { prompter, opener, settings, credentials, client, log }
+  // `applied` is reread, below: a sign-in or sign-out reaches the stream before anything is shown.
+  const session: SessionDeps = { prompter, opener, settings, credentials, client, log, applied: () => reread() }
 
   // The window's live state: the reducer over the stream (live.ts), and the
   // flows over it (flows.ts).
@@ -266,19 +267,9 @@ export function activate(context: vscode.ExtensionContext): Seam | undefined {
 
   const handlers: Record<CommandId, Handler> = {
     'drydock.signIn': async () => {
-      try {
-        await signIn(session)
-      } finally {
-        await reread()
-      }
+      await signIn(session)
     },
-    'drydock.signOut': async () => {
-      try {
-        await signOut(session)
-      } finally {
-        await reread()
-      }
-    },
+    'drydock.signOut': () => signOut(session),
     'drydock.openInBrowser': (id) => (id === undefined ? openInBrowser(session) : openInDrydock(flows, id)),
     'drydock.showLog': async () => {
       channel.show(true)

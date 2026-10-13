@@ -92,7 +92,7 @@ from a tree item or its node; a mutating command never does.
   once, *Sign out of <old>* or *Keep*. Meanwhile the token is sent nowhere.
 - **A stream belongs to the credential it opened with** (`src/credentialWatch.ts`): a sign-out, or
   a sign-in with another token, closes it, and the next hold opens one with the token now stored.
-  This window's Sign In and Sign Out apply the change before their command returns; SecretStorage's
+  This window's Sign In and Sign Out apply the change right after the write or clear, before any message (a notification's promise settles only when it is closed); SecretStorage's
   late `onDidChange` for the same change then finds nothing new, so it never closes the stream a
   command opened since with the new token. A stopped stream settles nothing, so it takes every
   mark with it (`src/live.ts`), and a clone or follow waiting on one ends and says why rather than

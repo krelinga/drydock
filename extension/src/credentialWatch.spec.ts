@@ -4,8 +4,12 @@
 // command opened with the new token.
 
 import { describe, expect, it } from 'vitest'
+import { stateEvent, wsView } from '../../web/src/core/reducer.fixtures'
+import type { WorkspaceView } from '../../web/src/core/types'
 import { CredentialWatch } from './credentialWatch'
-import { flowWorld } from '../test/fakeDrydock'
+import { CONNECT, clone } from './flows'
+import { PASTE_TOKEN, signIn } from './session'
+import { LINK, NEW_WS, flowWorld } from '../test/fakeDrydock'
 import { ORIGIN, TOKEN2, flush } from '../test/fakes'
 
 describe('CredentialWatch', () => {
@@ -76,4 +80,50 @@ describe('CredentialWatch', () => {
     reads[1]!(JSON.stringify({ origin: ORIGIN, token: TOKEN2 }))
     expect(await b).toBe(true)
   })
+})
+
+describe('a sign-in, then a clone while its notification is still open', () => {
+  // The notification's promise settles only when the operator closes it, so
+  // the clone runs while Sign In has not returned; SecretStorage's late
+  // onDidChange then arrives. The clone must still be followed to running.
+  async function signInThenClone(notificationCloses: boolean) {
+    const w = flowWorld()
+    const watch = new CredentialWatch(w)
+    await watch.check()
+    const hold = w.live.hold()
+    await flush()
+    ;(await hold)()
+    expect(w.live.streaming).toBe(true)
+    w.prompter.message = async function (level, text, actions = []) {
+      this.shown.push({ level, text, actions })
+      if (actions.includes(PASTE_TOKEN)) return PASTE_TOKEN
+      if (text.startsWith('Signed in to Drydock')) return notificationCloses ? undefined : new Promise<undefined>(() => {})
+      return text.includes(' is running.') ? CONNECT : undefined
+    }
+    w.prompter.typed = [TOKEN2]
+    void signIn({ ...w, applied: () => watch.check() })
+    await flush()
+    expect(w.prompter.shown.some((s) => s.text.startsWith('Signed in to Drydock'))).toBe(true)
+    expect(JSON.parse(w.secrets.value!).token).toBe(TOKEN2)
+
+    w.server.workspaces.push({ ...wsView({ id: NEW_WS, repository_id: 2, full_name: 'krelinga/homelab', state: 'running' }), vscode: { configured: true, url: LINK } } as WorkspaceView)
+    const done = clone(w, 2)
+    await flush()
+    // The sign-in's onDidChange, late: once for the clear, once for the write.
+    await watch.check()
+    await watch.check()
+    await flush()
+    w.server.emit(stateEvent(203, NEW_WS, 'running', { from: 'building' }))
+    for (let i = 0; i < 3 && w.opener.folders.length === 0; i++) {
+      w.clock.advance(1_000)
+      await flush()
+    }
+    await done
+    expect(w.server.transport.streams.at(-1)!.headers.Authorization).toBe(`Bearer ${TOKEN2}`)
+    expect(w.prompter.shown.map((s) => s.text).filter((t) => t.startsWith('Stopped following'))).toEqual([])
+    expect(w.opener.folders).toHaveLength(1)
+  }
+
+  it('the notification never closed: the clone is followed to running on the new token', () => signInThenClone(false))
+  it('the notification closed at once (the control)', () => signInThenClone(true))
 })
