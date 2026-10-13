@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.14.0](https://github.com/krelinga/drydock/compare/v0.13.0...v0.14.0) (2026-10-13)
+
+
+### Features
+
+* the extension's hub, clone and follow, connect, and status bar ([#160](https://github.com/krelinga/drydock/issues/160)) ([b44f656](https://github.com/krelinga/drydock/commit/b44f6565dd189fbc8773046aa290f8b3b4c803b3))
+
 ## [0.13.0](https://github.com/krelinga/drydock/compare/v0.12.2...v0.13.0) (2026-10-13)
 
 
