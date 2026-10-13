@@ -193,7 +193,8 @@ export class StaleTokenWatch {
 
   /** The window's focus changed: a window that gains it checks, since a settle it missed asked nothing. */
   focusChanged(focused: boolean): void {
-    if (!focused) return
+    // A settle still pending will check when it fires.
+    if (!focused || this.#cancel !== null) return
     void this.check().catch((e: unknown) => this.d.log.warn(`stale token: ${errorLine(e)}`))
   }
 

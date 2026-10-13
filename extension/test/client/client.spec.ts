@@ -33,7 +33,15 @@ afterAll(async () => {
   await stack?.teardown()
 })
 
-const fromTap = () => stack.tap.seen.map((s) => ({ method: s.method, path: s.path, authorization: s.authorization, origin: s.origin }))
+// What the tap saw, with each Authorization value replaced by its label, so
+// a failing assertion prints no token.
+const fromTap = () => stack.tap.seen.map((s) => ({ method: s.method, path: s.path, authorization: stack.bearerLabel(s.authorization), origin: s.origin }))
+/** Whether the stored entry is exactly {origin, token}, without printing it. */
+const holds = (value: string | undefined, origin: string, token: string) => {
+  if (value === undefined) return false
+  const v = JSON.parse(value) as { origin?: string; token?: string }
+  return v.origin === origin && v.token === token
+}
 
 describe('sign-in and the handshake', () => {
   it('a token minted in Settings is pasted, verified with GET /api/meta and stored for this origin; the client never signs in with the password', async () => {
@@ -48,8 +56,8 @@ describe('sign-in and the handshake', () => {
     stack.tap.clear()
     const meta = await signIn(d)
     expect(meta).toMatchObject({ version: 'dev', api: 1, credential: { kind: 'token', label: 'VS Code on the client tier', scopes: ['read', 'lifecycle', 'self'] } })
-    expect(JSON.parse(b.secrets.value!)).toEqual({ origin: stack.origin, token })
-    expect(fromTap()).toEqual([{ method: 'GET', path: '/api/meta', authorization: `Bearer ${token}`, origin: null }])
+    expect(holds(b.secrets.value, stack.origin, token)).toBe(true)
+    expect(fromTap()).toEqual([{ method: 'GET', path: '/api/meta', authorization: stack.labelOf(token), origin: null }])
     expect(stack.tap.seen.some((s) => s.path.startsWith('/api/auth/session'))).toBe(false)
   })
 
@@ -93,7 +101,7 @@ describe('the token goes only where it was stored for', () => {
       expect(stack.tap.seen).toEqual([])
       b.setOrigin(stack.origin)
       await b.client.get('/api/workspaces')
-      expect(fromTap()).toEqual([{ method: 'GET', path: '/api/workspaces', authorization: `Bearer ${token}`, origin: null }])
+      expect(fromTap()).toEqual([{ method: 'GET', path: '/api/workspaces', authorization: stack.labelOf(token), origin: null }])
     } finally {
       await second.stop()
     }
@@ -109,6 +117,12 @@ describe('the token goes only where it was stored for', () => {
     expect(r.status).toBeLessThan(400)
     expect(r.headers.get('Location')).toMatch(/^https:/)
     expect(stack.tap.seen).toEqual([])
+    // Control: the same request at the HTTPS origin reaches Drydock, with the token.
+    const ok = await nodeTransport.request({
+      method: 'GET', url: `${stack.origin}/api/workspaces`, headers: { Authorization: `Bearer ${token}` },
+    })
+    expect(ok.status).toBe(200)
+    expect(fromTap()).toEqual([{ method: 'GET', path: '/api/workspaces', authorization: stack.labelOf(token), origin: null }])
   })
 
   it('a certificate for another name is refused with TLS validation on, and nothing is sent; the right one is accepted (control)', async () => {
@@ -176,11 +190,19 @@ describe('the stream', () => {
       await bound(stack.origin, token).client.send('POST', '/api/repos/refresh')
       await until('the first refresh arrives', () => f.kinds().includes('repo.refreshed'))
       const seenBefore = f.events.length
-      await stack.caddy.kill()
-      for (let i = 0; i < 2; i++) {
-        const r = await stack.direct('POST', '/api/repos/refresh')
-        expect(r.status).toBe(202)
-        await new Promise((res) => setTimeout(res, 300))
+      // Written while Caddy is down, one after the other: each refresh is
+      // waited for on Drydock's own socket before the next is asked, since
+      // the catalog coalesces a refresh asked while one runs.
+      const watch = await stack.socketEvents()
+      try {
+        await stack.caddy.kill()
+        for (let i = 1; i <= 2; i++) {
+          const r = await stack.direct('POST', '/api/repos/refresh')
+          expect(r.status).toBe(202)
+          await until(`refresh ${i} written`, () => watch.count('repo.refreshed') >= i)
+        }
+      } finally {
+        watch.close()
       }
       await stack.caddy.run()
       await until('the two written meanwhile arrive', () => f.events.slice(seenBefore).filter((e) => e.kind === 'repo.refreshed').length >= 2, 60_000)
@@ -206,7 +228,7 @@ describe('the stream', () => {
       await stack.caddy.kill()
       await stack.caddy.run()
       await until('the stream ends on the 401', () => f.ended === 'unauthorized', 30_000)
-      expect(b.secrets.value).toBeUndefined()
+      expect(b.secrets.value === undefined).toBe(true)
       expect(b.unauthorized()).toBe(1)
     } finally {
       f.stop()
@@ -217,7 +239,7 @@ describe('the stream', () => {
     const o = bound(stack.origin, other.token)
     const prompter = new ScriptedPrompter()
     await signOut({ prompter, opener: new RecordingOpener(), settings: settingsOf(stack.origin), credentials: o.credentials, client: o.client, log: new MemoryLog() })
-    expect(o.secrets.value).toBeUndefined()
+    expect(o.secrets.value === undefined).toBe(true)
     expect(stack.tap.seen.at(-1)).toMatchObject({ method: 'DELETE', path: '/api/auth/token', status: 204 })
     expect((await stack.direct('GET', '/api/meta', undefined, { bearer: other.token })).status).toBe(401)
   })
@@ -280,7 +302,7 @@ describe('host-access approval, as the API does it', () => {
 
       // Without approve: 403, and the token is kept.
       await expect(b.client.send('POST', approve, { hash: hashA })).rejects.toMatchObject({ status: 403, code: 'forbidden_scope' })
-      expect(b.secrets.value).toContain(lifecycle.token)
+      expect(holds(b.secrets.value, stack.origin, lifecycle.token)).toBe(true)
 
       // The request changes: declined, the configuration grows an
       // initializeCommand, started again — request B.

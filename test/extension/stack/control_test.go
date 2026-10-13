@@ -221,9 +221,12 @@ func countArgv(t *testing.T, state, name, folder, verb string) int {
 	return n
 }
 
+// eventually polls ok for up to two minutes: a clone to running takes well
+// under a second on a quiet machine and about thirty under -race on a loaded
+// one, so the budget is generous rather than tuned.
 func eventually(t *testing.T, what string, ok func() bool) {
 	t.Helper()
-	deadline := time.Now().Add(30 * time.Second)
+	deadline := time.Now().Add(2 * time.Minute)
 	for !ok() {
 		if time.Now().After(deadline) {
 			t.Fatalf("%s: never", what)

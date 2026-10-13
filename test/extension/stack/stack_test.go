@@ -55,12 +55,13 @@ type Config struct {
 
 // The seeded repositories, under an installation account no real owner has.
 const (
-	Account    = "drydock-fixture"
-	PlainID    = 101
-	PlainName  = Account + "/plain"
-	DindID     = 102
-	DindName   = Account + "/dind"
-	AppID      = 5189455
+	Account   = "drydock-fixture"
+	PlainID   = 101
+	PlainName = Account + "/plain"
+	DindID    = 102
+	DindName  = Account + "/dind"
+	// Obviously not a real App's id: the fake GitHub accepts any.
+	AppID      = 999000001
 	SSHHost    = "devbox"
 	dindMarker = ".devcontainer/dind"
 )

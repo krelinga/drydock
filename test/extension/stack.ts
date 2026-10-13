@@ -182,9 +182,67 @@ export class ExtensionStack implements CaddySite {
   /** Mints an API token through Settings' own route (the cookie session), as an operator does. */
   async mintToken(scopes: string[], label = 'VS Code (client tier)'): Promise<{ id: string; token: string }> {
     const r = await this.direct('POST', '/api/tokens', { label, scopes, expires_in_days: 1 })
-    if (r.status !== 201) throw new Error(`mint: ${r.status} ${r.body}`)
+    if (r.status !== 201) throw new Error(`mint: ${r.status} ${r.body.replace(/drydock_[A-Za-z0-9_-]+/g, '[token]')}`)
     const b = JSON.parse(r.body) as { id: string; token: string }
+    this.names.set(b.token, `token#${this.names.size + 1}`)
     return { id: b.id, token: b.token }
+  }
+
+  private readonly names = new Map<string, string>()
+
+  /**
+   * An Authorization value as a spec may print it: `Bearer <token#N>` for a
+   * token this stack minted, `Bearer <unknown>` for anything else. Specs
+   * compare these, never the values, so a failing assertion prints no token.
+   */
+  bearerLabel(authorization: string | null): string | null {
+    if (authorization === null) return null
+    const m = /^Bearer (.*)$/.exec(authorization)
+    if (m === null) return '<not a bearer>'
+    return `Bearer <${this.names.get(m[1]!) ?? 'unknown'}>`
+  }
+
+  /** The label `bearerLabel` gives `token`. */
+  labelOf(token: string): string {
+    return `Bearer <${this.names.get(token) ?? 'unknown'}>`
+  }
+
+  /**
+   * The event stream on Drydock's own socket, with the cookie session: the
+   * harness's view of what the server wrote while Caddy is down. Resolves
+   * each `waitFor(kind, n)` once n events of that kind arrived after it opened.
+   */
+  async socketEvents(): Promise<{ count(kind: string): number; close(): void }> {
+    if (this.cookie === null) await this.signIn()
+    const kinds: string[] = []
+    let buf = ''
+    const req = http.request({ socketPath: this.drydockSocket, method: 'GET', path: '/api/events',
+      headers: { Host: UI_HOST, Accept: 'text/event-stream', Cookie: `${COOKIE}=${this.cookie}` } })
+    await new Promise<void>((resolve, reject) => {
+      req.on('response', (res) => {
+        res.setEncoding('utf8')
+        res.on('data', (c: string) => {
+          buf += c
+          for (;;) {
+            const i = buf.indexOf('\n\n')
+            if (i < 0) break
+            const frame = buf.slice(0, i)
+            buf = buf.slice(i + 2)
+            const data = frame.split('\n').filter((l) => l.startsWith('data:')).map((l) => l.slice(5).trim()).join('')
+            if (data === '') continue
+            try {
+              kinds.push((JSON.parse(data) as { kind: string }).kind)
+            } catch {
+              /* a named frame */
+            }
+          }
+        })
+        resolve()
+      })
+      req.on('error', reject)
+      req.end()
+    })
+    return { count: (k) => kinds.filter((x) => x === k).length, close: () => req.destroy() }
   }
 
   /** Waits for `ok` on the stack's own view of things. */
