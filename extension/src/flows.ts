@@ -18,6 +18,7 @@ import { ApiError } from '../../web/src/core/errors'
 import { errorLine } from './log'
 import { atCap, cloneItems, connectItems, hubItems, type HubAction } from './hub'
 import { vsixURL } from './handshake'
+import { installMatching, type Updater } from './update'
 import { remoteURI } from './link'
 import type { EndReason, Live } from './live'
 import type { Clock, Extensions, Log, Opener, Prompter, Settings, Window } from './ports'
@@ -55,6 +56,8 @@ export interface FlowDeps {
   ready: Set<string>
   /** Opens a workspace's host-access review document (review.ts), when the window has one. */
   review?: (id: string) => Promise<void>
+  /** Installs a release's extension (update.ts); without one, the skew's action opens the release in the browser. */
+  updater?: Updater
 }
 
 const nameOf = (e: Entities, w: Workspace | null | undefined, fallback = 'The workspace') =>
@@ -99,12 +102,18 @@ async function offerDrydock(d: FlowDeps, level: 'info' | 'warning' | 'error', se
 async function skewAllows(d: FlowDeps): Promise<boolean> {
   const s = d.live.skew()
   if (s === null || s.kind === 'ok') return true
-  const url = s.kind === 'server_newer' ? vsixURL(d.live.meta?.version) : null
-  if (s.kind !== 'server_newer' || url === null) {
+  const version = d.live.meta?.version
+  const url = s.kind === 'server_newer' ? vsixURL(version) : null
+  if (s.kind !== 'server_newer' || url === null || version === undefined) {
     await d.prompter.message('warning', s.sentence)
     return false
   }
-  if ((await d.prompter.message('warning', `${s.sentence} Install the extension from Drydock ${d.live.meta!.version}'s release.`, [s.action])) === s.action) {
+  if (d.updater !== undefined) {
+    // §9.2: the release's own .vsix, checked against its SHA256SUMS, installed here.
+    await installMatching({ ...d, updater: d.updater }, version, s.sentence)
+    return false
+  }
+  if ((await d.prompter.message('warning', `${s.sentence} Install the extension from Drydock ${version}'s release.`, [s.action])) === s.action) {
     await d.opener.openExternal(url)
   }
   return false
@@ -215,10 +224,10 @@ export async function clone(d: FlowDeps, repoId: number): Promise<void> {
   }
 }
 
-export type FollowEnd = 'running' | 'failed' | 'approval' | 'stopped' | 'gone' | 'dismissed' | 'stream'
+export type FollowEnd = 'running' | 'failed' | 'approval' | 'stopped' | 'gone' | 'dismissed' | 'stream' | 'unanswered'
 
 /** Where a followed workspace is: an end, or the line to show while it moves. */
-export function followState(e: Entities, id: string, approved?: string): { end: Exclude<FollowEnd, 'dismissed' | 'stream'> | null; line: string } {
+export function followState(e: Entities, id: string, approved?: string): { end: Exclude<FollowEnd, 'dismissed' | 'stream' | 'unanswered'> | null; line: string } {
   const w = e.workspaces[id]
   if (w === undefined || e.gone[id] !== undefined) return { end: 'gone', line: 'Deleted.' }
   switch (w.state) {
@@ -242,7 +251,7 @@ export function followState(e: Entities, id: string, approved?: string): { end: 
  * operator dismissing it ends the follow. Then says how it ended, with the
  * action that fits.
  */
-export async function follow(d: FlowDeps, id: string, approved?: string): Promise<FollowEnd> {
+export async function follow(d: FlowDeps, id: string, approved?: { hash: string; key: string }): Promise<FollowEnd> {
   const release = await d.live.hold()
   let end: FollowEnd = 'dismissed'
   try {
@@ -250,9 +259,15 @@ export async function follow(d: FlowDeps, id: string, approved?: string): Promis
     await d.prompter.progress(`Drydock: ${name}`, async (report, dismissed) => {
       let last = ''
       for (;;) {
-        const s = followState(d.live.entities, id, approved)
+        // The request an approval just sent is passed over only while that
+        // approval's mark is in flight and not yet slow: past that, a request
+        // still showing is not "continuing" any more.
+        const mark = approved === undefined ? undefined : d.live.marks.inFlight[approved.key]
+        const waiting = approved !== undefined && mark !== undefined && !mark.slow
+        const s = followState(d.live.entities, id, waiting ? approved.hash : undefined)
         if (s.end !== null) {
-          end = s.end
+          const same = d.live.entities.workspaces[id]?.approval?.hash
+          end = s.end === 'approval' && approved !== undefined && same === approved.hash ? 'unanswered' : s.end
           return
         }
         if (s.line !== last) report((last = s.line))
@@ -301,6 +316,9 @@ async function ending(d: FlowDeps, id: string, name: string, end: FollowEnd): Pr
       return offerDrydock(d, 'info', `${name} stopped.`, id)
     case 'gone':
       return void (await d.prompter.message('info', `${name} was deleted.`))
+    case 'unanswered':
+      return offerDrydock(d, 'warning',
+        `${name}: Drydock has not said what became of the approval yet, so this follow stopped. Drydock shows where it is.`, id)
     case 'stream':
       return void (await d.prompter.message('warning', `Stopped following ${name}: ${STREAM_ENDED[d.live.endedBy ?? 'closed']}`))
     case 'dismissed':

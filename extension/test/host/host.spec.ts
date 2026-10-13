@@ -3,12 +3,14 @@
 // its user data, extensions and logs, and the specs in inner/suite.ts run
 // inside it by @vscode/test-electron, headless under xvfb (run.sh).
 //
-// The extension runs from extension/ with its bundle (`npm run bundle`) in
-// ExtensionMode.Test. Running the bundle unpacked from the released .vsix,
-// and a Production-mode run of the installed .vsix, come with the .vsix
-// itself (PR 6).
+// Both runs use the packaged artifact (`npm run package`, the bytes the
+// release uploads): the Test-mode run unpacks dist/drydock-vscode.vsix and
+// develops *that* directory, so the bundle under test is the released one
+// with the seam; the Production-mode run installs the .vsix like any user,
+// and asserts it exports nothing.
 
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { execFileSync } from 'node:child_process'
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { build } from 'esbuild'
 import { runTests } from '@vscode/test-electron'
@@ -33,6 +35,62 @@ afterAll(async () => {
   await stopOthers()
   await stack?.teardown()
 })
+
+const VSIX = path.join(EXT, 'dist', 'drydock-vscode.vsix')
+
+/** The .vsix unpacked into `dir`: its extension/ is what the Test-mode run develops. */
+function unpack(dir: string): string {
+  if (!existsSync(VSIX)) throw new Error(`no ${VSIX}: run.sh host packages it (npm run package)`)
+  mkdirSync(dir, { recursive: true })
+  execFileSync('unzip', ['-q', '-o', VSIX, '-d', dir])
+  return path.join(dir, 'extension')
+}
+
+function report(out: string): string {
+  try {
+    const r = JSON.parse(readFileSync(out, 'utf8')) as { results: Array<{ name: string; ok: boolean; error?: string }> }
+    return r.results.map((x) => `${x.ok ? '✓' : '✗'} ${x.name}${x.error ? `\n${x.error}` : ''}`).join('\n')
+  } catch {
+    return '(no results written)'
+  }
+}
+
+it('in Production mode, the installed .vsix is lazy, registers every command, and exports nothing', async () => {
+  const exe = await vscodeExecutable()
+  const run = path.join(stack.root, 'vscode-production')
+  const extensions = path.join(run, 'extensions')
+  const user = path.join(run, 'user-data')
+  mkdirSync(path.join(user, 'User'), { recursive: true })
+  writeFileSync(path.join(user, 'User', 'settings.json'), JSON.stringify({ 'workbench.startupEditor': 'none' }))
+  // Installed as a user installs it: the CLI, into this run's extensions directory.
+  execFileSync(path.join(path.dirname(exe), 'bin', 'code'), [
+    '--install-extension', VSIX, '--extensions-dir', extensions, '--user-data-dir', user, '--force',
+  ], {
+    stdio: 'inherit',
+    // Not through a VS Code this test happens to run inside (a remote
+    // terminal's VSCODE_IPC_HOOK_CLI): the pinned one, on its own.
+    env: Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith('VSCODE_'))),
+  })
+  const suite = path.join(run, 'production.js')
+  await build({
+    entryPoints: [path.join(EXT, 'test', 'host', 'inner', 'production.ts')], outfile: suite, bundle: true,
+    platform: 'node', format: 'cjs', target: 'node22', external: ['vscode'], logLevel: 'warning',
+  })
+  const out = path.join(run, 'results.json')
+  const code = await runTests({
+    vscodeExecutablePath: exe,
+    // The probe is the extension in development; Drydock is installed.
+    extensionDevelopmentPath: path.join(EXT, 'test', 'host', 'probe'),
+    extensionTestsPath: suite,
+    launchArgs: ['--user-data-dir', user, '--extensions-dir', extensions, '--logsPath', path.join(run, 'logs'),
+      '--password-store=basic', '--disable-gpu', '--no-sandbox'],
+    extensionTestsEnv: { DRYDOCK_HOST_OUT: out },
+  }).catch((e: unknown) => {
+    console.error(e)
+    return 1
+  })
+  expect(code, report(out)).toBe(0)
+}, 300_000)
 
 it('the extension-host specs pass in the pinned VS Code', async () => {
   const exe = await vscodeExecutable()
@@ -60,7 +118,8 @@ it('the extension-host specs pass in the pinned VS Code', async () => {
   const out = path.join(run, 'results.json')
   const code = await runTests({
     vscodeExecutablePath: exe,
-    extensionDevelopmentPath: EXT,
+    // The .vsix's own bytes, unpacked, in Test mode.
+    extensionDevelopmentPath: unpack(path.join(run, 'unpacked')),
     extensionTestsPath: suite,
     launchArgs: [
       folder,

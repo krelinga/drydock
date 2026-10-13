@@ -773,8 +773,9 @@ message (`… N stored secret(s) are sealed under the installed key …`). What 
 [Runbook §5](first-deployment.md#5-install).
 
 **How the installer is fetched.** Not the `curl … | sudo bash` one-liner, and not the stamped
-standalone `install.sh` either: the release's `SHA256SUMS` covers only the tarball, so the
-standalone script is the one file nothing verifies. Instead, `get_url` downloads
+standalone `install.sh` either: the release's `SHA256SUMS` covers the tarball (and the VS Code
+extension's `drydock-vscode.vsix`) but not the standalone script, so that script is the one file
+nothing verifies. Instead, `get_url` downloads
 `drydock_linux_amd64.tar.gz` for `drydock_version` and checks it against that release's
 `SHA256SUMS` (the same check the standalone script does), and the play runs the `install.sh`
 **inside** the tarball. That is the exact file the one-liner ends up running: the standalone

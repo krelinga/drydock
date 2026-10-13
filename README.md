@@ -116,7 +116,8 @@ Releases are cut by [release-please](https://github.com/googleapis/release-pleas
 [conventional commit](https://www.conventionalcommits.org/) subjects: `feat:` and `fix:` cut a
 release, everything else (`docs:`, `test:`, `chore:` …) does not. Merging its release PR tags
 `vX.Y.Z` and creates a draft release; its assets — `drydock_linux_amd64.tar.gz`, `SHA256SUMS`, and
-the standalone `install.sh`, built by `deploy/package.sh` — are uploaded to the draft, installed by
-the one-liner, and only then published as *Latest*.
+the standalone `install.sh`, built by `deploy/package.sh`, and the VS Code extension's
+`drydock-vscode.vsix` — are uploaded to the draft, installed by the one-liner, and only then
+published as *Latest*.
 
 `CLAUDE.md` and [`docs/design/`](docs/design/) explain why things are the way they are.

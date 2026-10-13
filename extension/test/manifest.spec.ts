@@ -4,12 +4,15 @@
 // and against a broken fixture that must fail it by name (the controls).
 
 import { existsSync, readFileSync } from 'node:fs'
-import { resolve } from 'node:path'
+import { dirname, resolve } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { COMMANDS } from '../src/commands'
 
 type Manifest = Record<string, any>
-const real: Manifest = JSON.parse(readFileSync(resolve(process.cwd(), 'package.json'), 'utf8'))
+// The source's package.json, or — in the release's verify job — the one
+// unpacked from the .vsix (DRYDOCK_MANIFEST).
+const MANIFEST = process.env.DRYDOCK_MANIFEST ?? resolve(process.cwd(), 'package.json')
+const real: Manifest = JSON.parse(readFileSync(MANIFEST, 'utf8'))
 const typesVersion: string = JSON.parse(readFileSync(resolve(process.cwd(), 'node_modules/@types/vscode/package.json'), 'utf8')).version
 
 /** Commands deliberately hidden from the palette, each with its reason. None yet: every E1 command is in the palette. */
@@ -85,7 +88,7 @@ function menuErrors(m: Manifest): string[] {
     for (const key of whenKeys(w.when)) if (!knownKey(key)) errs.push(`viewsWelcome uses an unknown context key ${key}`)
   }
   for (const c of (m.contributes?.viewsContainers?.activitybar ?? []) as Array<{ icon: string }>) {
-    if (!existsSync(resolve(process.cwd(), c.icon))) errs.push(`the activity bar icon ${c.icon} does not exist`)
+    if (!existsSync(resolve(dirname(MANIFEST), c.icon))) errs.push(`the activity bar icon ${c.icon} does not exist`)
   }
   return errs
 }

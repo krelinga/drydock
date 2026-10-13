@@ -1,0 +1,13 @@
+{
+  "name": "drydock-production-probe",
+  "displayName": "Drydock production probe (tests only)",
+  "description": "The extension the Production-mode run develops, so the installed Drydock runs in Production mode. Never packaged.",
+  "publisher": "drydock-tests",
+  "version": "0.0.0",
+  "private": true,
+  "engines": {
+    "vscode": "^1.105.0"
+  },
+  "main": "./index.js",
+  "activationEvents": []
+}

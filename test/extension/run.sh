@@ -70,8 +70,9 @@ if [ "${1:-}" = host ]; then
       exit 1
     fi
   fi
-  # The extension under test is the bundle, built now.
-  npm run --silent bundle
+  # The extension under test is the packaged .vsix, built now: the bytes a
+  # release uploads.
+  npm run --silent package
   if [ -z "${DISPLAY:-}" ]; then
     command -v xvfb-run >/dev/null || { echo 'extension-host tier: no DISPLAY and no xvfb-run' >&2; exit 1; }
     exec xvfb-run -a npx vitest run --config vitest.host.config.mts "$@"

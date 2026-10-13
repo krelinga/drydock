@@ -15,6 +15,21 @@ what it covers are `test/extension/README.md`. The extension-host tier is `test/
 SHA-256, running `test/host/inner/suite.ts` against the same stack. In `ExtensionMode.Test` only,
 `activate` returns the seam (a Prompter, Opener, Window and Extensions a spec can replace).
 
+## Installing
+
+Each Drydock release carries the matching extension as `drydock-vscode.vsix`:
+
+```sh
+curl -fsSLO https://github.com/krelinga/drydock/releases/latest/download/drydock-vscode.vsix
+code --install-extension drydock-vscode.vsix
+```
+
+or *Extensions: Install from VSIX…*. It needs Remote - SSH and Dev Containers to connect, and
+offers to install them then. VS Code does not update a sideloaded extension, so the extension does:
+when the Drydock it signs in to is another release, it offers that release's `.vsix`, downloaded
+from GitHub and checked against the release's `SHA256SUMS` before VS Code installs it.
+`npm run package` builds the `.vsix` locally.
+
 ## Layers
 
 - **`src/adapter/`** is the only code that imports `vscode`: it builds the ports from VS Code's API
