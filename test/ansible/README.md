@@ -8,7 +8,8 @@ in CI.
   localhost against journals given as data (an allowlist: a line it was never told about fails
   it).
 - `live.sh` runs the assembled play against a bare Debian systemd container, installing a locally
-  packaged release (needs the internet): first install, a `changed=0` re-run, an upgrade with its
+  packaged release (needs the internet): first install (the workspace root bind-mounted
+  `nosuid,nodev` first, so the installer does not warn), a `changed=0` re-run, an upgrade with its
   database backup, an App key rotation, a master-key backup that refuses a different key, and the
   move to a vaulted master key (the installed key vaulted: `changed=0`; a new one with no secret
   stored: replaced; another with one stored: refused, the key unchanged; the same refusal on a

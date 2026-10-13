@@ -9,7 +9,8 @@
 #   test/ansible/live.sh           # needs ansible-core, community.docker, Docker allowing --privileged
 #   KEEP=1 test/ansible/live.sh    # leave the container up to poke at
 #
-# What it runs: a first install, a no-op re-run (changed=0), an upgrade (with
+# What it runs: a first install (the workspace root mounted nosuid,nodev
+# before the installer sees it), a no-op re-run (changed=0), an upgrade (with
 # the database backup), another no-op, an App key rotation, and a master-key
 # backup that refuses to be overwritten by a different key, then the move to a
 # vaulted secrets master key: the installed key vaulted (changed=0), a new one
@@ -139,6 +140,11 @@ check "and its only complaint is the fake App key" bash -c "! docker exec $name 
 check "the master key was backed up, 0400" [ "$(stat -c %a "$work/backup/secrets.key")" = 400 ]
 check "and is the server's key" [ "$(sha256sum <"$work/backup/secrets.key")" = "$(in_server cat /etc/drydock/secrets.key | sha256sum)" ]
 check "in a 0700 directory" [ "$(stat -c %a "$work/backup")" = 700 ]
+check "the workspace root is mounted nosuid,nodev (runbook §3.5)" bash -c "docker exec $name findmnt -n -o OPTIONS --mountpoint /srv/drydock/ws | grep -q 'nosuid,nodev'"
+check "and the fstab line is the runbook's" in_server grep -qx '/srv/drydock/ws /srv/drydock/ws none bind,nosuid,nodev 0 0' /etc/fstab
+check "so the installer had nothing to warn about" bash -c "! grep -q 'is not mounted' \"\$1\"" _ "$work/run1.log"
+check "control: the installer's output is in the log" grep -q "installed Drydock v0.0.1" "$work/run1.log"
+check "the workspace root is drydock's, 0700" [ "$(in_server stat -c '%U %a' /srv/drydock/ws)" = "drydock 700" ]
 
 play
 check "a re-run succeeds" [ "$rc" = 0 ]

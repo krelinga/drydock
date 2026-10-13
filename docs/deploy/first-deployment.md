@@ -111,7 +111,9 @@ You need five things. Gather all of them before touching the server.
   *Why:* every GitHub App request is a signed JWT with an issue time, and GitHub returns `401` for
   a clock that has drifted far enough.
 - [ ] **Disk space for images and clones**: workspaces live under `/srv/drydock/ws` and images
-  under `/var/lib/docker`, so tens of GB free. Containers are bounded by RAM: plan for the 5–15
+  under `/var/lib/docker`, so tens of GB free. A dedicated filesystem for `/srv/drydock/ws` is
+  welcome but not needed. Either way it is mounted `nosuid,nodev`
+  ([3.5](#35-the-workspace-root-nosuid-and-nodev)). Containers are bounded by RAM: plan for the 5–15
   you expect to run ([§1](../design/overall/drydock-design.md#1-problem--goals)).
 
 ### 1.2 A hostname for the UI, and how clients resolve it
@@ -320,7 +322,8 @@ whose release is not a draft, so it cannot replace a public release's files.
 SSH to the server. Everything from here on runs **on the server** unless it says *from your
 laptop*.
 
-The installer checks for each of these and refuses to run without them. It installs none of them.
+The installer checks for each of these and refuses to run without them, except
+[3.5](#35-the-workspace-root-nosuid-and-nodev), which it only warns about. It installs none of them.
 *Why:* Docker and the devcontainer CLI are long-lived dependencies that you, the operator, should
 own ([§1 Non-goals](../design/overall/drydock-design.md#non-goals)).
 
@@ -458,6 +461,39 @@ If the host runs a firewall, allow 443 (and optionally 80) from the LAN. With `u
 port, so **open nothing else**. *Why:* Caddy is the whole LAN-facing surface, and Drydock is
 reachable only through a Unix socket
 ([§13.1](../design/overall/drydock-design.md#131--the-front-door)).
+
+### 3.5 The workspace root: `nosuid` and `nodev`
+
+Clones live under `/srv/drydock/ws`, and each is bind-mounted read-write into its container. A
+container's root user writes that clone as **root on the host**, so an agent could leave a
+setuid-root binary or a device node in it. Then any host user who can reach the file and runs or
+opens it gets root, or the device. Today the directory's `0700` mode keeps other users out. Mounting
+it `nosuid,nodev` makes such a file inert, and keeps it inert if that mode is ever relaxed, for
+example to let your own account browse the clones.
+
+The installer does not make this mount, because it is yours to make. From v0.11.0, every run checks
+the mount and **warns** if an option is missing, but never refuses:
+`warning: /srv/drydock/ws is not mounted nosuid,nodev: …`.
+
+- [ ] **If `/srv/drydock/ws` is its own filesystem** (a dedicated disk or LV), add `nosuid,nodev`
+  to that filesystem's options in `/etc/fstab` and remount it.
+- [ ] **Otherwise, which is the usual case, bind-mount the directory onto itself**, with the two
+  options:
+  ```sh
+  sudo install -d -m 0755 /srv/drydock
+  sudo install -d -m 0700 /srv/drydock/ws   # the installer makes it drydock's; the mode is the same
+  echo '/srv/drydock/ws /srv/drydock/ws none bind,nosuid,nodev 0 0' | sudo tee -a /etc/fstab
+  sudo systemctl daemon-reload && sudo mount /srv/drydock/ws
+  findmnt -n -o OPTIONS --target /srv/drydock/ws   # must include nosuid and nodev
+  ```
+  The bind is the same directory, so nothing in it moves, and systemd mounts it at boot before
+  Docker or Drydock start. Inside a container the clone is `nosuid,nodev` too, because a bind mount
+  keeps the flags of its source. A working tree needs neither.
+
+**On a server that already runs Drydock**, the same commands work while it runs, and Drydock needs
+no restart. A workspace that is running keeps its old mount until it next starts, so **Stop** and
+**Start** it (or **Rebuild** it) when convenient. Then re-run the installer, or check with
+`findmnt` as above. The warning should be gone.
 
 ---
 
@@ -615,7 +651,10 @@ the master key), it starts Drydock again before it exits and says so:
    `devcontainer --version` as `drydock` (and fails if that does not run), and `docker info` as
    `drydock` (only a *warning* if the daemon is unreachable).
 8. It creates `/srv/drydock` (root, `0755`, only if it is absent), `/srv/drydock/ws`
-   (`drydock`, `0700`) and `/etc/drydock` (root, `0755`).
+   (`drydock`, `0700`) and `/etc/drydock` (root, `0755`). If `/srv/drydock/ws` is not mounted
+   `nosuid,nodev`, it warns, naming what is missing, and carries on:
+   `warning: /srv/drydock/ws is not mounted nosuid,nodev: …`
+   ([3.5](#35-the-workspace-root-nosuid-and-nodev)).
 9. It stages and decides, replacing nothing yet. It copies the release's binary to
    `/usr/local/bin/drydock.new`, and validates the new Caddy config with `caddy validate`. If the
    running Drydock is not the installed binary, because an earlier run was interrupted after it
@@ -674,7 +713,7 @@ sudo -u drydock drydock passwd --db /var/lib/drydock/drydock.db
 | `/run/drydock/{http,preview}.sock` | drydock:drydock `0660` | The two Unix sockets. The directory is `0750`. |
 | `/run/drydock/sock/` | drydock `0700` | One directory per workspace, `<id>/` (`0755`), holding its token-broker socket `broker.sock` while the workspace runs. The directory, not the socket, is mounted into the container, so it is kept across restarts (`RuntimeDirectoryPreserve=yes`) and removed by a delete. |
 | `/run/caddy/admin.sock` | caddy `0600` | Caddy's admin API, moved off `localhost:2019`. |
-| `/srv/drydock/ws/` | drydock `0700` | Clones, at `/srv/drydock/ws/<id>/repo`. |
+| `/srv/drydock/ws/` | drydock `0700` | Clones, at `/srv/drydock/ws/<id>/repo`. Mounted `nosuid,nodev` by your `/etc/fstab` line ([3.5](#35-the-workspace-root-nosuid-and-nodev)), not by the installer. |
 | `drydock.service`, `caddy.service` | enabled | Both start at boot. |
 | Docker volume `drydock-claude-config` | (Docker's) | Created by Drydock, not the installer, at the first workspace or Claude sign-in. Once someone signs in ([§8.6](#86-a-claude-session-phase-5)), it holds a live Claude login. |
 
@@ -1425,6 +1464,9 @@ sudo cp -p "$(ls -1 /etc/caddy/Caddyfile.before-drydock.* | head -n1)" /etc/cadd
 sudo rm -rf /etc/caddy/drydock.d
 sudo systemctl daemon-reload && sudo systemctl restart caddy
 # 5. Data and keys. Save the DB, and secrets.key unless your secret store has it, if you might come back.
+#    First undo 3.5's bind mount, line and all: a line left for a missing directory stops the next boot.
+findmnt --mountpoint /srv/drydock/ws >/dev/null && sudo umount /srv/drydock/ws
+sudo sed -i '\#^/srv/drydock/ws /srv/drydock/ws #d' /etc/fstab && sudo systemctl daemon-reload
 sudo rm -rf /srv/drydock/ws /var/lib/drydock
 sudo shred -u /etc/drydock/secrets.key /etc/drydock/github-app.pem
 sudo rm -rf /etc/drydock

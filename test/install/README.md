@@ -23,6 +23,9 @@ What it covers:
 - a mixed-case `--ui-host` (lowercased, sign-in works, an old `drydock.env` repaired,
   `drydock serve` refusing one); a preview domain under or beside the UI host (refused, nothing
   changed);
+- the workspace root's mount: a warning, not a refusal, when it is not `nosuid,nodev` (naming only
+  what is missing), and none once the runbook's bind mount is in under a running Drydock, which
+  is not restarted and can still write there; a container's bind of a clone inherits both flags;
 - `--vscode-ssh-host` (four malformed values refused with nothing changed or restarted; a good one
   kept in `drydock.env` and on drydock's command line, kept by a no-flag re-run that restarts
   nothing, and forgotten by `--no-vscode-ssh-host`);
