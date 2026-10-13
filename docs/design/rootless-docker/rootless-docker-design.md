@@ -1,6 +1,6 @@
 # Drydock on non-root Docker
 
-*An exploration, not a plan of record. The question: what would it take to run Drydock without the
+*An exploration, not a plan of record, **declined for now** (see *The owner's decision*). The question: what would it take to run Drydock without the
 `drydock` user being root on the host by way of the `docker` group? Which holes would that close,
 what would it break, how much would it cost, and how would we go about it? Nothing here is built.
 Claims marked **measured** were run for this document (§7 lists how). Claims marked **unmeasured**
@@ -10,6 +10,25 @@ Reads with: [overall design](../overall/drydock-design.md) §6 (*What a configur
 host*, *The docker guard*, *Opening a workspace in VS Code*), §7.1, §13.4 and §13.5;
 [port forwarding](../port-forwarding/port-forwarding-design.md) §8; the
 [security review](../security-review.md); [testing](../testing/testing-design.md) §3, §4.1 and §11.2.
+
+---
+
+## The owner's decision: not now
+
+**Declined for now.** The owner's answer to §8's first question is that **GitHub access and the
+secrets** are the assets that matter most. As this document says, none of these options protects
+them: a compromised Drydock holds the App key and the secrets master key by design, whichever
+daemon or runtime it drives. What the options buy, host protection from a container or from
+Drydock, is not worth their cost and compatibility risk at present. So nothing in §2–§6 will be
+built, and Spike 06 will not be run.
+
+What does go ahead are the three standalone hardenings at the end of §6: mounting the workspace
+root `nosuid`, giving `initializeCommand` its own sentence on the approval card, and the runbook's
+advice about the VS Code SSH user and `docker`. Each costs little and needs none of the rest.
+
+Reopen this document if the server comes to hold something worth more than the GitHub installation,
+or if a repository needs docker-in-docker and its approved `privileged` becomes a real concern.
+The analysis below is kept as it stood when the decision was made.
 
 ---
 
