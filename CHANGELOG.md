@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.16.0](https://github.com/krelinga/drydock/compare/v0.15.0...v0.16.0) (2026-10-13)
+
+
+### Features
+
+* approve host access from VS Code, and check the approval's baseline on the server ([#164](https://github.com/krelinga/drydock/issues/164)) ([e883a61](https://github.com/krelinga/drydock/commit/e883a6135928fda7e619585e58a91a2c02f62ae6))
+
 ## [0.15.0](https://github.com/krelinga/drydock/compare/v0.14.0...v0.15.0) (2026-10-13)
 
 
