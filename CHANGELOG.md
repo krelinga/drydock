@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.15.0](https://github.com/krelinga/drydock/compare/v0.14.0...v0.15.0) (2026-10-13)
+
+
+### Features
+
+* the extension's tree views and its extension-host tier, with Spike 05 ([#162](https://github.com/krelinga/drydock/issues/162)) ([0d84cf9](https://github.com/krelinga/drydock/commit/0d84cf94a8419268ce2bb1f1d0677ef24cf64796))
+
 ## [0.14.0](https://github.com/krelinga/drydock/compare/v0.13.0...v0.14.0) (2026-10-13)
 
 
