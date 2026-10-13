@@ -12,7 +12,6 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
-	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -236,16 +235,10 @@ func TestContractGHScopeMints(t *testing.T) {
 	ctx := context.Background()
 	ce := newContractEnv(t)
 	for _, own := range []string{githubtest.TestbedA, githubtest.TestbedB} {
-		var answer, value string
-		var ok bool
-		ce.backend.RetryPositiveControl(t, "GET-TOKEN scope=gh from "+own, func() error {
-			answer = ce.ask(t, ce.ws[own], "GET-TOKEN scope=gh")
-			value, ok = answerToken(answer)
-			if !ok && strings.HasPrefix(answer, "ERR ") {
-				return errors.New(answer)
-			}
-			return nil
-		})
+		// Not retried: a refusal here is a closed-set reason (a 404 maps to
+		// "revoked"), and widening a retry to it would hide a scoping bug.
+		answer := ce.ask(t, ce.ws[own], "GET-TOKEN scope=gh")
+		value, ok := answerToken(answer)
 		if !ok {
 			t.Errorf("the gh scope from %s's socket: %s; want OK token=…", own, redactAnswer(answer))
 			continue
