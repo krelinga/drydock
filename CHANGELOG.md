@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.12.2](https://github.com/krelinga/drydock/compare/v0.12.1...v0.12.2) (2026-10-13)
+
+
+### Bug Fixes
+
+* escape invisible and bidi characters in repo-sourced text, on a shared web/src/core ([#153](https://github.com/krelinga/drydock/issues/153)) ([92f5eb2](https://github.com/krelinga/drydock/commit/92f5eb21fa613ea6b3b7337e1e8b06cc839a3bb1))
+
 ## [0.12.1](https://github.com/krelinga/drydock/compare/v0.12.0...v0.12.1) (2026-10-13)
 
 
