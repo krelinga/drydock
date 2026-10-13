@@ -4,7 +4,7 @@
 
 import type { Clock } from '../../web/src/core/marks'
 import type {
-  HttpRequest, HttpResponse, Level, Log, Opener, Prompter, Secrets, Settings, StreamResponse, Transport, Window,
+  HttpRequest, HttpResponse, Level, Log, Opener, PickItem, Prompter, Secrets, Settings, StreamResponse, Transport, Window,
 } from '../src/ports'
 
 export const TOKEN = 'drydock_' + 'A'.repeat(20) + '_-' + 'b'.repeat(21)
@@ -128,6 +128,24 @@ export class ScriptedPrompter implements Prompter {
     return this.typed.shift()
   }
 
+  /** What each pick offered, and which item to answer with (an index, or undefined for Escape). */
+  picks: Array<{ placeHolder: string; items: Array<{ label: string; description?: string; value: unknown }> }> = []
+  pickAnswers: Array<number | undefined> = []
+  async pick<T>(items: readonly PickItem<T>[], opts: { placeHolder: string }): Promise<T | undefined> {
+    this.picks.push({ placeHolder: opts.placeHolder, items: items.map((i) => ({ label: i.label, description: i.description, value: i.value })) })
+    const n = this.pickAnswers.shift()
+    return n === undefined ? undefined : items[n]?.value
+  }
+
+  /** Progress notifications shown, with what each reported. `dismissNow` makes the operator dismiss each at once. */
+  progresses: Array<{ title: string; reports: string[] }> = []
+  dismissNow = false
+  async progress(title: string, run: (report: (m: string) => void, dismissed: () => boolean) => Promise<void>): Promise<void> {
+    const rec = { title, reports: [] as string[] }
+    this.progresses.push(rec)
+    await run((m) => rec.reports.push(m), () => this.dismissNow)
+  }
+
   texts(): string[] {
     return this.shown.map((s) => s.text)
   }
@@ -145,8 +163,12 @@ export class FakeWindow implements Window {
 
 export class RecordingOpener implements Opener {
   opened: string[] = []
+  folders: string[] = []
   async openExternal(url: string) {
     this.opened.push(url)
+  }
+  async openFolder(uri: string) {
+    this.folders.push(uri)
   }
 }
 

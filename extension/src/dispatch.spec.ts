@@ -6,48 +6,40 @@
 
 import { describe, expect, it } from 'vitest'
 import { ApiError } from '../../web/src/core/errors'
-import { DrydockClient } from './client'
 import { COMMANDS, type CommandId } from './commands'
-import { CredentialStore } from './credential'
 import { Dispatcher, OPEN_IN_DRYDOCK, TOKEN_ENDED, type Handler } from './dispatch'
 import { openInBrowser, PASTE_TOKEN, signIn, signOut, type SessionDeps } from './session'
-import { originOf } from './settings'
+import { cloneCommand, connectCommand, go, refreshRepositories } from './flows'
 import { ELSEWHERE } from './windowRule'
-import {
-  FakeTransport, FakeWindow, MemoryLog, MemorySecrets, ORIGIN, RecordingOpener, ScriptedPrompter, TOKEN, TOKEN2,
-  errorResponse, jsonResponse, settingsOf,
-} from '../test/fakes'
-
-const META = { version: 'v0.12.1', api: 1, credential: { kind: 'token', label: 'VS Code', scopes: ['read', 'lifecycle'], expires_at: '2027-01-01T00:00:00Z' } }
+import { FakeWindow, MemoryLog, ORIGIN, RecordingOpener, ScriptedPrompter, TOKEN2, errorResponse, settingsOf } from '../test/fakes'
+import { flowWorld } from '../test/fakeDrydock'
 
 /** The real handlers over fakes, with an operator who says yes to everything. */
 function world(remoteName: string | undefined) {
-  const transport = new FakeTransport()
-  transport.route = (req) => (req.url.endsWith('/api/meta') ? jsonResponse(200, META) : { status: 204, headers: { get: () => null }, text: async () => '' })
-  const secrets = new MemorySecrets()
-  secrets.value = JSON.stringify({ origin: ORIGIN, token: TOKEN })
-  const prompter = new ScriptedPrompter()
-  // Every message answered with its first action, every input with a token.
+  const f = flowWorld(remoteName)
+  const { prompter, window, opener, settings, log, secrets, credentials, client } = f
+  // Every message answered with its first action, every input with a token,
+  // every pick with its first item; every progress dismissed at once.
   prompter.message = async function (level, text, actions = []) {
     this.shown.push({ level, text, actions })
     return actions[0]
   }
   prompter.typed = Array(10).fill(TOKEN2)
-  const window = new FakeWindow(remoteName)
-  const opener = new RecordingOpener()
-  const settings = settingsOf(ORIGIN)
-  const log = new MemoryLog()
-  const credentials = new CredentialStore(secrets)
-  const client = new DrydockClient({ transport, credentials, origin: () => originOf(settings.url()) })
+  prompter.pickAnswers = Array(10).fill(0)
+  prompter.dismissNow = true
   const session: SessionDeps = { prompter, opener, settings, credentials, client, log }
   const handlers: Record<CommandId, Handler> = {
     'drydock.signIn': async () => void (await signIn(session)),
     'drydock.signOut': () => signOut(session),
     'drydock.openInBrowser': () => openInBrowser(session),
     'drydock.showLog': async () => {},
+    'drydock.go': () => go(f),
+    'drydock.clone': () => cloneCommand(f),
+    'drydock.connect': () => connectCommand(f),
+    'drydock.refreshRepositories': () => refreshRepositories(f),
   }
   const d: Dispatcher = new Dispatcher({ prompter, window, opener, settings, log, signIn: async () => void (await d.run('drydock.signIn')()) }, handlers)
-  return { d, transport, secrets, prompter, opener, log }
+  return { d, transport: f.server.transport, server: f.server, secrets, prompter, opener, log, live: f.live }
 }
 
 const MUTATING = COMMANDS.filter((c) => c.mutating).map((c) => c.id)
@@ -55,7 +47,7 @@ const MUTATING = COMMANDS.filter((c) => c.mutating).map((c) => c.id)
 describe('rule 1: no mutation outside local and SSH windows', () => {
   it('the registry marks the commands that change anything as mutating', () => {
     // A named list, so marking one of these read-only fails here by name.
-    expect(MUTATING).toEqual(['drydock.signIn', 'drydock.signOut'])
+    expect(MUTATING).toEqual(['drydock.clone', 'drydock.refreshRepositories', 'drydock.signIn', 'drydock.signOut'])
   })
 
   it('every mutating command in an attached-container window sends nothing, stores nothing, and says why', async () => {
@@ -103,7 +95,7 @@ describe('rules 2 and 3: arguments ignored, nothing returned', () => {
 describe('failures are shown, never thrown', () => {
   it('Sign Out of a token the server already refuses (401) forgets it', async () => {
     const w = world(undefined)
-    w.transport.route = (req) => (req.url.endsWith('/api/meta') ? jsonResponse(200, META) : errorResponse(401, 'unauthenticated'))
+    w.transport.route = () => errorResponse(401, 'unauthenticated')
     w.prompter.message = async function (level, text, actions = []) {
       this.shown.push({ level, text, actions })
       return undefined
@@ -131,6 +123,7 @@ describe('failures are shown, never thrown', () => {
     const log = new MemoryLog()
     const throwing = (e: unknown): Record<CommandId, Handler> => ({
       'drydock.signIn': async () => {}, 'drydock.signOut': async () => {}, 'drydock.showLog': async () => {},
+      'drydock.go': async () => {}, 'drydock.clone': async () => {}, 'drydock.connect': async () => {}, 'drydock.refreshRepositories': async () => {},
       'drydock.openInBrowser': async () => { throw e },
     })
     const deps = { prompter, window: new FakeWindow(), opener: new RecordingOpener(), settings: settingsOf(ORIGIN), log, signIn: async () => {} }

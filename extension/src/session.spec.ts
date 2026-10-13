@@ -292,6 +292,17 @@ describe('a token for an origin drydock.url no longer names', () => {
     expect(t.prompter.shown).toHaveLength(1)
   })
 
+  it('gaining the focus while a settle is pending asks nothing until it fires', async () => {
+    const t = watch('https://new.test')
+    t.w.changed()
+    t.w.focusChanged(true)
+    await flush()
+    expect(t.prompter.shown).toEqual([])
+    t.clock.advance(SETTLE_MS)
+    await flush()
+    expect(t.prompter.shown).toHaveLength(1)
+  })
+
   it('dispose cancels a pending settle', async () => {
     const t = watch('https://new.test')
     t.w.changed()

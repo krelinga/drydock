@@ -37,6 +37,27 @@ function commandErrors(m: Manifest): string[] {
   return errs
 }
 
+/** Context keys a `when` may use: the ones this extension sets (none yet) and VS Code documents for views. */
+const WHEN_KEYS = new Set(['focusedView', 'view', 'viewItem'])
+/** Commands that must never be one keystroke away (§10.4): no keybinding, ever. */
+const NEVER_BOUND = new Set(['drydock.approve', 'drydock.decline', 'drydock.signOut', 'drydock.clone'])
+
+function keybindingErrors(m: Manifest): string[] {
+  const errs: string[] = []
+  const ids = new Set((m.contributes?.commands ?? []).map((c: { command: string }) => c.command))
+  const kbs: Array<{ command: string; key?: string; mac?: string; when?: string }> = m.contributes?.keybindings ?? []
+  for (const k of kbs) {
+    if (!ids.has(k.command)) errs.push(`keybinding for ${k.command}, which is not contributed`)
+    if (!k.key || !k.mac) errs.push(`keybinding for ${k.command} lacks a default or a mac key`)
+    if (NEVER_BOUND.has(k.command)) errs.push(`keybinding for ${k.command}, which must never be one keystroke`)
+    if (k.command === 'drydock.go' && k.when !== undefined) errs.push('the hub binding has a when clause: it must work in every window (§6.2)')
+    for (const key of (k.when ?? '').match(/[A-Za-z][A-Za-z.]*/g) ?? []) {
+      if (!WHEN_KEYS.has(key) && !/^drydock\./.test(key)) errs.push(`keybinding for ${k.command} uses an unknown context key ${key}`)
+    }
+  }
+  return errs
+}
+
 function shapeErrors(m: Manifest): string[] {
   const errs: string[] = []
   if (JSON.stringify(m.extensionKind) !== '["ui"]') errs.push(`extensionKind is ${JSON.stringify(m.extensionKind)}`)
@@ -94,6 +115,26 @@ describe('the manifest', () => {
     expect(errs).toContain('drydock.stray is contributed but never registered')
     expect(errs).toContain('has category Other')
     expect(errs).toContain('drydock.showLog is hidden from the palette')
+  })
+
+  it('the one default keybinding is the hub, ctrl+alt+shift+d / cmd+alt+shift+d, with no when (§6.2)', () => {
+    expect(real.contributes.keybindings).toEqual([{ command: 'drydock.go', key: 'ctrl+alt+shift+d', mac: 'cmd+alt+shift+d' }])
+    expect(keybindingErrors(real)).toEqual([])
+  })
+
+  it('a binding to nothing, without a mac key, with a when on the hub, or on a command never bound fails by name (control)', () => {
+    const m = clone()
+    m.contributes.keybindings = [
+      { command: 'drydock.nope', key: 'ctrl+x', mac: 'cmd+x' },
+      { command: 'drydock.go', key: 'ctrl+alt+shift+d', when: 'editorFocus' },
+      { command: 'drydock.signOut', key: 'ctrl+y', mac: 'cmd+y' },
+    ]
+    const errs = keybindingErrors(m).join('\n')
+    expect(errs).toContain('drydock.nope, which is not contributed')
+    expect(errs).toContain('lacks a default or a mac key')
+    expect(errs).toContain('the hub binding has a when clause')
+    expect(errs).toContain('unknown context key editorFocus')
+    expect(errs).toContain('drydock.signOut, which must never be one keystroke')
   })
 
   it('runs on the laptop only, depends on nothing, activates lazily, and has no webview', () => {
