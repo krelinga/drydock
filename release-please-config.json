@@ -10,7 +10,12 @@
   "packages": {
     ".": {
       "release-type": "go",
-      "package-name": "drydock"
+      "package-name": "drydock",
+      "extra-files": [
+        { "type": "json", "path": "extension/package.json", "jsonpath": "$.version" },
+        { "type": "json", "path": "extension/package-lock.json", "jsonpath": "$.version" },
+        { "type": "json", "path": "extension/package-lock.json", "jsonpath": "$.packages[\"\"].version" }
+      ]
     }
   }
 }

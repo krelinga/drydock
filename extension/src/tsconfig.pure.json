@@ -1,0 +1,29 @@
+{
+  // The pure layer (vscode-extension §12.2): everything but src/adapter and
+  // src/node, with no ambient types. `vscode` is invisible here, and so are
+  // Node's globals and the DOM: fetch, setTimeout, process and console are
+  // type errors, so every effect goes through a port (Transport, Clock,
+  // Secrets, Prompter, Window, Log) the adapter implements. `noResolve`
+  // keeps the program to these files, core's and the two JSON files, so a
+  // package import does not resolve either.
+  // boundary.spec.ts is the named rule beside this compiler one.
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "lib": ["ES2023"],
+    "types": [],
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "noImplicitOverride": true,
+    "noFallthroughCasesInSwitch": true,
+    "isolatedModules": true,
+    "verbatimModuleSyntax": true,
+    "resolveJsonModule": true,
+    "skipLibCheck": true,
+    "noEmit": true,
+    "noResolve": true
+  },
+  "include": ["./**/*.ts", "../contract.json", "../package.json", "../../web/src/core/**/*.ts"],
+  "exclude": ["./**/*.spec.ts", "./adapter/**", "./node/**", "../../web/src/core/**/*.spec.ts"]
+}

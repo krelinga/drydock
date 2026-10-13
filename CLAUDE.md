@@ -22,6 +22,7 @@ The Go module is `github.com/krelinga/drydock`; the UI is Vue 3 + TypeScript + V
 go build ./... && go vet ./... && go test ./...   # the whole suite; the Caddy test needs `caddy` on PATH
 gofmt -l .                                        # must print nothing
 cd web && npm ci && npm run check                 # the UI: types, tests, dist is current, size budget
+cd extension && npm ci && npm run check           # the VS Code extension: types (pure layer alone too), specs, bundle
 test/install/run.sh                               # the installer, in a systemd container
 test/browser/run.sh                               # the browser tier: Chromium (+ Firefox, WebKit), Caddy, drydock (needs web/'s npm ci)
 go build -o drydock ./cmd/drydock                 # the one binary
@@ -65,6 +66,7 @@ printf "%s\n" "$PW" | ./drydock passwd --db x.db  # set the operator password (n
 | `internal/web` | Serves the embedded UI from `internal/web/dist`, which is **committed build output**: never hand-edit it; rebuild. |
 | `cmd/drydock` | `serve`, `passwd`, `count-secrets`, `check-preview-domain`, `check-vscode-ssh-host`, `version` — and the docker guard when run as `docker`. Nothing binds TCP or sets a password over HTTP. |
 | `web/` ([README](web/README.md)) | The Vue app. The reducer is the one writer of entity state; an in-flight mark ends on the settling event, never the `202`. |
+| `extension/` ([README](extension/README.md)) | The VS Code extension (E1, in progress). Only `src/adapter` imports `vscode`; the rest is pure, over ports, sharing `web/src/core` by path. The token goes only to the origin it was stored for, on a path `contract.json` names (which `TestExtensionContract` holds to the server); a mutating command runs only in a local or SSH window. Its `version` is Drydock's (release-please `extra-files`). |
 | `feature/` ([README](feature/README.md)) | The devcontainer Feature and its in-container clients. **Bump its `version` with any change**, and never declare `dependsOn`. |
 | `deploy/` ([README](deploy/README.md)) | Caddyfiles and the installer. Everything that can refuse runs before anything is replaced. |
 | `test/install`, `test/container`, `test/browser`, `test/ansible`, `test/docs`, `test/component` | Each has a README naming what it covers. |

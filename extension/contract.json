@@ -1,0 +1,28 @@
+{
+  "$comment": "What the extension relies on (vscode-extension §9.1). internal/api's TestExtensionContract holds every route here to api.Table (name, method, pattern) and every kind to the event registry with scope read. The client (src/client.ts) sends nothing to a path no route here matches. A change the server makes to one of these is an `api` bump (internal/api APIVersion), or the route or kind is kept.",
+  "routes": [
+    { "name": "meta.read", "method": "GET", "pattern": "/api/meta" },
+    { "name": "auth.token.delete", "method": "DELETE", "pattern": "/api/auth/token" },
+    { "name": "repos.list", "method": "GET", "pattern": "/api/repos" },
+    { "name": "repos.refresh", "method": "POST", "pattern": "/api/repos/refresh" },
+    { "name": "workspaces.list", "method": "GET", "pattern": "/api/workspaces" },
+    { "name": "workspaces.create", "method": "POST", "pattern": "/api/workspaces" },
+    { "name": "workspaces.read", "method": "GET", "pattern": "/api/workspaces/{id}" },
+    { "name": "workspaces.approve", "method": "POST", "pattern": "/api/workspaces/{id}/config-approval" },
+    { "name": "workspaces.decline", "method": "DELETE", "pattern": "/api/workspaces/{id}/config-approval" },
+    { "name": "events.stream", "method": "GET", "pattern": "/api/events" }
+  ],
+  "kinds": [
+    "workspace.state",
+    "workspace.step",
+    "workspace.action",
+    "workspace.gone",
+    "workspace.job",
+    "config.approved",
+    "supervisor.state",
+    "session.status",
+    "repo.refreshed",
+    "repo.refresh_failed",
+    "repo.removed"
+  ]
+}
