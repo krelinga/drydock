@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.17.0](https://github.com/krelinga/drydock/compare/v0.16.0...v0.17.0) (2026-10-13)
+
+
+### Features
+
+* ship the VS Code extension as drydock-vscode.vsix on every release ([#168](https://github.com/krelinga/drydock/issues/168)) ([6d093bd](https://github.com/krelinga/drydock/commit/6d093bd2bfc24b56d416a22760e452ad60ecebe7))
+
 ## [0.16.0](https://github.com/krelinga/drydock/compare/v0.15.0...v0.16.0) (2026-10-13)
 
 

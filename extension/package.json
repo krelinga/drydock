@@ -3,7 +3,7 @@
   "displayName": "Drydock",
   "description": "Clone a repository into a Drydock workspace and connect to it, from the command palette.",
   "publisher": "krelinga",
-  "version": "0.16.0",
+  "version": "0.17.0",
   "private": true,
   "license": "UNLICENSED",
   "repository": {
