@@ -41,14 +41,13 @@ import { execFileSync, spawn, type ChildProcess } from 'node:child_process'
 import { createHash, randomBytes } from 'node:crypto'
 import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, openSync, rmSync, writeFileSync } from 'node:fs'
 import http from 'node:http'
-import net from 'node:net'
 import { networkInterfaces, tmpdir } from 'node:os'
 import path from 'node:path'
 import tls from 'node:tls'
 import { chromium, type Browser } from '@playwright/test'
 import { CaddyProc, type CaddyOptions, type CaddySite } from '../harness/caddy'
 import { makeCerts as makeCertsIn } from '../harness/certs'
-import { filesUnder, freePort, groupName, sleep, unixAnswers, waitFor } from '../harness/proc'
+import { filesUnder, freePort, GaveUp, groupName, sleep, unixAnswers, waitFor } from '../harness/proc'
 import { COOKIE, Tap, type Seen } from '../harness/tap'
 
 // The shared pieces (test/harness): Caddy, the certificates, the tap and the
@@ -475,8 +474,12 @@ export class DevServer {
       path.join(REPO, 'web', 'node_modules', 'vite', 'bin', 'vite.js'),
       '--host', '0.0.0.0', '--port', String(this.port), '--strictPort',
     ], { cwd: this.root, stdio: ['ignore', openSync(log, 'a'), openSync(log, 'a')], env: { ...process.env, NODE_PATH: '' } })
+    const proc = this.proc
     const port = this.port
-    await waitFor('vite', () => tcpAnswers(port), log)
+    await waitFor('vite', () => {
+      if (proc.exitCode !== null || proc.signalCode !== null) throw new GaveUp('exited before it answered')
+      return httpAnswers(hostAddress(), port)
+    }, log)
   }
 
   async stop(): Promise<void> {
@@ -489,13 +492,25 @@ export class DevServer {
   }
 }
 
-function tcpAnswers(port: number): Promise<boolean> {
+/**
+ * Whether an HTTP server answers at host:port — any response at all — where
+ * the preview proxy dials it. A TCP connect is not enough: before its real
+ * listen, Vite's port check (isPortAvailable) opens and closes throwaway
+ * listeners on the wildcard addresses, and a connect that lands on one
+ * succeeds, after which the port refuses again for some milliseconds
+ * (measured: 6–9 ms on an idle machine, more on a loaded runner) — long
+ * enough for the next request through the proxy to be refused, the 502
+ * "Preview not answering". Those listeners never answer a request; only the
+ * dev server does.
+ */
+function httpAnswers(host: string, port: number): Promise<boolean> {
   return new Promise((resolve) => {
-    const s = net.connect(port, '127.0.0.1', () => {
-      s.end()
+    const req = http.get({ host, port, path: '/', timeout: 2000, agent: false }, (res) => {
+      res.resume()
       resolve(true)
     })
-    s.on('error', () => resolve(false))
+    req.on('timeout', () => req.destroy(new Error('timeout')))
+    req.on('error', () => resolve(false))
   })
 }
 
