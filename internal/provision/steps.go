@@ -233,10 +233,16 @@ func (r *runState) needsApproval(ha container.HostAccess, approved workspace.App
 	if len(names) > 0 {
 		sentence = what + ": " + strings.Join(names, ", ") + ". Approve it to continue, or remove it from devcontainer.json."
 	}
+	baseline := ""
+	if had {
+		baseline = approved.Hash
+	}
 	return workspace.NeedsApproval(sentence, workspace.PendingApproval{
 		Hash: ha.Hash, Settings: settings,
 		Added: enc(added), Changed: enc(changed), Removed: enc(removed),
 		RemoveExisting: r.removeExisting,
+		// What the difference above was computed against (Approve checks it).
+		Baseline: baseline,
 	})
 }
 
