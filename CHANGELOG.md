@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.12.0](https://github.com/krelinga/drydock/compare/v0.11.0...v0.12.0) (2026-10-13)
+
+
+### Features
+
+* scoped API tokens on the server (phase T) ([#149](https://github.com/krelinga/drydock/issues/149)) ([cf38b10](https://github.com/krelinga/drydock/commit/cf38b100e6895240e2fd07e93dd98eb04a5a2c5d))
+* Settings section for API tokens ([#150](https://github.com/krelinga/drydock/issues/150)) ([fe74708](https://github.com/krelinga/drydock/commit/fe74708c237151e616177b57a28226d7e92e8a2f))
+
 ## [0.11.0](https://github.com/krelinga/drydock/compare/v0.10.0...v0.11.0) (2026-10-13)
 
 
