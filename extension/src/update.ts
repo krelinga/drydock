@@ -58,22 +58,49 @@ export function versionNotice(meta: Meta | null, own = OWN_VERSION, dismissed: s
     : `This Drydock is ${meta.version}, and this extension is ${own}.`
 }
 
-/** Offers, and on the operator's word installs, the extension matching `version`. Resolves to whether it installed. */
-export async function installMatching(d: UpdateDeps, version: string, sentence: string, level: 'info' | 'warning' = 'warning'): Promise<boolean> {
+/**
+ * What came of an offer: installed; let be by the operator (`dismissed`, or
+ * no install was offered); or asked for where rule 1 refuses it (`refused`),
+ * which is this window's limit, not the operator's answer.
+ */
+export type Offer = 'installed' | 'dismissed' | 'refused'
+
+/** Offers, and on the operator's word installs, the extension matching `version`. */
+export async function installMatching(d: UpdateDeps, version: string, sentence: string, level: 'info' | 'warning' = 'warning'): Promise<Offer> {
   if (vsixURL(version) === null) {
     await d.prompter.message(level, sentence)
-    return false
+    return 'dismissed'
   }
   const label = installLabel(version)
-  if ((await d.prompter.message(level, sentence, [label])) !== label) return false
+  if ((await d.prompter.message(level, sentence, [label])) !== label) return 'dismissed'
   if (!mayMutate(d.window.remoteName())) {
     await d.prompter.message('warning', ELSEWHERE)
-    return false
+    return 'refused'
   }
   d.log.info(`installing the extension for Drydock ${version}`)
   await d.updater.install(version)
   if ((await d.prompter.message('info', `Installed the extension for Drydock ${version}. Reload to use it.`, [RELOAD])) === RELOAD) {
     await d.updater.reload()
   }
-  return true
+  return 'installed'
+}
+
+/** Where the version the operator let be is kept: per laptop (the adapter's globalState). */
+export interface Dismissals {
+  get(): string | undefined
+  set(version: string): Promise<void>
+}
+
+/**
+ * §9.1's quiet notice for `meta` (null when the handshake's skew is not
+ * `ok`), offered at most once per call. Only the operator's own let-be is
+ * remembered: a container window refusing the install (rule 1) is not a
+ * dismissal, so a local window still offers it.
+ */
+export async function offerVersion(d: UpdateDeps, meta: Meta | null, dismissals: Dismissals, own = OWN_VERSION): Promise<Offer | null> {
+  const text = versionNotice(meta, own, dismissals.get())
+  if (text === null || meta === null) return null
+  const offer = await installMatching(d, meta.version, text, 'info')
+  if (offer === 'dismissed') await dismissals.set(meta.version)
+  return offer
 }
