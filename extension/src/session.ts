@@ -10,15 +10,23 @@
 // entry is cleared, so signing out ends the credential rather than leaving it
 // live and forgotten. A token the server already refuses (401) is cleared
 // too; when Drydock cannot be reached, the token is kept and the operator is
-// told, with the choice to forget it anyway.
+// told, with the choice to forget it anyway. The token is revoked at the
+// origin it was stored for, whatever drydock.url says now.
+//
+// No live token is left behind when the credential is replaced: a sign-in
+// with a new token, and a drydock.url that no longer names the stored
+// token's origin (`retireStale`, run when the setting changes and on
+// activation), each revoke the old token at its own origin, best effort, and
+// then forget it. A revocation that fails is said, with where to revoke it
+// by hand.
 
 import { ApiError } from '../../web/src/core/errors'
 import { describeError } from '../../web/src/core/messages'
 import type { DrydockClient } from './client'
-import { checkPaste, type CredentialStore } from './credential'
+import { checkPaste, type Credential, type CredentialStore } from './credential'
 import { parseMeta, skew, type Meta } from './handshake'
+import { errorLine } from './log'
 import type { Log, Opener, Prompter, Settings } from './ports'
-import { pathFor } from './routes'
 import { originOf } from './settings'
 
 export const CREATE_TOKEN = 'Create a token in Drydock'
@@ -68,7 +76,7 @@ export async function signIn(d: SessionDeps): Promise<Meta | null> {
     if (e instanceof ApiError && e.status === 401) {
       await d.prompter.message('error', TOKEN_REFUSED)
     } else {
-      d.log.warn(`sign in: ${e instanceof ApiError ? `${e.status} ${e.code}` : String(e)}`)
+      d.log.warn(`sign in: ${errorLine(e)}`)
       await d.prompter.message('error', describeError(e))
     }
     return null
@@ -79,6 +87,8 @@ export async function signIn(d: SessionDeps): Promise<Meta | null> {
     d.log.warn('sign in: GET /api/meta answered with a body that is not a meta answer')
     return null
   }
+  const old = await d.credentials.read()
+  if (old !== null && (old.origin !== o.origin || old.token !== pasted.token)) await retire(d, old)
   await d.credentials.write({ origin: o.origin, token: pasted.token })
   d.log.info(`signed in to ${o.origin} (Drydock ${meta.version}, api ${meta.api}) as "${meta.credential.label}", scopes ${meta.credential.scopes.join(', ')}`)
   const s = skew(meta.api)
@@ -94,33 +104,57 @@ export async function signOut(d: SessionDeps): Promise<void> {
     await d.prompter.message('info', 'Not signed in to Drydock.')
     return
   }
-  const o = originOf(d.settings.url())
-  if (!o.ok || o.origin !== stored.origin) {
-    // The token is for a Drydock this window is no longer configured for:
-    // the client will not send it there, or anywhere else.
-    const ans = await d.prompter.message('warning',
-      `The stored token is for ${stored.origin}, which drydock.url no longer names, so it cannot be revoked from here. Revoke it in that Drydock's Settings.`,
-      [FORGET_ANYWAY])
-    if (ans === FORGET_ANYWAY) await d.credentials.clear()
-    return
-  }
   try {
-    await d.client.send('DELETE', pathFor('auth.token.delete'))
+    await d.client.revokeAt(stored.origin, stored.token)
   } catch (e) {
-    if (e instanceof ApiError && e.status === 401) {
-      // Already dead; the client cleared it.
-      await d.prompter.message('info', 'Signed out of Drydock.')
+    if (!(e instanceof ApiError && e.status === 401)) {
+      d.log.warn(`sign out: ${errorLine(e)}`)
+      const ans = await d.prompter.message('error',
+        `${describeError(e)} The token was not revoked and is still stored. Try again, or revoke it in Drydock's Settings at ${stored.origin}.`,
+        [FORGET_ANYWAY])
+      if (ans === FORGET_ANYWAY) await d.credentials.clear()
       return
     }
-    const ans = await d.prompter.message('error',
-      `${describeError(e)} The token was not revoked and is still stored. Try again, or revoke it in Drydock's Settings.`,
-      [FORGET_ANYWAY])
-    if (ans === FORGET_ANYWAY) await d.credentials.clear()
-    return
+    // A 401: the token was already revoked or expired.
   }
   await d.credentials.clear()
-  d.log.info(`signed out of ${stored.origin}; the token revoked itself`)
+  d.log.info(`signed out of ${stored.origin}; the token is revoked`)
   await d.prompter.message('info', 'Signed out of Drydock. The token is revoked.')
+}
+
+/**
+ * Revokes `old` at its own origin, best effort, and forgets it whatever the
+ * answer: the caller is replacing it. A failure is logged and said.
+ */
+async function retire(d: SessionDeps, old: Credential): Promise<void> {
+  try {
+    await d.client.revokeAt(old.origin, old.token)
+    d.log.info(`revoked the previous token at ${old.origin}`)
+  } catch (e) {
+    if (!(e instanceof ApiError && e.status === 401)) {
+      d.log.warn(`revoking the previous token at ${old.origin}: ${errorLine(e)}`)
+      void d.prompter.message('warning', `${notRevoked(old.origin)}`)
+    }
+  }
+  await d.credentials.clear()
+}
+
+export const notRevoked = (origin: string) =>
+  `The previous Drydock token could not be revoked at ${origin}, and is forgotten here. Revoke it in that Drydock's Settings.`
+
+/**
+ * After drydock.url changed (and on activation): a stored token for an
+ * origin the setting no longer names is revoked there and forgotten. One for
+ * the configured origin is left alone. Resolves to whether one was retired.
+ */
+export async function retireStale(d: SessionDeps): Promise<boolean> {
+  const stored = await d.credentials.read()
+  if (stored === null) return false
+  const o = originOf(d.settings.url())
+  if (o.ok && o.origin === stored.origin) return false
+  await retire(d, stored)
+  await d.prompter.message('info', `drydock.url no longer names ${stored.origin}, so this VS Code signed out of it.`)
+  return true
 }
 
 /** drydock.openInBrowser: Drydock's home page, in the browser. */

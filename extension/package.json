@@ -59,7 +59,7 @@
           "default": "",
           "scope": "application",
           "ignoreSync": true,
-          "markdownDescription": "The address of your Drydock, exactly as its web UI is reached: `https://` and a lowercase host, such as `https://drydock.example.com`. Changing it signs you out of the old one."
+          "markdownDescription": "The address of your Drydock's web UI: `https://`, a lowercase host and an optional port, with nothing after it, such as `https://drydock.example.com`. Changing it signs this VS Code out of the old Drydock: its token is revoked there (when that Drydock can be reached) and forgotten, and you sign in to the new one with a token minted there."
         },
         "drydock.connectWhenReady": {
           "type": "boolean",

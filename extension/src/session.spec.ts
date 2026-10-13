@@ -6,7 +6,7 @@
 import { describe, expect, it } from 'vitest'
 import { DrydockClient } from './client'
 import { CredentialStore } from './credential'
-import { CREATE_TOKEN, FORGET_ANYWAY, PASTE_TOKEN, TOKEN_REFUSED, signIn, signOut, type SessionDeps } from './session'
+import { CREATE_TOKEN, FORGET_ANYWAY, PASTE_TOKEN, TOKEN_REFUSED, notRevoked, retireStale, signIn, signOut, type SessionDeps } from './session'
 import { SERVER_NEWER } from './handshake'
 import { originOf } from './settings'
 import {
@@ -139,11 +139,72 @@ describe('Sign Out', () => {
     expect(forgotten.secrets.value).toBeUndefined()
   })
 
-  it('a token stored for another origin is never sent to revoke it', async () => {
+  it('a token is revoked at the origin it was stored for, never at the one drydock.url names now', async () => {
     const t = setup('https://other.test')
     t.secrets.value = JSON.stringify({ origin: ORIGIN, token: TOKEN2 })
+    t.transport.route = () => ({ status: 204, headers: { get: () => null }, text: async () => '' })
     await signOut(t.d)
-    expect(t.transport.requests).toEqual([])
-    expect(t.secrets.value).toContain(TOKEN2)
+    expect(t.transport.requests.map((r) => [r.method, r.url, r.headers.Authorization])).toEqual(
+      [['DELETE', `${ORIGIN}/api/auth/token`, `Bearer ${TOKEN2}`]])
+    expect(t.secrets.value).toBeUndefined()
+  })
+})
+
+describe('no live token left behind', () => {
+  const ok204 = () => ({ status: 204, headers: { get: () => null }, text: async () => '' })
+
+  it('signing in to another origin revokes the old token at its own origin, then stores the new one', async () => {
+    const t = setup('https://new.test')
+    t.secrets.value = JSON.stringify({ origin: ORIGIN, token: TOKEN2 })
+    t.transport.route = (req) => (req.method === 'DELETE' ? ok204() : jsonResponse(200, META))
+    t.prompter.answers = [PASTE_TOKEN]
+    t.prompter.typed = [TOKEN]
+    await signIn(t.d)
+    expect(t.transport.requests.map((r) => [r.method, r.url, r.headers.Authorization])).toEqual([
+      ['GET', 'https://new.test/api/meta', `Bearer ${TOKEN}`],
+      ['DELETE', `${ORIGIN}/api/auth/token`, `Bearer ${TOKEN2}`],
+    ])
+    expect(JSON.parse(t.secrets.value!)).toEqual({ origin: 'https://new.test', token: TOKEN })
+  })
+
+  it('signing in again with the same token revokes nothing (control)', async () => {
+    const t = setup()
+    t.secrets.value = JSON.stringify({ origin: ORIGIN, token: TOKEN })
+    t.prompter.answers = [PASTE_TOKEN]
+    t.prompter.typed = [TOKEN]
+    await signIn(t.d)
+    expect(t.transport.requests.map((r) => r.method)).toEqual(['GET'])
+  })
+
+  it('a changed drydock.url revokes the stored token at its origin and forgets it; an unchanged one is left alone (control)', async () => {
+    const same = setup()
+    same.secrets.value = JSON.stringify({ origin: ORIGIN, token: TOKEN })
+    expect(await retireStale(same.d)).toBe(false)
+    expect(same.transport.requests).toEqual([])
+    expect(same.secrets.value).toContain(TOKEN)
+
+    const moved = setup('https://new.test')
+    moved.secrets.value = JSON.stringify({ origin: ORIGIN, token: TOKEN })
+    moved.transport.route = ok204
+    expect(await retireStale(moved.d)).toBe(true)
+    expect(moved.transport.requests.map((r) => [r.method, r.url])).toEqual([['DELETE', `${ORIGIN}/api/auth/token`]])
+    expect(moved.secrets.value).toBeUndefined()
+
+    const unset = setup('')
+    unset.secrets.value = JSON.stringify({ origin: ORIGIN, token: TOKEN })
+    unset.transport.route = ok204
+    expect(await retireStale(unset.d)).toBe(true)
+    expect(unset.secrets.value).toBeUndefined()
+  })
+
+  it('a revocation that fails still forgets the token, and says where to revoke it by hand', async () => {
+    const t = setup('https://new.test')
+    t.secrets.value = JSON.stringify({ origin: ORIGIN, token: TOKEN })
+    t.transport.route = () => {
+      throw new Error('down')
+    }
+    await retireStale(t.d)
+    expect(t.secrets.value).toBeUndefined()
+    expect(t.prompter.texts()).toContain(notRevoked(ORIGIN))
   })
 })

@@ -13,9 +13,10 @@ import { DrydockClient } from '../client'
 import { Dispatcher, type Handler } from '../dispatch'
 import { redacting } from '../log'
 import type { Log, Opener, Prompter, Secrets, Settings, Window } from '../ports'
-import { openInBrowser, signIn, signOut, type SessionDeps } from '../session'
+import { openInBrowser, retireStale, signIn, signOut, type SessionDeps } from '../session'
 import { originOf } from '../settings'
 import { nodeTransport } from '../node/transport'
+import { mayMutate } from '../windowRule'
 
 /** The one SecretStorage key: `{origin, token}` (credential.ts). */
 const SECRET_KEY = 'drydock.credential'
@@ -72,6 +73,18 @@ export function activate(context: vscode.ExtensionContext): void {
   for (const c of COMMANDS) {
     context.subscriptions.push(vscode.commands.registerCommand(c.id, dispatcher.run(c.id)))
   }
+
+  // A token whose origin drydock.url no longer names is revoked there and
+  // forgotten (session.ts retireStale): when the setting changes, and once
+  // now, for a change made while the extension was not running. Like every
+  // mutation, only from a local or SSH window (§8 rule 1).
+  const retire = () => {
+    if (mayMutate(window.remoteName())) void retireStale(session).catch((e: unknown) => log.warn(`retiring a stale token: ${String(e)}`))
+  }
+  context.subscriptions.push(vscode.workspace.onDidChangeConfiguration((e) => {
+    if (e.affectsConfiguration('drydock.url')) retire()
+  }))
+  retire()
 }
 
 export function deactivate(): void {}

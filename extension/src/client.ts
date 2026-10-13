@@ -24,7 +24,7 @@
 import { ApiError } from '../../web/src/core/errors'
 import type { CredentialStore } from './credential'
 import type { HttpRequest, HttpResponse, StreamResponse, Transport } from './ports'
-import { routeOf } from './routes'
+import { pathFor, routeOf } from './routes'
 import { NOT_SET } from './settings'
 
 type Method = HttpRequest['method']
@@ -76,8 +76,18 @@ export class DrydockClient {
    * caller's to explain.
    */
   async metaWith(origin: string, token: string): Promise<unknown> {
-    const resp = await this.raw({ method: 'GET', url: origin + '/api/meta', headers: this.headers('GET', origin, token) }, false)
+    const resp = await this.raw({ method: 'GET', url: origin + pathFor('meta.read'), headers: this.headers('GET', origin, token) }, false)
     return json(resp)
+  }
+
+  /**
+   * DELETE /api/auth/token with a stored token, at the origin it was stored
+   * for: how a token whose Drydock is no longer `drydock.url` revokes itself
+   * before it is forgotten (session.ts). Clears nothing; the caller does.
+   */
+  async revokeAt(origin: string, token: string): Promise<void> {
+    const resp = await this.raw({ method: 'DELETE', url: origin + pathFor('auth.token.delete'), headers: this.headers('DELETE', origin, token) }, false)
+    await resp.text().catch(() => '')
   }
 
   /** Opens the event stream, resuming after `lastEventId` when it is past 0. */
@@ -121,8 +131,11 @@ export class DrydockClient {
     let resp: HttpResponse
     try {
       resp = await this.deps.transport.request(req)
-    } catch {
-      throw new ApiError(0, 'network')
+    } catch (e) {
+      // A transport's refusal of a URL is a bug to show, not a network
+      // failure to retry.
+      if (e instanceof Error && e.name === 'RefusedURL') throw e
+      throw new ApiError(0, 'network', null, causeOf(e))
     }
     if (resp.status >= 200 && resp.status < 300) return resp
     throw await this.failure(resp, stored)
@@ -137,6 +150,24 @@ export class DrydockClient {
     }
     return err
   }
+}
+
+/**
+ * Why a request got no response, for Show Log: an error's name and a
+ * machine code (ECONNREFUSED, CERT_HAS_EXPIRED, ERR_TLS_CERT_ALTNAME_INVALID…)
+ * from it or its cause, and nothing else — never a message, which can quote
+ * a URL.
+ */
+export function causeOf(e: unknown): string {
+  const parts: string[] = []
+  let cur: unknown = e
+  for (let depth = 0; depth < 3 && cur !== null && typeof cur === 'object'; depth++) {
+    const o = cur as { name?: unknown; code?: unknown; cause?: unknown }
+    if (typeof o.name === 'string' && /^[A-Za-z]{1,40}$/.test(o.name)) parts.push(o.name)
+    if (typeof o.code === 'string' && /^[A-Z0-9_]{1,60}$/.test(o.code)) parts.push(o.code)
+    cur = o.cause
+  }
+  return parts.length === 0 ? 'no response' : `no response: ${[...new Set(parts)].join(' ')}`
 }
 
 async function json(resp: HttpResponse): Promise<unknown> {

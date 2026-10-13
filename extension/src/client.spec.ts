@@ -4,7 +4,7 @@
 
 import { describe, expect, it } from 'vitest'
 import { ApiError } from '../../web/src/core/errors'
-import { DrydockClient, NotConfigured, SignInNeeded } from './client'
+import { DrydockClient, NotConfigured, SignInNeeded, causeOf } from './client'
 import { CredentialStore } from './credential'
 import { originOf } from './settings'
 import { FakeTransport, MemorySecrets, ORIGIN, TOKEN, errorResponse, jsonResponse, settingsOf } from '../test/fakes'
@@ -127,11 +127,46 @@ describe('what comes back', () => {
   it('a network failure is ApiError(0, network); a body that is not JSON is unparseable', async () => {
     const { transport, client } = setup()
     transport.route = () => {
-      throw new Error('ECONNREFUSED')
+      throw new TypeError(`fetch failed for ${ORIGIN}/api/workspaces?t=${TOKEN}`, { cause: Object.assign(new Error('connect ECONNREFUSED 10.0.0.1:443'), { code: 'ECONNREFUSED' }) })
     }
-    await expect(client.get('/api/workspaces')).rejects.toEqual(new ApiError(0, 'network'))
+    const err = await client.get('/api/workspaces').catch((e: unknown) => e)
+    expect(err).toBeInstanceOf(ApiError)
+    expect(err).toMatchObject({ status: 0, code: 'network' })
+    // The cause's name and code are kept for Show Log; its messages, which
+    // quote a URL, are not.
+    expect((err as ApiError).message).toBe('no response: TypeError Error ECONNREFUSED')
+    expect((err as ApiError).message).not.toContain(TOKEN)
     transport.route = () => ({ status: 200, headers: { get: () => 'text/html' }, text: async () => '<html>' })
     await expect(client.get('/api/workspaces')).rejects.toMatchObject({ code: 'unparseable' })
+  })
+})
+
+describe('causeOf', () => {
+  it('keeps names and machine codes through the cause chain, and nothing else', () => {
+    const e = new TypeError('fetch failed https://u:p@x.test/', {
+      cause: Object.assign(new Error('unable to verify'), { code: 'UNABLE_TO_VERIFY_LEAF_SIGNATURE' }),
+    })
+    expect(causeOf(e)).toBe('no response: TypeError Error UNABLE_TO_VERIFY_LEAF_SIGNATURE')
+    expect(causeOf(Object.assign(new Error('x'), { code: 'see https://evil.test/' + TOKEN }))).toBe('no response: Error')
+    expect(causeOf('a string')).toBe('no response')
+  })
+})
+
+describe('encoded dot segments', () => {
+  it('a path whose segment is or encodes a dot segment, or a slash, is refused before anything is sent', async () => {
+    const { transport, client } = setup()
+    for (const p of [
+      '/api/workspaces/%2e%2e/config-approval', '/api/workspaces/%2E%2E/config-approval', '/api/workspaces/.%2e/config-approval',
+      '/api/workspaces/%2e./config-approval', '/api/workspaces/../config-approval', '/api/workspaces/./config-approval',
+      '/api/workspaces/a%2Fb/config-approval', '/api/workspaces/%2e', '/api/workspaces/..?x=1', '/api/workspaces/%252e%252e',
+    ]) {
+      const send = p.endsWith('config-approval') ? client.send('POST', p, { hash: 'h' }) : client.get(p)
+      await expect(send, p).rejects.toThrow(/refusing/)
+    }
+    expect(transport.requests).toEqual([])
+    // Control: a ULID in the same place goes.
+    await client.send('POST', '/api/workspaces/01JA0000000000000000000010/config-approval', { hash: 'h' })
+    expect(transport.requests).toHaveLength(1)
   })
 })
 

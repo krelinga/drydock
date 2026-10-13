@@ -7,52 +7,82 @@ import (
 	"testing"
 )
 
-// The extension is versioned with Drydock (vscode-extension §9.2): one tag,
-// one version. release-please moves extension/package.json's version through
-// release-please-config.json's extra-files, so the two can differ only when
-// someone edits one by hand — or when that extra-files entry is lost, which
-// this also checks, since a release would then ship a .vsix claiming the
-// previous version.
-func TestExtensionVersionIsTheRelease(t *testing.T) {
-	read := func(name string, v any) {
-		t.Helper()
-		b, err := os.ReadFile(filepath.Join(root, name))
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := json.Unmarshal(b, v); err != nil {
-			t.Fatalf("%s: %v", name, err)
-		}
+// extraFile is one of release-please-config.json's extra-files.
+type extraFile struct {
+	Type     string `json:"type"`
+	Path     string `json:"path"`
+	JSONPath string `json:"jsonpath"`
+}
+
+// The version stamps the extension carries, each with the extra-files entry
+// that moves it.
+var extensionStamps = []extraFile{
+	{"json", "extension/package.json", "$.version"},
+	{"json", "extension/package-lock.json", "$.version"},
+	{"json", "extension/package-lock.json", `$.packages[""].version`},
+}
+
+func readJSON(t *testing.T, name string, v any) {
+	t.Helper()
+	b, err := os.ReadFile(filepath.Join(root, name))
+	if err != nil {
+		t.Fatal(err)
 	}
+	if err := json.Unmarshal(b, v); err != nil {
+		t.Fatalf("%s: %v", name, err)
+	}
+}
+
+// The extension is versioned with Drydock (vscode-extension §9.2): one tag,
+// one version. release-please moves the extension's version stamps through
+// release-please-config.json's extra-files, so they can differ from the
+// release only when someone edits one by hand — or when an extra-files entry
+// is lost, which this also checks, since a release would then ship a .vsix
+// (or a lock file) claiming the previous version.
+func TestExtensionVersionIsTheRelease(t *testing.T) {
 	var manifest map[string]string
-	read(".release-please-manifest.json", &manifest)
+	readJSON(t, ".release-please-manifest.json", &manifest)
 	var pkg struct {
 		Version string `json:"version"`
 	}
-	read("extension/package.json", &pkg)
-	// The control: both were read.
-	if manifest["."] == "" || pkg.Version == "" {
-		t.Fatalf("versions not found: manifest %q, extension %q", manifest["."], pkg.Version)
+	readJSON(t, "extension/package.json", &pkg)
+	var lock struct {
+		Version  string `json:"version"`
+		Packages map[string]struct {
+			Version string `json:"version"`
+		} `json:"packages"`
 	}
-	if pkg.Version != manifest["."] {
-		t.Errorf("extension/package.json is version %s, the release is %s: they move together (release-please-config.json extra-files)", pkg.Version, manifest["."])
+	readJSON(t, "extension/package-lock.json", &lock)
+
+	release := manifest["."]
+	// The control: the release and every stamp were read.
+	if release == "" || pkg.Version == "" || lock.Version == "" || lock.Packages[""].Version == "" {
+		t.Fatalf("versions not found: release %q, package.json %q, lock %q, lock packages[\"\"] %q",
+			release, pkg.Version, lock.Version, lock.Packages[""].Version)
+	}
+	for _, s := range []struct{ where, got string }{
+		{"extension/package.json $.version", pkg.Version},
+		{"extension/package-lock.json $.version", lock.Version},
+		{`extension/package-lock.json $.packages[""].version`, lock.Packages[""].Version},
+	} {
+		if s.got != release {
+			t.Errorf("%s is %s, the release is %s: they move together (release-please-config.json extra-files)", s.where, s.got, release)
+		}
 	}
 
 	var cfg struct {
 		Packages map[string]struct {
-			ExtraFiles []struct {
-				Type, Path, JSONPath string
-			} `json:"extra-files"`
+			ExtraFiles []extraFile `json:"extra-files"`
 		} `json:"packages"`
 	}
-	read("release-please-config.json", &cfg)
-	found := false
+	readJSON(t, "release-please-config.json", &cfg)
+	have := map[extraFile]bool{}
 	for _, f := range cfg.Packages["."].ExtraFiles {
-		if f.Type == "json" && f.Path == "extension/package.json" && f.JSONPath == "$.version" {
-			found = true
-		}
+		have[f] = true
 	}
-	if !found {
-		t.Error(`release-please-config.json does not move extension/package.json's version: its "." package needs extra-files {"type": "json", "path": "extension/package.json", "jsonpath": "$.version"}`)
+	for _, want := range extensionStamps {
+		if !have[want] {
+			t.Errorf("release-please-config.json does not move %s %s: its \".\" package needs the extra-files entry %+v", want.Path, want.JSONPath, want)
+		}
 	}
 }

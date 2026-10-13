@@ -101,7 +101,7 @@ describe('rules 2 and 3: arguments ignored, nothing returned', () => {
 })
 
 describe('failures are shown, never thrown', () => {
-  it('a 401 takes the one 401 path: the token is cleared and Sign In offered', async () => {
+  it('Sign Out of a token the server already refuses (401) forgets it', async () => {
     const w = world(undefined)
     w.transport.route = (req) => (req.url.endsWith('/api/meta') ? jsonResponse(200, META) : errorResponse(401, 'unauthenticated'))
     w.prompter.message = async function (level, text, actions = []) {
@@ -110,7 +110,7 @@ describe('failures are shown, never thrown', () => {
     }
     await w.d.run('drydock.signOut')()
     expect(w.secrets.value).toBeUndefined()
-    expect(w.prompter.texts()).toContain('Signed out of Drydock.')
+    expect(w.prompter.texts()).toContain('Signed out of Drydock. The token is revoked.')
   })
 
   it('a handler that throws something unexpected is reported, and the command still returns undefined', async () => {

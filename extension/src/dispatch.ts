@@ -16,6 +16,7 @@ import { ApiError } from '../../web/src/core/errors'
 import { describeError } from '../../web/src/core/messages'
 import { NotConfigured, SignInNeeded } from './client'
 import { COMMANDS, type CommandId } from './commands'
+import { errorLine } from './log'
 import type { Log, Opener, Prompter, Settings, Window } from './ports'
 import { originOf } from './settings'
 import { ELSEWHERE, mayMutate } from './windowRule'
@@ -78,11 +79,11 @@ export class Dispatcher {
       return
     }
     if (e instanceof ApiError) {
-      this.deps.log.warn(`${id}: ${e.status} ${e.code}`)
+      this.deps.log.warn(`${id}: ${errorLine(e)}`)
       await p.message('error', describeError(e))
       return
     }
-    this.deps.log.warn(`${id}: ${e instanceof Error ? e.message : String(e)}`)
+    this.deps.log.warn(`${id}: ${errorLine(e)}`)
     await p.message('error', 'Something went wrong in the Drydock extension. Show Log has the details.')
   }
 

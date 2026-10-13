@@ -4,6 +4,7 @@
 // quotes one. A Drydock token, a bearer header's value and a GitHub token are
 // masked wherever they appear.
 
+import { ApiError } from '../../web/src/core/errors'
 import type { Log } from './ports'
 
 const PATTERNS: readonly RegExp[] = [
@@ -25,4 +26,15 @@ export function redact(line: string): string {
 /** A Log that redacts every line before `sink` sees it. */
 export function redacting(sink: Log): Log {
   return { info: (l) => sink.info(redact(l)), warn: (l) => sink.warn(redact(l)) }
+}
+
+/**
+ * An error as one log line: an ApiError's status, code and message (for a
+ * network failure, causeOf's name and code; otherwise the server's prose),
+ * anything else by its name and message. Still redacted by the Log.
+ */
+export function errorLine(e: unknown): string {
+  if (e instanceof ApiError) return `${e.status} ${e.code}: ${e.message}`
+  if (e instanceof Error) return `${e.name}: ${e.message}`
+  return String(e)
 }

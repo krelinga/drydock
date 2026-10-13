@@ -131,8 +131,11 @@ describe('routes', () => {
     expect(routeOf('GET', '/api/workspaces')?.name).toBe('workspaces.list')
     expect(routeOf('DELETE', '/api/workspaces/abc/config-approval')?.name).toBe('workspaces.decline')
     expect(routeOf('PUT', '/api/workspaces')).toBeNull()
-    expect(pathFor('workspaces.read', { id: 'a/b?c' })).toBe('/api/workspaces/a%2Fb%3Fc')
-    expect(routeOf('GET', pathFor('workspaces.read', { id: 'a/b?c' }))?.name).toBe('workspaces.read')
+    expect(pathFor('workspaces.read', { id: '01JA0000000000000000000010' })).toBe('/api/workspaces/01JA0000000000000000000010')
+    expect(routeOf('GET', pathFor('workspaces.read', { id: '01JA0000000000000000000010' }))?.name).toBe('workspaces.read')
+    for (const id of ['a/b', 'a?b', '..', '.', '%2e%2e', 'a%2Fb', '']) {
+      expect(() => pathFor('workspaces.read', { id }), id).toThrow()
+    }
     expect(() => pathFor('secrets.list')).toThrow()
   })
 })
