@@ -533,13 +533,20 @@ Close both terminals afterwards.
    rm -f ~/drydock-ritual/drydock-ritual-probe.vsix
    ```
 
-   (On Windows: `code --list-extensions | Select-String drydock-ritual` and
-   `Get-ChildItem $env:USERPROFILE\.vscode\extensions | Select-String drydock-ritual`.)
+   On Windows (PowerShell), the same checks; each prints nothing when the probe is gone, and a
+   line naming `drydock-ritual.probe` when it is not:
+
+   ```powershell
+   code --list-extensions | Select-String drydock-ritual
+   Get-ChildItem -Name "$env:USERPROFILE\.vscode\extensions" -Filter 'drydock-ritual*'
+   Remove-Item -ErrorAction SilentlyContinue "$env:USERPROFILE\drydock-ritual\drydock-ritual-probe.vsix"
+   ```
 5. **The attached-container configuration** (2.1 step 5). For every file the search there listed,
-   open it and delete `"drydock-ritual.probe"` from its `extensions` array, leaving anything else as
-   it is. Use *Dev Containers: Open Container Configuration File* from a new attach to the testbed,
-   or open the file directly from the directory in 2.1's table. Then run 2.1's `grep` (or the
-   PowerShell line) again.
+   open it **directly**, from the directory in 2.1's table (*File → Open File…* in a local window,
+   or any editor), and delete `"drydock-ritual.probe"` from its `extensions` array, leaving anything
+   else as it is. Do not reach it by attaching to the testbed again: an attach installs what the
+   file names, which would put the probe back. Then run 2.1's `grep` (or the PowerShell line)
+   again.
 
 **Expect:** the probe is gone from the container's Extensions list, both laptop checks print
 nothing, and the configuration search prints nothing. Part 3 deletes the container itself.

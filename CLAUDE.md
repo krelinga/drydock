@@ -154,7 +154,7 @@ and only then `publish` makes it public and *Latest*, returning it to a draft if
 
 **CI** (`.github/workflows/ci.yml`) runs on every PR and push to `main`: `gofmt`, `go vet`, `go test`
 with Caddy, `socat`, `nc` and the devcontainer CLI and `DRYDOCK_REQUIRE_CADDY=1`,
-`DRYDOCK_REQUIRE_DOCKER=1`, `DRYDOCK_REQUIRE_TRANSPORTS=1` (without them a missing tool is a *skip*,
+`DRYDOCK_REQUIRE_DOCKER=1`, `DRYDOCK_REQUIRE_TRANSPORTS=1`, `DRYDOCK_REQUIRE_PYTHON=1` (without them a missing tool is a *skip*,
 which in CI is a silent pass); `npm run check`; `test/install/run.sh`; the Feature tests; and the
 `browser` job.
 

@@ -72,6 +72,7 @@ jobs:
           DRYDOCK_REQUIRE_CADDY: "1"
           DRYDOCK_REQUIRE_DOCKER: "1"
           DRYDOCK_REQUIRE_TRANSPORTS: "1"
+          DRYDOCK_REQUIRE_PYTHON: "1"
         run: .github/stress/stress.sh
       # Even when the loop failed, was cancelled or hit the job limit: whatever
       # it recorded is filed.
