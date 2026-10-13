@@ -26,14 +26,10 @@
 // (frontend §4.3).
 //
 // In-flight marks (§4.2) end on their settling event, and also on a snapshot
-// that shows the action over. A `resync` means the settling event may be in
-// a gap no replay can reach; without the second path the mark — and its
-// button — would spin until a reload. A snapshot resolves a mark only if it
-// was requested after the mark's request was accepted (its 2xx arrived): the
-// server commits an action's receipt before answering, so only such a body
-// can tell "not begun" from "over". Each action's "over" is one predicate
-// over an Outcome, shared by both paths (stores/workspaces.ts), so the event
-// path and the snapshot path cannot disagree.
+// that shows the action over: core/marks.ts holds that rule, shared with the
+// extension (vscode-extension §5.2), and this store delegates to it. Each
+// action's "over" is one predicate over an Outcome, shared by both paths
+// (core/settle.ts), so the event path and the snapshot path cannot disagree.
 //
 // The EventSource, the timers and the refetchers are not state — they are not
 // rendered and must not be reset by `$reset` (which would orphan an open
@@ -43,8 +39,11 @@
 import { defineStore } from 'pinia'
 import { toRaw } from 'vue'
 import * as api from '../api/client'
-import type { StreamEvent } from '../api/types'
-import { emptyEntities, hasStubs, reduce, type Action, type Entities } from './reducer'
+import type { StreamEvent } from '../core/types'
+import { emptyEntities, hasStubs, reduce, type Action, type Entities } from '../core/reducer'
+import { Marks, SLOW_AFTER_MS, type Clock, type InFlight } from '../core/marks'
+
+export { SLOW_AFTER_MS, type InFlight }
 
 export type Phase =
   /** No stream: signed out, or not started. */
@@ -61,20 +60,12 @@ export type Phase =
 
 /** Nothing visible for this long after a drop (§4.3). */
 export const MARKER_AFTER_MS = 5_000
-/** After this long with no settling event, an in-flight action says so (§4.2). */
-export const SLOW_AFTER_MS = 10_000
 /** Hard-retry backoff after a CLOSED stream, capped. */
 export const BACKOFF_MS = [1_000, 2_000, 4_000, 8_000, 16_000, 30_000] as const
 
 const EVENTS_URL = '/api/events'
 /** EventSource.CLOSED, spelled out so a test double need not carry the statics. */
 const CLOSED = 2
-
-export interface InFlight {
-  since: number
-  /** No settling event for SLOW_AFTER_MS: say "no response yet", never "failed". */
-  slow: boolean
-}
 
 /** A refetch the current view needs, and which events make it owed. */
 export interface Refetcher {
@@ -89,14 +80,8 @@ interface Runtime {
   backoff: number
   markerTimer: ReturnType<typeof setTimeout> | null
   retryTimer: ReturnType<typeof setTimeout> | null
-  slowTimers: Map<string, ReturnType<typeof setTimeout>>
-  settlers: Map<string, (ev: StreamEvent) => boolean>
-  /** Per key: whether the entities show the action over. Asked after a snapshot only. */
-  resolvers: Map<string, (e: Entities) => boolean>
-  /** Per key: the tick at which its request was accepted. Absent until it is. */
-  accepted: Map<string, number>
-  /** Orders acceptances against snapshot requests; never reset, only compared. */
-  tick: number
+  /** The in-flight rules; the record itself is this store's `inFlight` state. */
+  marks: Marks
   /** A snapshot was requested before the current stream first opened. */
   snapshotBeforeOpen: boolean
   refetchers: Set<Refetcher>
@@ -106,7 +91,16 @@ interface Runtime {
 
 const runtimes = new WeakMap<object, Runtime>()
 
-function rt(proxy: object): Runtime {
+/** The browser's clock, read at each call so a spec's fake timers apply. */
+const browserClock: Clock = {
+  now: () => Date.now(),
+  after: (ms, fn) => {
+    const t = setTimeout(fn, ms)
+    return () => clearTimeout(t)
+  },
+}
+
+function rt(proxy: { inFlight: Record<string, InFlight> }): Runtime {
   // Keyed by the raw store, not by `this`: Pinia's devtools plugin (dev
   // builds, so `npm run dev:mock`) calls every action with `this` set to a
   // fresh `new Proxy(store, …)`. Keyed by `this`, `begin` and `receive` got
@@ -115,10 +109,13 @@ function rt(proxy: object): Runtime {
   const store = toRaw(proxy)
   let r = runtimes.get(store)
   if (r === undefined) {
+    // The marks write through the handle that first asked, never the raw
+    // store: a write to the raw object would bypass reactivity.
+    const handle = proxy
     r = {
-      es: null, opens: 0, backoff: 0, markerTimer: null, retryTimer: null,
-      slowTimers: new Map(), settlers: new Map(), refetchers: new Set(), generation: 0,
-      resolvers: new Map(), accepted: new Map(), tick: 0, snapshotBeforeOpen: false,
+      es: null, opens: 0, backoff: 0, markerTimer: null, retryTimer: null, refetchers: new Set(), generation: 0,
+      snapshotBeforeOpen: false,
+      marks: new Marks(browserClock, { get: () => handle.inFlight, set: (next) => { handle.inFlight = { ...next } } }),
     }
     runtimes.set(store, r)
   }
@@ -168,11 +165,7 @@ export const useStreamStore = defineStore('stream', {
       if (r.retryTimer !== null) clearTimeout(r.retryTimer)
       r.markerTimer = null
       r.retryTimer = null
-      for (const t of r.slowTimers.values()) clearTimeout(t)
-      r.slowTimers.clear()
-      r.settlers.clear()
-      r.resolvers.clear()
-      r.accepted.clear()
+      r.marks.clear()
       r.snapshotBeforeOpen = false
       this.phase = 'idle'
       this.reconnecting = false
@@ -282,9 +275,7 @@ export const useStreamStore = defineStore('stream', {
       const before = this.entities
       this.dispatch({ type: 'event', event: ev })
       const r = rt(this)
-      for (const [key, settles] of r.settlers) {
-        if (settles(ev)) this.end(key)
-      }
+      r.marks.onEvent(ev)
       const unplaced = this.entities !== before && hasStubs(this.entities) && !hasStubs(before)
       for (const f of r.refetchers) {
         if (unplaced || f.when?.(ev) === true) void f.refetch()
@@ -304,7 +295,7 @@ export const useStreamStore = defineStore('stream', {
     snapshotTag(): { at: number; tick: number } {
       const r = rt(this)
       if (r.opens === 0) r.snapshotBeforeOpen = true
-      return { at: this.entities.lastEventId, tick: r.tick }
+      return { at: this.entities.lastEventId, tick: r.marks.snapshotTag() }
     },
 
     /**
@@ -316,11 +307,7 @@ export const useStreamStore = defineStore('stream', {
      */
     snapshot(action: Action, tick: number): void {
       this.dispatch(action)
-      const r = rt(this)
-      for (const [key, over] of r.resolvers) {
-        const at = r.accepted.get(key)
-        if (at !== undefined && at <= tick && over(this.entities)) this.end(key)
-      }
+      rt(this).marks.onSnapshot(this.entities, tick)
     },
 
     /**
@@ -329,9 +316,7 @@ export const useStreamStore = defineStore('stream', {
      * may resolve the mark. The response body is not read.
      */
     accepted(key: string): void {
-      const r = rt(this)
-      if (!(key in this.inFlight)) return
-      r.accepted.set(key, ++r.tick)
+      rt(this).marks.accepted(key)
     },
 
     /** @internal */
@@ -354,34 +339,12 @@ export const useStreamStore = defineStore('stream', {
      * ends a mark whose settling event fell in a resync's gap.
      */
     begin(key: string, settledBy: (ev: StreamEvent) => boolean, overIn?: (e: Entities) => boolean): void {
-      const r = rt(this)
-      this.inFlight = { ...this.inFlight, [key]: { since: Date.now(), slow: false } }
-      r.settlers.set(key, settledBy)
-      r.accepted.delete(key)
-      if (overIn !== undefined) r.resolvers.set(key, overIn)
-      else r.resolvers.delete(key)
-      const old = r.slowTimers.get(key)
-      if (old !== undefined) clearTimeout(old)
-      r.slowTimers.set(key, setTimeout(() => {
-        r.slowTimers.delete(key)
-        const cur = this.inFlight[key]
-        if (cur !== undefined) this.inFlight = { ...this.inFlight, [key]: { ...cur, slow: true } }
-      }, SLOW_AFTER_MS))
+      rt(this).marks.begin(key, settledBy, overIn)
     },
 
     /** Clears `key`: its settling event arrived, a snapshot showed it over, or the request itself was refused. */
     end(key: string): void {
-      const r = rt(this)
-      r.settlers.delete(key)
-      r.resolvers.delete(key)
-      r.accepted.delete(key)
-      const t = r.slowTimers.get(key)
-      if (t !== undefined) clearTimeout(t)
-      r.slowTimers.delete(key)
-      if (!(key in this.inFlight)) return
-      const next = { ...this.inFlight }
-      delete next[key]
-      this.inFlight = next
+      rt(this).marks.end(key)
     },
   },
 })

@@ -2,7 +2,7 @@
 // partial walk is a lower bound, and a stopped workspace has no memory figure.
 
 import { describe, expect, it } from 'vitest'
-import type { Resources } from '../stores/resources'
+import type { Resources } from '../core/resources'
 import { diskBreakdown, formatBytes, hostPercent, resourceLine } from './resources'
 
 const at = '2026-10-08T12:00:00Z'

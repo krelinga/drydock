@@ -18,7 +18,7 @@ import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import ActionButton from './ActionButton.vue'
 import { acceptsCode, checkCodeShape, codeRuleSentence, countdown, loginLive } from '../lib/login'
 import { LOGIN_BEGIN_KEY, LOGIN_CANCEL_KEY, LOGIN_CODE_KEY, useIdentityStore } from '../stores/identity'
-import { loginEnding } from '../lib/identity'
+import { loginEnding } from '../core/lib/identity'
 import { useStreamStore } from '../stores/stream'
 
 const stream = useStreamStore()

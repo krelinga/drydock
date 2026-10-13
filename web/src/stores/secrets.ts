@@ -17,8 +17,8 @@
 
 import { defineStore } from 'pinia'
 import * as api from '../api/client'
-import type { PutSecretResult, SecretList, Stale } from '../api/types'
-import { secretList, type Secret } from './reducer'
+import type { PutSecretResult, SecretList, Stale } from '../core/types'
+import { secretList, type Secret } from '../core/reducer'
 import { useStreamStore } from './stream'
 
 export type SecretsStatus = 'idle' | 'loading' | 'ready' | 'not_configured' | 'error'

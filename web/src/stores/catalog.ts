@@ -15,11 +15,12 @@
 
 import { defineStore } from 'pinia'
 import * as api from '../api/client'
-import type { CatalogView, InstallationView, StreamEvent } from '../api/types'
-import { capacity, type Capacity } from '../lib/capacity'
-import { stoppable } from '../lib/workspaceCard'
-import { repoHeld, workspaceForRepo, type Repo, type Workspace } from './reducer'
+import type { CatalogView, InstallationView, StreamEvent } from '../core/types'
+import { capacity, type Capacity } from '../core/lib/capacity'
+import { stoppable } from '../core/lib/workspaceCard'
+import { repoHeld, workspaceForRepo, type Repo, type Workspace } from '../core/reducer'
 import { useStreamStore } from './stream'
+import { settlesRefresh } from '../core/settle'
 
 export type CatalogStatus = 'idle' | 'loading' | 'ready' | 'not_configured' | 'error'
 
@@ -48,10 +49,6 @@ export interface RunningRow {
 /** Whether an event makes the repository list stale. */
 export function catalogEvent(ev: StreamEvent): boolean {
   return ev.kind.startsWith('repo.')
-}
-
-function settlesRefresh(ev: StreamEvent): boolean {
-  return ev.kind === 'repo.refreshed' || ev.kind === 'repo.refresh_failed'
 }
 
 // A load in progress is joined, and a load asked for meanwhile runs once

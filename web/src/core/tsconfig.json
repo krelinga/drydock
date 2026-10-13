@@ -1,0 +1,27 @@
+{
+  // core is shared with the VS Code extension (vscode-extension §5.2), so it is
+  // compiled with no DOM library and no ambient types: `window`, `document`,
+  // `EventSource`, `localStorage`, `setTimeout` and Node's globals are type
+  // errors here; and `noResolve` adds nothing to the program but core's own
+  // files, so `import 'vue'` (or anything outside core) does not resolve. Specs are excluded:
+  // they run under Vitest and may read Go source with node:fs. The boundary
+  // spec (boundary.spec.ts) is the named rule beside this compiler one.
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "lib": ["ES2023"],
+    "types": [],
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "noImplicitOverride": true,
+    "noFallthroughCasesInSwitch": true,
+    "isolatedModules": true,
+    "verbatimModuleSyntax": true,
+    "skipLibCheck": true,
+    "noEmit": true,
+    "noResolve": true
+  },
+  "include": ["./**/*.ts"],
+  "exclude": ["./**/*.spec.ts"]
+}

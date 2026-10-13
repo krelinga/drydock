@@ -11,7 +11,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { createPinia, setActivePinia } from 'pinia'
 import * as api from '../api/client'
-import type { WorkspaceList } from '../api/types'
+import type { WorkspaceList } from '../core/types'
 import { FakeEventSource } from '../test/fakeEventSource'
 import { freshBackend, settle, useMockApi } from '../test/setup'
 import { playScript, WS_FAILED, WS_RUNNING, type MockBackend } from '../mocks/backend'

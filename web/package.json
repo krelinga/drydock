@@ -6,7 +6,7 @@
     "dev": "vite",
     "dev:mock": "vite --mode mock",
     "build": "vue-tsc --noEmit && vite build",
-    "typecheck": "vue-tsc --noEmit",
+    "typecheck": "vue-tsc --noEmit && tsc -p src/core/tsconfig.json",
     "test": "vitest run",
     "budget": "node scripts/budget.mjs",
     "check:dist": "node scripts/check-dist.mjs",

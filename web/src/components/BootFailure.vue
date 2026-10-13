@@ -5,7 +5,7 @@
 import { ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { ApiError } from '../api/client'
-import { describeError } from '../api/messages'
+import { describeError } from '../core/messages'
 import { signInLocation } from '../routes'
 import { useSessionStore } from '../stores/session'
 

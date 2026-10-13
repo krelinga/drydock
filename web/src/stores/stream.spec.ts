@@ -7,7 +7,7 @@ import { toRaw } from 'vue'
 import { onUnauthorized } from '../api/client'
 import { FakeEventSource } from '../test/fakeEventSource'
 import { freshBackend, settle, useMockApi } from '../test/setup'
-import { CLONE_OK, REFRESHED, WS, stateEvent } from './reducer.fixtures'
+import { CLONE_OK, REFRESHED, WS, stateEvent } from '../core/reducer.fixtures'
 import { MARKER_AFTER_MS, SLOW_AFTER_MS, useStreamStore } from './stream'
 
 useMockApi()

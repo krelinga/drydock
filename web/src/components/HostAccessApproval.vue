@@ -12,81 +12,45 @@
 // ActionButton, settled by the stream (stores/workspaces settlesApprove,
 // settlesDecline), never by the 202.
 //
-// Values are the settings' JSON, rendered as text: the container wrote
-// them, so they are shown exactly and never interpreted.
+// What it says is core's (core/lib/approval.ts), which the VS Code
+// extension's review document renders too, so the two cannot drift. Values
+// are the settings' JSON, rendered as text: the container wrote them, so they
+// are shown exactly and never interpreted, with control and format
+// characters escaped (core/lib/text.ts) so none can reorder what is read.
 import { computed } from 'vue'
-import type { HostSettingChange, HostSettingView } from '../api/types'
-import type { Workspace } from '../stores/reducer'
+import type { Workspace } from '../core/reducer'
+import {
+  APPROVAL_CLOSING, APPROVAL_INTRO, APPROVAL_TITLE, INITIALIZE_COMMAND_SENTENCE, PRIVILEGED_SENTENCE, approvalSections,
+} from '../core/lib/approval'
 import { approveKey, declineKey, useWorkspacesStore } from '../stores/workspaces'
 import ActionButton from './ActionButton.vue'
 
 const props = defineProps<{ workspace: Workspace }>()
 const workspaces = useWorkspacesStore()
 const req = computed(() => props.workspace.approval)
-
-const SOURCE: Record<string, string> = {
-  repository: "the repository's devcontainer.json",
-  feature_or_image: 'a Feature or the image',
-}
-const source = (s: string) => SOURCE[s] ?? s
-const json = (v: unknown) => JSON.stringify(v)
-// Whether a setting is new or changed in this request. What is no longer
-// asked for is informational and earns no warning.
-const asks = (field: string) => {
-  const r = req.value
-  if (r === null) return false
-  return [...r.added, ...r.changed].some((s: HostSettingView | HostSettingChange) => s.field === field)
-}
-// The two settings that are host root by themselves get a sentence each
-// (overall §6, "What approval means — honestly"): privileged runs the
-// container as root on the host, and initializeCommand runs on the host
-// itself, as the drydock user, before any container exists.
-const privileged = computed(() => asks('privileged'))
-const initializeCommand = computed(() => asks('initializeCommand'))
+const sections = computed(() => (req.value === null ? null : approvalSections(req.value)))
+const GROUP_TEST: Record<string, string> = { added: 'approval-added', changed: 'approval-changed', removed: 'approval-removed' }
 </script>
 
 <template>
   <section v-if="req" class="approval" aria-label="Host access approval" data-test="approval">
-    <p class="title"><strong>Needs approval:</strong> this configuration asks for host access.</p>
+    <p class="title"><strong>{{ APPROVAL_TITLE.lead }}</strong> {{ APPROVAL_TITLE.rest }}</p>
     <div class="msg warn" role="note" data-test="approval-warning">
       <span class="glyph" aria-hidden="true">!</span>
       <span>
-        Approving lets this repository's dev container reach this server, as the drydock user or as root.
-        Anything running in the container — an agent included — can then use it, without changing the configuration again.
-        <strong v-if="privileged" data-test="approval-privileged">
-          privileged is root on the host: Drydock's keys and every other workspace are in reach.
-        </strong>
-        <strong v-if="initializeCommand" data-test="approval-initialize-command">
-          initializeCommand runs on this server, not in the container, as the drydock user — which can read Drydock's keys and is root through Docker.
-        </strong>
-        Approve only what you trust for this repository. It is recorded, and asked again if it changes.
+        {{ APPROVAL_INTRO }}
+        <strong v-if="sections?.privileged" data-test="approval-privileged">{{ PRIVILEGED_SENTENCE }}</strong>
+        <strong v-if="sections?.initializeCommand" data-test="approval-initialize-command">{{ INITIALIZE_COMMAND_SENTENCE }}</strong>
+        {{ APPROVAL_CLOSING }}
       </span>
     </div>
 
-    <template v-if="req.added.length > 0">
-      <p class="group">New</p>
-      <ul class="settings" data-test="approval-added">
-        <li v-for="s in req.added" :key="s.field + s.source" data-test="approval-setting">
-          <code class="field">{{ s.field }}</code> <span class="src">from {{ source(s.source) }}</span>
-          <pre class="value">{{ json(s.value) }}</pre>
-        </li>
-      </ul>
-    </template>
-    <template v-if="req.changed.length > 0">
-      <p class="group">Changed since the last approval</p>
-      <ul class="settings" data-test="approval-changed">
-        <li v-for="s in req.changed" :key="s.field + s.source" data-test="approval-setting">
-          <code class="field">{{ s.field }}</code> <span class="src">from {{ source(s.source) }}</span>
-          <pre class="value">was {{ json(s.from) }}</pre>
-          <pre class="value">now {{ json(s.to) }}</pre>
-        </li>
-      </ul>
-    </template>
-    <template v-if="req.removed.length > 0">
-      <p class="group">No longer asked for</p>
-      <ul class="settings" data-test="approval-removed">
-        <li v-for="s in req.removed" :key="s.field + s.source">
-          <code class="field">{{ s.field }}</code> <span class="src">from {{ source(s.source) }}</span>
+    <template v-for="g in sections?.groups ?? []" :key="g.kind">
+      <p class="group">{{ g.label }}</p>
+      <ul class="settings" :data-test="GROUP_TEST[g.kind]">
+        <li v-for="s in g.items" :key="s.key" :data-test="g.kind === 'removed' ? undefined : 'approval-setting'">
+          <code class="field">{{ s.field }}</code> <span class="src">{{ s.source }}</span>
+          <pre v-for="(v, i) in s.values" :key="i" class="value">{{ v }}</pre>
         </li>
       </ul>
     </template>

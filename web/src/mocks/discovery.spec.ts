@@ -10,7 +10,7 @@
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import type { StreamEvent } from '../api/types'
+import type { StreamEvent } from '../core/types'
 import { addMockPort, newBackend, scanPorts, WS_RUNNING } from './backend'
 
 const GOLDEN = JSON.parse(readFileSync(resolve(process.cwd(), '../internal/preview/testdata/discovery-events.json'), 'utf8')) as unknown[]

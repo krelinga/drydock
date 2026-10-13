@@ -8,7 +8,7 @@
 // store's listeners are exercised as written.
 
 import type { MockBackend } from '../mocks/backend'
-import type { StreamEvent } from '../api/types'
+import type { StreamEvent } from '../core/types'
 
 export class FakeEventSource extends EventTarget {
   static readonly CONNECTING = 0

@@ -6,7 +6,7 @@ import { describe, expect, it } from 'vitest'
 import { FakeEventSource } from '../test/fakeEventSource'
 import { freshBackend, mountApp, settle, useMockApi } from '../test/setup'
 import { WS_RUNNING } from '../mocks/backend'
-import type { HostDiskView, ResourcesView } from '../api/types'
+import type { HostDiskView, ResourcesView } from '../core/types'
 
 useMockApi()
 

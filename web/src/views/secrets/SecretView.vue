@@ -9,9 +9,9 @@
 // unmounts, because it is what *that* save did, not what the secret is.
 import { computed, onMounted, ref } from 'vue'
 import { RouterLink, useRoute, useRouter } from 'vue-router'
-import { describeError } from '../../api/messages'
+import { describeError } from '../../core/messages'
 import { useStreamRefetch } from '../../lib/refetch'
-import { relativeTime } from '../../lib/time'
+import { relativeTime } from '../../core/lib/time'
 import { useCatalogStore } from '../../stores/catalog'
 import { deleteKey, useSecretsStore, type PutOutcome } from '../../stores/secrets'
 import { useSessionStore } from '../../stores/session'

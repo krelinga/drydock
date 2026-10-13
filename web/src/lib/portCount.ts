@@ -13,7 +13,7 @@
 //     (a hidden row is one the operator asked not to see);
 //   - previewed: rows switched on, whatever is listening.
 
-import type { Port } from '../stores/reducer'
+import type { Port } from '../core/reducer'
 
 export interface PortCount {
   listening: number

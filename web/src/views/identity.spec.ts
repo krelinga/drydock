@@ -5,7 +5,7 @@
 // whose fault is its own keeps its own status and action.
 
 import { describe, expect, it } from 'vitest'
-import type { IdentityState, RepoView } from '../api/types'
+import type { IdentityState, RepoView } from '../core/types'
 import {
   failIdentityCheck, finishIdentityCheck, identityView, intervalIdentityCheck, refreshed, setIdentity, startIdentityCheck,
   type MockBackend, type MockWorkspace,

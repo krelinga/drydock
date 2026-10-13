@@ -7,7 +7,7 @@
 //
 // Joined from the catalog the reducer holds (repo.removed), never inferred.
 import { computed } from 'vue'
-import type { Workspace } from '../stores/reducer'
+import type { Workspace } from '../core/reducer'
 import { useStreamStore } from '../stores/stream'
 
 const props = defineProps<{ workspace: Workspace }>()

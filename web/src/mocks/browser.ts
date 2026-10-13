@@ -64,7 +64,7 @@
 //                                 stored state stands and Settings says why
 
 import { setupWorker } from 'msw/browser'
-import type { IdentityState } from '../api/types'
+import type { IdentityState } from '../core/types'
 import {
   cloneScript, completeRefresh, emit, failIdentityCheck, handlersFor, identityView, MOCK_PASSWORD, newBackend,
   nextWorkspaceId, recordSecretFetch, scanPorts, scheduleDelete, scheduleStop, secretMeta, secretUndeliverable, seedPorts,

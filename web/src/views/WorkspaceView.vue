@@ -28,13 +28,13 @@
 // server's prose about things that can carry repository content.
 import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import { RouterLink, useRoute } from 'vue-router'
-import { WORKSPACE_STEPS, type StreamEvent } from '../api/types'
-import { describeError } from '../api/messages'
+import { WORKSPACE_STEPS, type StreamEvent } from '../core/types'
+import { describeError } from '../core/messages'
 import ActionButton from '../components/ActionButton.vue'
 import WorkspaceAction from '../components/WorkspaceAction.vue'
 import WorkspaceIdentityNote from '../components/WorkspaceIdentityNote.vue'
 import { useStreamRefetch } from '../lib/refetch'
-import { relativeTime } from '../lib/time'
+import { relativeTime } from '../core/lib/time'
 import MakeRoom from '../components/MakeRoom.vue'
 import PortsPanel from '../components/PortsPanel.vue'
 import PortCount from '../components/PortCount.vue'
@@ -43,11 +43,12 @@ import ReadOnlyNote from '../components/ReadOnlyNote.vue'
 import OpenInVSCode from '../components/OpenInVSCode.vue'
 import { githubAccess } from '../lib/githubAccess'
 import * as api from '../api/client'
-import type { BuildLogBody } from '../api/types'
+import type { BuildLogBody } from '../core/types'
 import { diskBreakdown } from '../lib/resources'
-import { capacity } from '../lib/capacity'
-import { actionStepTitle, cardStatus, stepTitle, withRoom } from '../lib/workspaceCard'
-import { ACTION_STEPS, becameRunning, failedStep, liveAction, runSteps, stopFailed } from '../stores/reducer'
+import { capacity } from '../core/lib/capacity'
+import { escapeFormat } from '../core/lib/text'
+import { actionStepTitle, cardStatus, stepTitle, withRoom } from '../core/lib/workspaceCard'
+import { ACTION_STEPS, becameRunning, failedStep, liveAction, runSteps, stopFailed } from '../core/reducer'
 import { useStreamStore } from '../stores/stream'
 import { catalogEvent, useCatalogStore } from '../stores/catalog'
 import { deleteKey, rebuildKey, stopKey, useWorkspacesStore } from '../stores/workspaces'
@@ -73,7 +74,8 @@ const name = computed(() => {
   const w = ws.value
   if (w === null) return id.value
   const repo = w.repositoryId !== null ? stream.entities.repos[w.repositoryId] : undefined
-  return w.fullName ?? repo?.fullName ?? w.id
+  // Repository-sourced text shown beside a host-access request: escaped (core/lib/text.ts).
+  return escapeFormat(w.fullName ?? repo?.fullName ?? w.id)
 })
 
 onMounted(() => {
@@ -241,7 +243,7 @@ watch(id, () => {
       <div class="card" data-test="ws-card">
         <div class="head">
           <span class="state" :class="status.tone" data-test="ws-state">{{ status.line }}</span>
-          <span v-if="ws.branch" class="branch">{{ ws.branch }}</span>
+          <span v-if="ws.branch" class="branch">{{ escapeFormat(ws.branch) }}</span>
         </div>
         <p v-if="status.note" class="note" data-test="ws-note">{{ status.note }}</p>
         <ResourceLine :workspace="ws" />

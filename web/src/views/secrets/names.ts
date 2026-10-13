@@ -1,4 +1,4 @@
-import type { Entities } from '../../stores/reducer'
+import type { Entities } from '../../core/reducer'
 
 /**
  * A workspace named by id in `accessed_by`, as a person reads it: its

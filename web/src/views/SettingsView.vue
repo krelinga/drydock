@@ -9,14 +9,14 @@
 // includes this device.
 import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
-import { describeError } from '../api/messages'
+import { describeError } from '../core/messages'
 import { endSession } from '../signout'
-import { relativeTime } from '../lib/time'
+import { relativeTime } from '../core/lib/time'
 import { useSessionStore } from '../stores/session'
 import { REFRESH_KEY, useCatalogStore } from '../stores/catalog'
 import { useStreamStore } from '../stores/stream'
 import { CHECK_KEY, useIdentityStore } from '../stores/identity'
-import { identitySentence } from '../lib/identity'
+import { identitySentence } from '../core/lib/identity'
 import ClaudeLogin from '../components/ClaudeLogin.vue'
 import ApiTokens from '../components/ApiTokens.vue'
 

@@ -27,29 +27,14 @@
 //     out (GitHub, claude.ai) still carry no Drydock URL.
 //
 // Errors are reported by the envelope's machine-readable `code`; the server's
-// prose `message` is kept for logging but never shown (see messages.ts).
+// prose `message` is kept for logging but never shown (see core/messages.ts).
 
-import type { ErrorCode, ErrorEnvelope } from './types'
+import { ApiError } from '../core/errors'
+import type { ErrorEnvelope } from '../core/types'
 
-export class ApiError extends Error {
-  constructor(
-    /** HTTP status, or 0 when no response arrived. */
-    readonly status: number,
-    /** The envelope's code, or `network` / `unparseable`. */
-    readonly code: ErrorCode | (string & {}),
-    /** Seconds from a `Retry-After` header, when one was sent as seconds. */
-    readonly retryAfter: number | null = null,
-    serverMessage = '',
-    /**
-     * The envelope's `detail`: which rule, which character. Shown as text for
-     * the few codes whose sentence needs it (messages.ts), never parsed.
-     */
-    readonly detail = '',
-  ) {
-    super(serverMessage || `${status} ${code}`)
-    this.name = 'ApiError'
-  }
-}
+// ApiError lives in core (vscode-extension §5.1), shared with the extension;
+// re-exported so `api.ApiError` stays the one name the app uses.
+export { ApiError }
 
 type UnauthorizedHandler = () => void
 let unauthorized: UnauthorizedHandler | null = null

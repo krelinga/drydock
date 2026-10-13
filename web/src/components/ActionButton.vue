@@ -9,11 +9,11 @@
 // arrives as events and renders wherever the entity renders.
 //
 // A refusal is the only outcome shown here: by code, never by the server's
-// prose (api/messages.ts). `in_progress` is a note, not an error — the state
+// prose (core/messages.ts). `in_progress` is a note, not an error — the state
 // machine beat you to it (§9).
 import { computed, ref } from 'vue'
 import { ApiError } from '../api/client'
-import { describeError } from '../api/messages'
+import { describeError } from '../core/messages'
 import { useSessionStore } from '../stores/session'
 import { useStreamStore } from '../stores/stream'
 

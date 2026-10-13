@@ -12,7 +12,7 @@ import { computed, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import BrandMark from '../components/BrandMark.vue'
 import { ApiError } from '../api/client'
-import { describeError } from '../api/messages'
+import { describeError } from '../core/messages'
 import { isServerPath, navigation, safeReturnPath } from '../lib/returnPath'
 import { useSessionStore } from '../stores/session'
 

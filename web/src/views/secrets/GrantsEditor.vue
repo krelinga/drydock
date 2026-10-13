@@ -15,9 +15,9 @@
 // granted to is always read from the entity, which only events and the list
 // write — the 200 the grants PUT returns is not applied.
 import { computed, ref } from 'vue'
-import { describeError } from '../../api/messages'
+import { describeError } from '../../core/messages'
 import { useCatalogStore } from '../../stores/catalog'
-import type { Secret } from '../../stores/reducer'
+import type { Secret } from '../../core/reducer'
 import { grantsKey, useSecretsStore } from '../../stores/secrets'
 import { useSessionStore } from '../../stores/session'
 import { useStreamStore } from '../../stores/stream'

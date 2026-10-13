@@ -12,8 +12,8 @@
 
 import { defineStore } from 'pinia'
 import * as api from '../api/client'
-import type { HostHeader, PortList, ProbeResult, StreamEvent } from '../api/types'
-import type { Entities, Port } from './reducer'
+import type { HostHeader, PortList, ProbeResult, StreamEvent } from '../core/types'
+import type { Entities, Port } from '../core/reducer'
 import { useStreamStore } from './stream'
 
 /** The in-flight key for switching a port's preview on or off. */
