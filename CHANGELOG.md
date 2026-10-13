@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.17.3](https://github.com/krelinga/drydock/compare/v0.17.2...v0.17.3) (2026-10-13)
+
+
+### Bug Fixes
+
+* a failed window refresh never reports a successful sign-in as an error ([#175](https://github.com/krelinga/drydock/issues/175)) ([8057bf4](https://github.com/krelinga/drydock/commit/8057bf4bc89024470efe0a57d1151fbd94707261))
+
 ## [0.17.2](https://github.com/krelinga/drydock/compare/v0.17.1...v0.17.2) (2026-10-13)
 
 
