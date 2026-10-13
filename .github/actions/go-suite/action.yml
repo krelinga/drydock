@@ -66,7 +66,8 @@ runs:
     # silent pass of the one test of the LAN-facing surface; likewise Docker
     # and the container tier (test/container), and the commits since the last
     # release that test/docs reads (the checkout needs fetch-depth: 0), and
-    # socat and nc, without which the broker's argv sweep is skipped.
+    # socat and nc, without which the broker's argv sweep is skipped, and
+    # python3, without which the connect ritual's probe digest is unchecked.
     - name: go test
       if: inputs.run-suite == 'true'
       shell: bash
@@ -75,6 +76,7 @@ runs:
         DRYDOCK_REQUIRE_DOCKER: "1"
         DRYDOCK_REQUIRE_RELEASE_HISTORY: "1"
         DRYDOCK_REQUIRE_TRANSPORTS: "1"
+        DRYDOCK_REQUIRE_PYTHON: "1"
         DRYDOCK_PR_TITLE: ${{ inputs.pr-title }}
       # -timeout 20m, twice the default: test/container takes under five
       # minutes green, and its network-bound steps are bounded inside the

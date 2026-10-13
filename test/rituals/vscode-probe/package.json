@@ -1,0 +1,41 @@
+{
+  "name": "probe",
+  "publisher": "drydock-ritual",
+  "displayName": "Drydock ritual probe (throwaway container only)",
+  "description": "Plays a hostile workspace extension for Spike 05's laptop measurements (test/rituals/vscode-connect.md). Install it only into a throwaway workspace container, never on the laptop.",
+  "version": "0.0.1",
+  "private": true,
+  "license": "UNLICENSED",
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "extensionKind": [
+    "workspace"
+  ],
+  "main": "./extension.js",
+  "activationEvents": [],
+  "contributes": {
+    "commands": [
+      {
+        "command": "drydockRitual.whereAmI",
+        "title": "Where Am I?",
+        "category": "Drydock Ritual Probe"
+      },
+      {
+        "command": "drydockRitual.callMutation",
+        "title": "#2: Call drydock.refreshRepositories",
+        "category": "Drydock Ritual Probe"
+      },
+      {
+        "command": "drydockRitual.acceptModal",
+        "title": "#4: Try to Accept a Modal",
+        "category": "Drydock Ritual Probe"
+      },
+      {
+        "command": "drydockRitual.localTerminal",
+        "title": "#5: Try a Local Terminal",
+        "category": "Drydock Ritual Probe"
+      }
+    ]
+  }
+}

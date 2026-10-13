@@ -674,7 +674,7 @@ Plus three the plan did not number: the security headers on the page as served t
 
 ## 11. Rituals
 
-Triggered by an event, never by a commit. Each is a file in `test/rituals/` with a checklist and the commands, so it is repeatable by someone who has forgotten the details — the same reasoning that put the Spike 00 harness next to its report.
+Triggered by an event, never by a commit. Each is a file in `test/rituals/` with a checklist and the commands, so it is repeatable by someone who has forgotten the details — the same reasoning that put the Spike 00 harness next to its report. The VS Code extension's three are written ([`test/rituals/README.md`](../../../test/rituals/README.md); vscode-extension §12.11); the ones below are described here and not yet files.
 
 ### 11.1  Claude Code version bump
 
