@@ -746,6 +746,13 @@ The fake transport in the unit tier is checked against this tier: the recorded r
 - **Approve exactly what was shown**: the document is open on A, with the scripted operator at the input box. A second client declines and restarts with the `initializeCommand` variant. When B's event lands, the input box closes and no `POST` is sent, and the document now shows the `initializeCommand` sentence. Typing again sends B's hash. **And the race the client cannot see**: the harness holds the SSE relay at the tap, so the extension has not seen B, and the scripted operator confirms A. The `POST` carries A, the server answers `409 approval_stale`, and the extension refetches and reopens the document on B. The control in the same test is the unheld run approving A → `202`.
 - **Version skew** (§12.7).
 
+**As built (4b).** The tier is `extension/test/host/`: `host.spec.ts` (Vitest, outside VS Code) starts the client tier's stack, downloads the pinned VS Code by URL and checks its SHA-256 (`vscode.json`, cached in `~/.cache/drydock-vscode`), and runs `inner/suite.ts` in it with `@vscode/test-electron`'s `runTests`, headless under `xvfb-run` (`test/extension/run.sh host`). The specs inside reach the stack through a loopback control channel (`ctl.ts`: the tap, a mint, a view's link). Where it differs from the plan above:
+
+- **The extension runs from `extension/` with its bundle, not from the unpacked `.vsix`**, and there is **no Production-mode run yet**: both need the `.vsix`, which is PR 6. The seam (`activate` returns `{prompter, opener, window, extensions}` in `ExtensionMode.Test` only) is in place; the Production run's `exports === undefined` is PR 6's.
+- **Its CA is in the system store, not `NODE_EXTRA_CA_CERTS`** (Spike 05 #1, measured wrong for the extension host). `test/extension/system-ca.sh` makes and trusts it, as root; CI runs it on a runner that lives for one job, and `run.sh host` refuses to run until the system store verifies the CA, never editing it itself.
+- **Covered now:** lazy activation (nothing asked of Drydock until a command; showing the view opens the stream and reads the list), every contributed command registered, workspace settings unable to move `drydock.url` (with `editor.tabSize` from the same file as the control), `http.proxyStrictSSL` not off, sign-in over HTTPS through Caddy, the wrong-host certificate refused by VS Code's own HTTP stack, rule 1 for every mutating command under a reported `attached-container` (the refresh from a local window the control), E1's hub flow to the recorded `vscode-remote://` URI, and the default keybindings' conflict check. **Not yet:** sign-in surviving a reload, the canary sweep of the run root (§12.8), the approval specs (PR 5), skew (§12.7) and the hostile fixture.
+- **The CI job stays on the bare runner**, which has xvfb and Electron's libraries; the Playwright image was not needed.
+
 ### 12.6  UI-level tests: evaluated, and kept small
 
 | Option | What it is | For | Against |
@@ -873,7 +880,7 @@ Every item below is a belief about undocumented or unmeasured VS Code behaviour 
 
 The owner settled the design's questions (Decisions, *Settled by the owner*). What remains open is what only measurement or other work can answer:
 
-1. **Spike 05's results** (§12.9). In particular:
+1. **Spike 05's results** (§12.9; the report is `docs/design/spikes/05-vscode-extension-host.md`). Measured so far: #1 wrong (the extension host trusts the system store, not `NODE_EXTRA_CA_CERTS`; the fallback is in use), #6's workspace half right, #7 right (`openTextDocument` reads the default keybindings). Still open, for the laptop rituals:
    - #2: a remote caller's command runs in that window's own instance, which rule 1 depends on;
    - #4: what Enter does in a modal;
    - #5: whether a container window can reach a local terminal, which the residual risk in §4.5 and §8.2 depends on;

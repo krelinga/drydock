@@ -309,8 +309,9 @@ export const STREAM_ENDED: Record<EndReason, string> = {
 
 // ---- connect --------------------------------------------------------------
 
-/** drydock.connect: pick a running workspace and connect to it. */
-export async function connectCommand(d: FlowDeps): Promise<void> {
+/** drydock.connect: connect to the tree item's workspace, or pick a running one. */
+export async function connectCommand(d: FlowDeps, target?: string): Promise<void> {
+  if (target !== undefined) return connect(d, target)
   const id = await held(d, async () => {
     const items = connectItems(d.live.entities, d.ready)
     if (items.length === 0) {

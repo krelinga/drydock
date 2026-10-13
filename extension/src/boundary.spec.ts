@@ -100,9 +100,13 @@ describe('extension boundary', () => {
   })
 
   it('nothing in the extension turns TLS off, spawns, opens a webview or carries a directive', () => {
+    // The test harnesses start processes (the stack, VS Code, tar): only
+    // the extension's own sources are held to "spawns nothing".
     const all = [...files(SRC), ...files(join(ROOT, 'test')), ...files(join(ROOT, 'scripts'))]
     expect(all.length).toBeGreaterThan(10)
-    const bad = all.flatMap((f) => textViolations(readFileSync(f, 'utf8')).map((w) => `${relative(ROOT, f)}: ${w}`))
+    const bad = all.flatMap((f) => textViolations(readFileSync(f, 'utf8'))
+      .filter((w) => w !== 'starts a process' || f.startsWith(SRC + sep))
+      .map((w) => `${relative(ROOT, f)}: ${w}`))
     expect(bad).toEqual([])
   })
 

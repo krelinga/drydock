@@ -33,7 +33,8 @@
       {
         "command": "drydock.go",
         "title": "Go to Workspace…",
-        "category": "Drydock"
+        "category": "Drydock",
+        "icon": "$(search)"
       },
       {
         "command": "drydock.clone",
@@ -43,12 +44,14 @@
       {
         "command": "drydock.connect",
         "title": "Connect to Workspace…",
-        "category": "Drydock"
+        "category": "Drydock",
+        "icon": "$(remote)"
       },
       {
         "command": "drydock.refreshRepositories",
         "title": "Refresh Repositories",
-        "category": "Drydock"
+        "category": "Drydock",
+        "icon": "$(refresh)"
       },
       {
         "command": "drydock.signIn",
@@ -78,6 +81,73 @@
         "mac": "cmd+alt+shift+d"
       }
     ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "drydock",
+          "title": "Drydock",
+          "icon": "media/drydock.svg"
+        }
+      ]
+    },
+    "views": {
+      "drydock": [
+        {
+          "id": "drydock.workspaces",
+          "name": "Workspaces"
+        },
+        {
+          "id": "drydock.repositories",
+          "name": "Repositories"
+        }
+      ]
+    },
+    "viewsWelcome": [
+      {
+        "view": "drydock.workspaces",
+        "contents": "Drydock is not signed in here.\n[Sign In](command:drydock.signIn)\nA token comes from Drydock's Settings. Set drydock.url to Drydock's address first.",
+        "when": "!drydock.signedIn"
+      },
+      {
+        "view": "drydock.workspaces",
+        "contents": "No workspaces yet.\n[Go to Workspace…](command:drydock.go)",
+        "when": "drydock.signedIn"
+      },
+      {
+        "view": "drydock.repositories",
+        "contents": "No repositories without a workspace.\n[Refresh Repositories](command:drydock.refreshRepositories)",
+        "when": "drydock.signedIn"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "drydock.go",
+          "when": "view == drydock.workspaces",
+          "group": "navigation"
+        },
+        {
+          "command": "drydock.refreshRepositories",
+          "when": "view == drydock.repositories",
+          "group": "navigation"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "drydock.connect",
+          "when": "view == drydock.workspaces && viewItem == workspace.running",
+          "group": "inline"
+        },
+        {
+          "command": "drydock.openInBrowser",
+          "when": "view == drydock.workspaces && viewItem =~ /^workspace\\./"
+        },
+        {
+          "command": "drydock.clone",
+          "when": "view == drydock.repositories && viewItem == repo.clonable"
+        }
+      ]
+    },
     "configuration": {
       "title": "Drydock",
       "properties": {
@@ -107,6 +177,7 @@
   "devDependencies": {
     "@types/node": "24.19.1",
     "@types/vscode": "1.105.0",
+    "@vscode/test-electron": "3.1.0",
     "esbuild": "0.28.2",
     "typescript": "6.0.3",
     "vitest": "5.0.3"

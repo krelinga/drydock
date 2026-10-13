@@ -14,8 +14,9 @@ import { Dispatcher, type Handler } from '../dispatch'
 import { redacting } from '../log'
 import type { Clock, Extensions, Log, Opener, Prompter, Secrets, Settings, Window } from '../ports'
 import { Live } from '../live'
-import { cloneCommand, connectCommand, go, refreshRepositories, type FlowDeps } from '../flows'
+import { cloneCommand, connectCommand, go, openInDrydock, refreshRepositories, type FlowDeps } from '../flows'
 import { statusView } from '../status'
+import { repositoryNodes, workspaceNodes, type TreeNode } from '../tree'
 import { StaleTokenWatch, openInBrowser, signIn, signOut, type SessionDeps } from '../session'
 import { originOf } from '../settings'
 import { nodeTransport } from '../node/transport'
@@ -23,7 +24,23 @@ import { nodeTransport } from '../node/transport'
 /** The one SecretStorage key: `{origin, token}` (credential.ts). */
 const SECRET_KEY = 'drydock.credential'
 
-export function activate(context: vscode.ExtensionContext): void {
+/**
+ * The extension-host tier's seam (vscode-extension §12.5): in
+ * ExtensionMode.Test only, `activate` returns this, and a spec sets a
+ * scripted Prompter, a recording Opener, a Window reporting any remoteName
+ * and fake Extensions in place of VS Code's. In Production `activate`
+ * returns undefined, so the seam cannot ship live (the Production run
+ * asserts `exports === undefined`).
+ */
+export interface Seam {
+  prompter?: Prompter
+  opener?: Opener
+  window?: Window
+  extensions?: Extensions
+}
+
+export function activate(context: vscode.ExtensionContext): Seam | undefined {
+  const seam: Seam = {}
   const channel = vscode.window.createOutputChannel('Drydock', { log: true })
   context.subscriptions.push(channel)
   const log: Log = redacting({ info: (l) => channel.info(l), warn: (l) => channel.warn(l) })
@@ -33,7 +50,7 @@ export function activate(context: vscode.ExtensionContext): void {
     store: (v) => Promise.resolve(context.secrets.store(SECRET_KEY, v)),
     delete: () => Promise.resolve(context.secrets.delete(SECRET_KEY)),
   }
-  const prompter: Prompter = {
+  const realPrompter: Prompter = {
     message: (level, text, actions = []) => {
       const show = level === 'error' ? vscode.window.showErrorMessage
         : level === 'warning' ? vscode.window.showWarningMessage : vscode.window.showInformationMessage
@@ -54,8 +71,8 @@ export function activate(context: vscode.ExtensionContext): void {
       (p, token) => run((message) => p.report({ message }), () => token.isCancellationRequested),
     )),
   }
-  const window: Window = { remoteName: () => vscode.env.remoteName, focused: () => vscode.window.state.focused }
-  const opener: Opener = {
+  const realWindow: Window = { remoteName: () => vscode.env.remoteName, focused: () => vscode.window.state.focused }
+  const realOpener: Opener = {
     openExternal: async (url) => {
       await vscode.env.openExternal(vscode.Uri.parse(url, true))
     },
@@ -64,11 +81,30 @@ export function activate(context: vscode.ExtensionContext): void {
       await vscode.commands.executeCommand('vscode.openFolder', vscode.Uri.parse(uri, true), { forceNewWindow: true })
     },
   }
-  const extensions: Extensions = {
+  const realExtensions: Extensions = {
     installed: (id) => vscode.extensions.getExtension(id) !== undefined,
     install: async (id) => {
       await vscode.commands.executeCommand('workbench.extensions.installExtension', id)
     },
+  }
+  // Each port is VS Code's unless the Test-mode seam holds a replacement.
+  const prompter: Prompter = {
+    message: (l, t, a) => (seam.prompter ?? realPrompter).message(l, t, a),
+    input: (o) => (seam.prompter ?? realPrompter).input(o),
+    pick: (i, o) => (seam.prompter ?? realPrompter).pick(i, o),
+    progress: (t, r) => (seam.prompter ?? realPrompter).progress(t, r),
+  }
+  const window: Window = {
+    remoteName: () => (seam.window ?? realWindow).remoteName(),
+    focused: () => (seam.window ?? realWindow).focused(),
+  }
+  const opener: Opener = {
+    openExternal: (u) => (seam.opener ?? realOpener).openExternal(u),
+    openFolder: (u) => (seam.opener ?? realOpener).openFolder(u),
+  }
+  const extensions: Extensions = {
+    installed: (id) => (seam.extensions ?? realExtensions).installed(id),
+    install: (id) => (seam.extensions ?? realExtensions).install(id),
   }
   // `application` scope (package.json): only the laptop's user settings can
   // set it, never a workspace, folder or remote (§6.4).
@@ -110,6 +146,8 @@ export function activate(context: vscode.ExtensionContext): void {
   }
   const reread = async () => {
     signedIn = (await credentials.read()) !== null
+    // The views' welcome content (package.json viewsWelcome) reads this.
+    await vscode.commands.executeCommand('setContext', 'drydock.signedIn', signedIn)
     if (!signedIn) live.close('signed_out')
     render()
   }
@@ -119,6 +157,26 @@ export function activate(context: vscode.ExtensionContext): void {
       if (e.key === SECRET_KEY) void reread()
     }),
   )
+  // The two tree views (tree.ts). A shown view holds the stream (§5.5).
+  const trees = [
+    { view: 'drydock.workspaces', nodes: () => workspaceNodes(live.entities) },
+    { view: 'drydock.repositories', nodes: () => repositoryNodes(live.entities) },
+  ].map(({ view, nodes }) => {
+    const provider = new NodeTree(nodes)
+    const tv = vscode.window.createTreeView(view, { treeDataProvider: provider })
+    let release: (() => void) | null = null
+    context.subscriptions.push(tv, tv.onDidChangeVisibility((e) => {
+      if (e.visible && release === null) {
+        live.hold().then((r) => { release = r }, (err: unknown) => log.warn(`${view}: ${String(err)}`))
+      } else if (!e.visible && release !== null) {
+        release()
+        release = null
+      }
+    }))
+    return provider
+  })
+  context.subscriptions.push({ dispose: live.onChange(() => { for (const t of trees) t.refresh() }) })
+
   const tick = setInterval(render, 2_000)
   context.subscriptions.push({ dispose: () => clearInterval(tick) })
   void reread()
@@ -128,13 +186,13 @@ export function activate(context: vscode.ExtensionContext): void {
       await signIn(session)
     },
     'drydock.signOut': () => signOut(session),
-    'drydock.openInBrowser': () => openInBrowser(session),
+    'drydock.openInBrowser': (id) => (id === undefined ? openInBrowser(session) : openInDrydock(flows, id)),
     'drydock.showLog': async () => {
       channel.show(true)
     },
     'drydock.go': () => go(flows),
     'drydock.clone': () => cloneCommand(flows),
-    'drydock.connect': () => connectCommand(flows),
+    'drydock.connect': (id) => connectCommand(flows, id),
     'drydock.refreshRepositories': () => refreshRepositories(flows),
   }
   const dispatcher: Dispatcher = new Dispatcher(
@@ -162,6 +220,35 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.window.onDidChangeWindowState((s) => stale.focusChanged(s.focused)),
   )
   void stale.check().catch((e: unknown) => log.warn(`stale token: ${String(e)}`))
+  return context.extensionMode === vscode.ExtensionMode.Test ? seam : undefined
 }
 
 export function deactivate(): void {}
+
+/** A TreeDataProvider over tree.ts's nodes, rebuilt from the entities on every change. */
+class NodeTree implements vscode.TreeDataProvider<TreeNode> {
+  readonly #changed = new vscode.EventEmitter<void>()
+  readonly onDidChangeTreeData = this.#changed.event
+
+  constructor(private readonly nodes: () => TreeNode[]) {}
+
+  refresh(): void {
+    this.#changed.fire()
+  }
+
+  getChildren(n?: TreeNode): TreeNode[] {
+    return n === undefined ? this.nodes() : n.children ?? []
+  }
+
+  getTreeItem(n: TreeNode): vscode.TreeItem {
+    const item = new vscode.TreeItem(n.label, n.children !== undefined && n.children.length > 0
+      ? vscode.TreeItemCollapsibleState.Collapsed : vscode.TreeItemCollapsibleState.None)
+    item.id = n.key
+    item.description = n.description
+    item.tooltip = n.tooltip
+    item.contextValue = n.contextValue
+    item.iconPath = new vscode.ThemeIcon(n.icon)
+    if (n.command !== undefined) item.command = { command: n.command.id, title: '', arguments: [n.command.arg] }
+    return item
+  }
+}

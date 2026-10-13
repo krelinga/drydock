@@ -8,7 +8,7 @@ export default defineConfig({
     environment: 'node',
     include: ['src/**/*.spec.ts', 'test/**/*.spec.ts'],
     // The client tier needs the stack (vitest.client.config.mts, run.sh).
-    exclude: ['test/client/**', 'node_modules/**'],
+    exclude: ['test/client/**', 'test/host/**', 'node_modules/**'],
     restoreMocks: true,
   },
 })

@@ -3,7 +3,7 @@
 // editor. Each check is a function of a manifest, run against the real one
 // and against a broken fixture that must fail it by name (the controls).
 
-import { readFileSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { COMMANDS } from '../src/commands'
@@ -51,9 +51,41 @@ function keybindingErrors(m: Manifest): string[] {
     if (!k.key || !k.mac) errs.push(`keybinding for ${k.command} lacks a default or a mac key`)
     if (NEVER_BOUND.has(k.command)) errs.push(`keybinding for ${k.command}, which must never be one keystroke`)
     if (k.command === 'drydock.go' && k.when !== undefined) errs.push('the hub binding has a when clause: it must work in every window (§6.2)')
-    for (const key of (k.when ?? '').match(/[A-Za-z][A-Za-z.]*/g) ?? []) {
-      if (!WHEN_KEYS.has(key) && !/^drydock\./.test(key)) errs.push(`keybinding for ${k.command} uses an unknown context key ${key}`)
+    for (const key of whenKeys(k.when)) {
+      if (!knownKey(key)) errs.push(`keybinding for ${k.command} uses an unknown context key ${key}`)
     }
+  }
+  return errs
+}
+
+/** The context keys a `when` clause reads: the left side of each comparison, and each bare key. */
+export function whenKeys(when: string | undefined): string[] {
+  if (when === undefined) return []
+  return when.split(/&&|\|\|/).map((c) => c.trim().replace(/^!\s*/, '').split(/\s*(?:==|!=|=~)\s*/)[0]!.trim()).filter((k) => k !== '')
+}
+
+const knownKey = (k: string) => WHEN_KEYS.has(k) || /^drydock\.[A-Za-z]+$/.test(k)
+
+function menuErrors(m: Manifest): string[] {
+  const errs: string[] = []
+  const ids = new Set((m.contributes?.commands ?? []).map((c: { command: string }) => c.command))
+  const views = new Set(Object.values(m.contributes?.views ?? {}).flat().map((v) => (v as { id: string }).id))
+  for (const [menu, entries] of Object.entries(m.contributes?.menus ?? {})) {
+    for (const e of entries as Array<{ command: string; when?: string }>) {
+      if (!ids.has(e.command)) errs.push(`${menu}: ${e.command} is not contributed`)
+      for (const key of whenKeys(e.when)) if (!knownKey(key)) errs.push(`${menu}: ${e.command} uses an unknown context key ${key}`)
+      for (const v of (e.when ?? '').match(/view == ([\w.]+)/g) ?? []) {
+        const id = v.replace('view == ', '')
+        if (!views.has(id)) errs.push(`${menu}: ${e.command} names a view that is not contributed: ${id}`)
+      }
+    }
+  }
+  for (const w of (m.contributes?.viewsWelcome ?? []) as Array<{ view: string; when?: string }>) {
+    if (!views.has(w.view)) errs.push(`viewsWelcome names a view that is not contributed: ${w.view}`)
+    for (const key of whenKeys(w.when)) if (!knownKey(key)) errs.push(`viewsWelcome uses an unknown context key ${key}`)
+  }
+  for (const c of (m.contributes?.viewsContainers?.activitybar ?? []) as Array<{ icon: string }>) {
+    if (!existsSync(resolve(process.cwd(), c.icon))) errs.push(`the activity bar icon ${c.icon} does not exist`)
   }
   return errs
 }
@@ -135,6 +167,22 @@ describe('the manifest', () => {
     expect(errs).toContain('the hub binding has a when clause')
     expect(errs).toContain('unknown context key editorFocus')
     expect(errs).toContain('drydock.signOut, which must never be one keystroke')
+  })
+
+  it('the views, their welcome and their menus name only contributed commands and views, and known context keys', () => {
+    expect(Object.keys(real.contributes.menus)).toContain('view/item/context')
+    expect(menuErrors(real)).toEqual([])
+    const m = clone()
+    m.contributes.menus['view/item/context'].push({ command: 'drydock.nope', when: 'view == drydock.elsewhere && sideBarFocus' })
+    m.contributes.viewsWelcome.push({ view: 'drydock.ghost', contents: 'x', when: 'editorFocus' })
+    m.contributes.viewsContainers.activitybar[0].icon = 'media/missing.svg'
+    const errs = menuErrors(m).join('\n')
+    expect(errs).toContain('drydock.nope is not contributed')
+    expect(errs).toContain('unknown context key sideBarFocus')
+    expect(errs).toContain('names a view that is not contributed: drydock.elsewhere')
+    expect(errs).toContain('viewsWelcome names a view that is not contributed: drydock.ghost')
+    expect(errs).toContain('the activity bar icon media/missing.svg does not exist')
+    expect(whenKeys('view == drydock.workspaces && viewItem =~ /^workspace\\./ && !drydock.signedIn')).toEqual(['view', 'viewItem', 'drydock.signedIn'])
   })
 
   it('runs on the laptop only, depends on nothing, activates lazily, and has no webview', () => {

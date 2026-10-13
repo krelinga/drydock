@@ -6,7 +6,7 @@
 
 import { describe, expect, it } from 'vitest'
 import { ApiError } from '../../web/src/core/errors'
-import { COMMANDS, type CommandId } from './commands'
+import { COMMANDS, type CommandDef, type CommandId } from './commands'
 import { Dispatcher, OPEN_IN_DRYDOCK, TOKEN_ENDED, type Handler } from './dispatch'
 import { openInBrowser, PASTE_TOKEN, signIn, signOut, type SessionDeps } from './session'
 import { cloneCommand, connectCommand, go, refreshRepositories } from './flows'
@@ -79,6 +79,28 @@ describe('rule 1: no mutation outside local and SSH windows', () => {
     await w.d.run('drydock.openInBrowser')()
     expect(w.opener.opened).toEqual([`${ORIGIN}/`])
     expect(w.prompter.texts()).toEqual([])
+  })
+})
+
+describe('rule 2: only a read or a connect takes an id', () => {
+  it('no mutating command takes an id; connect and Open in Drydock do (control)', () => {
+    expect(COMMANDS.filter((c: CommandDef) => c.takesId === true && c.mutating)).toEqual([])
+    expect(COMMANDS.filter((c: CommandDef) => c.takesId === true).map((c) => c.id).sort()).toEqual(['drydock.connect', 'drydock.openInBrowser'])
+  })
+
+  it('a tree item\'s id reaches connect; anything not a workspace id is dropped, and the command asks', async () => {
+    const seen: Array<string | undefined> = []
+    const w = world(undefined)
+    const d = new Dispatcher({ prompter: w.prompter, window: new FakeWindow(), opener: w.opener, settings: settingsOf(ORIGIN), log: w.log, signIn: async () => {} },
+      Object.fromEntries(COMMANDS.map((c) => [c.id, async (id?: string) => { seen.push(id) }])) as Record<CommandId, Handler>)
+    await d.run('drydock.connect')('01JA0000000000000000000010')
+    await d.run('drydock.connect')('../../api/secrets')
+    await d.run('drydock.connect')({ id: '01JA0000000000000000000010' })
+    await d.run('drydock.connect')({ key: '01JA0000000000000000000010', label: 'a tree node' })
+    await d.run('drydock.connect')({ key: 'repo/2' })
+    await d.run('drydock.clone')('01JA0000000000000000000010')
+    await d.run('drydock.clone')({ key: '01JA0000000000000000000010' })
+    expect(seen).toEqual(['01JA0000000000000000000010', undefined, undefined, '01JA0000000000000000000010', undefined, undefined, undefined])
   })
 })
 
