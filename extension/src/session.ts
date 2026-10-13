@@ -98,7 +98,7 @@ export async function signIn(d: SessionDeps): Promise<Meta | null> {
   const old = await d.credentials.read()
   if (old !== null && (old.origin !== o.origin || old.token !== pasted.token)) await retire(d, old)
   await d.credentials.write({ origin: o.origin, token: pasted.token })
-  await d.applied?.()
+  await apply(d)
   d.log.info(`signed in to ${o.origin} (Drydock ${meta.version}, api ${meta.api}) as "${meta.credential.label}", scopes ${meta.credential.scopes.join(', ')}`)
   const s = skew(meta.api)
   const signed = `Signed in to Drydock ${meta.version} as "${meta.credential.label}".`
@@ -123,14 +123,14 @@ export async function signOut(d: SessionDeps): Promise<void> {
         [FORGET_ANYWAY])
       if (ans === FORGET_ANYWAY) {
         await d.credentials.clear()
-        await d.applied?.()
+        await apply(d)
       }
       return
     }
     // A 401: the token was already revoked or expired.
   }
   await d.credentials.clear()
-  await d.applied?.()
+  await apply(d)
   d.log.info(`signed out of ${stored.origin}; the token is revoked`)
   await d.prompter.message('info', 'Signed out of Drydock. The token is revoked.')
 }
@@ -150,6 +150,20 @@ async function retire(d: SessionDeps, old: Credential): Promise<void> {
     }
   }
   await d.credentials.clear()
+}
+
+/**
+ * Applies a credential change to the window (`applied`). The change itself
+ * is done by now, so a failure here is the window's refresh failing, never
+ * the sign-in or sign-out: it is logged, and the command goes on to say what
+ * it did.
+ */
+async function apply(d: SessionDeps): Promise<void> {
+  try {
+    await d.applied?.()
+  } catch (e) {
+    d.log.warn(`refreshing this window after the credential changed: ${errorLine(e)}`)
+  }
 }
 
 export const notRevoked = (origin: string) =>
@@ -241,7 +255,7 @@ export class StaleTokenWatch {
     const now = await d.credentials.read()
     if (now === null || now.origin !== stored.origin || now.token !== stored.token) return 'nothing'
     await retire(d, stored)
-    await d.applied?.()
+    await apply(d)
     await d.prompter.message('info', `Signed out of ${stored.origin}. Sign in to ${o.origin} with a token from its Settings.`)
     return 'signed_out'
   }
