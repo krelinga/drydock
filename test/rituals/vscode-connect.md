@@ -87,9 +87,12 @@ VS Code. The activity bar has *Drydock*.
 1. In VS Code's **user** settings, set `drydock.url` to the UI origin, for example
    `https://drydock.example.com`.
 2. In the browser, open Drydock's **Settings → API tokens → Create token**:
-   - Label: `VS Code on <laptop>`.
-   - Tick **Approve host access**. The warning beside it is the web card's sentence.
-   - Keep the default lifetime.
+   - Label: `VS Code on <laptop> (ritual)`.
+   - Tick **Approve host access**. The warning beside it is the web card's sentence. 1.6 needs it;
+     part 3 revokes this token, so the scope does not outlive the run.
+   - **Expires after: 30 days**, the shortest, not the default 90.
+   - **Signing in with it revokes any token this VS Code already holds** (a new sign-in retires the
+     one it replaces, §4.2). Part 3 mints the day-to-day one afresh.
    - Press **Create token**, then **Copy**. Leave the page open.
 3. In VS Code, run *Drydock: Sign In* (`ctrl+shift+p`) and choose *Paste a token*.
 4. **Negative first:** paste `drydock_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA`, a well-formed
@@ -101,7 +104,7 @@ VS Code. The activity bar has *Drydock*.
 
 - The fake token: *Drydock refused this token: it was revoked or has expired, …*, and the views stay
   signed out.
-- The real token: *Signed in to Drydock vX.Y.Z as "VS Code on <laptop>".*
+- The real token: *Signed in to Drydock vX.Y.Z as "VS Code on <laptop> (ritual)".*
 - The *Workspaces* and *Repositories* views fill.
 - *Drydock: Show Log* has `signed in to https://… (Drydock vX.Y.Z, api 1) as "…", scopes read,
   lifecycle, approve`.
@@ -248,6 +251,12 @@ git branch -D "$b"
 
 ### 1.8 *Reopen in Container* finds Drydock's container (Spike 05 #3, `dev-container`)
 
+**Only on the testbed workspace.** If Drydock's labels ever stop matching, *Reopen in Container*
+builds a container from the clone's `devcontainer.json` itself: outside Drydock's docker guard and
+approval gate, running its `initializeCommand` on the server as the SSH user. That is acceptable for
+the `krelinga/drydock-testbed-a` fixture, and for no other repository, the docker-in-docker one
+included.
+
 **Do:**
 
 1. *Remote-SSH: Connect to Host…* to the server, with the same `--vscode-ssh-host` value.
@@ -277,11 +286,12 @@ git branch -D "$b"
 
 **Record:** Spike 05 #3 (`dev-container` half): the logged kind, or *not run*.
 
-### 1.9 The token's *last used* moves
+### 1.9 The token's *used …* moves
 
 **Do:** reload Drydock's Settings page in the browser.
 
-**Expect:** the *VS Code on <laptop>* row's *last used* is within the last few minutes.
+**Expect:** the *VS Code on <laptop> (ritual)* row says *used* a few minutes ago or less, not *never
+used*.
 
 **If not:** the server's `last_used_at` bookkeeping is best-effort (§4.2). A stale value with
 everything else working is a low-priority bug, not a blocker.
@@ -298,8 +308,13 @@ the same way. Never use the docker-in-docker repository's window.
 **Do:**
 
 1. On the laptop, from a checkout of this repository at the commit under test:
-   `python3 test/rituals/vscode-probe/pack.py ~/drydock-ritual/drydock-ritual-probe.vsix`
-   (it prints the file's SHA-256: record it).
+   `python3 test/rituals/vscode-probe/pack.py ~/drydock-ritual/drydock-ritual-probe.vsix`.
+   It prints the file's SHA-256: record it. The pack is reproducible (fixed order, timestamps and
+   attributes, no compression), so the digest is a function of the probe's two files: anyone can
+   re-pack the commit and compare, and `test/docs`' `TestRitualProbeDigest` holds this line to the
+   sources. For the probe as written here, the expected digest: `8692c10daac5b359d84a160da80cab4320410d424d71a035221e3a74676f0160`.
+   Anything else means the files differ from this commit's (on Windows, check `core.autocrlf` did
+   not rewrite their line endings).
 2. Drag `drydock-ritual-probe.vsix` from the laptop's file manager onto the Explorer of the
    **testbed-a container window**. VS Code uploads it into the clone.
 3. In **that window's** terminal, which runs in the container:
@@ -310,17 +325,44 @@ the same way. Never use the docker-in-docker repository's window.
 
 4. Check where it landed, in a **laptop** terminal (not the container's):
    `code --list-extensions | grep drydock-ritual`
+5. Check the laptop's **attached-container configuration**. Dev Containers keeps, on the laptop,
+   one file per image (`imageConfigs/`) and per container name (`nameConfigs/`). It may add an
+   extension installed after attaching to that file's `extensions`, and installs those on the next
+   attach to the same image or name: a way for the probe to outlive its container.
+   1. In the container window, run *Dev Containers: Open Container Configuration File* (type
+      `Container Configuration` in the palette to find it), and *Dev Containers: Open Named
+      Container Configuration File* if it is offered.
+   2. Note whether `drydock-ritual.probe` is in either file's `extensions`.
+   3. Search the directory from a laptop terminal:
+
+   | Laptop OS | Dev Containers' configuration directory on the laptop |
+   |---|---|
+   | macOS | `~/Library/Application Support/Code/User/globalStorage/ms-vscode-remote.remote-containers/` |
+   | Linux | `~/.config/Code/User/globalStorage/ms-vscode-remote.remote-containers/` |
+   | Windows | `%APPDATA%\Code\User\globalStorage\ms-vscode-remote.remote-containers\` |
+
+      ```sh
+      # macOS
+      grep -rl drydock-ritual ~/Library/Application\ Support/Code/User/globalStorage/ms-vscode-remote.remote-containers/
+      # Linux
+      grep -rl drydock-ritual ~/.config/Code/User/globalStorage/ms-vscode-remote.remote-containers/
+      # Windows (PowerShell)
+      Get-ChildItem -Recurse "$env:APPDATA\Code\User\globalStorage\ms-vscode-remote.remote-containers" -Filter *.json | Select-String drydock-ritual -List | Select-Object Path
+      ```
 
 **Expect:**
 
 - The container's `code` (the remote CLI) says it was installed.
 - The Extensions view shows *Drydock ritual probe* under the container's *Installed* section, not
   under *Local*.
-- The laptop terminal prints **nothing**.
+- Step 4 prints **nothing**.
+- Step 5 either way: record whether the configuration names the probe. If it does, 2.7 removes it.
 
-**If not:** if the probe is listed locally, or the laptop's `grep` prints it, run
-`code --uninstall-extension drydock-ritual.probe` in the laptop terminal **now** and stop part 2.
-Record *not run: installed locally*.
+**If not:** if the probe is listed locally, or step 4's `grep` prints it, run
+`code --uninstall-extension drydock-ritual.probe` in the laptop terminal **now**, then do 2.7 and
+stop part 2. Record *not run: installed locally*.
+
+**Record:** the digest, and whether step 5 found the probe in a configuration file.
 
 ### 2.2 Where is it?
 
@@ -368,8 +410,13 @@ Record *not run: installed locally*.
 
 1. In the laptop's **user** settings, check `window.dialogStyle` is `native`, the default. If you
    change it, VS Code asks to restart. Reconnect the testbed-a window afterwards.
-2. Run *Drydock Ritual Probe: #4: Try to Accept a Modal*. A modal appears.
-3. **Press nothing** until the probe's output says to close it, about ten seconds. Then press Cancel
+2. In the testbed-a window, run *Notifications: Clear All Notifications* and *View: Close All
+   Editors*. The probe's acceptors act on whatever has focus: `notification.acceptPrimaryAction`
+   would press any visible notification's button (a leftover refusal, git's *periodically fetch?*,
+   an *Install* recommendation), and `type` would put a newline into an open editor. With nothing
+   else on screen, only the modal can be accepted, and nothing else is changed.
+3. Run *Drydock Ritual Probe: #4: Try to Accept a Modal*. A modal appears.
+4. **Press nothing** until the probe's output says to close it, about ten seconds. Then press Cancel
    (or Escape).
 
 **Expect:** the output reads `#4 RESULT: the dialog is still open after every attempt`, with each
@@ -417,7 +464,9 @@ Close both terminals afterwards.
 
 **Do:**
 
-1. **The signal's positive control, in a local window:**
+1. **The signal's positive control, in a local window.** While this line is set, **every** VS Code
+   window on the laptop sends its traffic to a dead proxy (extensions, sign-ins, other work), so do
+   the next three steps back to back and remove it straight after:
    1. Add `"http.proxy": "http://127.0.0.1:9"` to the laptop's **user** settings JSON. Nothing
       listens on port 9.
    2. *Developer: Reload Window*.
@@ -484,8 +533,19 @@ Close both terminals afterwards.
    rm -f ~/drydock-ritual/drydock-ritual-probe.vsix
    ```
 
-**Expect:** the probe is gone from the container's Extensions list, and both laptop checks print
-nothing. Part 3 deletes the container itself.
+   (On Windows: `code --list-extensions | Select-String drydock-ritual` and
+   `Get-ChildItem $env:USERPROFILE\.vscode\extensions | Select-String drydock-ritual`.)
+5. **The attached-container configuration** (2.1 step 5). For every file the search there listed,
+   open it and delete `"drydock-ritual.probe"` from its `extensions` array, leaving anything else as
+   it is. Use *Dev Containers: Open Container Configuration File* from a new attach to the testbed,
+   or open the file directly from the directory in 2.1's table. Then run 2.1's `grep` (or the
+   PowerShell line) again.
+
+**Expect:** the probe is gone from the container's Extensions list, both laptop checks print
+nothing, and the configuration search prints nothing. Part 3 deletes the container itself.
+
+**If not:** a configuration file still naming the probe would install it into the next container
+from the same image. Do not attach to one until it is gone.
 
 ## Part 3: cleanup
 
@@ -496,9 +556,17 @@ nothing. Part 3 deletes the container itself.
 3. **Settings changed in this ritual. Check each is back:**
    - user `http.proxy` (2.6): absent;
    - the remote settings' six lines (2.6): absent;
-   - `window.dialogStyle` (2.4): `native`.
-4. **The token:** keep it if this laptop keeps using the extension. Otherwise run *Drydock: Sign Out*,
-   which revokes it, and check the Settings row says *Revoked*.
+   - `window.dialogStyle` (2.4): `native`;
+   - the probe in Dev Containers' configuration (2.7 step 5): absent.
+4. **The token, always:**
+   1. Run *Drydock: Sign Out*. It revokes the ritual token.
+   2. Check its Settings row says *Revoked*.
+   3. If this laptop keeps using the extension, mint a fresh token with the scopes you want day to
+      day. Tick *Approve host access* only if you want this VS Code to approve; it is off by default
+      for a reason (§4.1). Then sign in with it.
+
+   The ritual's token had `approve`, and it was present while 2.5 measured whether a container can
+   reach the laptop. It does not stay.
 5. `rm -rf ~/drydock-ritual`.
 6. **The record:**
    - Paste the run record into the *Laptop ritual runs* section of
@@ -518,8 +586,8 @@ Remote - SSH:                     Dev Containers:
 1.3 clone .............. pass/fail   (Enter → running: __ min)
 1.4 connect ............ pass/fail   1.5 rule 1 ............. pass/fail
 1.6 approve + dind ..... pass/fail   1.7 push ............... pass/fail
-1.8 reopen ............. pass/fail/not run   1.9 last used .......... pass/fail
-Probe .vsix SHA-256:
+1.8 reopen ............. pass/fail/not run   1.9 used ............... pass/fail
+Probe .vsix SHA-256:                   in a container configuration (2.1): yes/no
 #2  (2.3):
 #3  attached-container (1.5):          dev-container (1.8):
 #4  native (2.4):                      custom (optional):
