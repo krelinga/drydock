@@ -1,7 +1,7 @@
 <script setup lang="ts">
 // /settings — the device list (design §13.2: "a device list in the UI, and
-// one button that kills all sessions"), the shared Claude login (design §7.3)
-// and the catalog refresh. Capacity joins it in a later phase.
+// one button that kills all sessions"), the API tokens (vscode-extension
+// §4.2), the shared Claude login (design §7.3) and the catalog refresh. Capacity joins it in a later phase.
 //
 // The API offers two revocations, both of which include this device: sign out
 // here, or sign out everywhere. Neither is a surprise — the list marks which
@@ -18,6 +18,7 @@ import { useStreamStore } from '../stores/stream'
 import { CHECK_KEY, useIdentityStore } from '../stores/identity'
 import { identitySentence } from '../lib/identity'
 import ClaudeLogin from '../components/ClaudeLogin.vue'
+import ApiTokens from '../components/ApiTokens.vue'
 
 const session = useSessionStore()
 const catalog = useCatalogStore()
@@ -177,6 +178,10 @@ async function signOut(everywhere: boolean): Promise<void> {
         </div>
       </div>
     </section>
+
+    <!-- API tokens (vscode-extension §4.2): /settings#tokens is where the
+         extension's Create a token in Drydock lands. -->
+    <ApiTokens />
 
     <!-- The shared Claude login (design §7.3, frontend §5). The fleet banner's
          one Sign in to Claude lands here. -->

@@ -883,6 +883,54 @@
       ${tabbar("settings")}`;
   }
 
+  function scrTokens() {
+    const rows = [
+      ["VS Code on Mac", "read · lifecycle · approve", "used 4 min ago", "expires in 89 days", ""],
+      ["VS Code on iPad", "read · lifecycle", "never used", "expires in 12 days", ""],
+      ["Old laptop", "read", "used 3 weeks ago", "revoked 2 weeks ago", "Revoked"],
+    ];
+    return `
+      <div class="app-top"><span class="brand">&lsaquo; Settings</span><span class="link-live">vscode §4.2</span></div>
+      <div class="app-body">
+        <div class="hs">
+          <h2>API tokens</h2>
+          <div class="okmsg">
+            <b>Copy this token now.</b> Drydock will not show it again.
+            <div class="urlbox" style="margin-top:8px">drydock_q8N3vTzW1kP0cRf6yHs2mLb9XeJ4uGdA7oVnKiE5tCw</div>
+          </div>
+          <div class="card-act">
+            <button class="btn ghost sm">Copy</button>
+            <button class="btn primary sm">Done</button>
+          </div>
+          <div class="block">
+            <div class="sec-label"><span>New token</span></div>
+            <div class="field">
+              <label for="tlabel">Label</label>
+              <input id="tlabel" type="text" value="VS Code on Mac" autocomplete="off">
+            </div>
+            <div class="grants">
+              <label class="grant"><input type="checkbox" checked> Read — workspaces, ports, logs, the stream</label>
+              <label class="grant"><input type="checkbox" checked> Lifecycle — clone, start, stop, rebuild, delete</label>
+              <label class="grant"><input type="checkbox"> Approve host access</label>
+            </div>
+            <div class="allrepos">Approving lets a repository's dev container reach this server, as the drydock user or as root. A token with this scope can do that without this page.</div>
+          </div>
+          <div class="block">
+            <div class="sec-label"><span>Tokens</span><span>2 live</span></div>
+            ${rows.map(([l, sc, used, exp, tag]) => `
+              <div class="grant" style="flex-direction:column;align-items:flex-start;gap:3px">
+                <span style="font-family:var(--sans);font-size:14px;font-weight:500;${tag ? "color:var(--ink-3)" : ""}">${l}${tag ? ` · ${tag}` : ""}</span>
+                <span style="font-size:11px;color:var(--ink-3)">${sc} · ${used} · ${exp}</span>
+                ${tag ? "" : `<button class="btn ghost sm" style="color:var(--bad);border-color:var(--bad)">Revoke</button>`}
+              </div>`).join("")}
+          </div>
+          <div class="writeonly"><span aria-hidden="true">·</span>
+            <span>A token never reaches secrets, other tokens or signed-in devices. Only its SHA-256 is stored.</span></div>
+        </div>
+      </div>
+      ${tabbar("settings")}`;
+  }
+
   function scrSecret() {
     return `
       <div class="app-top"><span class="brand">&lsaquo; Secrets</span><span class="link-live">§6.4</span></div>
@@ -959,6 +1007,7 @@
     refused:   ["Refused starts",  scrRefused],
     workspace: ["Workspace",       scrWorkspace],
     handshake: ["Sign in",         scrHandshake],
+    tokens:    ["API tokens",      scrTokens],
     secret:    ["Secret form",     scrSecret],
     confirm:   ["Delete confirm",  scrConfirm]
   };
@@ -1019,6 +1068,18 @@
       <h3>It spans an app switch</h3>
       <p>On a phone, step 1 backgrounds this page and iOS may discard it. The handshake therefore lives
       on the server and this view re-reads it, so a reload mid-flow loses nothing.</p>`,
+
+    tokens: `<h3>Shown once, and only by the screen that asked</h3>
+      <p>The mint's <code>201</code> is the one response in the API that carries a credential. The
+      token lives in that component until <strong>Done</strong>; the list's row arrives as
+      <code>api_token.created</code>, which carries the metadata alone, like a token minted on
+      another device.</p>
+      <h3>Approve is off unless you tick it</h3>
+      <p>The other two are the editor's everyday work. Approving host access is the one thing a
+      container could want a token for, so it carries the approval card's own sentence.</p>
+      <h3>Revoke settles on its event</h3>
+      <p>A <code>202</code>, in flight until <code>api_token.revoked</code>. The extension's stream
+      ends within one heartbeat of it.</p>`,
 
     secret: `<h3>The friction is the feature</h3>
       <p>"What can someone do with this?" is a visible label on a real textarea, not a placeholder —

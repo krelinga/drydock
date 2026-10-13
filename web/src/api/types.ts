@@ -48,6 +48,7 @@ export interface ErrorEnvelope {
 export type ErrorCode =
   | 'unauthenticated'
   | 'forbidden_origin'
+  | 'forbidden_scope'
   | 'forbidden_host'
   | 'not_found'
   | 'method_not_allowed'
@@ -503,6 +504,39 @@ export interface Undeliverable {
 }
 
 /** `GET /api/secrets`. */
+/** A scope an API token may be minted with (vscode-extension §4.1). */
+export type TokenScope = 'read' | 'lifecycle' | 'approve'
+export const TOKEN_SCOPES: readonly TokenScope[] = ['read', 'lifecycle', 'approve']
+
+/**
+ * One API token's metadata, from `GET /api/tokens` and the `api_token.*`
+ * events (internal/auth.Token). There is no field for the token, and none
+ * for its hash: neither is ever sent but in the mint's own response.
+ */
+export interface ApiTokenMeta {
+  id: string
+  label: string
+  scopes: string[]
+  created_at: string
+  last_used_at: string | null
+  expires_at: string
+  revoked_at: string | null
+}
+
+/** `GET /api/tokens`. */
+export interface TokenList {
+  tokens: ApiTokenMeta[]
+}
+
+/**
+ * `POST /api/tokens`' 201: the metadata and, in `token`, the token itself —
+ * the one response that carries a credential. Shown once by the screen that
+ * asked, and never handed to the reducer.
+ */
+export interface MintedToken extends ApiTokenMeta {
+  token: string
+}
+
 export interface SecretList {
   secrets: SecretMeta[]
   /** Null when every stored secret can be delivered (frontend §4.5 #12). */

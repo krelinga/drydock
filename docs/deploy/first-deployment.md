@@ -1466,8 +1466,8 @@ None of the following is a deployment fault. These are the phases still being bu
 | Settings | `/etc/drydock/drydock.env`. The effective command line is in `systemctl cat drydock`. |
 
 To change the password: `sudo -u drydock drydock passwd --db /var/lib/drydock/drydock.db`. This
-signs out every device and revokes every API token. A device can also be signed out from
-**Settings**.
+signs out every device and revokes every API token. A device can also be signed out, and a token
+revoked, from **Settings**.
 
 ### 10.4 Uninstall
 

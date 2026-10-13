@@ -17,7 +17,7 @@
 
 import { http, HttpResponse, sse, type HttpHandler } from 'msw'
 import type {
-  ActionView, ApprovalView, BuildLogBody, DiscoveryState, PortList, PortView, ProbeResult, HostDiskView, ResourcesView, HostSettingView, CatalogView, Device, IdentityState, IdentityView, InstallationView, LoginView, PutSecretResult, RepoView, SecretMeta, SessionInfo, SessionView, Stale, StaleWorkspace, SupervisorView,
+  ActionView, ApiTokenMeta, ApprovalView, BuildLogBody, DiscoveryState, PortList, PortView, ProbeResult, HostDiskView, ResourcesView, HostSettingView, CatalogView, Device, IdentityState, IdentityView, InstallationView, LoginView, PutSecretResult, RepoView, SecretMeta, SessionInfo, SessionView, Stale, StaleWorkspace, SupervisorView,
   StepView, StreamEvent, Undeliverable, UndeliverableSecret, WorkspaceDetail, WorkspaceList, WorkspaceState, WorkspaceView,
 } from '../api/types'
 import { checkDescription, checkName, checkReach, checkValue, type SecretRefusal } from '../lib/secretRules'
@@ -123,6 +123,14 @@ export interface MockBackend {
    * prove a value *was* sent before proving it is nowhere afterwards.
    */
   secretBodies: Array<{ method: string; url: string; body: string; ifNoneMatch: string | null }>
+  /**
+   * API tokens (vscode-extension §4.2), by id: the metadata the server keeps.
+   * The token itself is in `tokenValues` only, as the server keeps only its
+   * hash, so a spec can find out whether the UI let one escape.
+   */
+  tokens: Record<string, ApiTokenMeta>
+  /** Every minted token, by id: what a spec's canary sweep looks for. */
+  tokenValues: Record<string, string>
   /**
    * The next secret write is refused with this envelope, once, whatever it
    * sent — how a spec (or dev:mock's `refuseSecret`) reaches a server-side
@@ -548,6 +556,8 @@ function newBackendBare(now: number, overrides: Partial<MockBackend>): MockBacke
     secretsKey: true,
     secrets: sampleSecrets(now),
     secretBodies: [],
+    tokens: {},
+    tokenValues: {},
     refuseNextSecret: null,
     staleRestart: [],
     undeliverable: null,
@@ -1591,7 +1601,7 @@ const refused = (r: SecretRefusal, name: string) =>
  * Reads a body the way internal/api's `decode` does: a JSON object, every
  * field of the right type, and no field it does not know.
  */
-function strictBody(text: string, fields: Record<string, 'string' | 'boolean' | 'number' | 'ints'>): Record<string, unknown> | null {
+function strictBody(text: string, fields: Record<string, 'string' | 'boolean' | 'number' | 'ints' | 'strings'>): Record<string, unknown> | null {
   let body: unknown
   try {
     body = JSON.parse(text)
@@ -1602,6 +1612,10 @@ function strictBody(text: string, fields: Record<string, 'string' | 'boolean' | 
   for (const [k, v] of Object.entries(body)) {
     const want = fields[k]
     if (want === undefined) return null
+    if (want === 'strings') {
+      if (!Array.isArray(v) || !v.every((x) => typeof x === 'string')) return null
+      continue
+    }
     if (want === 'ints' ? !(v === null || (Array.isArray(v) && v.every(Number.isInteger))) : typeof v !== want) return null
   }
   return body as Record<string, unknown>
@@ -2281,6 +2295,56 @@ export function handlersFor(b: MockBackend): HttpHandler[] {
       // Storing a value again is how a row the key cannot open is repaired.
       if (!kept) repairDelivery(b, name, 'does_not_open')
       return HttpResponse.json(res)
+    }),
+
+    // API tokens (vscode-extension §4.2): the operator's session only. The
+    // mint's 201 is the one body carrying a token; its event carries the
+    // metadata alone, as internal/auth's does.
+    http.get('/api/tokens', ({ request }) => {
+      record(request)
+      if (!b.signedIn) return unauthenticated()
+      const tokens = Object.values(b.tokens).sort((x, y) => y.created_at.localeCompare(x.created_at))
+      return HttpResponse.json({ tokens }, { headers: { 'Cache-Control': 'no-store' } })
+    }),
+
+    http.post('/api/tokens', async ({ request }) => {
+      record(request)
+      if (!b.signedIn) return unauthenticated()
+      const body = strictBody(await request.text(), { label: 'string', scopes: 'strings', expires_in_days: 'number' })
+      const label = typeof body?.label === 'string' ? body.label.trim() : ''
+      const scopes = Array.isArray(body?.scopes) ? (body.scopes as string[]) : []
+      const days = typeof body?.expires_in_days === 'number' ? body.expires_in_days : 90
+      const known = ['read', 'lifecycle', 'approve']
+      if (body === null || label === '' || [...label].length > 100 || scopes.length === 0 ||
+        scopes.some((s, i) => !known.includes(s) || scopes.indexOf(s) !== i) ||
+        !Number.isInteger(days) || days < 1 || days > 365) {
+        return envelope(400, 'bad_request', 'That is not a token Drydock can mint.')
+      }
+      const now = Date.now()
+      const id = `tok_${(++b.idSeq).toString(16).padStart(20, '0')}`
+      const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_'
+      const rnd = new Uint8Array(43)
+      crypto.getRandomValues(rnd)
+      const token = 'drydock_' + Array.from(rnd, (n) => chars[n % 64]).join('')
+      const meta: ApiTokenMeta = {
+        id, label, scopes: known.filter((s) => scopes.includes(s)),
+        created_at: new Date(now).toISOString(), last_used_at: null,
+        expires_at: new Date(now + days * 86400e3).toISOString(), revoked_at: null,
+      }
+      b.tokens[id] = meta
+      b.tokenValues[id] = token
+      emit(b, 'api_token.created', { message: 'An API token was created.', data: { token: { ...meta } } })
+      return HttpResponse.json({ ...meta, token }, { status: 201, headers: { 'Cache-Control': 'no-store' } })
+    }),
+
+    http.delete('/api/tokens/:id', ({ request, params }) => {
+      record(request)
+      if (!b.signedIn) return unauthenticated()
+      const t = b.tokens[String(params.id)]
+      if (t === undefined || t.revoked_at !== null) return envelope(404, 'not_found', 'There is no such live token.')
+      t.revoked_at = new Date().toISOString()
+      emit(b, 'api_token.revoked', { message: 'An API token was revoked.', data: { token: { ...t } } })
+      return HttpResponse.json({}, { status: 202 })
     }),
 
     http.delete('/api/secrets/:name', async ({ request, params }) => {
