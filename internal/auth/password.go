@@ -1,5 +1,6 @@
 // Package auth is Drydock's one credential check: an operator password, a
-// session cookie, and the lockout in front of both (design §13.2).
+// session cookie, the lockout in front of both (design §13.2), and the scoped
+// API tokens a client that is not a browser holds (vscode-extension §4).
 //
 // It is deliberately the least sophisticated design that is correct here — one
 // operator, no enrollment, no second service — and the effort goes into the
@@ -12,6 +13,16 @@
 // argon2id with a floor and rehash-on-sign-in; sessions stored only as
 // SHA-256; a lockout that is per-IP backoff plus a global cap, kept in
 // auth_attempt so a restart does not reset it.
+//
+// API tokens (token.go): `drydock_` + 43 base64url characters, stored only as
+// SHA-256 in api_token under a random `tok_…` id; scoped read, lifecycle,
+// approve (a Credential adds self, which every token holds; a cookie session
+// holds every scope but self, session included, which no token can); 90 days
+// by default, a year at most, no idle expiry. Create and Revoke commit the row
+// with api_token.created/revoked (metadata only); a lookup is never a sign-in
+// attempt and writes only last_used_at, at most once a minute. SetPassword
+// revokes every token as it ends every session. Service.Alive answers for
+// either credential, for the stream's heartbeat.
 package auth
 
 import (

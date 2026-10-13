@@ -121,6 +121,14 @@ const (
 	// reason, permissions}. read.
 	KindTokenRefused Kind = "token.refused"
 
+	// internal/auth: an API token minted (vscode-extension §4.2). data:
+	// {token: {id, label, scopes, created_at, last_used_at, expires_at,
+	// revoked_at}} — metadata only, never the token or its hash. session.
+	KindAPITokenCreated Kind = "api_token.created"
+	// internal/auth: an API token revoked, from Settings or by itself.
+	// data: {token: {…}}, as api_token.created. session.
+	KindAPITokenRevoked Kind = "api_token.revoked"
+
 	// internal/identity: the stored Claude identity changed, or a failing
 	// check recovered. data: {identity}. read.
 	KindAuthIdentity Kind = "auth.identity"
@@ -181,6 +189,9 @@ var Scopes = map[Kind]Scope{
 
 	KindTokenIssued:  ScopeRead,
 	KindTokenRefused: ScopeRead,
+
+	KindAPITokenCreated: ScopeSession,
+	KindAPITokenRevoked: ScopeSession,
 
 	KindAuthIdentity:            ScopeRead,
 	KindAuthIdentityCheckFailed: ScopeRead,

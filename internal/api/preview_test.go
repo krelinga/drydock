@@ -149,10 +149,9 @@ func TestPreviewFrontDoorReachesNoAPIHandler(t *testing.T) {
 	}
 
 	// Control: the API mux, same handlers, same gate, runs each one.
-	apiMux := Build(MuxAPI, allOpen, handlers)
 	for _, rt := range APIRoutes() {
 		hits[rt.Name] = false
-		apiMux.ServeHTTP(httptest.NewRecorder(), requestFor(rt))
+		Build(MuxAPI, openFor(rt), handlers).ServeHTTP(httptest.NewRecorder(), requestFor(rt))
 		if !hits[rt.Name] {
 			t.Errorf("control: %s did not run on the API mux either", rt.Name)
 		}

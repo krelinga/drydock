@@ -32,7 +32,7 @@ printf "%s\n" "$PW" | ./drydock passwd --db x.db  # set the operator password (n
 
 | Package | Is — and what not to break there |
 |---|---|
-| `internal/api` | The route table as **data**, both muxes, the gate, the error envelope, the preview front door; meta-tests walk the table. |
+| `internal/api` | The route table as **data**, both muxes, the gate, the error envelope, the preview front door; meta-tests walk the table. Every API route declares a `Scope` (an unset one is closed to tokens), checked after auth and before `Origin`. |
 | `internal/sys` | `Clock`, `DiskUsage`, `Random`, and `Cleanup` (the context rule's rule 3). Never call `time.Now()` directly; `TestContextRule` enforces it. |
 | `internal/life` | `Group` (goroutines stopped and waited for as one: nothing starts after `Stop`, `Wait` names stragglers on an injected-clock deadline) and `Coalescer` (periodic + on demand on one worker; a ticket is answered only by a run begun after it, and its payload, if `TriggerWith` gave one, reaches that run alone; `Await` of ticket 0 is `ErrNoTicket`). A `Child` is released once its own `Wait` finds it ended, so a child per job must be waited for. Not exempt from the context rule. |
 | `internal/subproc` | Invocations as data, resolved by `PATH` or a `Resolver`. No shell anywhere; `Env` replaces rather than inherits; `StartPTY` is the one PTY start. |
@@ -40,7 +40,7 @@ printf "%s\n" "$PW" | ./drydock passwd --db x.db  # set the operator password (n
 | `internal/store` | SQLite in WAL mode, the single-instance lock, §4's schema with enums as `CHECK`s. Every transaction opens `IMMEDIATE`; a golden snapshot pins the schema. |
 | `internal/classify` | The five classifiers over the recorded corpus. They refuse rather than guess. |
 | `internal/claudetest`, `internal/pty` | `fakeclaude`, replaying the corpus on a real PTY, its replays pinned by SHA-256; and the PTY itself. |
-| `internal/auth` | argon2id, sessions stored only as SHA-256, a lockout that survives restart. |
+| `internal/auth` | argon2id, sessions and API tokens stored only as SHA-256, a lockout that survives restart (a bearer lookup never counts toward it). |
 | `internal/preview` | Preview tokens (memory only, single-use), preview sessions (stored as hashes), the preview proxy and the port registry. `forwarded_port` has no foreign key to `workspace`: a slug is never reissued. A port is off until enabled and nothing a container declares or listens on enables it; a disable or retire closes its websockets at once; the probe is the proxy's own dial. Discovery (`Scanner`) reads each running container's socket table through `container.Listeners` — the PID resolved by label every scan, never kept — debounces, merges onto live rows only (a retired slug is never revived), and writes no `enabled`; its events are ordinary `port.*` rows with `source: "discovery"`, never a notice, and stay out of the activity feed (`events.Log.Feed`). Diagnosis (PF §11): a port listening on loopback only is answered from its row — the `--host 0.0.0.0` sentence, by the proxy's page and the probe — and **never resolved or dialled**, and an enable of one is `409 port_loopback`; discovery's state (`ok`/`unavailable`/`limited`) is reported by `port.scanned`/`port.discovery` and the port list, so a broken or budget-held scanner never looks like an empty list. The list's state is set inside the report's commit (`events.Log.CommitThen`, before the publish), so no list fetched after the event carries the state it replaced, and a raced rescan's `unavailable` is corrected by the next round that reads, past the status budget. Previews are done but for the real-Safari gate (PF §13.3). |
 | `internal/events` | The append-only event log and its fan-out. `Commit` makes a row change and its event one fact, so **an event that describes a row change goes through `Commit`** (`CommitThen` adds a hook after the commit and before the publish, for in-memory state that must change with the event); bare `Emit`/`Append` is only for events with no row, and `TestRowRule` lists each with why. **Only the SSE stream subscribes** (`TestOnlySSESubscribes`): a component that must act on another's change is called by it. **Every kind is a constant in `kinds.go`, with its scope**, and nowhere else spells one (`TestKindRegistry`). `message` is prose nothing may parse. |
 | `internal/workspace` | The state machine and §6's eight steps. A step's raw error never reaches an event; the cap's rule is `Occupying` and nothing else; the host-access approval state. |
@@ -269,7 +269,10 @@ These come from §2 (Claude Code constraints) and §13.5 (non-negotiables). Most
   `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC`, `DISABLE_GROWTHBOOK`. Any of them disables Remote
   Control while everything still builds and starts. They are also reserved secret names.
 - **Auth is middleware around the whole mux**, so a route added later is protected by default. Only
-  the sign-in POST is unauthenticated, and it is rate-limited and lockout-guarded.
+  the sign-in POST is unauthenticated, and it is rate-limited and lockout-guarded. A request carries
+  the session cookie *or* an API token (`Authorization: Bearer`), never both; every route's scope is
+  checked after auth, and `session`-scoped routes (secrets, tokens, sessions, the preview handshake)
+  are no token's. A token's stream and views carry only kinds its scopes cover, failing closed.
 - **The `Origin` check is exact-match and fails closed** (§13.5). Every mutating route compares
   `Origin` to the literal UI origin — never a suffix, never a registrable-domain match, never
   case-folded — and refuses one absent, empty, `null`, or sent twice as hard as a wrong one. No
@@ -298,7 +301,8 @@ These come from §2 (Claude Code constraints) and §13.5 (non-negotiables). Most
   how four of the five were each found missing one in review.
 - **Store no credential but the App private key.** GitHub tokens live in a bounded in-memory cache;
   `token_grant` records that a token was issued, never the token. `auth_session.id` is the SHA-256 of
-  the cookie value, so a stolen DB yields no usable cookie. Secret values are XChaCha20-Poly1305
+  the cookie value, so a stolen DB yields no usable cookie; `api_token.token_hash` likewise, and the
+  mint's `201` is the one response that carries a credential. Secret values are XChaCha20-Poly1305
   ciphertext with the secret id as AAD.
 - **The App key and the secrets master key never enter the environment** — `0400` files read once at
   startup. Environment variables leak into `/proc`, crash reports, and every child process.

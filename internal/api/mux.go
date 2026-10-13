@@ -3,6 +3,8 @@ package api
 import (
 	"fmt"
 	"net/http"
+
+	"github.com/krelinga/drydock/internal/auth"
 )
 
 // Gate is the policy a mux applies before any handler runs. It is an interface
@@ -13,10 +15,12 @@ import (
 // refusal itself — because the refusal differs by policy (401 with an envelope
 // for a fetch, 302 to sign-in for a navigation) and only the gate knows which.
 type Gate interface {
-	// Authenticate reports whether the request carries a valid session and,
-	// if so, returns it with the session attached to its context, so a
-	// handler that needs the session (the device list, sign-out) does not
-	// look it up a second time.
+	// Authenticate reports whether the request carries one valid
+	// credential — a session cookie or an API token — and, if so, returns it
+	// with the credential attached to its context (WithCredential), and a
+	// session too when it was the cookie, so a handler that needs either
+	// does not look it up a second time. An authenticated request with no
+	// credential attached reaches nothing: the scope step refuses it.
 	Authenticate(r *http.Request) (*http.Request, bool)
 	// OriginAllowed reports whether a state-changing request's Origin is
 	// the literal UI origin. Must fail closed on an absent Origin and must
@@ -55,8 +59,12 @@ type Gate interface {
 //     implemented route from an unimplemented one. If the 501 for a nil
 //     Handler came first, the API would be a route oracle for anyone who can
 //     reach the socket.
-//  3. Origin, for mutating routes.
-//  4. The handler, or 501.
+//  3. Scope (vscode-extension §4.3): the credential must hold the route's.
+//     After auth, so only an authenticated caller learns a route's scope;
+//     before the 501, which is still behind auth. A route with no Scope is
+//     closed to every token, as if it were session.
+//  4. Origin, for mutating routes — for every credential, a token's too.
+//  5. The handler, or 501.
 func Build(m Mux, g Gate, handlers map[string]http.HandlerFunc) *http.ServeMux {
 	mux := http.NewServeMux()
 	for _, rt := range routesFor(m) {
@@ -91,6 +99,12 @@ func wrap(rt Route, g Gate) http.Handler {
 			r = authed
 		case AuthRedirect:
 			authed, ok := g.Authenticate(r)
+			// A top-level browser navigation, bound to the browser's
+			// session (the preview handshake mints against it): a bearer
+			// is refused outright, before scope, as if it were absent.
+			if c, _ := CredentialFrom(authed.Context()); ok && c.Kind != auth.CredentialSession {
+				ok = false
+			}
 			if !ok {
 				http.Redirect(w, r, g.SignInRedirect(r), http.StatusFound)
 				return
@@ -114,14 +128,21 @@ func wrap(rt Route, g Gate) http.Handler {
 			// may exist on the API mux.
 		}
 
-		// 3. Origin, exact match, fail closed.
+		// 3. Scope.
+		if (rt.Auth == AuthRequired || rt.Auth == AuthRedirect) && !mayReach(r, rt) {
+			WriteError(w, http.StatusForbidden, CodeForbiddenScope,
+				"This credential may not do that.", "")
+			return
+		}
+
+		// 4. Origin, exact match, fail closed.
 		if rt.Mutating && !g.OriginAllowed(r) {
 			WriteError(w, http.StatusForbidden, CodeForbiddenOrigin,
 				"This request did not come from Drydock's own origin.", "")
 			return
 		}
 
-		// 4. The handler, or an honest 501 for a route a later phase owns.
+		// 5. The handler, or an honest 501 for a route a later phase owns.
 		if rt.Handler == nil {
 			WriteError(w, http.StatusNotImplemented, CodeNotImplemented,
 				"This route is not implemented yet.",
@@ -130,4 +151,19 @@ func wrap(rt Route, g Gate) http.Handler {
 		}
 		rt.Handler(w, r)
 	})
+}
+
+// mayReach is the scope step: the request's credential holds the route's
+// scope. No credential attached reaches nothing, and a route that declares
+// no scope is session-scoped — closed to every token, protected by default.
+func mayReach(r *http.Request, rt Route) bool {
+	c, ok := CredentialFrom(r.Context())
+	if !ok {
+		return false
+	}
+	need := rt.Scope
+	if need == "" {
+		need = auth.ScopeSession
+	}
+	return c.Has(need)
 }

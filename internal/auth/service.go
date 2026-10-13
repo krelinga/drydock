@@ -30,7 +30,10 @@ type Service struct {
 	Random   io.Reader
 	Params   Params
 	Sessions *Sessions
-	Limiter  *Limiter
+	// Tokens is the API token store (vscode-extension §4). Its Events is
+	// set by the server; without one a mint or a revoke is refused.
+	Tokens  *Tokens
+	Limiter *Limiter
 }
 
 // New wires a Service with the production defaults.
@@ -38,6 +41,7 @@ func New(db *sql.DB, env sys.Env) *Service {
 	return &Service{
 		DB: db, Clock: env.Clock, Random: env.Random, Params: DefaultParams,
 		Sessions: &Sessions{DB: db, Clock: env.Clock, Random: env.Random},
+		Tokens:   &Tokens{DB: db, Clock: env.Clock, Random: env.Random},
 		Limiter:  &Limiter{DB: db, Clock: env.Clock, Policy: DefaultPolicy},
 	}
 }
@@ -131,9 +135,10 @@ func (s *Service) HasPassword(ctx context.Context) (bool, error) {
 	return n == 1, err
 }
 
-// SetPassword is `drydock passwd`. It also ends every session: a password is
-// changed because it may be known to someone else, and a change that leaves
-// that someone signed in has not done its job.
+// SetPassword is `drydock passwd`. It also ends every session and revokes
+// every API token: a password is changed because it may be known to someone
+// else, and a change that leaves that someone signed in — or holding a token
+// they minted while they were — has not done its job.
 func (s *Service) SetPassword(ctx context.Context, password string) error {
 	if len(password) < 12 {
 		return errors.New("password must be at least 12 characters: it is the only credential between the LAN and code execution on this host (§13.5)")
@@ -141,7 +146,23 @@ func (s *Service) SetPassword(ctx context.Context, password string) error {
 	if err := s.storeHash(ctx, password); err != nil {
 		return err
 	}
-	return s.Sessions.RevokeAll(ctx)
+	if err := s.Sessions.RevokeAll(ctx); err != nil {
+		return err
+	}
+	return s.Tokens.RevokeAll(ctx)
+}
+
+// Alive reports whether a credential is still live, writing nothing: the
+// event stream asks it on every heartbeat, so a signed-out session's or a
+// revoked or expired token's stream ends within one beat.
+func (s *Service) Alive(ctx context.Context, c Credential) (bool, error) {
+	switch c.Kind {
+	case CredentialSession:
+		return s.Sessions.Alive(ctx, c.ID)
+	case CredentialToken:
+		return s.Tokens.Alive(ctx, c.ID)
+	}
+	return false, nil
 }
 
 func (s *Service) storeHash(ctx context.Context, password string) error {

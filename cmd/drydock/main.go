@@ -120,6 +120,7 @@ Run any of them with -h for its flags.
 
 func serve(args []string) int {
 	cfg := config.Default()
+	cfg.Version = version
 	fs := flag.NewFlagSet("serve", flag.ContinueOnError)
 	fs.StringVar(&cfg.UIOrigin, "ui-origin", "", "the exact origin the UI is served from, e.g. https://drydock.example.com (required)")
 	fs.StringVar(&cfg.UIHost, "ui-host", "", "the hostname the UI answers to (required)")
@@ -215,7 +216,7 @@ func passwd(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "drydock passwd: %v\n", err)
 		return 1
 	}
-	fmt.Fprintln(stdout, "Password set. Every existing session has been signed out.")
+	fmt.Fprintln(stdout, "Password set. Every existing session has been signed out, and every API token revoked.")
 	return 0
 }
 

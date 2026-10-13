@@ -196,9 +196,10 @@ func (wr WorkspaceRoutes) read(w http.ResponseWriter, r *http.Request) {
 		WriteError(w, http.StatusInternalServerError, CodeInternal, "Could not read the workspace's events.", "")
 		return
 	}
-	if evs == nil {
-		evs = []events.Event{}
-	}
+	// The events a credential may see, as the stream filters them
+	// (vscode-extension §4.1): a token's view carries no session kind.
+	c, _ := CredentialFrom(r.Context())
+	evs = VisibleEvents(c, evs)
 	if wr.Resources != nil {
 		v.Resources = wr.Resources.Of(v.ID)
 	}
@@ -279,7 +280,7 @@ func (wr WorkspaceRoutes) remove(w http.ResponseWriter, r *http.Request) {
 // approve is POST /api/workspaces/{id}/config-approval {"hash": "sha256:…"}:
 // the hash is the request's as the page showed it, so a configuration that
 // changed in between is approval_stale rather than approved unseen. The
-// approval is recorded as the session that made it.
+// approval is recorded as the credential that made it: a session or a token.
 func (wr WorkspaceRoutes) approve(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Hash string `json:"hash"`
@@ -289,9 +290,11 @@ func (wr WorkspaceRoutes) approve(w http.ResponseWriter, r *http.Request) {
 		WriteError(w, http.StatusBadRequest, CodeBadRequest, "The request needs the hash of the host access being approved.", "")
 		return
 	}
+	// Who approved: the session's id (its cookie's SHA-256) or the API
+	// token's id — never a usable credential either way.
 	by := "unknown"
-	if s, ok := SessionFrom(r.Context()); ok {
-		by = s.ID
+	if c, ok := CredentialFrom(r.Context()); ok {
+		by = c.ID
 	}
 	if err := wr.Provisioner.ApproveConfig(r.Context(), r.PathValue("id"), body.Hash, by); err != nil {
 		wr.writeProvisionError(w, err)

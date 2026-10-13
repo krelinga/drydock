@@ -234,7 +234,7 @@ func TestPreviewHandshakeOverTheSockets(t *testing.T) {
 	}
 
 	// Revoke-all closes it on the next request.
-	if resp := r.do(t, req{method: "DELETE", path: "/api/auth/session?all=true", origin: uiOrigin, cookie: cookie}); resp.StatusCode != http.StatusNoContent {
+	if resp := r.do(t, req{method: "DELETE", path: "/api/auth/sessions", origin: uiOrigin, cookie: cookie}); resp.StatusCode != http.StatusNoContent {
 		t.Fatalf("sign out everywhere = %d", resp.StatusCode)
 	}
 	resp, _ = r.previewDo(t, "GET", start, withCookie)

@@ -1701,8 +1701,19 @@ export function handlersFor(b: MockBackend): HttpHandler[] {
     http.delete('/api/auth/session', ({ request }) => {
       record(request)
       if (!b.signedIn) return unauthenticated()
-      const all = new URL(request.url).searchParams.get('all') === 'true'
-      b.devices = all ? [] : b.devices.filter((d) => !d.is_current)
+      // The server refuses the ?all=true this route once took (phase T).
+      if (new URL(request.url).searchParams.has('all')) {
+        return envelope(400, 'bad_request', 'Sign out everywhere is DELETE /api/auth/sessions.')
+      }
+      b.devices = b.devices.filter((d) => !d.is_current)
+      b.signedIn = false
+      return new HttpResponse(null, { status: 204 })
+    }),
+
+    http.delete('/api/auth/sessions', ({ request }) => {
+      record(request)
+      if (!b.signedIn) return unauthenticated()
+      b.devices = []
       b.signedIn = false
       return new HttpResponse(null, { status: 204 })
     }),

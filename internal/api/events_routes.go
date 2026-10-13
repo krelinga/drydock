@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/krelinga/drydock/internal/auth"
 	"github.com/krelinga/drydock/internal/events"
 	"github.com/krelinga/drydock/internal/sys"
 )
@@ -37,10 +38,11 @@ const DefaultHeartbeat = 20 * time.Second
 type EventRoutes struct {
 	Log   *events.Log
 	Clock sys.Clock
-	// Alive re-checks the stream's session on every heartbeat, without
-	// sliding its idle window. A stream outlives the request that opened it,
-	// and signing a device out must end that device's stream too.
-	Alive     func(ctx context.Context, sessionID string) (bool, error)
+	// Alive re-checks the stream's credential on every heartbeat, without
+	// sliding a session's idle window. A stream outlives the request that
+	// opened it, and signing a device out, or revoking a token, must end
+	// that credential's stream too.
+	Alive     func(ctx context.Context, c auth.Credential) (bool, error)
 	Heartbeat time.Duration
 }
 
@@ -50,8 +52,8 @@ func (e EventRoutes) Handlers() map[string]http.HandlerFunc {
 }
 
 func (e EventRoutes) stream(w http.ResponseWriter, r *http.Request) {
-	sess, ok := SessionFrom(r.Context())
-	if !ok { // the gate guarantees a session; refuse rather than stream to nobody
+	cred, ok := CredentialFrom(r.Context())
+	if !ok { // the gate guarantees a credential; refuse rather than stream to nobody
 		WriteError(w, http.StatusUnauthorized, CodeUnauthenticated, "Sign in to continue.", "")
 		return
 	}
@@ -106,8 +108,11 @@ func (e EventRoutes) stream(w http.ResponseWriter, r *http.Request) {
 		}
 		sent = latest
 	}
+	// The replay, filtered as the live events below are: a kind outside the
+	// credential's scopes is sent as its id alone, so the position moves
+	// past it and a reconnect neither replays it nor resyncs for it.
 	for _, ev := range backlog {
-		if err := writeEvent(w, ev); err != nil {
+		if err := writeScoped(w, cred, ev); err != nil {
 			return
 		}
 		sent = ev.ID
@@ -141,7 +146,7 @@ func (e EventRoutes) stream(w http.ResponseWriter, r *http.Request) {
 			if ev.ID <= sent {
 				continue
 			}
-			if writeEvent(w, ev) != nil || rc.Flush() != nil {
+			if writeScoped(w, cred, ev) != nil || rc.Flush() != nil {
 				return
 			}
 			sent = ev.ID
@@ -150,7 +155,7 @@ func (e EventRoutes) stream(w http.ResponseWriter, r *http.Request) {
 			// Ending the response is how a revoked session finds out: the
 			// browser reconnects, gets a 401, and its EventSource closes
 			// (frontend §2.3), which the client turns into "signed out".
-			if alive, err := e.Alive(r.Context(), sess.ID); err != nil || !alive {
+			if alive, err := e.Alive(r.Context(), cred); err != nil || !alive {
 				return
 			}
 			if _, err := io.WriteString(w, ": ping\n\n"); err != nil || rc.Flush() != nil {
@@ -158,6 +163,44 @@ func (e EventRoutes) stream(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+}
+
+// MaySee reports whether a credential may see an event of kind k
+// (vscode-extension §4.1). A cookie session sees every kind. Any other
+// credential sees a kind only when the registry scopes it read and the
+// credential holds read: a kind missing from events.Scopes is denied — the
+// filter fails closed — and a session kind is never a token's.
+func MaySee(c auth.Credential, k events.Kind) bool {
+	if c.Kind == auth.CredentialSession {
+		return true
+	}
+	s, ok := events.Scopes[k]
+	return ok && s == events.ScopeRead && c.Has(auth.ScopeRead)
+}
+
+// VisibleEvents is evs without the events c may not see, in order. For the
+// views that carry events (the workspace detail's), so no path shows a
+// session-kind event to a token.
+func VisibleEvents(c auth.Credential, evs []events.Event) []events.Event {
+	out := make([]events.Event, 0, len(evs))
+	for _, ev := range evs {
+		if MaySee(c, ev.Kind) {
+			out = append(out, ev)
+		}
+	}
+	return out
+}
+
+// writeScoped writes ev if c may see it, and otherwise a frame of its id
+// alone. Per the SSE spec a frame with an id and no data dispatches nothing
+// but sets the stream's last event id, so the filtered event still advances
+// the position a reconnect resumes from.
+func writeScoped(w io.Writer, c auth.Credential, ev events.Event) error {
+	if MaySee(c, ev.Kind) {
+		return writeEvent(w, ev)
+	}
+	_, err := fmt.Fprintf(w, "id: %d\n\n", ev.ID)
+	return err
 }
 
 func writeEvent(w io.Writer, ev events.Event) error {

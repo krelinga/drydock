@@ -36,6 +36,10 @@ import (
 // the App private key and the secrets master key are mode-0400 files read once
 // at startup and never placed in a struct that something might log (§13.5).
 type Config struct {
+	// Version is the release this binary was built from (main.version,
+	// "dev" for a local build), answered by GET /api/meta. Not a flag.
+	Version string
+
 	// UIOrigin is the exact origin string the Origin allowlist compares
 	// against — "https://drydock.example.com", with no trailing slash and
 	// never a suffix pattern (§13.3).

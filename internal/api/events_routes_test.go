@@ -20,16 +20,24 @@ import (
 )
 
 type streamEnv struct {
-	log   *events.Log
-	clock *sys.FakeClock
-	alive atomic.Bool
-	url   string
+	log    *events.Log
+	routes EventRoutes
+	clock  *sys.FakeClock
+	alive  atomic.Bool
+	url    string
 	// serve is the handler without a server around it, so a panic in it
 	// reaches the test rather than net/http's recover.
 	serve http.HandlerFunc
 }
 
 func newStreamEnv(t *testing.T) *streamEnv {
+	t.Helper()
+	return newStreamEnvAs(t, auth.SessionCredential(auth.Session{ID: "s1"}))
+}
+
+// newStreamEnvAs is a stream whose requests carry cred, as the gate would
+// attach it. Alive answers for the credential id s1 alone.
+func newStreamEnvAs(t *testing.T, cred auth.Credential) *streamEnv {
 	t.Helper()
 	db, err := store.Open(context.Background(), filepath.Join(t.TempDir(), "drydock.db"))
 	if err != nil {
@@ -40,11 +48,12 @@ func newStreamEnv(t *testing.T) *streamEnv {
 	env.log = events.New(db.DB, env.clock)
 	env.alive.Store(true)
 	routes := EventRoutes{Log: env.log, Clock: env.clock, Heartbeat: 20 * time.Second,
-		Alive: func(_ context.Context, id string) (bool, error) { return id == "s1" && env.alive.Load(), nil }}
+		Alive: func(_ context.Context, c auth.Credential) (bool, error) { return c.ID == "s1" && env.alive.Load(), nil }}
+	env.routes = routes
 	h := routes.Handlers()["events.stream"]
 	// Stands in for the gate, which these tests are not about.
 	env.serve = func(w http.ResponseWriter, r *http.Request) {
-		h(w, r.WithContext(context.WithValue(r.Context(), sessionKey{}, auth.Session{ID: "s1"})))
+		h(w, WithCredential(r, cred))
 	}
 	srv := httptest.NewServer(env.serve)
 	t.Cleanup(func() { env.log.Close(); srv.Close() })

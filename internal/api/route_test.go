@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/krelinga/drydock/internal/auth"
 	"github.com/krelinga/drydock/internal/preview"
 )
 
@@ -19,9 +20,24 @@ type stubGate struct {
 	token          bool
 	previewHost    bool
 	previewSession bool
+	// cred is the credential a passing Authenticate attaches: the
+	// operator's cookie session when nil.
+	cred *auth.Credential
 }
 
-func (g stubGate) Authenticate(r *http.Request) (*http.Request, bool)      { return r, g.session }
+// operator is the credential a signed-in browser is.
+var operator = auth.SessionCredential(auth.Session{ID: "sess-hash", Label: "Mac Firefox"})
+
+func (g stubGate) Authenticate(r *http.Request) (*http.Request, bool) {
+	if !g.session {
+		return r, false
+	}
+	c := operator
+	if g.cred != nil {
+		c = *g.cred
+	}
+	return WithCredential(r, c), true
+}
 func (g stubGate) OriginAllowed(*http.Request) bool                        { return g.origin }
 func (g stubGate) HostAllowed(*http.Request) bool                          { return g.host }
 func (g stubGate) PreviewTokenValid(r *http.Request) (*http.Request, bool) { return r, g.token }
@@ -41,6 +57,22 @@ const stubAuthorize = "https://drydock.example.com/preview/authorize?return="
 // testing-plan §4.1, which is the rule that keeps these from passing against a
 // server that refuses everything.
 var allOpen = stubGate{session: true, origin: true, host: true, token: true, previewHost: true, previewSession: true}
+
+// fullToken is an API token holding every scope a token can: read,
+// lifecycle, approve, and self.
+var fullToken = auth.TokenCredential(auth.Token{ID: "tok_full", Label: "every scope", Scopes: auth.GrantableScopes})
+
+// openFor is allOpen with a credential that holds rt's scope: the operator,
+// or, for the one token-only route (scope self), a token. It is the positive
+// control wherever a test needs the route's handler reached.
+func openFor(rt Route) stubGate {
+	g := allOpen
+	if rt.Scope == auth.ScopeSelf {
+		c := fullToken
+		g.cred = &c
+	}
+	return g
+}
 
 // reachedHandler marks a route's handler as having run, so a test can assert
 // "no handler was reached" rather than inferring it from a status code.
@@ -150,7 +182,7 @@ func TestNoRouteRunsWithoutItsGate(t *testing.T) {
 			// The positive control: the same route, every gate satisfied,
 			// must reach its handler. Without this the test above would
 			// pass against a mux that refuses everything.
-			_, hit = serve(t, rt, allOpen)
+			_, hit = serve(t, rt, openFor(rt))
 			if !hit {
 				t.Errorf("handler did NOT run with every gate satisfied: the refusal above proves nothing")
 			}
@@ -204,7 +236,7 @@ func TestEveryMutatingRouteChecksOrigin(t *testing.T) {
 				t.Errorf("status = %d; want 403", rec.Code)
 			}
 			// Positive control.
-			if _, hit := serve(t, rt, allOpen); !hit {
+			if _, hit := serve(t, rt, openFor(rt)); !hit {
 				t.Errorf("handler did not run with an allowed Origin")
 			}
 		})

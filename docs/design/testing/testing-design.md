@@ -381,6 +381,10 @@ The table CLAUDE.md's invariant list and §13.5 / PF §10.7 imply. Columns: the 
 | No HTTP route sets the password | component | the route table contains no password-write entry; plausible paths → `404` | `drydock passwd` does change the stored hash |
 | Two Drydocks refuse to coexist | component | second start against the same DB file exits non-zero | the first is still serving |
 | Password, cookie, login code never persisted | component | *sweep* | *sweep* found its marker |
+| A token reaches only its scopes; `session` routes never; an unset scope is closed to tokens | unit | walk the table with a token lacking each route's scope → `403 forbidden_scope`, handler not run; every API route declares a scope; secrets, tokens, sessions and every `AuthRedirect` route are `session` (`internal/api/scope_test.go`) | the same route with a token holding its scope runs its handler; the operator's session reaches every route but `self` |
+| Cookie XOR bearer; a bearer never touches the lockout | unit | cookie plus any `Authorization`, two headers, a non-Bearer scheme, a malformed, unknown, revoked or expired token → not authenticated; 100 bad bearers record no `auth_attempt` | the token alone and the cookie alone authenticate; six bad passwords lock the address out |
+| A token's stream and views carry only its kinds | unit + component | `secret.*`, `api_token.*` and an unregistered kind are an `id:` line alone on the replay and live; the detail view's `events` omit them; over the real server a canary-named secret's create, grant and rotate reach no bearer transcript | the operator's stream over the same window has each; the bearer stream got the interleaved `workspace.state` events |
+| A token is never persisted | component | *sweep* seeded with a minted token, every encoded form, after use and self-revocation (`internal/server/tokens_test.go`) | its SHA-256 is in the database; the mint's body held it |
 
 ### 8.2  Secrets
 

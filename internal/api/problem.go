@@ -32,7 +32,12 @@ const (
 	CodeUnauthenticated = "unauthenticated"
 	CodeForbiddenOrigin = "forbidden_origin"
 	CodeForbiddenHost   = "forbidden_host"
-	CodeNotFound        = "not_found"
+	// CodeForbiddenScope: an API token without the route's scope
+	// (vscode-extension §4.1), or a cookie session on the one token-only
+	// route (DELETE /api/auth/token). Not a 401: the credential is good,
+	// and a client keeps it.
+	CodeForbiddenScope = "forbidden_scope"
+	CodeNotFound       = "not_found"
 	// CodeMethodNotAllowed is a declared path under a method it does not take.
 	// Distinct from bad_request, which means the body or query was wrong: a
 	// 405 is a client bug in which route it called, not in what it sent.
