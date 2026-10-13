@@ -131,10 +131,17 @@ jobs:
         env:
           TAG: ${{ needs.release-please.outputs.tag }}
         run: |
-          if ! { [ -f extension/package.json ] && jq -e '.scripts.package' extension/package.json >/dev/null; }; then
-            echo "$TAG predates the VS Code extension's .vsix: uploading without it"
-            exit 0
-          fi
+          # Only a tag that truly has no package script skips: a missing jq
+          # or an unreadable package.json fails the job rather than shipping
+          # a release without the .vsix.
+          command -v jq >/dev/null || { echo "jq is not installed: cannot tell whether $TAG packages the extension" >&2; exit 1; }
+          rc=1
+          if [ -f extension/package.json ]; then jq -e '.scripts.package' extension/package.json >/dev/null && rc=0 || rc=$?; fi
+          case $rc in
+            0) ;;
+            1) echo "$TAG predates the VS Code extension's .vsix: uploading without it"; exit 0 ;;
+            *) echo "cannot read extension/package.json (jq exit $rc)" >&2; exit 1 ;;
+          esac
           cd extension
           npm ci
           [ "v$(jq -r .version package.json)" = "$TAG" ] || { echo "extension/package.json is not $TAG" >&2; exit 1; }
@@ -198,7 +205,11 @@ jobs:
           # A tag that predates the extension's packaging has no .vsix to verify.
           want="SHA256SUMS drydock_linux_amd64.tar.gz install.sh "
           vsix=""
-          if [ -f .tag/extension/package.json ] && jq -e '.scripts.package' .tag/extension/package.json >/dev/null; then
+          command -v jq >/dev/null || { echo "jq is not installed: cannot tell whether $TAG packages the extension" >&2; exit 1; }
+          rc=1
+          if [ -f .tag/extension/package.json ]; then jq -e '.scripts.package' .tag/extension/package.json >/dev/null && rc=0 || rc=$?; fi
+          [ "$rc" -le 1 ] || { echo "cannot read .tag/extension/package.json (jq exit $rc)" >&2; exit 1; }
+          if [ "$rc" = 0 ]; then
             want="SHA256SUMS drydock-vscode.vsix drydock_linux_amd64.tar.gz install.sh "
             vsix=1
             echo "VSIX=1" >>"$GITHUB_ENV"
@@ -208,8 +219,8 @@ jobs:
           cd "$RUNNER_TEMP/assets"
           # Exactly the fixed names the README, the installer and the
           # extension's update path use.
-          [ "$(ls | LC_ALL=C sort | tr '\n' ' ')" = "$want" ] ||
-            { echo "unexpected assets: $(ls)" >&2; exit 1; }
+          got=$(find . -mindepth 1 -maxdepth 1 -printf '%P\n' | LC_ALL=C sort | tr '\n' ' ')
+          [ "$got" = "$want" ] || { echo "unexpected assets: $got" >&2; exit 1; }
           sha256sum -c SHA256SUMS
           if [ -n "$vsix" ]; then grep -q "  drydock-vscode.vsix\$" SHA256SUMS; fi
           grep -qx "RELEASE_VERSION=\"$TAG\"" install.sh

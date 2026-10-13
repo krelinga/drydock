@@ -3,7 +3,7 @@
 // laptop (rule 1), and that only a release version is ever installed.
 
 import { describe, expect, it } from 'vitest'
-import { OWN_VERSION, RELOAD, installLabel, installMatching, versionNotice, type Updater } from './update'
+import { OWN_VERSION, RELOAD, installLabel, installMatching, offerVersion, versionNotice, type Updater } from './update'
 import { FakeWindow, MemoryLog, ScriptedPrompter } from '../test/fakes'
 import { ELSEWHERE } from './windowRule'
 import { clone } from './flows'
@@ -47,10 +47,51 @@ describe('versionNotice', () => {
   })
 })
 
+class MemoryDismissals {
+  constructor(public value?: string) {}
+  get() {
+    return this.value
+  }
+  async set(v: string) {
+    this.value = v
+  }
+}
+
+describe('offerVersion', () => {
+  it('a container window refusing the install is not remembered as a dismissal; the operator letting it be is (control)', async () => {
+    const refused = new MemoryDismissals()
+    const inContainer = deps('attached-container', (_t, a) => a[0])
+    expect(await offerVersion(inContainer, meta('v9.9.9'), refused, 'v1.0.0')).toBe('refused')
+    expect(inContainer.updater.installed).toEqual([])
+    expect(refused.value).toBeUndefined()
+    // So the next (local) window still offers it, and installs on the word.
+    const local = deps(undefined, (_t, a) => a[0])
+    expect(await offerVersion(local, meta('v9.9.9'), refused, 'v1.0.0')).toBe('installed')
+    expect(local.updater.installed).toEqual(['v9.9.9'])
+    expect(refused.value).toBeUndefined()
+
+    const letBe = new MemoryDismissals()
+    expect(await offerVersion(deps(undefined, () => undefined), meta('v9.9.9'), letBe, 'v1.0.0')).toBe('dismissed')
+    expect(letBe.value).toBe('v9.9.9')
+    const again = deps(undefined, (_t, a) => a[0])
+    expect(await offerVersion(again, meta('v9.9.9'), letBe, 'v1.0.0')).toBeNull()
+    expect(again.prompter.shown).toEqual([])
+  })
+
+  it('says nothing for a skew that is not ok (null meta) or the same release', async () => {
+    const store = new MemoryDismissals()
+    const d = deps(undefined, (_t, a) => a[0])
+    expect(await offerVersion(d, null, store, 'v1.0.0')).toBeNull()
+    expect(await offerVersion(d, meta('v1.0.0'), store, 'v1.0.0')).toBeNull()
+    expect(d.prompter.shown).toEqual([])
+    expect(store.value).toBeUndefined()
+  })
+})
+
 describe('installMatching', () => {
   it('installs the server\'s release when the operator asks, and offers a reload', async () => {
     const d = deps(undefined, (_t, a) => a[0])
-    expect(await installMatching(d, 'v9.9.9', 'Newer.')).toBe(true)
+    expect(await installMatching(d, 'v9.9.9', 'Newer.')).toBe('installed')
     expect(d.prompter.shown[0]!.actions).toEqual([installLabel('v9.9.9')])
     expect(d.updater.installed).toEqual(['v9.9.9'])
     expect(d.prompter.shown.at(-1)!.actions).toEqual([RELOAD])
@@ -59,13 +100,13 @@ describe('installMatching', () => {
 
   it('declined, it installs nothing (control for the above)', async () => {
     const d = deps(undefined, () => undefined)
-    expect(await installMatching(d, 'v9.9.9', 'Newer.')).toBe(false)
+    expect(await installMatching(d, 'v9.9.9', 'Newer.')).toBe('dismissed')
     expect(d.updater.installed).toEqual([])
   })
 
   it('from a container window it installs nothing and says why (§8 rule 1)', async () => {
     const d = deps('attached-container', (_t, a) => a[0])
-    expect(await installMatching(d, 'v9.9.9', 'Newer.')).toBe(false)
+    expect(await installMatching(d, 'v9.9.9', 'Newer.')).toBe('refused')
     expect(d.updater.installed).toEqual([])
     expect(d.prompter.shown.map((s) => s.text)).toContain(ELSEWHERE)
   })
@@ -73,7 +114,7 @@ describe('installMatching', () => {
   it('a version that is not a release offers no install at all', async () => {
     for (const v of ['dev', 'v1.2', 'v1.2.3/../../x', 'latest']) {
       const d = deps(undefined, (_t, a) => a[0])
-      expect(await installMatching(d, v, 'Newer.')).toBe(false)
+      expect(await installMatching(d, v, 'Newer.')).toBe('dismissed')
       expect(d.prompter.shown[0]!.actions).toEqual([])
       expect(d.updater.installed).toEqual([])
     }

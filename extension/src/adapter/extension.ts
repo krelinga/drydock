@@ -16,7 +16,7 @@ import type { Clock, Extensions, Log, Opener, Prompter, Secrets, Settings, Windo
 import { Live } from '../live'
 import { cloneCommand, connectCommand, go, openInDrydock, refreshRepositories, type FlowDeps } from '../flows'
 import { statusView } from '../status'
-import { installMatching, versionNotice, type Updater } from '../update'
+import { offerVersion, type Updater } from '../update'
 import { downloadRelease, removeDownload } from '../node/update'
 import { Reviews, SCHEME, approve, decline, idOfURI, reviewApproval, type DocumentsPort, type ReviewDeps } from '../review'
 import { repositoryNodes, workspaceNodes, type TreeNode } from '../tree'
@@ -233,12 +233,12 @@ export function activate(context: vscode.ExtensionContext): Seam | undefined {
   context.subscriptions.push({ dispose: live.onChange(() => {
     if (noticed || live.meta === null) return
     noticed = true
-    const version = live.meta.version
-    const text = live.skew()?.kind === 'ok' ? versionNotice(live.meta, undefined, context.globalState.get<string>(DISMISSED)) : null
-    if (text === null) return
-    void installMatching({ prompter, window, log, updater }, version, text, 'info').then(async (installed) => {
-      if (!installed) await context.globalState.update(DISMISSED, version)
-    }, (e: unknown) => log.warn(`update: ${String(e)}`))
+    const dismissals = {
+      get: () => context.globalState.get<string>(DISMISSED),
+      set: async (v: string) => { await context.globalState.update(DISMISSED, v) },
+    }
+    const meta = live.skew()?.kind === 'ok' ? live.meta : null
+    offerVersion({ prompter, window, log, updater }, meta, dismissals).catch((e: unknown) => log.warn(`update: ${String(e)}`))
   }) })
 
   const tick = setInterval(render, 2_000)
