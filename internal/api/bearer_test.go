@@ -364,3 +364,87 @@ func TestStoreFailureIsNot401(t *testing.T) {
 		t.Errorf("a revoked token = %d; want 401", rec.Code)
 	}
 }
+
+// TestSessionStoreFailureIsNot401 is TestStoreFailureIsNot401 for the
+// cookie: a 401 is what sends the web UI to /signin, so a session store
+// Drydock cannot read answers 503 unavailable with Retry-After on every door
+// a cookie comes through — a route, a navigation (AuthRedirect, which would
+// otherwise bounce to the sign-in page) and an undeclared path — and a
+// failed slide is best-effort. The controls: the cookie passes before the
+// failures and after the store recovers, and a revoked cookie is still 401
+// (and still a redirect to sign in on a navigation).
+func TestSessionStoreFailureIsNot401(t *testing.T) {
+	b := newBearerRig(t)
+	cookie, sess, err := b.svc.Sessions.Create(context.Background(), "Mac Firefox", "192.0.2.1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	mux := Build(MuxAPI, b.gate, MetaRoutes{}.Handlers())
+	front := Unrouted(b.gate, mux)
+	get := func(path string) *httptest.ResponseRecorder {
+		r := httptest.NewRequest("GET", "https://drydock.example.com"+path, nil)
+		r.Host = "drydock.example.com"
+		r.AddCookie(&http.Cookie{Name: auth.CookieName, Value: cookie})
+		rec := httptest.NewRecorder()
+		front.ServeHTTP(rec, r)
+		return rec
+	}
+	// What each door answers a cookie that got through auth: the route,
+	// the navigation's nil handler (501, after auth), the undeclared 404.
+	passed := map[string]int{
+		"/api/meta":          http.StatusOK,
+		"/preview/authorize": http.StatusNotImplemented,
+		"/api/no-such-route": http.StatusNotFound,
+	}
+	check := func(when string) {
+		t.Helper()
+		for path, want := range passed {
+			if rec := get(path); rec.Code != want {
+				t.Errorf("%s: %s = %d; want %d", when, path, rec.Code, want)
+			}
+		}
+	}
+	check("control")
+
+	// The slide fails; the request does not.
+	db := b.svc.DB
+	if _, err := db.Exec(`CREATE TRIGGER no_slide BEFORE UPDATE OF last_seen_at ON auth_session BEGIN SELECT RAISE(ABORT, 'busy'); END`); err != nil {
+		t.Fatal(err)
+	}
+	b.clock.Advance(time.Minute)
+	check("a failed slide")
+	if _, err := db.Exec(`DROP TRIGGER no_slide`); err != nil {
+		t.Fatal(err)
+	}
+
+	// The read fails: 503 with Retry-After at every door, never 401 or a
+	// redirect to sign in.
+	if _, err := db.Exec(`ALTER TABLE auth_session RENAME TO auth_session_gone`); err != nil {
+		t.Fatal(err)
+	}
+	for path := range passed {
+		rec := get(path)
+		if rec.Code != http.StatusServiceUnavailable || errCodeOf(rec) != CodeUnavailable || rec.Header().Get("Retry-After") == "" {
+			t.Errorf("a failed read: %s = %d %q %s; want 503 unavailable with Retry-After", path, rec.Code, rec.Header().Get("Location"), rec.Body)
+		}
+	}
+	if _, err := db.Exec(`ALTER TABLE auth_session_gone RENAME TO auth_session`); err != nil {
+		t.Fatal(err)
+	}
+	check("the store recovered")
+
+	// Control: a bad cookie is still 401, and a navigation still goes to
+	// sign in.
+	if err := b.svc.Sessions.Revoke(context.Background(), sess.ID); err != nil {
+		t.Fatal(err)
+	}
+	if rec := get("/api/meta"); rec.Code != http.StatusUnauthorized || errCodeOf(rec) != CodeUnauthenticated {
+		t.Errorf("a revoked cookie = %d %s; want 401", rec.Code, rec.Body)
+	}
+	if rec := get("/api/no-such-route"); rec.Code != http.StatusUnauthorized {
+		t.Errorf("a revoked cookie on an undeclared path = %d; want 401", rec.Code)
+	}
+	if rec := get("/preview/authorize"); rec.Code != http.StatusFound || !strings.HasPrefix(rec.Header().Get("Location"), "/signin?") {
+		t.Errorf("a revoked cookie's navigation = %d %q; want 302 to /signin", rec.Code, rec.Header().Get("Location"))
+	}
+}

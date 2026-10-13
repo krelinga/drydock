@@ -75,10 +75,13 @@ func WithCredential(r *http.Request, c auth.Credential) *http.Request {
 // SHA-256. A request carrying the cookie and any Authorization header at all,
 // whatever its scheme, is refused — an ambiguous request is not one to give
 // the benefit of the doubt, as two Origin headers are not — and so are two
-// Authorization headers. Any failure — none, unknown, expired, revoked, the
-// store erroring — is "not signed in": the gate fails closed and never says
-// which. A bearer lookup is not a sign-in attempt and never counts toward
-// the lockout.
+// Authorization headers. Any bad credential — none, unknown, expired,
+// revoked — is "not signed in": the gate fails closed and never says which.
+// The store erroring fails closed too, but is no verdict on the credential:
+// the request is marked (AuthUnavailable) and answered 503 with Retry-After,
+// for a cookie as for a token, because a 401 is what sends the web UI to
+// /signin and a client to forget its token. A bearer lookup is not a sign-in
+// attempt and never counts toward the lockout.
 func (g SessionGate) Authenticate(r *http.Request) (*http.Request, bool) {
 	authz := r.Header.Values("Authorization")
 	c, cookieErr := r.Cookie(auth.CookieName)
@@ -103,8 +106,11 @@ func (g SessionGate) Authenticate(r *http.Request) (*http.Request, bool) {
 		return r, false
 	}
 	s, err := g.Sessions.Lookup(r.Context(), c.Value)
-	if err != nil {
+	if errors.Is(err, auth.ErrNoSession) {
 		return r, false
+	}
+	if err != nil {
+		return markUnavailable(r), false
 	}
 	r = r.WithContext(context.WithValue(r.Context(), sessionKey{}, s))
 	return WithCredential(r, auth.SessionCredential(s)), true

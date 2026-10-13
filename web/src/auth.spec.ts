@@ -45,6 +45,49 @@ describe('boot', () => {
   })
 })
 
+// What the server answers when it cannot read its session store (a busy
+// database): 503 unavailable with Retry-After, never the 401 that signs out.
+const STORE_BUSY = () =>
+  HttpResponse.json(
+    { error: { code: 'unavailable', message: 'Drydock could not check this credential just now. Try again.' } },
+    { status: 503, headers: { 'Retry-After': '5' } },
+  )
+
+describe('a session store Drydock cannot read', () => {
+  it('a 503 boot probe is "did not answer", not a trip to /signin', async () => {
+    const b = freshBackend({ signedIn: true })
+    server.use(http.get('/api/auth/session', STORE_BUSY))
+    const { router, wrapper } = await mountApp('/settings')
+    expect(router.currentRoute.value.name).toBe('settings')
+    expect(useSessionStore().status).not.toBe('signed-out')
+    expect(wrapper.text()).toContain('Drydock is busy')
+    // Control: once the store answers, Try again brings the page back.
+    server.resetHandlers(...handlersFor(b))
+    await wrapper.find('button').trigger('click')
+    await settle()
+    expect(wrapper.findAll('[data-test="device"]').length).toBe(3)
+  })
+
+  it('a 503 mid-use keeps the session and the data on screen', async () => {
+    const b = freshBackend({ signedIn: true })
+    const { router, wrapper, pinia } = await mountApp('/settings')
+    const session = useSessionStore(pinia)
+    server.use(http.get('/api/no-such-route', STORE_BUSY))
+    await get('/api/no-such-route').catch(() => undefined)
+    await settle()
+    expect(router.currentRoute.value.fullPath).toBe('/settings')
+    expect(session.status).toBe('signed-in')
+    expect(wrapper.findAll('[data-test="device"]').length).toBe(3)
+    // Control: the same request answered 401 does sign out.
+    server.resetHandlers(...handlersFor(b))
+    b.signedIn = false
+    await get('/api/no-such-route').catch(() => undefined)
+    await settle()
+    expect(session.status).toBe('signed-out')
+    expect(router.currentRoute.value.name).toBe('signin')
+  })
+})
+
 describe('a session that lapses mid-use', () => {
   it('clears entity state and lands on /signin with return, not on stale data', async () => {
     const b = freshBackend({ signedIn: true })

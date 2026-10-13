@@ -39,7 +39,7 @@
 
 import { execFileSync, spawn, type ChildProcess } from 'node:child_process'
 import { createHash, randomBytes } from 'node:crypto'
-import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import http from 'node:http'
 import net from 'node:net'
 import { networkInterfaces, tmpdir, userInfo } from 'node:os'
@@ -411,6 +411,22 @@ function tlsAnswers(port: number): Promise<boolean> {
 }
 
 /** Reads the certificate a listener presents for `servername`. */
+/**
+ * Every regular file under dir, recursively: what a sweep of the stack's root
+ * reads — Caddy's log, Drydock's log (its stdout and stderr: the journal, in
+ * production), the database and its WAL, the stand-in docker's argv log.
+ */
+export function filesUnder(dir: string): string[] {
+  const out: string[] = []
+  for (const name of readdirSync(dir)) {
+    const p = path.join(dir, name)
+    const st = statSync(p, { throwIfNoEntry: false })
+    if (st?.isDirectory()) out.push(...filesUnder(p))
+    else if (st?.isFile()) out.push(p)
+  }
+  return out
+}
+
 export function presentedCert(port: number, servername: string): Promise<tls.PeerCertificate> {
   return new Promise((resolve, reject) => {
     const s = tls.connect({ host: '127.0.0.1', port, servername, rejectUnauthorized: false }, () => {

@@ -10,23 +10,11 @@
 // request body, is typed into the PTY, and is in nothing the stack writes or
 // any URL a request carried.
 
-import { readdirSync, readFileSync, statSync } from 'node:fs'
+import { readFileSync } from 'node:fs'
 import { createHash } from 'node:crypto'
 import path from 'node:path'
-import { UI } from './harness'
+import { filesUnder, UI } from './harness'
 import { expect, test } from './fixtures'
-
-/** Every regular file under dir, recursively. */
-function files(dir: string): string[] {
-  const out: string[] = []
-  for (const name of readdirSync(dir)) {
-    const p = path.join(dir, name)
-    const st = statSync(p, { throwIfNoEntry: false })
-    if (st?.isDirectory()) out.push(...files(p))
-    else if (st?.isFile()) out.push(p)
-  }
-  return out
-}
 
 test('the login handshake survives a reload, and the code reaches the PTY and nothing else', async ({ signedIn: page, stack }) => {
   await page.goto(`${UI}/settings#claude`)
@@ -77,7 +65,7 @@ test('the login handshake survives a reload, and the code reaches the PTY and no
   // database and its WAL, the stand-in docker's argv log — every URL any
   // request carried, and the page as it stands.
   const [code, state] = stack.loginCode.split('#') as [string, string]
-  const written = files(stack.root)
+  const written = filesUnder(stack.root)
   expect(written.some((f) => f.endsWith('drydock.db'))).toBe(true) // control: the sweep sees the store
   for (const part of [stack.loginCode, code, state]) {
     for (const f of written) {
