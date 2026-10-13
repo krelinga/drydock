@@ -9,15 +9,18 @@
 #   test/ansible/live.sh           # needs ansible-core, community.docker, Docker allowing --privileged
 #   KEEP=1 test/ansible/live.sh    # leave the container up to poke at
 #
-# What it runs: a first install, a no-op re-run (changed=0), an upgrade (with
+# What it runs: a first install (the workspace root mounted nosuid,nodev
+# before the installer sees it), a no-op re-run (changed=0), an upgrade (with
 # the database backup), another no-op, an App key rotation, and a master-key
 # backup that refuses to be overwritten by a different key, then the move to a
 # vaulted secrets master key: the installed key vaulted (changed=0), a new one
 # while no secret is stored (replaced), and another once one is (refused) —
 # also on a run that moves the release, which must leave the old binary
-# running — and last the run after an interrupted upgrade, which must back up
+# running — then the run after an interrupted upgrade, which must back up
 # the database and restart onto the installed binary though `drydock version`
-# already reads the new release.
+# already reads the new release; and last the workspace root's mount check
+# (runbook §3.5): an opted-out root without nosuid,nodev, another filesystem's
+# fstab entry, and a self-bind line without nodev each fail the play.
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 root=$(cd "$here/../.." && pwd)
@@ -139,6 +142,11 @@ check "and its only complaint is the fake App key" bash -c "! docker exec $name 
 check "the master key was backed up, 0400" [ "$(stat -c %a "$work/backup/secrets.key")" = 400 ]
 check "and is the server's key" [ "$(sha256sum <"$work/backup/secrets.key")" = "$(in_server cat /etc/drydock/secrets.key | sha256sum)" ]
 check "in a 0700 directory" [ "$(stat -c %a "$work/backup")" = 700 ]
+check "the workspace root is mounted nosuid,nodev (runbook §3.5)" bash -c "docker exec $name findmnt -n -o OPTIONS --mountpoint /srv/drydock/ws | grep -q 'nosuid,nodev'"
+check "and the fstab line is the runbook's" in_server grep -qx '/srv/drydock/ws /srv/drydock/ws none bind,nosuid,nodev 0 0' /etc/fstab
+check "so the installer had nothing to warn about" bash -c "! grep -q 'is not mounted' \"\$1\"" _ "$work/run1.log"
+check "control: the installer's output is in the log" grep -q "installed Drydock v0.0.1" "$work/run1.log"
+check "the workspace root is drydock's, 0700" [ "$(in_server stat -c '%U %a' /srv/drydock/ws)" = "drydock 700" ]
 
 play
 check "a re-run succeeds" [ "$rc" = 0 ]
@@ -268,6 +276,49 @@ b=$(backups)
 play "${KEYSRC4[@]}"
 check "control: the next run changes nothing" [ "$changed" = 0 ]
 check "and backs up nothing" [ "$(backups)" = "$b" ]
+
+# The workspace root's check (runbook §3.5): the play fails on a live mount
+# without nosuid,nodev whatever drydock_ws_bind_mount says, never appends a
+# second fstab entry over another filesystem's, and never rewrites an existing
+# self-bind line. Each refusal beside the same run passing.
+LINE='/srv/drydock/ws /srv/drydock/ws none bind,nosuid,nodev 0 0'
+ws_opts() { in_server findmnt -n -o OPTIONS --mountpoint /srv/drydock/ws; }
+ws_entries() { in_server grep -c ' /srv/drydock/ws ' /etc/fstab; }
+# set_ws_line LINE: fstab's one entry for the root becomes LINE.
+set_ws_line() {
+	in_server sh -c "grep -v ' /srv/drydock/ws ' /etc/fstab >/etc/fstab.t; echo '$1' >>/etc/fstab.t; cat /etc/fstab.t >/etc/fstab; rm /etc/fstab.t"
+}
+in_server umount /srv/drydock/ws
+play "${KEYSRC4[@]}" -e drydock_ws_bind_mount=false
+n=$run
+check "opted out with the root not mounted nosuid,nodev, the play fails" [ "$rc" != 0 ]
+check "at the mount check" grep -q "/srv/drydock/ws is not mounted nosuid,nodev" "$work/run$n.log"
+play "${KEYSRC4[@]}"
+check "control: opted in, the play mounts it again and passes" [ "$rc" = 0 ]
+check "the root is nosuid,nodev again" grep -q 'nosuid,nodev' <<<"$(ws_opts)"
+
+set_ws_line 'tmpfs /srv/drydock/ws tmpfs defaults 0 0'
+check "control: fstab now mounts another filesystem there" in_server grep -qx 'tmpfs /srv/drydock/ws tmpfs defaults 0 0' /etc/fstab
+play "${KEYSRC4[@]}"
+n=$run
+check "over another filesystem's entry, the play fails" [ "$rc" != 0 ]
+check "saying which" grep -q "already mounts tmpfs at" "$work/run$n.log"
+check "and fstab still has one entry for the root" [ "$(ws_entries)" = 1 ]
+
+set_ws_line '/srv/drydock/ws /srv/drydock/ws none bind,nosuid 0 0'
+in_server mount -o remount,bind,nosuid /srv/drydock/ws
+check "control: the root is now mounted without nodev" bash -c "! grep -q nodev <<<\"\$1\"" _ "$(ws_opts)"
+play "${KEYSRC4[@]}"
+n=$run
+check "a self-bind line without nodev fails the play" [ "$rc" != 0 ]
+check "at the mount check" grep -q "/srv/drydock/ws is not mounted nosuid,nodev" "$work/run$n.log"
+check "and the operator's line was left as it was" in_server grep -qx '/srv/drydock/ws /srv/drydock/ws none bind,nosuid 0 0' /etc/fstab
+set_ws_line "$LINE"
+in_server mount -o remount,bind,nosuid,nodev /srv/drydock/ws
+play "${KEYSRC4[@]}"
+check "control: fixed by hand, the play passes" [ "$rc" = 0 ]
+check "and changes nothing" [ "$changed" = 0 ]
+check "with one fstab entry for the root" [ "$(ws_entries)" = 1 ]
 
 # No key's bytes in any run's output, raw (searched as hex) or encoded.
 cat "$work"/run*.log >"$work/all-runs.log"

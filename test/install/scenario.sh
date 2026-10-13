@@ -91,6 +91,9 @@ section "first install"
 install v0.0.1 --ui-host "$UI" --cert /etc/ssl/drydock/ui.pem --key /etc/ssl/drydock/ui.key --ca-cert "$CA"
 check "it succeeds (and its own end-to-end 401 check passed)" [ "$rc" = 0 ] || printf '%s\n' "$out"
 check "it reports a fresh install" grep -q "installed Drydock v0.0.1" <<<"$out"
+# This container's /srv is plain overlay: no nosuid, no nodev. Said, not refused.
+check "it warns that the workspace root is not mounted nosuid,nodev" \
+	grep -qF "warning: /srv/drydock/ws is not mounted nosuid,nodev:" <<<"$out"
 # The re-run below passes no flags and still passes its check: that is the
 # proof this is read back, since this host does not trust the test CA.
 check "the CA certificate's path is kept for later runs" grep -qx "DRYDOCK_CA_CERT=$CA" /etc/drydock/drydock.env
@@ -211,6 +214,34 @@ check "caddy was not restarted" [ "$(mainpid caddy)" = "$pid_c" ]
 # passwd would end every session, so a live one is the proof it was not run.
 check "the password was left alone" [ "$(status -b "$jar" "https://$UI/api/auth/session")" = 200 ]
 check "the master key was kept" [ "$(sha256sum "$SK")" = "$key_sum" ]
+
+section "the workspace root's mount"
+# The runbook's §3.5 bind mount of the directory onto itself, applied under a
+# running Drydock: a re-run then has nothing to say about it, and changes
+# nothing. Half of it (nosuid alone) is named as half.
+pid_d=$(mainpid drydock)
+mount -o bind,nosuid /srv/drydock/ws /srv/drydock/ws
+install v0.0.1
+check "with nosuid alone the re-run succeeds" [ "$rc" = 0 ] || printf '%s\n' "$out"
+check "and names only what is missing" grep -qF "warning: /srv/drydock/ws is not mounted nodev:" <<<"$out"
+umount /srv/drydock/ws
+mount -o bind,nosuid,nodev /srv/drydock/ws /srv/drydock/ws
+check "control: the mount is nosuid,nodev" bash -c "findmnt -n -o OPTIONS --target /srv/drydock/ws | grep -q 'nosuid,nodev'"
+install v0.0.1
+check "with nosuid,nodev the re-run succeeds" [ "$rc" = 0 ] || printf '%s\n' "$out"
+check "and says nothing about the mount" bash -c "! grep -q 'is not mounted' <<<\"\$1\"" _ "$out"
+check "it still says it is current" grep -q "v0.0.1 is installed and current" <<<"$out"
+check "drydock was not restarted" [ "$(mainpid drydock)" = "$pid_d" ]
+check "the service can still write the workspace root" in_service touch /srv/drydock/ws/.probe
+rm -f /srv/drydock/ws/.probe
+# What a workspace container gets: a bind of a directory under the root keeps
+# its flags (the image is the one the devcontainer probe above pulled).
+mkdir -p /srv/drydock/ws/.bind
+check "a container's bind mount of a clone is nosuid,nodev too" bash -c \
+	"docker run --rm -v /srv/drydock/ws/.bind:/clone debian:bookworm-slim grep ' /clone ' /proc/self/mountinfo | grep -q 'nosuid,nodev'"
+check "control: one from outside it is not" bash -c \
+	"! docker run --rm -v /opt:/clone debian:bookworm-slim grep ' /clone ' /proc/self/mountinfo | grep -q 'nosuid,nodev'"
+rm -rf /srv/drydock/ws/.bind
 
 section "upgrade"
 install v0.0.2

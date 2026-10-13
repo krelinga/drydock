@@ -68,7 +68,7 @@ drydock-ansible/
     ├── handlers/main.yml
     └── tasks/
         ├── main.yml
-        ├── prerequisites.yml        # §3
+        ├── prerequisites.yml        # §3, §3.5
         ├── firewall.yml             # §3.4, optional
         ├── tls.yml                  # §4.2
         ├── install.yml              # §4.1 + §4.3 + §5 (+ the §10.1 database backup)
@@ -221,6 +221,11 @@ drydock_preview_domain: ""
 # installer is told --no-vscode-ssh-host.
 drydock_vscode_ssh_host: ""
 # drydock_vscode_ssh_host: owner@devbox.lan
+
+# The workspace root is bind-mounted onto itself, nosuid and nodev (runbook
+# §3.5). false only when /srv/drydock/ws is its own filesystem whose fstab
+# entry already says nosuid,nodev.
+# drydock_ws_bind_mount: false
 ```
 
 **The operator password and the private keys go in ansible-vault.** The password is a
@@ -290,6 +295,8 @@ drydock_preview_cert_path: /etc/caddy/certs/preview.crt
 drydock_preview_key_path: /etc/caddy/certs/preview.key
 # The Open in VS Code link, off unless drydock_vscode_ssh_host is set (runbook §8.9).
 drydock_vscode_ssh_host: ""
+# /srv/drydock/ws bind-mounted onto itself, nosuid and nodev (runbook §3.5).
+drydock_ws_bind_mount: true
 ```
 
 ---
@@ -478,6 +485,96 @@ Needs `community.general` ([requirements.yml](#requirements-and-layout)).
     port: "443"
     proto: tcp
     from_ip: "{{ drydock_firewall_lan_cidr }}"
+```
+
+### 3.5 The workspace root: `nosuid` and `nodev`
+
+[Runbook §3.5](first-deployment.md#35-the-workspace-root-nosuid-and-nodev). The same `/etc/fstab`
+line as the runbook: `/srv/drydock/ws` bind-mounted onto itself with `nosuid,nodev`, so a
+setuid-root file or a device node a container leaves in a clone means nothing on the host. It is
+mounted before the installer runs. Set `drydock_ws_bind_mount: false` when `/srv/drydock/ws` is its
+own filesystem, and give that filesystem's own `fstab` entry `nosuid,nodev`.
+
+The installer only *warns* about a missing option, on stderr, which a green play never shows. So
+the play **checks the live mount itself and fails** unless it is `nosuid,nodev`, whatever
+`drydock_ws_bind_mount` says. It never edits an `fstab` entry that is already there:
+
+- With `drydock_ws_bind_mount: true` and an entry that mounts **another filesystem** at
+  `/srv/drydock/ws` (a dedicated LV, say), it fails rather than append a second entry for the same
+  mount point, which systemd refuses at every boot. Add `nosuid,nodev` to that entry, remount it,
+  and set the variable to `false`.
+- An existing self-bind line is left as it is, extra options and all. If it lacks either option,
+  the check fails. Fix the line, and remount with
+  `sudo mount -o remount,bind,nosuid,nodev /srv/drydock/ws`.
+- Setting the variable back to `false` removes nothing: the line stays in `/etc/fstab`, and the
+  check still applies.
+
+On a server that already runs Drydock, the mount goes in under it without a restart. A running
+workspace keeps its old mount until its next **Stop** and **Start**, or **Rebuild**.
+
+```yaml
+# file: roles/drydock/tasks/prerequisites.yml
+- name: Create the workspace root to mount (the installer makes it drydock's, mode unchanged)
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    mode: "{{ item.mode }}"
+  loop:
+    - {path: /srv/drydock, mode: "0755"}
+    - {path: /srv/drydock/ws, mode: "0700"}
+  when: drydock_ws_bind_mount | bool
+
+- name: Read the fstab entries for the workspace root
+  ansible.builtin.command: findmnt --fstab -n -o SOURCE --mountpoint /srv/drydock/ws
+  register: drydock_ws_fstab_sources
+  changed_when: false
+  failed_when: drydock_ws_fstab_sources.rc not in [0, 1]
+
+- name: Refuse to add a bind over another filesystem's entry (runbook §3.5)
+  ansible.builtin.fail:
+    msg: >-
+      /etc/fstab already mounts {{ drydock_ws_fstab_sources.stdout_lines | join(', ') }} at
+      /srv/drydock/ws. Give that entry nosuid,nodev, remount it, and set
+      drydock_ws_bind_mount: false (runbook §3.5).
+  when:
+    - drydock_ws_bind_mount | bool
+    - drydock_ws_fstab_sources.stdout_lines | reject('equalto', '/srv/drydock/ws') | list | length > 0
+
+- name: Bind-mount the workspace root onto itself, nosuid and nodev, at boot (runbook §3.5)
+  ansible.builtin.lineinfile:
+    path: /etc/fstab
+    line: /srv/drydock/ws /srv/drydock/ws none bind,nosuid,nodev 0 0
+    create: true
+    mode: "0644"
+  register: drydock_ws_fstab
+  when:
+    - drydock_ws_bind_mount | bool
+    - drydock_ws_fstab_sources.stdout_lines | length == 0
+
+- name: And now (systemd's unit for the fstab line)
+  ansible.builtin.systemd_service:
+    name: srv-drydock-ws.mount
+    state: started
+    daemon_reload: "{{ drydock_ws_fstab is changed }}"
+  when: drydock_ws_bind_mount | bool
+
+- name: Read the workspace root's live mount options
+  ansible.builtin.command: findmnt -n -o OPTIONS --target /srv/drydock/ws
+  register: drydock_ws_mount
+  changed_when: false
+  failed_when: false
+
+- name: Check the workspace root is mounted nosuid and nodev (runbook §3.5)
+  ansible.builtin.assert:
+    that:
+      - drydock_ws_mount.rc == 0
+      - "'nosuid' in drydock_ws_mount.stdout.split(',')"
+      - "'nodev' in drydock_ws_mount.stdout.split(',')"
+    fail_msg: >-
+      /srv/drydock/ws is not mounted nosuid,nodev (options: {{ drydock_ws_mount.stdout }}).
+      A container writes its clone as root, so a setuid file or device node left there works on
+      this host. See runbook §3.5.
+    quiet: true
 ```
 
 ---

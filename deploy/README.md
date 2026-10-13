@@ -39,6 +39,11 @@ and verifies the release tarball and runs the copy inside; from the tarball it i
   gives the unit `ReadWritePaths=/srv/drydock/ws` and `RuntimeDirectoryPreserve=yes`, so
   `/run/drydock/sock/<id>/`, which running containers mount, survives a restart (`run.sh` checks
   its inode across one).
+- It **warns, and never refuses**, when `/srv/drydock/ws` is not mounted `nosuid,nodev` (runbook
+  §3.5): a container's root writes its clone as host root. The mount is the operator's (an
+  `/etc/fstab` line, or the Ansible play's), so the installer does not touch `/etc/fstab`, and a
+  refusal would break every existing install's no-flag re-run. The warning goes to stderr, never as
+  a `==> ` line, so the Ansible play's `changed` is unaffected.
 - **The secrets master key.** The first install creates `/etc/drydock/secrets.key` (32 bytes of
   `/dev/urandom`, `0400`, `drydock`'s, never printed), or installs the 32-byte file
   `--secrets-key PATH` names (a path, like `--github-app-key`, staged through a temp file in

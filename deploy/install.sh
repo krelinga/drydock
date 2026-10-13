@@ -513,6 +513,33 @@ ensure_workspace_root() {
 	# is; the workspace root inside it is drydock's, 0700, always.
 	[ -d "$(dirname "$WS_ROOT")" ] || install -d -m 0755 -o root -g root "$(dirname "$WS_ROOT")"
 	install -d -m 0700 -o drydock -g drydock "$WS_ROOT"
+	check_workspace_root_mount
+}
+
+# check_workspace_root_mount says, every run, when the filesystem holding the
+# workspace root is not mounted nosuid and nodev (runbook §3.5). A
+# container's root writes its clone as host root, so without them an agent
+# can leave a setuid-root binary or a device node there for a host user to
+# run or open (the root's 0700 keeps other users out today; the mount keeps
+# that true if the mode is ever relaxed). A warning, not a refusal: the mount is the operator's to
+# make, and refusing would break the README's no-flag re-run on every
+# existing install. It prints no `==> ` line, so the Ansible companion's
+# `changed` is unaffected.
+check_workspace_root_mount() {
+	local opts missing="" o
+	if ! command -v findmnt >/dev/null; then
+		warn "cannot check that $WS_ROOT is mounted nosuid,nodev (findmnt not found); see runbook §3.5"
+		return 0
+	fi
+	opts=$(findmnt -n -o OPTIONS --target "$WS_ROOT" 2>/dev/null | tail -n1)
+	for o in nosuid nodev; do
+		case ",$opts," in
+		*",$o,"*) ;;
+		*) missing="${missing:+$missing,}$o" ;;
+		esac
+	done
+	[ -z "$missing" ] ||
+		warn "$WS_ROOT is not mounted $missing: a container writes its clone as root, so a setuid-root file or a device node left there works for any user on this host who can reach it. Mount it nosuid,nodev (runbook §3.5)."
 }
 
 ensure_account() {
