@@ -311,7 +311,8 @@ whose release is not a draft, so it cannot replace a public release's files.
   gh release view --repo krelinga/drydock --json tagName,assets --jq '.tagName, [.assets[].name]'
   curl -fsSL https://github.com/krelinga/drydock/releases/latest/download/install.sh | grep '^RELEASE_VERSION='
   ```
-  The assets must be exactly `SHA256SUMS`, `drydock_linux_amd64.tar.gz` and `install.sh`. The
+  The assets must be exactly `SHA256SUMS`, `drydock-vscode.vsix`, `drydock_linux_amd64.tar.gz` and
+  `install.sh` — or, for a tag older than the VS Code extension, the last three. The
   second command must print `RELEASE_VERSION="vX.Y.Z"`, the tag you resumed. If it prints the
   previous tag, or `curl` fails, the upload has not finished.
 

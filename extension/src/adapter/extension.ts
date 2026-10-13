@@ -17,7 +17,7 @@ import { Live } from '../live'
 import { cloneCommand, connectCommand, go, openInDrydock, refreshRepositories, type FlowDeps } from '../flows'
 import { statusView } from '../status'
 import { installMatching, versionNotice, type Updater } from '../update'
-import { downloadRelease } from '../node/update'
+import { downloadRelease, removeDownload } from '../node/update'
 import { Reviews, SCHEME, approve, decline, idOfURI, reviewApproval, type DocumentsPort, type ReviewDeps } from '../review'
 import { repositoryNodes, workspaceNodes, type TreeNode } from '../tree'
 import { StaleTokenWatch, openInBrowser, signIn, signOut, type SessionDeps } from '../session'
@@ -138,7 +138,12 @@ export function activate(context: vscode.ExtensionContext): Seam | undefined {
   const updater: Updater = {
     install: async (version) => {
       const file = await downloadRelease(version)
-      await vscode.commands.executeCommand('workbench.extensions.installExtension', vscode.Uri.file(file))
+      try {
+        await vscode.commands.executeCommand('workbench.extensions.installExtension', vscode.Uri.file(file))
+      } finally {
+        // VS Code has copied it, or failed to: either way the download goes.
+        removeDownload(file)
+      }
     },
     reload: async () => {
       await vscode.commands.executeCommand('workbench.action.reloadWindow')
@@ -221,12 +226,19 @@ export function activate(context: vscode.ExtensionContext): Seam | undefined {
 
   // One quiet notice per window when this Drydock's release is not this
   // extension's, once the handshake says so (§9.1).
+  // A version let be is remembered per laptop (globalState), so a new
+  // window does not ask again about the same release.
+  const DISMISSED = 'drydock.versionNotice.dismissed'
   let noticed = false
   context.subscriptions.push({ dispose: live.onChange(() => {
     if (noticed || live.meta === null) return
     noticed = true
-    const text = live.skew()?.kind === 'ok' ? versionNotice(live.meta) : null
-    if (text !== null) void installMatching({ prompter, window, log, updater }, live.meta.version, text, 'info').catch((e: unknown) => log.warn(`update: ${String(e)}`))
+    const version = live.meta.version
+    const text = live.skew()?.kind === 'ok' ? versionNotice(live.meta, undefined, context.globalState.get<string>(DISMISSED)) : null
+    if (text === null) return
+    void installMatching({ prompter, window, log, updater }, version, text, 'info').then(async (installed) => {
+      if (!installed) await context.globalState.update(DISMISSED, version)
+    }, (e: unknown) => log.warn(`update: ${String(e)}`))
   }) })
 
   const tick = setInterval(render, 2_000)

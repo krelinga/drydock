@@ -32,14 +32,30 @@ export interface UpdateDeps {
 export const installLabel = (version: string) => `Install the extension for Drydock ${version}`
 export const RELOAD = 'Reload Window'
 
+const parts = (v: string) => v.slice(1).split('.').map(Number)
+
+/** -1, 0 or 1 as release `a` is older than, the same as, or newer than `b`. */
+export function compareReleases(a: string, b: string): number {
+  const x = parts(a)
+  const y = parts(b)
+  for (let i = 0; i < 3; i++) if (x[i] !== y[i]) return x[i]! < y[i]! ? -1 : 1
+  return 0
+}
+
 /**
  * The quiet notice for a server whose release is not this extension's, or
  * null: only when both are release versions and they differ (a `dev` server
- * or extension says nothing; its version builds no URL).
+ * or extension says nothing; its version builds no URL), and not for a
+ * version this VS Code was already told about and let be (`dismissed`, kept
+ * per laptop, so a new window does not ask again). An older server's release
+ * is said to be older: installing it goes back.
  */
-export function versionNotice(meta: Meta | null, own = OWN_VERSION): string | null {
+export function versionNotice(meta: Meta | null, own = OWN_VERSION, dismissed: string | undefined = undefined): string | null {
   if (meta === null || vsixURL(meta.version) === null || vsixURL(own) === null || meta.version === own) return null
-  return `This Drydock is ${meta.version}, and this extension is ${own}.`
+  if (dismissed === meta.version) return null
+  return compareReleases(meta.version, own) < 0
+    ? `This Drydock is ${meta.version}, older than this extension (${own}). Installing its extension goes back to ${meta.version}.`
+    : `This Drydock is ${meta.version}, and this extension is ${own}.`
 }
 
 /** Offers, and on the operator's word installs, the extension matching `version`. Resolves to whether it installed. */

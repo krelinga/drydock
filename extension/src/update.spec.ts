@@ -34,6 +34,11 @@ function deps(remote?: string, answer?: (t: string, a: readonly string[]) => str
 describe('versionNotice', () => {
   it('only when both are releases and they differ', () => {
     expect(versionNotice(meta('v9.9.9'), 'v1.0.0')).toBe('This Drydock is v9.9.9, and this extension is v1.0.0.')
+    expect(versionNotice(meta('v0.9.0'), 'v0.12.0')).toBe('This Drydock is v0.9.0, older than this extension (v0.12.0). Installing its extension goes back to v0.9.0.')
+    expect(versionNotice(meta('v0.12.1'), 'v0.12.0')).toContain('and this extension is v0.12.0')
+    // Already told about this version and let be: not again; another version: yes (control).
+    expect(versionNotice(meta('v9.9.9'), 'v1.0.0', 'v9.9.9')).toBeNull()
+    expect(versionNotice(meta('v9.9.9'), 'v1.0.0', 'v9.9.8')).not.toBeNull()
     expect(versionNotice(meta('v1.0.0'), 'v1.0.0')).toBeNull()
     expect(versionNotice(meta('dev'), 'v1.0.0')).toBeNull()
     expect(versionNotice(meta('v1.0.0'), 'v0.0.0-dev')).toBeNull()

@@ -121,16 +121,20 @@ jobs:
       # The VS Code extension (vscode-extension §9.2): drydock-vscode.vsix,
       # built from the tag with the lock file's toolchain, its version the
       # tag's (release-please's extra-files moved extension/package.json).
-      # SHA256SUMS gains its line; the installer reads only its tarball's.
+      # SHA256SUMS gains its line; the installer reads only its tarball's. A
+      # resumed draft whose tag predates the extension's packaging (no
+      # extension/, or no `package` script) is uploaded without it.
       - uses: actions/setup-node@v5
         with:
           node-version: 24
-          cache: npm
-          cache-dependency-path: extension/package-lock.json
       - name: Package the extension
         env:
           TAG: ${{ needs.release-please.outputs.tag }}
         run: |
+          if ! { [ -f extension/package.json ] && jq -e '.scripts.package' extension/package.json >/dev/null; }; then
+            echo "$TAG predates the VS Code extension's .vsix: uploading without it"
+            exit 0
+          fi
           cd extension
           npm ci
           [ "v$(jq -r .version package.json)" = "$TAG" ] || { echo "extension/package.json is not $TAG" >&2; exit 1; }
@@ -191,19 +195,30 @@ jobs:
           draft=$(gh release view "$TAG" --json isDraft --jq .isDraft)
           [ "$draft" = true ] || { echo "$TAG is not a draft; refusing to verify a release that is already public" >&2; exit 1; }
           gh release download "$TAG" --dir "$RUNNER_TEMP/assets"
+          # A tag that predates the extension's packaging has no .vsix to verify.
+          want="SHA256SUMS drydock_linux_amd64.tar.gz install.sh "
+          vsix=""
+          if [ -f .tag/extension/package.json ] && jq -e '.scripts.package' .tag/extension/package.json >/dev/null; then
+            want="SHA256SUMS drydock-vscode.vsix drydock_linux_amd64.tar.gz install.sh "
+            vsix=1
+            echo "VSIX=1" >>"$GITHUB_ENV"
+          else
+            echo "$TAG predates the VS Code extension's .vsix: verifying the other three"
+          fi
           cd "$RUNNER_TEMP/assets"
-          # Exactly the four fixed names the README, the installer and the
+          # Exactly the fixed names the README, the installer and the
           # extension's update path use.
-          [ "$(ls | LC_ALL=C sort | tr '\n' ' ')" = "SHA256SUMS drydock-vscode.vsix drydock_linux_amd64.tar.gz install.sh " ] ||
+          [ "$(ls | LC_ALL=C sort | tr '\n' ' ')" = "$want" ] ||
             { echo "unexpected assets: $(ls)" >&2; exit 1; }
           sha256sum -c SHA256SUMS
-          grep -q "  drydock-vscode.vsix\$" SHA256SUMS
+          if [ -n "$vsix" ]; then grep -q "  drydock-vscode.vsix\$" SHA256SUMS; fi
           grep -qx "RELEASE_VERSION=\"$TAG\"" install.sh
       # The .vsix says the tag's version, and its manifest passes the
       # extension's manifest contract. No Electron here (that is CI's
       # extension job, on the same commit): an xvfb flake must not hold back
       # a server release, and nothing here claims the build is reproducible.
       - name: Check the extension's .vsix
+        if: env.VSIX == '1'
         env:
           TAG: ${{ needs.release-please.outputs.tag }}
         run: |
@@ -211,6 +226,12 @@ jobs:
           unzip -q "$RUNNER_TEMP/assets/drydock-vscode.vsix" -d "$RUNNER_TEMP/vsix"
           [ "v$(jq -r .version "$RUNNER_TEMP/vsix/extension/package.json")" = "$TAG" ] ||
             { echo "the .vsix is not $TAG" >&2; exit 1; }
+          # A manifest spec that does not read DRYDOCK_MANIFEST would check
+          # the tag's source and pass whatever the .vsix holds: skip it, said.
+          if ! grep -q DRYDOCK_MANIFEST .tag/extension/test/manifest.spec.ts; then
+            echo "$TAG's manifest spec cannot check an unpacked package.json: skipping the manifest contract"
+            exit 0
+          fi
           cd .tag/extension
           npm ci
           DRYDOCK_MANIFEST="$RUNNER_TEMP/vsix/extension/package.json" npx vitest run test/manifest.spec.ts

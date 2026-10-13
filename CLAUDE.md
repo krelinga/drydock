@@ -146,7 +146,8 @@ and only then `publish` makes it public and *Latest*, returning it to a draft if
   workflow file its run started with.
 - When the fix is to the workflow or its test environment (`.github/`, `test/install/`), merge it as
   `ci:` and resume the draft: `gh workflow run release-please.yml --ref main -f tag=vX.Y.Z`. Fix
-  forward with a `fix:` when the code is wrong.
+  forward with a `fix:` when the code is wrong. A resumed tag older than the extension's packaging
+  is uploaded and verified without `drydock-vscode.vsix` (both jobs say so in their log).
 - The release PR gets no CI (a `GITHUB_TOKEN`-opened PR triggers no workflows), so it merges only with
   an admin bypass of the ruleset — the owner's decision. Agents never merge with `--admin`.
 - The repo setting *Allow GitHub Actions to create and approve pull requests* must be on.
