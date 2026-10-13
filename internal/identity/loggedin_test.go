@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"testing"
 	"time"
+
+	"github.com/krelinga/drydock/internal/events"
 )
 
 // TestLoggedInRecordsTheHandshakesMoment: a login the handshake reports is
@@ -36,7 +38,7 @@ func TestLoggedInRecordsTheHandshakesMoment(t *testing.T) {
 	if v.LoggedInAt == nil || !v.LoggedInAt.Equal(at) {
 		t.Errorf("logged_in_at = %v; want the handshake's %v", v.LoggedInAt, at)
 	}
-	if evs := h.events(t)[n:]; len(evs) != 1 || evs[0].Kind != KindIdentity {
+	if evs := h.events(t)[n:]; len(evs) != 1 || evs[0].Kind != events.KindAuthIdentity {
 		t.Errorf("the new moment was not announced: %v", h.kinds(t)[n:])
 	}
 
@@ -98,8 +100,8 @@ func TestLoggedInWaitsOutARunningCheck(t *testing.T) {
 		if err := json.Unmarshal(evs[i].Data, &data); err != nil {
 			t.Fatal(err)
 		}
-		if got := data.Identity.LoggedInAt; evs[i].Kind != KindIdentity || got == nil || !got.Equal(want) {
-			t.Errorf("event %d: %s, logged_in_at %v; want %s with %v", i, evs[i].Kind, got, KindIdentity, want)
+		if got := data.Identity.LoggedInAt; evs[i].Kind != events.KindAuthIdentity || got == nil || !got.Equal(want) {
+			t.Errorf("event %d: %s, logged_in_at %v; want %s with %v", i, evs[i].Kind, got, events.KindAuthIdentity, want)
 		}
 	}
 }

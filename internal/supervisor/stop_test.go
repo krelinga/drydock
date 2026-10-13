@@ -17,6 +17,7 @@ import (
 
 	"github.com/krelinga/drydock/internal/claudetest"
 	"github.com/krelinga/drydock/internal/container"
+	"github.com/krelinga/drydock/internal/events"
 	"github.com/krelinga/drydock/internal/workspace"
 )
 
@@ -181,7 +182,7 @@ func TestRestartKeepsTheEnvironment(t *testing.T) {
 	var said []string
 	for _, ev := range evs { // newest first
 		var d workspace.SupervisorData
-		if ev.Kind == workspace.KindSupervisor && json.Unmarshal(ev.Data, &d) == nil {
+		if ev.Kind == events.KindSupervisorState && json.Unmarshal(ev.Data, &d) == nil {
 			said = append(said, d.State)
 		}
 	}

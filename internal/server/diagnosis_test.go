@@ -57,7 +57,7 @@ func TestDiagnosisOverTheSockets(t *testing.T) {
 		}
 		scans++
 		deadline := time.Now().Add(10 * time.Second)
-		for countKind(t, r, preview.KindPortScanned) < scans {
+		for countKind(t, r, string(events.KindPortScanned)) < scans {
 			if time.Now().After(deadline) {
 				t.Fatal("no port.scanned")
 			}
@@ -122,9 +122,9 @@ func TestDiagnosisOverTheSockets(t *testing.T) {
 		if d.Source == preview.SourceDiscovery {
 			t.Errorf("the activity list carries discovery's %s", ev.Kind)
 		}
-		feed = append(feed, ev.Kind)
+		feed = append(feed, string(ev.Kind))
 	}
-	if !strings.Contains(strings.Join(feed, " "), preview.KindPortEnabled) || countKind(t, r, preview.KindPortScanned) != 4 {
+	if !strings.Contains(strings.Join(feed, " "), string(events.KindPortEnabled)) || countKind(t, r, string(events.KindPortScanned)) != 4 {
 		t.Errorf("the activity list = %v; want port.enabled, with the log keeping discovery's", feed)
 	}
 
@@ -145,7 +145,7 @@ func countKind(t *testing.T, r *running, kind string) int {
 	}
 	n := 0
 	for _, e := range es {
-		if e.WorkspaceID == "wprev" && e.Kind == kind {
+		if e.WorkspaceID == "wprev" && string(e.Kind) == kind {
 			n++
 		}
 	}

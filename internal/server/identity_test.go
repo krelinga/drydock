@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/krelinga/drydock/internal/events"
 	"github.com/krelinga/drydock/internal/identity"
 	"github.com/krelinga/drydock/internal/sys"
 )
@@ -136,9 +137,9 @@ func TestClaudeIdentityEndToEnd(t *testing.T) {
 		var checked, changed int
 		for _, e := range evs {
 			switch e.Kind {
-			case identity.KindChecked:
+			case events.KindAuthIdentityChecked:
 				checked++
-			case identity.KindIdentity:
+			case events.KindAuthIdentity:
 				changed++
 			}
 		}
@@ -147,7 +148,7 @@ func TestClaudeIdentityEndToEnd(t *testing.T) {
 		}
 		if time.Now().After(deadline) {
 			t.Fatalf("after an unchanged requested check: %d %s and %d %s; want 1 and 1",
-				checked, identity.KindChecked, changed, identity.KindIdentity)
+				checked, events.KindAuthIdentityChecked, changed, events.KindAuthIdentity)
 		}
 	}
 	// Once the watch has shut down nothing would answer a check, so the

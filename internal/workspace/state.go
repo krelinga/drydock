@@ -24,7 +24,7 @@
 // history outlives the workspace. It also retires the workspace's forwarded
 // ports (never deletes them: a slug is spent for good) and deletes their
 // preview sessions. A repository row it releases is announced in the same
-// commit as repo.removed (store.KindRepositoriesRemoved, {repository_ids}),
+// commit as repo.removed (events.KindRepoRemoved, {repository_ids}),
 // after workspace.gone: a repo.* event is what makes an open catalog refetch.
 //
 // Annotate sets state_detail without a move (a stuck delete, a failed stop)

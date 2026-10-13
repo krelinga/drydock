@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/krelinga/drydock/internal/events"
 	"github.com/krelinga/drydock/internal/life"
 )
 
@@ -62,8 +63,8 @@ func TestARequestedCheckIsAnsweredWithoutAChange(t *testing.T) {
 	}
 	h.settled(t, "the requested check did not end")
 	evs := h.events(t)[n:]
-	if len(evs) != 1 || evs[0].Kind != KindChecked {
-		t.Fatalf("a requested check with no change wrote %v; want [%s]", h.since(t, n), KindChecked)
+	if len(evs) != 1 || evs[0].Kind != events.KindAuthIdentityChecked {
+		t.Fatalf("a requested check with no change wrote %v; want [%s]", h.since(t, n), events.KindAuthIdentityChecked)
 	}
 	var data struct{ Identity View }
 	if err := json.Unmarshal(evs[0].Data, &data); err != nil {
@@ -80,16 +81,16 @@ func TestARequestedCheckIsAnsweredWithoutAChange(t *testing.T) {
 	h.src.set(nil, nil, nil, nil)
 	h.w.Trigger()
 	h.settled(t, "the requested check did not end")
-	if got := h.since(t, n); strings.Join(got, ",") != KindIdentity {
-		t.Errorf("a requested check that changed the verdict wrote %v; want [%s]", got, KindIdentity)
+	if got := h.since(t, n); strings.Join(got, ",") != string(events.KindAuthIdentity) {
+		t.Errorf("a requested check that changed the verdict wrote %v; want [%s]", got, events.KindAuthIdentity)
 	}
 	// And a requested check that failed: its auth.identity_check_failed.
 	n = len(h.kinds(t))
 	h.src.set(nil, nil, &ReadError{Problem: ProblemDocker, Detail: "x"}, nil)
 	h.w.Trigger()
 	h.settled(t, "the requested check did not end")
-	if got := h.since(t, n); strings.Join(got, ",") != KindCheckFailed {
-		t.Errorf("a requested check that failed wrote %v; want [%s]", got, KindCheckFailed)
+	if got := h.since(t, n); strings.Join(got, ",") != string(events.KindAuthIdentityCheckFailed) {
+		t.Errorf("a requested check that failed wrote %v; want [%s]", got, events.KindAuthIdentityCheckFailed)
 	}
 }
 
@@ -121,8 +122,8 @@ func TestATriggerDuringACheckIsAnsweredByTheNext(t *testing.T) {
 		got := h.since(t, n)
 		reads := h.calls()
 		switch {
-		case trigger && (strings.Join(got, ",") != KindChecked || reads != 3):
-			t.Errorf("a press during a check: events %v, %d reads; want [%s] from a check of its own (3 reads)", got, reads, KindChecked)
+		case trigger && (strings.Join(got, ",") != string(events.KindAuthIdentityChecked) || reads != 3):
+			t.Errorf("a press during a check: events %v, %d reads; want [%s] from a check of its own (3 reads)", got, reads, events.KindAuthIdentityChecked)
 		case !trigger && (len(got) != 0 || reads != 2):
 			t.Errorf("control: the held check with no Trigger: events %v, %d reads; want nothing, and no second check", got, reads)
 		}
@@ -155,11 +156,11 @@ func TestATriggerAfterTheAnnouncementIsStillAnswered(t *testing.T) {
 		}
 		h.settled(t, "the late Trigger's check did not end")
 		got := strings.Join(h.kinds(t), ",")
-		want := KindIdentity
+		want := events.KindAuthIdentity
 		if trigger {
-			want += "," + KindChecked
+			want += "," + events.KindAuthIdentityChecked
 		}
-		if got != want {
+		if got != string(want) {
 			t.Errorf("trigger=%v: events [%s]; want [%s]", trigger, got, want)
 		}
 	}
@@ -214,13 +215,13 @@ func TestACallersContextNeverCutsACheck(t *testing.T) {
 		reads := h.calls()
 		// The handshake's check changed logged_in_at, so it announces; the
 		// press after it finds nothing new and is answered as such.
-		want := KindIdentity
+		want := events.KindAuthIdentity
 		wantReads := 2
 		if trigger {
-			want += "," + KindChecked
+			want += "," + events.KindAuthIdentityChecked
 			wantReads = 3
 		}
-		if strings.Join(got, ",") != want || reads != wantReads {
+		if strings.Join(got, ",") != string(want) || reads != wantReads {
 			t.Errorf("trigger=%v: events %v, %d reads; want [%s], %d reads", trigger, got, reads, want, wantReads)
 		}
 	}
@@ -286,11 +287,11 @@ func TestAnAnswerThatCannotBeStoredIsAFailure(t *testing.T) {
 			h.w.Trigger()
 			h.settled(t, "the requested check did not end")
 			got := strings.Join(h.since(t, n), ",")
-			want := KindChecked
+			want := events.KindAuthIdentityChecked
 			if broken {
-				want = KindCheckFailed
+				want = events.KindAuthIdentityCheckFailed
 			}
-			if got != want {
+			if got != string(want) {
 				t.Errorf("%s, broken=%v: events [%s]; want [%s]", c.name, broken, got, want)
 			}
 		}
@@ -310,8 +311,8 @@ func TestAnAnswerThatCannotBeStoredIsAFailure(t *testing.T) {
 		_, err := h.w.Check(waitCtx(t))
 		got := strings.Join(h.since(t, n), ",")
 		switch {
-		case broken && (got != KindCheckFailed || err == nil):
-			t.Errorf("unrequested, unstorable: events [%s], err %v; want [%s] and an error", got, err, KindCheckFailed)
+		case broken && (got != string(events.KindAuthIdentityCheckFailed) || err == nil):
+			t.Errorf("unrequested, unstorable: events [%s], err %v; want [%s] and an error", got, err, events.KindAuthIdentityCheckFailed)
 		case !broken && (got != "" || err != nil):
 			t.Errorf("control: unrequested, unchanged: events [%s], err %v; want nothing", got, err)
 		}
@@ -377,7 +378,7 @@ func TestAPressSharingARunWithALoginIsAnswered(t *testing.T) {
 			got := strings.Join(h.since(t, n), ",")
 			want := ""
 			if pressed {
-				want = KindChecked
+				want = string(events.KindAuthIdentityChecked)
 			}
 			if got != want {
 				t.Errorf("events [%s]; want [%s]", got, want)

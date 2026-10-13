@@ -366,7 +366,7 @@ func TestAHungReadCostsOneWorkspace(t *testing.T) {
 	es, _ := d.log.Since(context.Background(), 0)
 	verdict := map[string]string{}
 	for _, e := range es {
-		if e.Kind == preview.KindPortScanned {
+		if e.Kind == events.KindPortScanned {
 			var v struct{ Discovery string }
 			json.Unmarshal(e.Data, &v)
 			verdict[e.WorkspaceID] = v.Discovery
@@ -660,13 +660,13 @@ func discoveryVerdicts(t *testing.T, d *discovery) []string {
 	}
 	var out []string
 	for _, e := range es {
-		if e.Kind == preview.KindPortScanned || e.Kind == preview.KindPortDiscovery {
+		if e.Kind == events.KindPortScanned || e.Kind == events.KindPortDiscovery {
 			var v struct{ Discovery, Source string }
 			json.Unmarshal(e.Data, &v)
 			if v.Source != preview.SourceDiscovery || e.Level != events.Info {
 				t.Errorf("%s: source %q, level %q", e.Kind, v.Source, e.Level)
 			}
-			out = append(out, e.Kind+":"+v.Discovery)
+			out = append(out, string(e.Kind)+":"+v.Discovery)
 		}
 	}
 	return out
@@ -690,7 +690,7 @@ func TestRescan(t *testing.T) {
 	for {
 		es, _ := d.log.Since(ctx, 0)
 		if len(es) > 0 {
-			if len(es) != 1 || es[0].Kind != preview.KindPortScanned || es[0].WorkspaceID != "w2" {
+			if len(es) != 1 || es[0].Kind != events.KindPortScanned || es[0].WorkspaceID != "w2" {
 				t.Fatalf("events = %+v; want one port.scanned for w2", es)
 			}
 			break
@@ -729,9 +729,9 @@ func TestDiscoveryEventsNotifyNoOne(t *testing.T) {
 	d := newDiscovery(t)
 	playGolden(t, d)
 	es, _ := d.log.Since(context.Background(), 0)
-	allowed := map[string]bool{"port.added": true, "port.updated": true, "port.retired": true, "port.scanned": true,
+	allowed := map[events.Kind]bool{"port.added": true, "port.updated": true, "port.retired": true, "port.scanned": true,
 		"port.discovery": true}
-	if len(es) < 2 || es[0].Kind != preview.KindPortAdded {
+	if len(es) < 2 || es[0].Kind != events.KindPortAdded {
 		t.Fatalf("events = %+v; want the declaration's port.added, then discovery's", es)
 	}
 	for _, e := range es[1:] { // after the declaration's, which is step 4's
@@ -811,7 +811,7 @@ func TestDiscoveryEventsGolden(t *testing.T) {
 	for _, e := range es[1:] { // after the declaration's port.added, which is step 4's
 		var data map[string]any
 		json.Unmarshal(e.Data, &data)
-		g := goldenEvent{Kind: e.Kind, Level: string(e.Level)}
+		g := goldenEvent{Kind: string(e.Kind), Level: string(e.Level)}
 		for i, n := range after {
 			if e.ID <= n {
 				g.Scan = i + 1

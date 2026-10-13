@@ -16,8 +16,8 @@ import (
 
 	"github.com/krelinga/drydock/internal/api"
 	"github.com/krelinga/drydock/internal/container"
+	"github.com/krelinga/drydock/internal/events"
 	"github.com/krelinga/drydock/internal/github/githubtest"
-	"github.com/krelinga/drydock/internal/provision"
 	"github.com/krelinga/drydock/internal/subproc"
 	"github.com/krelinga/drydock/internal/sys"
 	"github.com/krelinga/drydock/internal/workspace"
@@ -316,15 +316,15 @@ func TestDeleteResumesAtBoot(t *testing.T) {
 	}
 	evs, _ := srv.Events.ForWorkspace(ctx, deleting, 100)
 	// workspace.gone, and with it — the same commit — the delete job's end.
-	if len(evs) < 2 || evs[1].Kind != workspace.KindGone || evs[0].Kind != workspace.KindJob ||
+	if len(evs) < 2 || evs[1].Kind != events.KindWorkspaceGone || evs[0].Kind != events.KindWorkspaceJob ||
 		string(evs[0].Data) != `{"kind":"delete","outcome":"ok"}` {
 		b, _ := json.Marshal(evs)
 		t.Errorf("the last events are not workspace.gone and the delete's end: %s", b)
 	}
 	// The row came in stuck, annotated; the resume cleared that first, on
 	// the stream, before its first sub-step (frontend §4.5 #16).
-	if n := len(evs); n < 2 || evs[n-1].Kind != workspace.KindState ||
-		string(evs[n-1].Data) != `{"from":"deleting","state":"deleting"}` || evs[n-2].Kind != provision.KindAction {
+	if n := len(evs); n < 2 || evs[n-1].Kind != events.KindWorkspaceState ||
+		string(evs[n-1].Data) != `{"from":"deleting","state":"deleting"}` || evs[n-2].Kind != events.KindWorkspaceAction {
 		b, _ := json.Marshal(evs)
 		t.Errorf("the resume did not begin by clearing the stuck note: %s", b)
 	}

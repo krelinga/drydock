@@ -125,7 +125,7 @@ fi
 				ClaudeCodeVersion: e.p.ClaudeCodeVersion, Timeout: time.Minute, Logf: t.Logf,
 				StartSupervisor: func(ctx context.Context, w workspace.Workspace) error {
 					// The supervisor's first event, as Supervisor.Start writes it.
-					ev, err := e.log.Emit(ctx, w.ID, events.Info, workspace.KindSupervisor, "Starting.",
+					ev, err := e.log.Emit(ctx, w.ID, events.Info, events.KindSupervisorState, "Starting.",
 						map[string]any{"state": "starting"})
 					if supervisorEvent == 0 {
 						supervisorEvent = ev.ID
@@ -190,7 +190,7 @@ func (e *env) lastStepEvent(t *testing.T, id string, st workspace.Step) int64 {
 	var n int64
 	err := e.p.Workspaces.DB.QueryRow(`SELECT coalesce(max(id), 0) FROM event
 		WHERE workspace_id = ? AND kind = ? AND json_extract(data, '$.step') = ?`,
-		id, workspace.KindStep, string(st)).Scan(&n)
+		id, events.KindWorkspaceStep, string(st)).Scan(&n)
 	if err != nil {
 		t.Fatal(err)
 	}

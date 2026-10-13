@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/krelinga/drydock/internal/api"
+	"github.com/krelinga/drydock/internal/events"
 	"github.com/krelinga/drydock/internal/preview"
 )
 
@@ -61,7 +62,7 @@ func TestDiscoveryOverTheSockets(t *testing.T) {
 		es, _ := r.srv.Events.Since(context.Background(), 0)
 		n := 0
 		for _, e := range es {
-			if e.Kind == preview.KindPortScanned && e.WorkspaceID == "wdisc" {
+			if e.Kind == events.KindPortScanned && e.WorkspaceID == "wdisc" {
 				n++
 			}
 		}
@@ -102,7 +103,7 @@ func TestDiscoveryOverTheSockets(t *testing.T) {
 	es, _ := r.srv.Events.Since(context.Background(), 0)
 	for _, e := range es {
 		if e.WorkspaceID == "wdisc" {
-			kinds = append(kinds, e.Kind)
+			kinds = append(kinds, string(e.Kind))
 		}
 	}
 	want := []string{"port.scanned", "port.added", "port.added", "port.scanned"}

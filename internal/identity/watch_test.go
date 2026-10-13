@@ -175,7 +175,7 @@ func (h *harness) events(t *testing.T) []events.Event {
 func (h *harness) kinds(t *testing.T) []string {
 	var out []string
 	for _, e := range h.events(t) {
-		out = append(out, e.Kind)
+		out = append(out, string(e.Kind))
 	}
 	return out
 }
@@ -245,8 +245,8 @@ func TestEveryFixtureGetsItsVerdict(t *testing.T) {
 				t.Errorf("last_checked_at = %v; want %v", v.LastCheckedAt, h.clock.Now())
 			}
 			evs := h.events(t)
-			if len(evs) != 1 || evs[0].Kind != KindIdentity {
-				t.Fatalf("events = %v; want one %s", h.kinds(t), KindIdentity)
+			if len(evs) != 1 || evs[0].Kind != events.KindAuthIdentity {
+				t.Fatalf("events = %v; want one %s", h.kinds(t), events.KindAuthIdentity)
 			}
 			var data struct{ Identity View }
 			if err := json.Unmarshal(evs[0].Data, &data); err != nil {
@@ -346,8 +346,8 @@ func TestUnreadableInputKeepsTheStoredState(t *testing.T) {
 			t.Errorf("%s: check_error = %+v", f.name, v.CheckError)
 		}
 		evs := h.events(t)[before:]
-		if len(evs) != 1 || evs[0].Kind != KindCheckFailed || evs[0].Level != events.Warn {
-			t.Errorf("%s: events = %+v; want one %s", f.name, evs, KindCheckFailed)
+		if len(evs) != 1 || evs[0].Kind != events.KindAuthIdentityCheckFailed || evs[0].Level != events.Warn {
+			t.Errorf("%s: events = %+v; want one %s", f.name, evs, events.KindAuthIdentityCheckFailed)
 		}
 	}
 
@@ -383,7 +383,7 @@ func TestRecoveryIsAnnouncedEvenWithoutAChange(t *testing.T) {
 	h.w.Check(ctx)
 	good()
 	good()
-	want := []string{KindIdentity, KindCheckFailed, KindIdentity}
+	want := []string{string(events.KindAuthIdentity), string(events.KindAuthIdentityCheckFailed), string(events.KindAuthIdentity)}
 	if got := h.kinds(t); strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Errorf("events = %v; want %v", got, want)
 	}

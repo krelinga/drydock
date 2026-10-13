@@ -68,7 +68,7 @@ func (f *fixture) stepEvents(t *testing.T, id string) []string {
 	}
 	var out []string
 	for _, e := range all {
-		if e.WorkspaceID != id || e.Kind != KindStep {
+		if e.WorkspaceID != id || e.Kind != events.KindWorkspaceStep {
 			continue
 		}
 		var d struct{ Step, Status string }
@@ -135,7 +135,7 @@ func TestMoveWritesAnEventAndRefusesIllegalMoves(t *testing.T) {
 		t.Fatal(err)
 	}
 	evs, _ := f.events.Since(ctx, before)
-	if len(evs) != 1 || evs[0].Kind != KindState || string(evs[0].Data) != `{"from":"pending","state":"cloning"}` {
+	if len(evs) != 1 || evs[0].Kind != events.KindWorkspaceState || string(evs[0].Data) != `{"from":"pending","state":"cloning"}` {
 		t.Errorf("a move wrote %+v; want one workspace.state event", evs)
 	}
 }
@@ -169,7 +169,7 @@ func TestConcurrentMovesHaveOneWinner(t *testing.T) {
 	all, _ := f.events.Since(ctx, 0)
 	var last string
 	for _, e := range all {
-		if e.Kind == KindState {
+		if e.Kind == events.KindWorkspaceState {
 			var d struct{ State string }
 			json.Unmarshal(e.Data, &d)
 			last = d.State
@@ -212,7 +212,7 @@ func TestStateEventsArePublishedInCommitOrder(t *testing.T) {
 				if !ok {
 					t.Fatal("the subscription was cut off; the test reads too slowly")
 				}
-				if e.Kind == KindState {
+				if e.Kind == events.KindWorkspaceState {
 					var d struct{ State string }
 					json.Unmarshal(e.Data, &d)
 					lastPublished[e.WorkspaceID] = d.State
@@ -343,7 +343,7 @@ func TestRunningCarriesTheContainerID(t *testing.T) {
 			ContainerID string `json:"container_id"`
 		}
 		json.Unmarshal(ev.Data, &d)
-		if ev.Kind == KindState {
+		if ev.Kind == events.KindWorkspaceState {
 			got[d.State] = d.ContainerID
 		}
 	}
@@ -642,22 +642,22 @@ func TestRemoveAnnouncesAReleasedRepository(t *testing.T) {
 		all, _ := f.events.Since(ctx, 0)
 		var out []events.Event
 		for _, e := range all[len(before):] {
-			if e.Kind != KindState {
+			if e.Kind != events.KindWorkspaceState {
 				out = append(out, e)
 			}
 		}
 		return out
 	}
 
-	if got := remove(kept); len(got) != 1 || got[0].Kind != KindGone {
+	if got := remove(kept); len(got) != 1 || got[0].Kind != events.KindWorkspaceGone {
 		t.Errorf("control: removing a workspace of an installed repository wrote %+v; want workspace.gone alone", got)
 	}
 	got := remove(released)
-	if len(got) != 2 || got[0].Kind != KindGone || got[1].Kind != store.KindRepositoriesRemoved ||
+	if len(got) != 2 || got[0].Kind != events.KindWorkspaceGone || got[1].Kind != events.KindRepoRemoved ||
 		got[1].WorkspaceID != "" || string(got[1].Data) != `{"repository_ids":[2]}` {
 		t.Fatalf("removing the released repository's last workspace wrote %+v", got)
 	}
-	if !strings.HasPrefix(got[1].Kind, "repo.") {
+	if !strings.HasPrefix(string(got[1].Kind), "repo.") {
 		t.Errorf("%s is not a repo.* kind, which is what the catalog refetches on", got[1].Kind)
 	}
 	var n int
@@ -686,7 +686,7 @@ func TestAnnotateSetsTheDetailWithoutMoving(t *testing.T) {
 	}
 	all, _ := f.events.Since(ctx, 0)
 	last := all[len(all)-1]
-	if last.Kind != KindState || !strings.Contains(string(last.Data), `"detail":"The delete stopped part-way."`) ||
+	if last.Kind != events.KindWorkspaceState || !strings.Contains(string(last.Data), `"detail":"The delete stopped part-way."`) ||
 		!strings.Contains(string(last.Data), `"state":"deleting"`) {
 		t.Errorf("last event %s %s", last.Kind, last.Data)
 	}
@@ -718,7 +718,7 @@ func TestClearDetailOnlyWhenThereIsOne(t *testing.T) {
 		t.Fatalf("cleared %v, err %v", cleared, err)
 	}
 	all, _ := f.events.Since(ctx, 0)
-	if len(all) != n+1 || all[n].Kind != KindState || string(all[n].Data) != `{"from":"deleting","state":"deleting"}` {
+	if len(all) != n+1 || all[n].Kind != events.KindWorkspaceState || string(all[n].Data) != `{"from":"deleting","state":"deleting"}` {
 		t.Errorf("events after the clear: %+v", all[n:])
 	}
 	if got, _ := f.store.Get(ctx, w.ID); got.State != Deleting || got.StateDetail != "" {
@@ -875,7 +875,7 @@ func TestViewsReadOnlyLiveHistoryAndSkipAMalformedEvent(t *testing.T) {
 	// Malformed rows, as only a bug or a hand edit could write them: the
 	// log's own Append refuses data that is not an object.
 	for _, ws := range []string{gone.ID, live.ID} {
-		for _, kind := range []string{KindStep, KindAction, KindSupervisor} {
+		for _, kind := range []string{string(events.KindWorkspaceStep), string(events.KindWorkspaceAction), string(events.KindSupervisorState)} {
 			if _, err := f.store.DB.ExecContext(ctx,
 				`INSERT INTO event (workspace_id, level, kind, message, data, at) VALUES (?, 'info', ?, 'x', ?, ?)`,
 				ws, kind, `{"step": 7`, "2026-10-04T12:00:00Z"); err != nil {
@@ -940,7 +940,7 @@ func TestViewsReadOnlyLiveHistoryAndSkipAMalformedEvent(t *testing.T) {
 		if ws == gone.ID {
 			t.Errorf("the list's query read the deleted workspace's %s event", kind)
 		}
-		if kind == KindStep && strings.Contains(data.String, `"clone"`) {
+		if kind == string(events.KindWorkspaceStep) && strings.Contains(data.String, `"clone"`) {
 			clones++
 		}
 	}

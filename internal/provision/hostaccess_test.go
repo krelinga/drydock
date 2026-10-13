@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/krelinga/drydock/internal/events"
 	"github.com/krelinga/drydock/internal/workspace"
 )
 
@@ -180,7 +181,7 @@ func TestHostAccessNeedsAnApprovalThatMatches(t *testing.T) {
 	if by != "session-x" || hash != da.Hash {
 		t.Errorf("recorded %q %q", by, hash)
 	}
-	if n := e.kinds(t, d.ID, workspace.KindApproved); n != 1 {
+	if n := e.kinds(t, d.ID, string(events.KindConfigApproved)); n != 1 {
 		t.Errorf("%d config.approved events", n)
 	}
 	// Approving again: nothing is pending.

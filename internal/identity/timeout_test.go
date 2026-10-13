@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/krelinga/drydock/internal/events"
 	"github.com/krelinga/drydock/internal/life"
 	"github.com/krelinga/drydock/internal/subproc"
 )
@@ -115,14 +116,14 @@ func TestAHungReadIsBoundedAndReported(t *testing.T) {
 	}
 	// Await answers with the newest check's result, which may already be
 	// the next one's; the hung check's own verdict is on the stream.
-	if !strings.Contains(strings.Join(h.kinds(t), ","), KindCheckFailed) {
-		t.Fatalf("events %v; want the hung check's %s", h.kinds(t), KindCheckFailed)
+	if !strings.Contains(strings.Join(h.kinds(t), ","), string(events.KindAuthIdentityCheckFailed)) {
+		t.Fatalf("events %v; want the hung check's %s", h.kinds(t), events.KindAuthIdentityCheckFailed)
 	}
 	var data struct {
 		CheckError *CheckError `json:"check_error"`
 	}
 	for _, e := range h.events(t) {
-		if e.Kind == KindCheckFailed {
+		if e.Kind == events.KindAuthIdentityCheckFailed {
 			json.Unmarshal(e.Data, &data)
 		}
 	}
@@ -272,7 +273,7 @@ func TestATriggerInACheckTailGetsACheckOfItsOwn(t *testing.T) {
 	if n := srcReads(src); n != 2 {
 		t.Fatalf("%d credential reads; want 2: a Trigger in a check's tail gets a check of its own", n)
 	}
-	if got := strings.Join(h.kinds(t), ","); got != KindIdentity+","+KindChecked {
+	if got := strings.Join(h.kinds(t), ","); got != string(events.KindAuthIdentity+","+events.KindAuthIdentityChecked) {
 		t.Errorf("events [%s]; want the first check's verdict, then the press's answer", got)
 	}
 

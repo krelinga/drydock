@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/krelinga/drydock/internal/container"
+	"github.com/krelinga/drydock/internal/events"
 	"github.com/krelinga/drydock/internal/reconcile"
 	"github.com/krelinga/drydock/internal/workspace"
 )
@@ -209,7 +210,7 @@ func (e *env) actions(t *testing.T, id string) []string {
 	}
 	var out []string
 	for i := len(evs) - 1; i >= 0; i-- {
-		if evs[i].Kind != KindAction {
+		if evs[i].Kind != events.KindWorkspaceAction {
 			continue
 		}
 		var d struct{ Action, Step, Status string }
@@ -229,7 +230,7 @@ func (e *env) actionDetail(t *testing.T, id, action, step string) string {
 	}
 	for _, ev := range evs { // newest first
 		var d struct{ Action, Step, Status, Detail string }
-		if ev.Kind == KindAction && json.Unmarshal(ev.Data, &d) == nil &&
+		if ev.Kind == events.KindWorkspaceAction && json.Unmarshal(ev.Data, &d) == nil &&
 			d.Action == action && d.Step == step && d.Status != "started" {
 			return d.Detail
 		}
@@ -245,7 +246,7 @@ func (e *env) kinds(t *testing.T, id, kind string) int {
 	}
 	n := 0
 	for _, ev := range evs {
-		if ev.Kind == kind {
+		if string(ev.Kind) == kind {
 			n++
 		}
 	}
@@ -495,9 +496,9 @@ func (e *env) timeline(t *testing.T, id string) []string {
 		var d struct{ State, Detail, Action, Step, Status string }
 		json.Unmarshal(evs[i].Data, &d)
 		switch evs[i].Kind {
-		case workspace.KindState:
+		case events.KindWorkspaceState:
 			out = append(out, "state:"+d.State+"|"+d.Detail)
-		case KindAction:
+		case events.KindWorkspaceAction:
 			out = append(out, "action:"+d.Action+":"+d.Step+":"+d.Status)
 		}
 	}
@@ -666,7 +667,7 @@ func TestDeleteRemovesEverything(t *testing.T) {
 	if got := e.actions(t, v.ID); strings.Join(got, " ") != strings.Join(want, " ") {
 		t.Errorf("actions\n got %v\nwant %v", got, want)
 	}
-	if n := e.kinds(t, v.ID, workspace.KindGone); n != 1 {
+	if n := e.kinds(t, v.ID, string(events.KindWorkspaceGone)); n != 1 {
 		t.Errorf("%d workspace.gone events", n)
 	}
 	if cs := e.containers(t, v.ID); len(cs) != 0 {
@@ -770,10 +771,10 @@ func TestDeleteCancelsARunInFlight(t *testing.T) {
 	for _, ev := range evs {
 		var d struct{ Step, Status, Detail, State string }
 		json.Unmarshal(ev.Data, &d)
-		if ev.Kind == workspace.KindStep && d.Step == "up" && d.Status == "failed" && strings.Contains(d.Detail, "being deleted") {
+		if ev.Kind == events.KindWorkspaceStep && d.Step == "up" && d.Status == "failed" && strings.Contains(d.Detail, "being deleted") {
 			sawCancel = true
 		}
-		if ev.Kind == workspace.KindState && d.State == "running" {
+		if ev.Kind == events.KindWorkspaceState && d.State == "running" {
 			sawRunning = true
 		}
 	}
@@ -987,7 +988,7 @@ func TestDeleteIsResumableAfterEverySubStep(t *testing.T) {
 			if c := b2.closes(); len(c) != 1 || c[0] != v.ID {
 				t.Errorf("the resumed delete closed sockets %v", c)
 			}
-			if n := e.kinds(t, v.ID, workspace.KindGone); n != 1 {
+			if n := e.kinds(t, v.ID, string(events.KindWorkspaceGone)); n != 1 {
 				t.Errorf("%d workspace.gone events", n)
 			}
 			var enabled, sessions int
@@ -1008,7 +1009,7 @@ func TestDeleteIsResumableAfterEverySubStep(t *testing.T) {
 			if err := p2.ResumeDelete(ctx, v.ID); !errors.Is(err, workspace.ErrNotFound) {
 				t.Errorf("a second resume = %v", err)
 			}
-			if n := e.kinds(t, v.ID, workspace.KindGone); n != 1 {
+			if n := e.kinds(t, v.ID, string(events.KindWorkspaceGone)); n != 1 {
 				t.Errorf("%d workspace.gone events after a second boot", n)
 			}
 		})
@@ -1232,7 +1233,7 @@ func TestDeleteFallsBackToTheHelperContainer(t *testing.T) {
 		for _, ev := range evs {
 			var d struct{ Step, Status, Detail string }
 			json.Unmarshal(ev.Data, &d)
-			if ev.Kind == KindAction && d.Step == SubFiles && d.Status != "started" {
+			if ev.Kind == events.KindWorkspaceAction && d.Step == SubFiles && d.Status != "started" {
 				return d.Status + ": " + d.Detail
 			}
 		}
@@ -1382,12 +1383,12 @@ func TestSweepHelpersSkipsAJobInFlight(t *testing.T) {
 	evs, _ := e.log.Since(ctx, 0)
 	var swept int
 	for _, ev := range evs {
-		if ev.Kind == KindHelpersSwept && ev.WorkspaceID == "" && string(ev.Data) == `{"count":1}` {
+		if ev.Kind == events.KindContainerHelpersSwept && ev.WorkspaceID == "" && string(ev.Data) == `{"count":1}` {
 			swept++
 		}
 	}
 	if swept != 1 {
-		t.Errorf("%d %s events with count 1", swept, KindHelpersSwept)
+		t.Errorf("%d %s events with count 1", swept, events.KindContainerHelpersSwept)
 	}
 
 	// Control: the job ends, and the next sweep takes the other.

@@ -36,16 +36,10 @@ import (
 //     global UNIQUE on slug covers retired rows, and a mint that draws a spent
 //     slug draws again rather than reuse it (PF §4, §11).
 
-// Event kinds the registry writes, each on the port's workspace. Every one
-// but port.retired carries the whole port as `data.port`, so the reducer
-// upserts it by id; port.retired carries `data.port_id` and drops it.
-const (
-	KindPortAdded    = "port.added"
-	KindPortEnabled  = "port.enabled"
-	KindPortDisabled = "port.disabled"
-	KindPortUpdated  = "port.updated"
-	KindPortRetired  = "port.retired"
-)
+// The port.* kinds the registry writes (events.KindPort…) are each on the
+// port's workspace. Every one but port.retired carries the whole port as
+// `data.port`, so the reducer upserts it by id; port.retired carries
+// `data.port_id` and drops it.
 
 // MaxPorts bounds a workspace's live rows. A configuration — the container's
 // to write — declares at most MaxDeclared of them; the rest are the
@@ -315,7 +309,7 @@ func (s *Service) Add(ctx context.Context, workspaceID string, spec AddSpec) (Po
 		if out, err = s.port(ctx, tx, workspaceID, id); err != nil {
 			return nil, err
 		}
-		e, err := portEvent(KindPortAdded, out, fmt.Sprintf("Port %d added to the ports list.", out.ContainerPort))
+		e, err := portEvent(events.KindPortAdded, out, fmt.Sprintf("Port %d added to the ports list.", out.ContainerPort))
 		return []events.Event{e}, err
 	})
 	return out, err
@@ -521,14 +515,14 @@ func (s *Service) Update(ctx context.Context, workspaceID, portID string, c Chan
 				return nil, err
 			}
 		}
-		kind := KindPortUpdated
+		kind := events.KindPortUpdated
 		if c.Enabled != nil {
 			if err := set("enabled", *c.Enabled); err != nil {
 				return nil, err
 			}
-			kind = KindPortEnabled
+			kind = events.KindPortEnabled
 			if !*c.Enabled {
-				kind = KindPortDisabled
+				kind = events.KindPortDisabled
 				// The sessions go with the switch, so a re-enable
 				// revives none of them (PF §5).
 				if _, err := tx.ExecContext(ctx, `DELETE FROM preview_session WHERE forwarded_port_id = ?`, cur.ID); err != nil {
@@ -541,12 +535,12 @@ func (s *Service) Update(ctx context.Context, workspaceID, portID string, c Chan
 		}
 		msg := fmt.Sprintf("Port %d updated.", out.ContainerPort)
 		switch kind {
-		case KindPortEnabled:
+		case events.KindPortEnabled:
 			msg = fmt.Sprintf("Port %d previewed.", out.ContainerPort)
 			if out.URL != nil {
 				msg = fmt.Sprintf("Port %d previewed at %s.", out.ContainerPort, *out.URL)
 			}
-		case KindPortDisabled:
+		case events.KindPortDisabled:
 			msg = fmt.Sprintf("Port %d no longer previewed.", out.ContainerPort)
 		}
 		e, err := portEvent(kind, out, msg)
@@ -599,12 +593,12 @@ func retire(ctx context.Context, tx *sql.Tx, portID string, now time.Time) error
 	return err
 }
 
-func portEvent(kind string, p Port, msg string) (events.Event, error) {
+func portEvent(kind events.Kind, p Port, msg string) (events.Event, error) {
 	return events.NewEvent(p.WorkspaceID, events.Info, kind, msg, map[string]any{"port": p})
 }
 
 func retiredEvent(p Port) (events.Event, error) {
-	return events.NewEvent(p.WorkspaceID, events.Info, KindPortRetired,
+	return events.NewEvent(p.WorkspaceID, events.Info, events.KindPortRetired,
 		fmt.Sprintf("Port %d removed from the ports list.", p.ContainerPort),
 		map[string]any{"port_id": p.ID, "container_port": p.ContainerPort})
 }
@@ -669,7 +663,7 @@ func (s *Service) DeclarePorts(ctx context.Context, workspaceID string, ds []Dec
 			return nil, err
 		}
 		var es []events.Event
-		emit := func(kind string, id, msg string) error {
+		emit := func(kind events.Kind, id, msg string) error {
 			p, err := s.port(ctx, tx, workspaceID, id)
 			if err != nil {
 				return err
@@ -691,7 +685,7 @@ func (s *Service) DeclarePorts(ctx context.Context, workspaceID string, ds []Dec
 					label, cur.ID); err != nil {
 					return nil, err
 				}
-				if err := emit(KindPortUpdated, cur.ID, fmt.Sprintf("Port %d is declared by the dev container configuration.", port)); err != nil {
+				if err := emit(events.KindPortUpdated, cur.ID, fmt.Sprintf("Port %d is declared by the dev container configuration.", port)); err != nil {
 					return nil, err
 				}
 				continue
@@ -704,7 +698,7 @@ func (s *Service) DeclarePorts(ctx context.Context, workspaceID string, ds []Dec
 				return nil, err
 			}
 			count++
-			if err := emit(KindPortAdded, id, fmt.Sprintf("Port %d is declared by the dev container configuration.", port)); err != nil {
+			if err := emit(events.KindPortAdded, id, fmt.Sprintf("Port %d is declared by the dev container configuration.", port)); err != nil {
 				return nil, err
 			}
 		}
@@ -727,7 +721,7 @@ func (s *Service) DeclarePorts(ctx context.Context, workspaceID string, ds []Dec
 			if _, err := tx.ExecContext(ctx, `UPDATE forwarded_port SET declared = 0 WHERE id = ?`, p.ID); err != nil {
 				return nil, err
 			}
-			if err := emit(KindPortUpdated, p.ID, fmt.Sprintf("Port %d is no longer declared by the dev container configuration.", p.ContainerPort)); err != nil {
+			if err := emit(events.KindPortUpdated, p.ID, fmt.Sprintf("Port %d is no longer declared by the dev container configuration.", p.ContainerPort)); err != nil {
 				return nil, err
 			}
 		}

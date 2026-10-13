@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/krelinga/drydock/internal/config"
+	"github.com/krelinga/drydock/internal/events"
 	"github.com/krelinga/drydock/internal/github/githubtest"
 	"github.com/krelinga/drydock/internal/provision"
 )
@@ -141,7 +142,7 @@ func TestDeleteRemovesRootOwnedFiles(t *testing.T) {
 		for _, ev := range evs { // newest first
 			var d struct{ Step, Status, Detail string }
 			json.Unmarshal(ev.Data, &d)
-			if ev.Kind == provision.KindAction && d.Step == provision.SubFiles && d.Status != "started" {
+			if ev.Kind == events.KindWorkspaceAction && d.Step == provision.SubFiles && d.Status != "started" {
 				return d.Status + ": " + d.Detail
 			}
 		}

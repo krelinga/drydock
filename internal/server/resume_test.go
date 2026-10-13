@@ -88,7 +88,7 @@ func TestASignInResumesThroughProvisionJobs(t *testing.T) {
 		n := 0
 		for _, e := range since(mark) {
 			var d workspace.JobData
-			if e.Kind == workspace.KindJob && e.WorkspaceID == id && json.Unmarshal(e.Data, &d) == nil && d.Kind == provision.JobSupervisor {
+			if e.Kind == events.KindWorkspaceJob && e.WorkspaceID == id && json.Unmarshal(e.Data, &d) == nil && d.Kind == provision.JobSupervisor {
 				n++
 			}
 		}
@@ -97,7 +97,7 @@ func TestASignInResumesThroughProvisionJobs(t *testing.T) {
 	lastSupervisor := func(id string) workspace.SupervisorData {
 		var d workspace.SupervisorData
 		for _, e := range since(0) {
-			if e.Kind == workspace.KindSupervisor && e.WorkspaceID == id {
+			if e.Kind == events.KindSupervisorState && e.WorkspaceID == id {
 				json.Unmarshal(e.Data, &d)
 			}
 		}
@@ -139,7 +139,7 @@ func TestASignInResumesThroughProvisionJobs(t *testing.T) {
 		ended := false
 		for _, e := range since(0) {
 			var d workspace.JobData
-			if e.Kind == workspace.KindJob && e.WorkspaceID == id && json.Unmarshal(e.Data, &d) == nil && d.Kind == provision.JobCreate {
+			if e.Kind == events.KindWorkspaceJob && e.WorkspaceID == id && json.Unmarshal(e.Data, &d) == nil && d.Kind == provision.JobCreate {
 				ended = true
 			}
 		}
@@ -166,7 +166,7 @@ func TestASignInResumesThroughProvisionJobs(t *testing.T) {
 		switch {
 		case e.Kind == "auth.identity" && identityAt == 0:
 			identityAt = e.ID
-		case e.Kind == workspace.KindJob && e.WorkspaceID == id && json.Unmarshal(e.Data, &d) == nil && d.Kind == provision.JobSupervisor:
+		case e.Kind == events.KindWorkspaceJob && e.WorkspaceID == id && json.Unmarshal(e.Data, &d) == nil && d.Kind == provision.JobSupervisor:
 			jobAt = e.ID
 		}
 	}

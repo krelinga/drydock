@@ -67,7 +67,7 @@ func (e *env) eventKinds(t *testing.T) []string {
 	}
 	var out []string
 	for _, ev := range evs {
-		out = append(out, ev.Kind)
+		out = append(out, string(ev.Kind))
 	}
 	return out
 }
@@ -101,8 +101,8 @@ func refreshed(t *testing.T, sub *events.Sub, n int) []int {
 			if !ok {
 				t.Fatal("the subscription ended")
 			}
-			if ev.Kind != KindRefreshed {
-				t.Fatalf("event %s; want %s", ev.Kind, KindRefreshed)
+			if ev.Kind != events.KindRepoRefreshed {
+				t.Fatalf("event %s; want %s", ev.Kind, events.KindRepoRefreshed)
 			}
 			var d struct{ Count int }
 			if err := json.Unmarshal(ev.Data, &d); err != nil {
@@ -139,8 +139,8 @@ func TestATriggeredRefreshCompletes(t *testing.T) {
 	if n := len(e.list(t)); n != 5 {
 		t.Errorf("the triggered refresh cached %d repositories; want 5", n)
 	}
-	if got := e.eventKinds(t); len(got) != 1 || got[0] != KindRefreshed {
-		t.Errorf("events %v; want one %s", got, KindRefreshed)
+	if got := e.eventKinds(t); len(got) != 1 || got[0] != string(events.KindRepoRefreshed) {
+		t.Errorf("events %v; want one %s", got, events.KindRepoRefreshed)
 	}
 }
 

@@ -429,7 +429,7 @@ func (b *Broker) token(ctx context.Context, wsID string, scope Scope) string {
 		// A fixed sentence keyed by reason, and never GitHub's own message:
 		// the event is what the operator reads, so it says what to check.
 		// The permission set is the scope's constant, not a secret.
-		b.Events.Emit(ctx, wsID, events.Warn, "token.refused", RefusedSentence(scope, reason),
+		b.Events.Emit(ctx, wsID, events.Warn, events.KindTokenRefused, RefusedSentence(scope, reason),
 			map[string]any{"scope": scope, "reason": reason, "permissions": scope.Permissions()})
 		return errLine(reason)
 	}
@@ -485,7 +485,7 @@ func (b *Broker) record(ctx context.Context, wsID string, repoID int64, scope Sc
 			now.Format(time.RFC3339Nano), tok.ExpiresAt.UTC().Format(time.RFC3339Nano), scope.requestedBy()); err != nil {
 			return nil, err
 		}
-		e, err := events.NewEvent(wsID, events.Info, "token.issued", fmt.Sprintf("Issued a %s token.", scope),
+		e, err := events.NewEvent(wsID, events.Info, events.KindTokenIssued, fmt.Sprintf("Issued a %s token.", scope),
 			map[string]any{"scope": scope, "expires_at": tok.ExpiresAt.UTC()})
 		return []events.Event{e}, err
 	}); err != nil {

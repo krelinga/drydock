@@ -121,7 +121,7 @@ func (e *env) next(t *testing.T, ok func(login.View) bool) login.View {
 	for {
 		select {
 		case ev := <-e.sub.C:
-			if ev.Kind != login.KindLogin {
+			if ev.Kind != events.KindAuthLogin {
 				continue
 			}
 			var d struct{ Login login.View }
@@ -551,7 +551,7 @@ func (e *env) announcedEnd(t *testing.T, id string) bool {
 	}
 	for _, ev := range evs {
 		var d struct{ Login login.View }
-		if ev.Kind == login.KindLogin && json.Unmarshal(ev.Data, &d) == nil && d.Login.ID == id && d.Login.Phase.Ended() {
+		if ev.Kind == events.KindAuthLogin && json.Unmarshal(ev.Data, &d) == nil && d.Login.ID == id && d.Login.Phase.Ended() {
 			return true
 		}
 	}

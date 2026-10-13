@@ -232,7 +232,7 @@ func (r *rig) sups() []workspace.SupervisorData {
 	}
 	var out []workspace.SupervisorData
 	for i := len(evs) - 1; i >= 0; i-- {
-		if evs[i].Kind != workspace.KindSupervisor {
+		if evs[i].Kind != events.KindSupervisorState {
 			continue
 		}
 		var d workspace.SupervisorData

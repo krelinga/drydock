@@ -148,7 +148,7 @@ func (s *sup) write(ctx context.Context, st State, r Reason, detail string, pid 
 		if _, err := tx.ExecContext(ctx, q+` WHERE id = ?`, append(args, s.row)...); err != nil {
 			return nil, err
 		}
-		e, err := events.NewEvent(s.ws, level, workspace.KindSupervisor, msg, workspace.SupervisorData{
+		e, err := events.NewEvent(s.ws, level, events.KindSupervisorState, msg, workspace.SupervisorData{
 			State: string(st), From: from, Reason: string(r), Detail: detail, RestartCount: restarts,
 		})
 		return []events.Event{e}, err
@@ -165,7 +165,7 @@ func (s *sup) write(ctx context.Context, st State, r Reason, detail string, pid 
 				from = string(s.current())
 			}
 			err = m.commit(ctx, func(*sql.Tx) ([]events.Event, error) {
-				e, err := events.NewEvent(s.ws, level, workspace.KindSupervisor, msg, workspace.SupervisorData{
+				e, err := events.NewEvent(s.ws, level, events.KindSupervisorState, msg, workspace.SupervisorData{
 					State: string(st), From: from, Reason: string(r), Detail: detail, RestartCount: restarts,
 				})
 				return []events.Event{e}, err
@@ -305,7 +305,7 @@ func (s *sup) recordDiscovery(ctx context.Context, d *discovered, env string, se
 			used, total := d.capUsed, d.capTotal
 			data.CapacityUsed, data.CapacityTotal = &used, &total
 		}
-		e, err := events.NewEvent(s.ws, events.Info, workspace.KindSession, strings.Join(what, " "), data)
+		e, err := events.NewEvent(s.ws, events.Info, events.KindSessionStatus, strings.Join(what, " "), data)
 		return []events.Event{e}, err
 	})
 	if err != nil {

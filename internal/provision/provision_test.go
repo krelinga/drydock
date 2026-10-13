@@ -299,7 +299,7 @@ func (e *env) stepEvents(t *testing.T, id string) []string {
 	}
 	var out []string
 	for i := len(evs) - 1; i >= 0; i-- {
-		if evs[i].Kind != workspace.KindStep {
+		if evs[i].Kind != events.KindWorkspaceStep {
 			continue
 		}
 		var d struct{ Step, Status string }

@@ -73,7 +73,7 @@ func (e *env) jobEnds(t *testing.T, id string, since int64) []jobEnd {
 	t.Helper()
 	var out []jobEnd
 	for _, ev := range e.allEvents(t, id) {
-		if ev.Kind != workspace.KindJob || ev.ID <= since {
+		if ev.Kind != events.KindWorkspaceJob || ev.ID <= since {
 			continue
 		}
 		var d workspace.JobData
@@ -129,7 +129,7 @@ func TestEveryJobEndsWithOneEvent(t *testing.T) {
 	mark := e.latest(t)
 	v := e.running(t, alpha)
 	prev := e.endsOnce(t, v.ID, mark, JobCreate, workspace.JobOK)
-	if prev.Kind != workspace.KindStep || !strings.Contains(string(prev.Data), `"session_server"`) {
+	if prev.Kind != events.KindWorkspaceStep || !strings.Contains(string(prev.Data), `"session_server"`) {
 		t.Errorf("create: the event before the end is %s %s, want step 8's", prev.Kind, prev.Data)
 	}
 	if got := rec.last(); got != "create:own" {
@@ -144,7 +144,7 @@ func TestEveryJobEndsWithOneEvent(t *testing.T) {
 	}
 	e.p.idle()
 	prev = e.endsOnce(t, v.ID, mark, JobStop, workspace.JobFailed)
-	if prev.Kind != workspace.KindState || !strings.Contains(string(prev.Data), "The stop did not finish") {
+	if prev.Kind != events.KindWorkspaceState || !strings.Contains(string(prev.Data), "The stop did not finish") {
 		t.Errorf("failed stop: the event before the end is %s %s, want the annotation", prev.Kind, prev.Data)
 	}
 	if got := rec.last(); got != "stop:carried" {
@@ -159,7 +159,7 @@ func TestEveryJobEndsWithOneEvent(t *testing.T) {
 	}
 	e.p.idle()
 	prev = e.endsOnce(t, v.ID, mark, JobStop, workspace.JobOK)
-	if prev.Kind != workspace.KindState || !strings.Contains(string(prev.Data), `"state":"stopped"`) {
+	if prev.Kind != events.KindWorkspaceState || !strings.Contains(string(prev.Data), `"state":"stopped"`) {
 		t.Errorf("stop: the event before the end is %s %s, want the move to stopped", prev.Kind, prev.Data)
 	}
 	if got := rec.last(); got != "stop:carried" {
@@ -184,7 +184,7 @@ func TestEveryJobEndsWithOneEvent(t *testing.T) {
 	}
 	e.p.idle()
 	prev = e.endsOnce(t, v.ID, mark, JobRebuild, workspace.JobFailed)
-	if prev.Kind != workspace.KindState || !strings.Contains(string(prev.Data), `"state":"failed"`) {
+	if prev.Kind != events.KindWorkspaceState || !strings.Contains(string(prev.Data), `"state":"failed"`) {
 		t.Errorf("failed rebuild: the event before the end is %s %s, want the move to failed", prev.Kind, prev.Data)
 	}
 	if got := rec.last(); got != "rebuild:carried" {
@@ -205,7 +205,7 @@ func TestEveryJobEndsWithOneEvent(t *testing.T) {
 	// own, so the end is a commit of its own after them.
 	var restartErr error
 	e.p.SupervisorRestart = func(ctx context.Context, id string) error {
-		_, err := e.log.Emit(ctx, id, events.Error, workspace.KindSupervisor, "The session server could not be stopped.",
+		_, err := e.log.Emit(ctx, id, events.Error, events.KindSupervisorState, "The session server could not be stopped.",
 			workspace.SupervisorData{State: "degraded", Reason: "stop_failed"})
 		if err != nil {
 			return err
@@ -226,7 +226,7 @@ func TestEveryJobEndsWithOneEvent(t *testing.T) {
 		}
 		e.p.idle()
 		prev = e.endsOnce(t, v.ID, mark, JobSupervisor, outcome)
-		if prev.Kind != workspace.KindSupervisor {
+		if prev.Kind != events.KindSupervisorState {
 			t.Errorf("supervisor (failed %v): the event before the end is %s", failed, prev.Kind)
 		}
 		if got := rec.last(); got != "supervisor:own" {
@@ -243,7 +243,7 @@ func TestEveryJobEndsWithOneEvent(t *testing.T) {
 	}
 	e.p.idle()
 	prev = e.endsOnce(t, v.ID, mark, JobDelete, workspace.JobFailed)
-	if prev.Kind != workspace.KindState || !strings.Contains(string(prev.Data), "The delete stopped part-way") {
+	if prev.Kind != events.KindWorkspaceState || !strings.Contains(string(prev.Data), "The delete stopped part-way") {
 		t.Errorf("stuck delete: the event before the end is %s %s", prev.Kind, prev.Data)
 	}
 	if got := rec.last(); got != "delete:carried" {
@@ -256,7 +256,7 @@ func TestEveryJobEndsWithOneEvent(t *testing.T) {
 	}
 	e.p.idle()
 	prev = e.endsOnce(t, v.ID, mark, JobDelete, workspace.JobOK)
-	if prev.Kind != workspace.KindGone {
+	if prev.Kind != events.KindWorkspaceGone {
 		t.Errorf("delete: the event before the end is %s, want workspace.gone", prev.Kind)
 	}
 	if got := rec.last(); got != "delete:carried" {
@@ -290,7 +290,7 @@ func TestAJobStoppedForApprovalAndItsApprovalEachEnd(t *testing.T) {
 	}
 	e.p.idle()
 	prev := e.endsOnce(t, v.ID, mark, JobRebuild, workspace.JobOK)
-	if prev.Kind != workspace.KindState || !strings.Contains(string(prev.Data), `"approval"`) {
+	if prev.Kind != events.KindWorkspaceState || !strings.Contains(string(prev.Data), `"approval"`) {
 		t.Errorf("the event before the end is %s %s, want the stop for approval", prev.Kind, prev.Data)
 	}
 	if got := rec.last(); got != "rebuild:carried" {
@@ -342,13 +342,13 @@ func TestAJobCutOffByADeleteEndsCancelled(t *testing.T) {
 		// saying why), and precedes the delete's first sub-step.
 		var deleting, upFailed, firstAction int64
 		for _, ev := range e.allEvents(t, w.ID) {
-			if ev.Kind == workspace.KindState && strings.Contains(string(ev.Data), `"state":"deleting"`) && deleting == 0 {
+			if ev.Kind == events.KindWorkspaceState && strings.Contains(string(ev.Data), `"state":"deleting"`) && deleting == 0 {
 				deleting = ev.ID
 			}
-			if ev.Kind == workspace.KindStep && strings.Contains(string(ev.Data), `"status":"failed"`) {
+			if ev.Kind == events.KindWorkspaceStep && strings.Contains(string(ev.Data), `"status":"failed"`) {
 				upFailed = ev.ID
 			}
-			if ev.Kind == KindAction && firstAction == 0 {
+			if ev.Kind == events.KindWorkspaceAction && firstAction == 0 {
 				firstAction = ev.ID
 			}
 		}
@@ -408,7 +408,7 @@ func TestAJobCutOffByShutdownEndsCancelled(t *testing.T) {
 	}
 	e.shutdown(15 * time.Second)
 	prev := e.endsOnce(t, w.ID, mark, JobCreate, workspace.JobCancelled)
-	if prev.Kind != workspace.KindState || !strings.Contains(string(prev.Data), "Drydock shut down") {
+	if prev.Kind != events.KindWorkspaceState || !strings.Contains(string(prev.Data), "Drydock shut down") {
 		t.Errorf("the event before the end is %s %s, want the move to failed", prev.Kind, prev.Data)
 	}
 	if got := rec.all(); len(got) != 1 || got[0] != "create:carried" {

@@ -78,7 +78,7 @@ func TestStateWritesPublishInCommitOrder(t *testing.T) {
 	go func() {
 		var out []events.Event
 		for ev := range sub.C {
-			if ev.Kind == workspace.KindSupervisor {
+			if ev.Kind == events.KindSupervisorState {
 				out = append(out, ev)
 			}
 			if len(out) == total {
@@ -220,7 +220,7 @@ func TestAFailedDiscoveryWriteIsRetried(t *testing.T) {
 		}
 		var out []events.Event
 		for _, e := range evs {
-			if e.Kind == workspace.KindSession {
+			if e.Kind == events.KindSessionStatus {
 				out = append(out, e)
 			}
 		}

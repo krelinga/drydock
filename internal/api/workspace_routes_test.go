@@ -85,7 +85,7 @@ func (stubEvents) Feed(_ context.Context, id string, limit int) ([]events.Event,
 	if limit != 50 {
 		return nil, errors.New("the detail carries 50 events")
 	}
-	return []events.Event{{ID: 7, WorkspaceID: id, Level: events.Info, Kind: workspace.KindStep,
+	return []events.Event{{ID: 7, WorkspaceID: id, Level: events.Info, Kind: events.KindWorkspaceStep,
 		Message: "Up: started.", Data: json.RawMessage(`{"step":"up","status":"started"}`)}}, nil
 }
 

@@ -209,7 +209,7 @@ func TestRunAppliesThePlan(t *testing.T) {
 	evs, _ := e.log.Since(ctx, 0)
 	var detail string
 	for _, ev := range evs {
-		if ev.WorkspaceID == building.ID && ev.Kind == workspace.KindState {
+		if ev.WorkspaceID == building.ID && ev.Kind == events.KindWorkspaceState {
 			var d struct{ Detail string }
 			json.Unmarshal(ev.Data, &d)
 			detail = d.Detail
@@ -339,7 +339,7 @@ func TestRunLeavesThisProcessesRunsAlone(t *testing.T) {
 // step writes a workspace.step event, as Provision does.
 func (e env) step(t *testing.T, id string, st workspace.Step, status string) int64 {
 	t.Helper()
-	ev, err := e.log.Emit(context.Background(), id, events.Info, workspace.KindStep, "x",
+	ev, err := e.log.Emit(context.Background(), id, events.Info, events.KindWorkspaceStep, "x",
 		map[string]any{"step": st, "status": status})
 	if err != nil {
 		t.Fatal(err)
@@ -374,7 +374,7 @@ func (e env) stepEvents(t *testing.T, id string) []stepEv {
 	}
 	var out []stepEv
 	for i := len(evs) - 1; i >= 0; i-- {
-		if evs[i].Kind != workspace.KindStep {
+		if evs[i].Kind != events.KindWorkspaceStep {
 			continue
 		}
 		var d struct{ Step, Status, Detail string }
@@ -467,7 +467,7 @@ func TestRunClosesAStepLeftStarted(t *testing.T) {
 		ev := <-sub.C
 		var d struct{ Step, Status, Detail string }
 		json.Unmarshal(ev.Data, &d)
-		if ev.WorkspaceID == dangling.ID && ev.Kind == workspace.KindStep &&
+		if ev.WorkspaceID == dangling.ID && ev.Kind == events.KindWorkspaceStep &&
 			d.Step == string(workspace.StepSessionServer) && d.Status == "failed" && d.Detail == closedStep8 {
 			live = true
 		}
@@ -529,10 +529,10 @@ func TestRunClosesTheStepOfAnInterruptedBuild(t *testing.T) {
 	for _, ev := range evs { // newest first
 		var d struct{ Step, Status, State string }
 		json.Unmarshal(ev.Data, &d)
-		if ev.Kind == workspace.KindStep && d.Status == "failed" && stepID == 0 {
+		if ev.Kind == events.KindWorkspaceStep && d.Status == "failed" && stepID == 0 {
 			stepID = ev.ID
 		}
-		if ev.Kind == workspace.KindState && d.State == string(workspace.Failed) && moveID == 0 {
+		if ev.Kind == events.KindWorkspaceState && d.State == string(workspace.Failed) && moveID == 0 {
 			moveID = ev.ID
 		}
 	}

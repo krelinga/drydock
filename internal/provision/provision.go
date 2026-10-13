@@ -837,7 +837,7 @@ func (a *admission) abandon() {
 // Its context descends from the group's, so it ends at Drydock's shutdown,
 // or when a delete cancels it.
 //
-// Every job ends with exactly one workspace.job event (workspace.KindJob,
+// Every job ends with exactly one workspace.job event (events.KindWorkspaceJob,
 // {kind, outcome}), which is what ends the press that started it (frontend
 // §4.2) whichever path the job took — so no error path has to remember to
 // write an event that merely implies the end. Where the job's last act is a

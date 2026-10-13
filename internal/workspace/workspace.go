@@ -71,17 +71,6 @@ var (
 	ErrNotFound = errors.New("workspace: no such workspace")
 )
 
-// Kinds of event this package writes. The frontend's reducer switches on
-// these; data carries the fields it applies.
-const (
-	KindState = "workspace.state" // data: {state, from, detail?}
-	KindStep  = "workspace.step"  // data: {step, status, detail?}
-	KindGone  = "workspace.gone"  // data: {} — the row is removed
-	// KindAction is a stop's or a delete's sub-step, written by
-	// internal/provision. data: {action: stop|delete, step, status, detail?}
-	KindAction = "workspace.action"
-)
-
 // Create is step 1, allocate: a new row in pending, with its directory path
 // minted but not yet made (the caller makes it, so a failure there is the
 // allocate step failing, with its own event).
@@ -125,7 +114,7 @@ func (s *Store) Create(ctx context.Context, repositoryID int64, branch string) (
 			w.ID, w.RepositoryID, w.HostPath, w.Branch, string(w.State), ts(now)); err != nil {
 			return nil, fmt.Errorf("workspace: insert: %w", err)
 		}
-		return one(events.NewEvent(w.ID, events.Info, KindState, "Workspace created.",
+		return one(events.NewEvent(w.ID, events.Info, events.KindWorkspaceState, "Workspace created.",
 			map[string]any{"state": Pending, "repository_id": repositoryID, "branch": branch}))
 	})
 	if err != nil {
@@ -192,7 +181,7 @@ func (s *Store) Move(ctx context.Context, id string, to State, detail string) (W
 		if detail != "" {
 			data["detail"] = detail
 		}
-		es, err := one(events.NewEvent(id, level, KindState, message(to, detail), data))
+		es, err := one(events.NewEvent(id, level, events.KindWorkspaceState, message(to, detail), data))
 		return withEnd(ctx, id, &done, es, err)
 	})
 	ended(done, err)
@@ -259,7 +248,7 @@ func (s *Store) Annotate(ctx context.Context, id string, want State, detail stri
 		if detail != "" {
 			data["detail"] = detail
 		}
-		es, err := one(events.NewEvent(id, events.Warn, KindState, message(want, detail), data))
+		es, err := one(events.NewEvent(id, events.Warn, events.KindWorkspaceState, message(want, detail), data))
 		return withEnd(ctx, id, &done, es, err)
 	})
 	ended(done, err)
@@ -286,7 +275,7 @@ func (s *Store) ClearDetail(ctx context.Context, id string, want State) (cleared
 			return nil, nil
 		}
 		cleared = true
-		return one(events.NewEvent(id, events.Info, KindState, message(want, ""),
+		return one(events.NewEvent(id, events.Info, events.KindWorkspaceState, message(want, ""),
 			map[string]any{"state": want, "from": want}))
 	})
 	if err != nil {
@@ -339,7 +328,7 @@ func (s *Store) Remove(ctx context.Context, id string) error {
 		if repos, dropped, err = store.DropReleasedRepositories(ctx, tx); err != nil {
 			return nil, err
 		}
-		gone, err := events.NewEvent(id, events.Info, KindGone, "Workspace deleted.", map[string]any{})
+		gone, err := events.NewEvent(id, events.Info, events.KindWorkspaceGone, "Workspace deleted.", map[string]any{})
 		if err != nil {
 			return nil, err
 		}
@@ -350,7 +339,7 @@ func (s *Store) Remove(ctx context.Context, id string) error {
 		// does too: a repo.* event is what makes an open catalog refetch,
 		// and without one it showed the removed repository until the next
 		// refresh.
-		removed, err := events.NewEvent("", events.Info, store.KindRepositoriesRemoved,
+		removed, err := events.NewEvent("", events.Info, events.KindRepoRemoved,
 			"A repository removed from the GitHub App's installation was released by its last workspace.",
 			map[string]any{"repository_ids": repos})
 		if err != nil {
@@ -475,7 +464,7 @@ func (s *Store) Adopt(ctx context.Context, w Workspace, fullName string) error {
 		if w.StateDetail != "" {
 			data["detail"] = w.StateDetail
 		}
-		return one(events.NewEvent(w.ID, events.Warn, KindState, message(w.State, w.StateDetail), data))
+		return one(events.NewEvent(w.ID, events.Warn, events.KindWorkspaceState, message(w.State, w.StateDetail), data))
 	})
 	return err
 }

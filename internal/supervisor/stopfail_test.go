@@ -16,7 +16,7 @@ import (
 
 	"github.com/krelinga/drydock/internal/claudetest"
 	"github.com/krelinga/drydock/internal/container"
-	"github.com/krelinga/drydock/internal/workspace"
+	"github.com/krelinga/drydock/internal/events"
 )
 
 // stubborn serves and ignores SIGTERM: only SIGKILL ends it.
@@ -498,7 +498,7 @@ done
 		}
 		n := 0
 		for _, e := range evs {
-			if e.Kind == workspace.KindSession && strings.Contains(e.Message, id) {
+			if e.Kind == events.KindSessionStatus && strings.Contains(e.Message, id) {
 				n++
 			}
 		}

@@ -7,13 +7,12 @@ import (
 	"github.com/krelinga/drydock/internal/events"
 )
 
-// KindJob ends a workspace job: one per job internal/provision runs (a
-// create's or start's run, a stop, a rebuild, a delete, a session server
-// restart, an approval's continuation), written whichever way it ended.
-// data: {kind, outcome} — JobData. It changes no entity: it is what tells a
-// client that the request it pressed is over (frontend §4.2), so no error
-// path has to remember to say so with an event that merely implies it.
-const KindJob = "workspace.job"
+// events.KindWorkspaceJob ends a workspace job: one per job internal/provision
+// runs (a create's or start's run, a stop, a rebuild, a delete, a session
+// server restart, an approval's continuation), written whichever way it
+// ended. data: {kind, outcome} — JobData. It changes no entity: it is what
+// tells a client that the request it pressed is over (frontend §4.2), so no
+// error path has to remember to say so with an event that merely implies it.
 
 // Job outcomes: the job did what it was asked, failed on its own, or was cut
 // off — by Drydock's shutdown, or by a delete that preempted it.
@@ -83,7 +82,7 @@ func (j *JobEnd) event(failed bool) (events.Event, error) {
 	if o != JobOK {
 		level = events.Warn
 	}
-	return events.NewEvent(j.id, level, KindJob, jobMessage(j.kind, o), JobData{Kind: j.kind, Outcome: o})
+	return events.NewEvent(j.id, level, events.KindWorkspaceJob, jobMessage(j.kind, o), JobData{Kind: j.kind, Outcome: o})
 }
 
 func jobMessage(kind, outcome string) string {
