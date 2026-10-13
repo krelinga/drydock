@@ -44,6 +44,14 @@ export interface SessionDeps {
   credentials: CredentialStore
   client: DrydockClient
   log: Log
+  /**
+   * Applies a change of the stored credential to the window (the adapter's
+   * CredentialWatch), called right after each write or clear here and before
+   * anything is shown: a notification's promise settles only when it is
+   * closed, and a command the operator runs meanwhile must find the stream
+   * already on the new credential.
+   */
+  applied?: () => Promise<unknown>
 }
 
 /** drydock.signIn. Resolves to the verified meta, or null when nothing was stored. */
@@ -90,6 +98,7 @@ export async function signIn(d: SessionDeps): Promise<Meta | null> {
   const old = await d.credentials.read()
   if (old !== null && (old.origin !== o.origin || old.token !== pasted.token)) await retire(d, old)
   await d.credentials.write({ origin: o.origin, token: pasted.token })
+  await d.applied?.()
   d.log.info(`signed in to ${o.origin} (Drydock ${meta.version}, api ${meta.api}) as "${meta.credential.label}", scopes ${meta.credential.scopes.join(', ')}`)
   const s = skew(meta.api)
   const signed = `Signed in to Drydock ${meta.version} as "${meta.credential.label}".`
@@ -112,12 +121,16 @@ export async function signOut(d: SessionDeps): Promise<void> {
       const ans = await d.prompter.message('error',
         `${describeError(e)} The token was not revoked and is still stored. Try again, or revoke it in Drydock's Settings at ${stored.origin}.`,
         [FORGET_ANYWAY])
-      if (ans === FORGET_ANYWAY) await d.credentials.clear()
+      if (ans === FORGET_ANYWAY) {
+        await d.credentials.clear()
+        await d.applied?.()
+      }
       return
     }
     // A 401: the token was already revoked or expired.
   }
   await d.credentials.clear()
+  await d.applied?.()
   d.log.info(`signed out of ${stored.origin}; the token is revoked`)
   await d.prompter.message('info', 'Signed out of Drydock. The token is revoked.')
 }
@@ -228,6 +241,7 @@ export class StaleTokenWatch {
     const now = await d.credentials.read()
     if (now === null || now.origin !== stored.origin || now.token !== stored.token) return 'nothing'
     await retire(d, stored)
+    await d.applied?.()
     await d.prompter.message('info', `Signed out of ${stored.origin}. Sign in to ${o.origin} with a token from its Settings.`)
     return 'signed_out'
   }

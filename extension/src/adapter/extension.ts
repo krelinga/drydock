@@ -9,6 +9,7 @@
 import * as vscode from 'vscode'
 import { COMMANDS, type CommandId } from '../commands'
 import { CredentialStore } from '../credential'
+import { CredentialWatch } from '../credentialWatch'
 import { DrydockClient } from '../client'
 import { Dispatcher, type Handler } from '../dispatch'
 import { redacting } from '../log'
@@ -128,7 +129,8 @@ export function activate(context: vscode.ExtensionContext): Seam | undefined {
   }
   const credentials = new CredentialStore(secrets)
   const client = new DrydockClient({ transport: nodeTransport, credentials, origin: () => originOf(settings.url()) })
-  const session: SessionDeps = { prompter, opener, settings, credentials, client, log }
+  // `applied` is reread, below: a sign-in or sign-out reaches the stream before anything is shown.
+  const session: SessionDeps = { prompter, opener, settings, credentials, client, log, applied: () => reread() }
 
   // The window's live state: the reducer over the stream (live.ts), and the
   // flows over it (flows.ts).
@@ -168,18 +170,14 @@ export function activate(context: vscode.ExtensionContext): Seam | undefined {
     bar.backgroundColor = v.warning ? new vscode.ThemeColor('statusBarItem.warningBackground') : undefined
     bar.show()
   }
+  // A stream belongs to the credential it opened with (credentialWatch.ts):
+  // a change closes it before anything else is awaited, and this window's
+  // own Sign In and Sign Out apply theirs before their command returns.
+  const watch = new CredentialWatch({ credentials, live })
   const reread = async () => {
-    const c = await credentials.read()
-    const was = signedIn
-    signedIn = c !== null
+    signedIn = await watch.check()
     // The views' welcome content (package.json viewsWelcome) reads this.
     await vscode.commands.executeCommand('setContext', 'drydock.signedIn', signedIn)
-    // A stream belongs to the credential it opened with: signed out, or
-    // signed in with another token (the old one is revoked), it closes, and
-    // the next use opens one with the token now stored.
-    if (!signedIn) live.close('signed_out')
-    // The secret changed while signed in before and after: a new token.
-    else if (was) live.close('signed_in_again')
     render()
   }
   context.subscriptions.push(

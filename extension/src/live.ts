@@ -47,6 +47,7 @@ export class Live {
   /** When `phase` last changed, on the injected clock: what the status bar's quiet marker reads. */
   phaseSince = 0
   readonly marks: Marks
+  readonly #markState = ownState(() => this.#changed())
   readonly #stream: EventStream
   readonly #listeners = new Set<() => void>()
   #holds = 0
@@ -54,7 +55,7 @@ export class Live {
   #loading: Promise<void> | null = null
 
   constructor(private readonly d: LiveDeps) {
-    this.marks = new Marks(d.clock, ownState(() => this.#changed()))
+    this.marks = new Marks(d.clock, this.#markState)
     this.#stream = new EventStream(d.client, d.clock, {
       event: (ev) => this.#event(ev),
       named: (type, data, id) => {
@@ -83,6 +84,7 @@ export class Live {
       ended: (reason) => {
         this.endedBy = reason
         this.#cancelIdle()
+        this.#dropMarks()
         this.#settle(reason === 'unauthorized' ? new ApiError(401, 'unauthenticated')
           : reason === 'sign_in' ? new SignInNeeded('none') : new NotConfigured())
         d.ended?.(reason)
@@ -165,10 +167,22 @@ export class Live {
   close(reason: EndReason = 'closed'): void {
     if (this.#stream.running) this.endedBy = reason
     this.#cancelIdle()
-    this.marks.clear()
+    this.#dropMarks()
     this.#fresh = false
     this.#stream.stop()
     this.#changed()
+  }
+
+  /**
+   * A stopped stream settles nothing, so every mark goes with it — its
+   * settlers and timers (core's `clear`) and the in-flight record too, which
+   * the web UI keeps until its store resets but which here would hold the
+   * stream for good and make a retry "already in flight" forever. A flow
+   * waiting on a mark sees it gone and the stream stopped, and says why.
+   */
+  #dropMarks(): void {
+    this.marks.clear()
+    if (Object.keys(this.#markState.get()).length > 0) this.#markState.set({})
   }
 
   #fresh = false

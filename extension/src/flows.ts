@@ -213,8 +213,15 @@ export async function clone(d: FlowDeps, repoId: number): Promise<void> {
       throw e
     }
     // The mark ends when the row exists (settlesClone): the workspace id
-    // comes from that event, never from the 202's body (§5.4).
-    while (d.live.marks.has(key)) await nextChange(d, 1_000)
+    // comes from that event, never from the 202's body (§5.4). A stream that
+    // stops first (a sign-out, a sign-in with another token, drydock.url
+    // changed, a 401) will never carry it: say so, as a follow does.
+    while (d.live.marks.has(key) && d.live.streaming) await nextChange(d, 1_000)
+    if (!d.live.streaming) {
+      d.live.marks.end(key)
+      await d.prompter.message('warning', `Stopped following ${name}: ${STREAM_ENDED[d.live.endedBy ?? 'closed']}`)
+      return
+    }
     const w = workspaceForRepo(d.live.entities, repoId)
     if (w === null) return
     d.log.info(`cloning ${name}: workspace ${w.id}`)
@@ -422,7 +429,7 @@ export async function refreshRepositories(d: FlowDeps): Promise<void> {
       throw e
     }
     await d.prompter.progress('Drydock: refreshing repositories', async (_report, dismissed) => {
-      while (d.live.marks.has(REFRESH_KEY) && !dismissed()) await nextChange(d, 1_000)
+      while (d.live.marks.has(REFRESH_KEY) && d.live.streaming && !dismissed()) await nextChange(d, 1_000)
     })
     const r = d.live.entities.lastRefresh
     if (r === null || r.eventId <= since) return

@@ -219,6 +219,42 @@ describe('a follow ends when the stream does', () => {
     expect(w.prompter.shown.at(-1)!.text).toBe(`Stopped following krelinga/homelab: ${STREAM_ENDED.signed_out}`)
   })
 
+  // The host tier's race (a sign-in's late credential change): the clone's
+  // hold was taken on the stream about to close, so the close lands after
+  // the create is sent and before its event arrives. Nothing can settle the
+  // mark then; the clone must end and say why, not wait forever.
+  it('closed between the hold and the create\'s event: the clone ends, says why and leaves no mark; the stream open is the control', async () => {
+    const w = flowWorld()
+    answering(w)
+    const release = await opened(w)
+    const done = clone(w, 2)
+    let ended = false
+    void done.then(() => { ended = true }, () => { ended = true })
+    w.live.close('signed_in_again')
+    for (let i = 0; i < 5; i++) {
+      await flush()
+      w.clock.advance(1_000)
+    }
+    await flush()
+    expect(w.server.sent('POST', '/api/workspaces')).toHaveLength(1)
+    expect(ended).toBe(true)
+    expect(w.prompter.shown.at(-1)!.text).toBe(`Stopped following krelinga/homelab: ${STREAM_ENDED.signed_in_again}`)
+    expect(w.live.marks.inFlight).toEqual({})
+    expect(w.live.held).toBe(true)
+    release()
+    expect(w.live.held).toBe(false)
+
+    // Control: the same clone with the stream left open learns its workspace and follows it.
+    const c = flowWorld()
+    answering(c)
+    const r = await opened(c)
+    void clone(c, 2)
+    await flush()
+    expect(c.prompter.progresses).toHaveLength(1)
+    expect(c.live.marks.inFlight).toEqual({})
+    r()
+  })
+
   it('a 401 on the reconnect: the same, with the token sentence; a follow that reaches running is the control', async () => {
     const w = flowWorld()
     answering(w)
