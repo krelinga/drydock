@@ -341,7 +341,7 @@ func (r *Reconciler) apply(ctx context.Context, a Action) error {
 	ws := r.Workspaces
 	switch a.Kind {
 	case Adopt:
-		e, err := events.NewEvent(a.WorkspaceID, events.Info, "workspace.adopted",
+		e, err := events.NewEvent(a.WorkspaceID, events.Info, events.KindWorkspaceAdopted,
 			"Found running after a restart.", map[string]any{"container_id": a.ContainerID})
 		if err != nil {
 			return err
@@ -398,7 +398,7 @@ func (r *Reconciler) apply(ctx context.Context, a Action) error {
 		if !ulid.MatchString(wsID) {
 			wsID = ""
 		}
-		_, err := r.Events.Emit(ctx, wsID, events.Warn, "container.unclaimed",
+		_, err := r.Events.Emit(ctx, wsID, events.Warn, events.KindContainerUnclaimed,
 			"A container carries this instance's label but could not be matched to a workspace; it was left alone.",
 			map[string]any{"container_id": a.ContainerID, "reason": string(a.Kind)})
 		return err

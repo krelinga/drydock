@@ -371,13 +371,13 @@ func (s *Store) put(ctx context.Context, name string, value *string, reach, desc
 		var e events.Event
 		switch {
 		case res.Created:
-			e, err = events.NewEvent("", events.Info, "secret.created", "Stored the secret "+name+". It is granted to nothing yet.", map[string]any{"secret": res.Secret})
+			e, err = events.NewEvent("", events.Info, events.KindSecretCreated, "Stored the secret "+name+". It is granted to nothing yet.", map[string]any{"secret": res.Secret})
 		case res.Rotated:
-			e, err = events.NewEvent("", events.Info, "secret.rotated", fmt.Sprintf("Rotated the secret %s; %d running workspaces hold it.",
+			e, err = events.NewEvent("", events.Info, events.KindSecretRotated, fmt.Sprintf("Rotated the secret %s; %d running workspaces hold it.",
 				name, len(res.Stale.NewCommands)+len(res.Stale.NeedsSupervisorRestart)),
 				map[string]any{"secret": res.Secret, "stale": res.Stale})
 		default:
-			e, err = events.NewEvent("", events.Info, "secret.updated", "Updated the reach and description of the secret "+name+"; its value is unchanged.", map[string]any{"secret": res.Secret})
+			e, err = events.NewEvent("", events.Info, events.KindSecretUpdated, "Updated the reach and description of the secret "+name+"; its value is unchanged.", map[string]any{"secret": res.Secret})
 		}
 		return []events.Event{e}, err
 	})
@@ -509,7 +509,7 @@ func (s *Store) Delete(ctx context.Context, name string) error {
 		if n, _ := res.RowsAffected(); n == 0 {
 			return nil, ErrNotFound
 		}
-		e, err := events.NewEvent("", events.Info, "secret.deleted", "Deleted the secret "+name+".", map[string]any{"name": name})
+		e, err := events.NewEvent("", events.Info, events.KindSecretDeleted, "Deleted the secret "+name+".", map[string]any{"name": name})
 		return []events.Event{e}, err
 	})
 	if err != nil {
@@ -539,7 +539,7 @@ func (s *Store) SetGrants(ctx context.Context, name string, repoIDs []int64, all
 		if allRepos {
 			msg = "Granted the secret " + name + " to every repository."
 		}
-		e, err := events.NewEvent("", events.Info, "secret.grants", msg, map[string]any{"secret": m})
+		e, err := events.NewEvent("", events.Info, events.KindSecretGrants, msg, map[string]any{"secret": m})
 		return []events.Event{e}, err
 	})
 	if err != nil {
@@ -764,7 +764,7 @@ func (s *Store) noteLocked(ctx context.Context, bad []UndeliverableSecret) {
 		s.undeliverable = &Undeliverable{Since: since, Secrets: bad}
 		if s.Events != nil {
 			// The message names secrets and rules, never a value.
-			s.Events.Emit(ctx, "", events.Error, "secret.undeliverable",
+			s.Events.Emit(ctx, "", events.Error, events.KindSecretUndeliverable,
 				"Stored secrets cannot be delivered, so every workspace's commands will fail until this is fixed: "+s.snap.err.Error(),
 				map[string]any{"undeliverable": s.undeliverable})
 		}
@@ -772,7 +772,7 @@ func (s *Store) noteLocked(ctx context.Context, bad []UndeliverableSecret) {
 	}
 	s.undeliverable = nil
 	if wasBad && s.Events != nil {
-		s.Events.Emit(ctx, "", events.Info, "secret.deliverable",
+		s.Events.Emit(ctx, "", events.Info, events.KindSecretDeliverable,
 			"Stored secrets can be delivered again.", map[string]any{})
 	}
 }
@@ -780,10 +780,12 @@ func (s *Store) noteLocked(ctx context.Context, bad []UndeliverableSecret) {
 // lastReportedUndeliverable is whether the newest delivery event in the log
 // is a secret.undeliverable — by this process or an earlier one.
 func (s *Store) lastReportedUndeliverable(ctx context.Context) bool {
+	// The registry's constants, not their text, so a renamed kind is renamed
+	// here too (a spelled kind would make this read miss silently).
 	var kind string
-	err := s.DB.QueryRowContext(ctx, `SELECT kind FROM event WHERE kind IN ('secret.undeliverable', 'secret.deliverable')
-		ORDER BY id DESC LIMIT 1`).Scan(&kind)
-	return err == nil && kind == "secret.undeliverable"
+	err := s.DB.QueryRowContext(ctx, `SELECT kind FROM event WHERE kind IN (?, ?) ORDER BY id DESC LIMIT 1`,
+		string(events.KindSecretUndeliverable), string(events.KindSecretDeliverable)).Scan(&kind)
+	return err == nil && kind == string(events.KindSecretUndeliverable)
 }
 
 func (s *Store) build(ctx context.Context) *snapshot {

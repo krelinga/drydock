@@ -7,6 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"time"
+
+	"github.com/krelinga/drydock/internal/events"
 )
 
 // View is a workspace as the API serves it (GET /api/workspaces and
@@ -72,17 +74,6 @@ type VSCodeLink struct {
 	Configured bool    `json:"configured"`
 	URL        *string `json:"url"`
 }
-
-// Kinds the session supervisor (internal/supervisor, design §8) writes.
-const (
-	// KindSupervisor: the remote-control process's state moved, or its
-	// reason did. data: SupervisorData.
-	KindSupervisor = "supervisor.state"
-	// KindSession: what the server's output said changed — the
-	// environment id, the capacity fraction, a session newly seen.
-	// data: SessionData.
-	KindSession = "session.status"
-)
 
 // SupervisorData is a supervisor.state event's data.
 type SupervisorData struct {
@@ -221,7 +212,7 @@ func (s *Store) views(ctx context.Context, q string, args ...any) ([]View, error
 // that has a row; with one, over that workspace alone.
 func latestEvents(one ...any) (string, []any) {
 	scope := `workspace_id IN (SELECT id FROM workspace)`
-	args := []any{KindStep, KindAction, KindSupervisor, KindSession}
+	args := []any{string(events.KindWorkspaceStep), string(events.KindWorkspaceAction), string(events.KindSupervisorState), string(events.KindSessionStatus)}
 	if len(one) == 1 {
 		scope = `workspace_id = ?`
 		args = append(args, one[0])
@@ -230,7 +221,7 @@ func latestEvents(one ...any) (string, []any) {
 		SELECT max(id) FROM event
 		WHERE kind IN (?, ?, ?, ?) AND ` + scope + `
 		GROUP BY workspace_id, kind,
-		  CASE WHEN kind = '` + KindStep + `' AND json_valid(data) THEN json_extract(data, '$.step') END
+		  CASE WHEN kind = '` + string(events.KindWorkspaceStep) + `' AND json_valid(data) THEN json_extract(data, '$.step') END
 	) ORDER BY id`, args
 }
 
@@ -276,7 +267,7 @@ func (s *Store) fillSteps(ctx context.Context, out []View, index map[string]int,
 			continue
 		}
 		switch kind {
-		case KindSupervisor:
+		case string(events.KindSupervisorState):
 			var d SupervisorData
 			if err := json.Unmarshal([]byte(data.String), &d); err != nil || d.State == "" {
 				skip(errors.Join(errors.New("no state"), err))
@@ -284,7 +275,7 @@ func (s *Store) fillSteps(ctx context.Context, out []View, index map[string]int,
 			}
 			out[i].Supervisor = &SupervisorView{SupervisorData: d, At: t}
 			continue
-		case KindSession:
+		case string(events.KindSessionStatus):
 			var d SessionData
 			if err := json.Unmarshal([]byte(data.String), &d); err != nil {
 				skip(err)
@@ -300,11 +291,11 @@ func (s *Store) fillSteps(ctx context.Context, out []View, index map[string]int,
 			Detail string `json:"detail"`
 		}
 		if err := json.Unmarshal([]byte(data.String), &d); err != nil || d.Step == "" ||
-			(kind == KindAction && d.Action == "") {
+			(kind == string(events.KindWorkspaceAction) && d.Action == "") {
 			skip(errors.Join(errors.New("no step or action"), err))
 			continue
 		}
-		if kind == KindAction {
+		if kind == string(events.KindWorkspaceAction) {
 			out[i].LastAction = &ActionOutcome{Action: d.Action, Step: string(d.Step), Status: d.Status, Detail: d.Detail, At: t}
 			continue
 		}

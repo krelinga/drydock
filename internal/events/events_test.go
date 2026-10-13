@@ -304,7 +304,7 @@ func TestFeedLeavesDiscoveryOut(t *testing.T) {
 	l, _ := newLog(t)
 	emit := func(kind string, data any) {
 		t.Helper()
-		if _, err := l.Emit(ctx, "ws1", Info, kind, kind, data); err != nil {
+		if _, err := l.Emit(ctx, "ws1", Info, Kind(kind), kind, data); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -324,7 +324,7 @@ func TestFeedLeavesDiscoveryOut(t *testing.T) {
 	}
 	var kinds []string
 	for _, e := range feed {
-		kinds = append(kinds, e.Kind)
+		kinds = append(kinds, string(e.Kind))
 	}
 	if want := []string{"other.kind", "workspace.action", "port.enabled", "workspace.state"}; strings.Join(kinds, " ") != strings.Join(want, " ") {
 		t.Errorf("Feed = %v; want %v", kinds, want)

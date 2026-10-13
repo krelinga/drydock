@@ -54,7 +54,7 @@ func newStreamEnv(t *testing.T) *streamEnv {
 
 func (env *streamEnv) emit(t *testing.T, kind string) events.Event {
 	t.Helper()
-	e, err := env.log.Emit(context.Background(), "ws1", events.Info, kind, "m", map[string]string{"k": kind})
+	e, err := env.log.Emit(context.Background(), "ws1", events.Info, events.Kind(kind), "m", map[string]string{"k": kind})
 	if err != nil {
 		t.Fatal(err)
 	}

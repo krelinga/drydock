@@ -23,9 +23,8 @@ import (
 // writes a workspace.action event as it starts and as it ends, so a stop or a
 // delete that sticks names where it stuck.
 
-// KindAction is the event a stop or delete sub-step writes.
+// The event a stop or delete sub-step writes is events.KindWorkspaceAction.
 // data: {action: "stop"|"delete", step, status: started|done|failed, detail?}
-const KindAction = workspace.KindAction
 
 // Sub-steps, in order.
 const (
@@ -359,9 +358,8 @@ func (p *Provisioner) removeBuiltImages(ctx context.Context, w workspace.Workspa
 	return fmt.Sprintf("Removed its %d built images.", len(removed))
 }
 
-// KindHelpersSwept is the system event the boot sweep writes when it removed
-// anything. data: {count}
-const KindHelpersSwept = "container.helpers_swept"
+// events.KindContainerHelpersSwept is the system event the boot sweep writes
+// when it removed anything. data: {count}
 
 // SweepHelpers is boot's sweep of helper containers (internal/ephemeral):
 // every kind there is — a delete's cleanup helper, the docker guard's log
@@ -405,7 +403,7 @@ func (p *Provisioner) SweepHelpers(ctx context.Context) (int, error) {
 	if len(gone) > 1 {
 		msg = fmt.Sprintf("Removed %d helper containers an earlier Drydock left behind.", len(gone))
 	}
-	_, err = p.Events.Emit(ctx, "", events.Info, KindHelpersSwept, msg, map[string]any{"count": len(gone)})
+	_, err = p.Events.Emit(ctx, "", events.Info, events.KindContainerHelpersSwept, msg, map[string]any{"count": len(gone)})
 	return len(gone), err
 }
 
@@ -493,13 +491,10 @@ type unpaused struct {
 	ids []string
 }
 
-// Kinds of the events an action's unpause and re-pause write, which join the
-// workspace's feed (a rebuild's unpause has no sub-step to note it on).
-// data: {action, count} and {action, count, failed}.
-const (
-	KindUnpaused = "container.unpaused"
-	KindRepaused = "container.repaused"
-)
+// An action's unpause and re-pause write container.unpaused and
+// container.repaused (events.KindContainer…), which join the workspace's
+// feed (a rebuild's unpause has no sub-step to note it on). data: {count}
+// and {count, failed}.
 
 // unpauseAndStopSupervisor is how a workspace stop, rebuild or delete stops
 // the session server: the workspace's container is unpaused first, and then
@@ -552,7 +547,7 @@ func (p *Provisioner) unpauseAndStopSupervisor(ctx context.Context, w workspace.
 			p.logf("drydock: workspace %s: unpausing the container before stopping the session server: %v", w.ID, err)
 			return false
 		}
-		p.emit(context.WithoutCancel(ctx), w.ID, events.Info, KindUnpaused,
+		p.emit(context.WithoutCancel(ctx), w.ID, events.Info, events.KindContainerUnpaused,
 			"The workspace's container was paused; Drydock closed its GitHub access and unpaused it to stop the session server cleanly.",
 			map[string]any{"count": len(ids)})
 		return true
@@ -620,7 +615,7 @@ func (p *Provisioner) repause(parent context.Context, w workspace.Workspace, un 
 	if err != nil {
 		p.logf("drydock: workspace %s: pausing the container again: %v", w.ID, err)
 		said := hint(RepauseFailedSentence)
-		p.emit(ctx, w.ID, events.Warn, KindRepaused, said, map[string]any{"count": n, "failed": true})
+		p.emit(ctx, w.ID, events.Warn, events.KindContainerRepaused, said, map[string]any{"count": n, "failed": true})
 		return said
 	}
 	said := RepausedClosedSentence
@@ -635,7 +630,7 @@ func (p *Provisioner) repause(parent context.Context, w workspace.Workspace, un 
 			said = RepausedSentence
 		}
 	}
-	p.emit(ctx, w.ID, events.Info, KindRepaused, said, map[string]any{"count": n, "failed": false})
+	p.emit(ctx, w.ID, events.Info, events.KindContainerRepaused, said, map[string]any{"count": n, "failed": false})
 	return said
 }
 
@@ -650,7 +645,7 @@ const (
 	RestoreAccessHint = "To restore its GitHub access, stop the workspace and start it again, or rebuild it."
 )
 
-func (p *Provisioner) emit(ctx context.Context, id string, level events.Level, kind, msg string, data map[string]any) {
+func (p *Provisioner) emit(ctx context.Context, id string, level events.Level, kind events.Kind, msg string, data map[string]any) {
 	if p.Events == nil {
 		return
 	}
@@ -709,7 +704,7 @@ func (p *Provisioner) subSteps(ctx context.Context, action, id string, steps []s
 			data["detail"] = detail
 			msg = fmt.Sprintf("%s: %s %s. %s", capitalize(action), step, status, detail)
 		}
-		_, err := p.Events.Emit(book, id, level, KindAction, msg, data)
+		_, err := p.Events.Emit(book, id, level, events.KindWorkspaceAction, msg, data)
 		return err
 	}
 	for _, st := range steps {

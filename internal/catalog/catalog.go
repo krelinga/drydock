@@ -56,11 +56,9 @@ import (
 // DefaultInterval is the periodic refresh (§3.1).
 const DefaultInterval = 15 * time.Minute
 
-// Event kinds. The frontend's catalog store refetches on repo.* (frontend §4.1).
-const (
-	KindRefreshed     = "repo.refreshed"      // data: {count, added, removed}
-	KindRefreshFailed = "repo.refresh_failed" // data: {}
-)
+// The catalog's events are repo.refreshed and repo.refresh_failed
+// (events.KindRepo…); the frontend's catalog store refetches on repo.*
+// (frontend §4.1).
 
 // Catalog refreshes and reads the repository cache.
 type Catalog struct {
@@ -161,7 +159,7 @@ func (c *Catalog) run(ctx context.Context, _ []struct{}) (Result, error) {
 		c.mu.Lock()
 		c.failure = &RefreshError{At: c.Clock.Now().UTC(), Message: msg}
 		c.mu.Unlock()
-		c.Events.Emit(ctx, "", events.Warn, KindRefreshFailed, msg, map[string]any{})
+		c.Events.Emit(ctx, "", events.Warn, events.KindRepoRefreshFailed, msg, map[string]any{})
 		return Result{}, err
 	}
 	return res, nil
@@ -246,7 +244,7 @@ func (c *Catalog) refresh(ctx context.Context) (Result, error) {
 		c.mu.Lock()
 		c.failure = nil
 		c.mu.Unlock()
-		e, err := events.NewEvent("", events.Info, KindRefreshed,
+		e, err := events.NewEvent("", events.Info, events.KindRepoRefreshed,
 			fmt.Sprintf("Repository list refreshed: %d repositories.", res.Count),
 			map[string]any{"count": res.Count, "added": res.Added, "removed": res.Removed})
 		return []events.Event{e}, err

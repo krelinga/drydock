@@ -12,7 +12,7 @@ import (
 	"github.com/krelinga/drydock/internal/config"
 	"github.com/krelinga/drydock/internal/dockerguard"
 	"github.com/krelinga/drydock/internal/ephemeral"
-	"github.com/krelinga/drydock/internal/provision"
+	"github.com/krelinga/drydock/internal/events"
 )
 
 // TestBootSweepsLeftoverHelpers: a helper container an earlier process left
@@ -96,7 +96,7 @@ func TestBootSweepsLeftoverHelpers(t *testing.T) {
 		}
 		var swept string
 		for _, ev := range evs {
-			if ev.Kind == provision.KindHelpersSwept {
+			if ev.Kind == events.KindContainerHelpersSwept {
 				swept = string(ev.Data)
 			}
 		}

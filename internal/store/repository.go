@@ -5,12 +5,6 @@ import (
 	"database/sql"
 )
 
-// KindRepositoriesRemoved is the event a workspace's removal writes, in the
-// same commit, when it released repository rows (data: {repository_ids}). It
-// is a repo.* kind, which is what makes an open catalog refetch (frontend
-// §4.1); a refresh that drops rows says so in its own repo.refreshed.
-const KindRepositoriesRemoved = "repo.removed"
-
 // released is every repository row the installation dropped (removed_at set)
 // that no workspace holds any more.
 const released = `SELECT id FROM repository WHERE removed_at IS NOT NULL

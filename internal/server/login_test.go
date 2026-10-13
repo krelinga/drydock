@@ -434,7 +434,7 @@ func TestShutdownEndsALoginInFlight(t *testing.T) {
 	var phases []string
 	for _, ev := range evs {
 		var d struct{ Login login.View }
-		if ev.Kind == login.KindLogin && json.Unmarshal(ev.Data, &d) == nil && d.Login.ID == id {
+		if ev.Kind == events.KindAuthLogin && json.Unmarshal(ev.Data, &d) == nil && d.Login.ID == id {
 			phases = append(phases, string(d.Login.Phase))
 			if d.Login.Phase == login.Failed && (d.Login.Problem == nil || *d.Login.Problem != login.ProblemShutdown) {
 				t.Errorf("the login ended failed for %v; want shutdown", d.Login.Problem)

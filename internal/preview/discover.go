@@ -59,21 +59,19 @@ import (
 // A retired row stays retired: the merge is onto live rows only, so a port
 // seen again after its row was retired is a new row with a new slug (PF §4).
 
-// KindPortScanned answers a rescan (POST …/ports/rescan): one per workspace
+// events.KindPortScanned answers a rescan (POST …/ports/rescan): one per workspace
 // asked about, after the scan that began after the request, carrying
 // `data.discovery` — "ok"; "unavailable" when the socket table could not be
 // read; "limited" when a budget held back a change the scan found (PF §11).
 // It describes no row change and moves nothing into reach.
-const KindPortScanned = "port.scanned"
-
-// KindPortDiscovery says a workspace's discovery changed between ok,
+//
+// events.KindPortDiscovery says a workspace's discovery changed between ok,
 // unavailable and limited without anyone asking — `data.discovery` as
 // port.scanned carries it — so an open ports panel says so (PF §11's
 // *discovery unavailable*, and a budget holding changes back). Both kinds are
 // reports of one per-workspace state, and the port list carries its latest
 // value as `discovery`. At most StatusBurst, then one per StatusEvery, per
 // workspace: a Docker that fails every other round cannot flood the log.
-const KindPortDiscovery = "port.discovery"
 
 // SourceDiscovery is the `data.source` of every event the scan writes.
 const SourceDiscovery = events.SourceDiscovery
@@ -139,7 +137,7 @@ const (
 	// EphemeralFrom is the bottom of Linux's default ip_local_port_range,
 	// where a server that binds port 0 is put.
 	EphemeralFrom = 32768
-	// StatusBurst and StatusEvery bound KindPortDiscovery per workspace. A
+	// StatusBurst and StatusEvery bound events.KindPortDiscovery per workspace. A
 	// change of state past the budget is reported when it allows, as the
 	// state is then.
 	StatusBurst = 4
@@ -867,7 +865,7 @@ func (s *Service) observe(ctx context.Context, workspaceID string, ss []Sighting
 			return nil, err
 		}
 		var es []events.Event
-		emit := func(kind, id, msg string) error {
+		emit := func(kind events.Kind, id, msg string) error {
 			p, err := s.port(ctx, tx, workspaceID, id)
 			if err != nil {
 				return err
@@ -887,7 +885,7 @@ func (s *Service) observe(ctx context.Context, workspaceID string, ss []Sighting
 					continue
 				}
 				id := cur.ID
-				kind, msg := KindPortUpdated, fmt.Sprintf("Port %d is listening.", o.Port)
+				kind, msg := events.KindPortUpdated, fmt.Sprintf("Port %d is listening.", o.Port)
 				if !ok {
 					if len(live) >= MaxPorts || observedOnly >= MaxObserved {
 						continue
@@ -898,7 +896,7 @@ func (s *Service) observe(ctx context.Context, workspaceID string, ss []Sighting
 					}
 					observedOnly++
 					live[o.Port] = Port{ID: id}
-					kind, msg = KindPortAdded, fmt.Sprintf("Port %d is listening. It is not previewed.", o.Port)
+					kind, msg = events.KindPortAdded, fmt.Sprintf("Port %d is listening. It is not previewed.", o.Port)
 				}
 				if _, err := tx.ExecContext(ctx, `UPDATE forwarded_port SET observed = 1, observed_state = ?,
 					bind_addr = ?, first_seen_at = coalesce(first_seen_at, ?), last_seen_at = ? WHERE id = ?`,
@@ -921,7 +919,7 @@ func (s *Service) observe(ctx context.Context, workspaceID string, ss []Sighting
 					StateGone, ts(o.At), cur.ID); err != nil {
 					return nil, err
 				}
-				if err := emit(KindPortUpdated, cur.ID, fmt.Sprintf("Port %d stopped listening.", o.Port)); err != nil {
+				if err := emit(events.KindPortUpdated, cur.ID, fmt.Sprintf("Port %d stopped listening.", o.Port)); err != nil {
 					return nil, err
 				}
 				continue
@@ -934,7 +932,7 @@ func (s *Service) observe(ctx context.Context, workspaceID string, ss []Sighting
 				return nil, err
 			}
 			revoked = append(revoked, cur.ID)
-			e, err := events.NewEvent(workspaceID, events.Info, KindPortRetired,
+			e, err := events.NewEvent(workspaceID, events.Info, events.KindPortRetired,
 				fmt.Sprintf("Port %d removed from the ports list: nothing has listened on it for a while.", o.Port),
 				map[string]any{"port_id": cur.ID, "container_port": cur.ContainerPort, "source": SourceDiscovery})
 			if err != nil {
@@ -943,7 +941,7 @@ func (s *Service) observe(ctx context.Context, workspaceID string, ss []Sighting
 			es = append(es, e)
 		}
 		if note != nil && note.Status != "" {
-			e, err := events.NewEvent(workspaceID, events.Info, KindPortDiscovery, discoveryMessage(note.Status),
+			e, err := events.NewEvent(workspaceID, events.Info, events.KindPortDiscovery, discoveryMessage(note.Status),
 				map[string]any{"discovery": note.Status, "source": SourceDiscovery})
 			if err != nil {
 				return nil, err
@@ -955,7 +953,7 @@ func (s *Service) observe(ctx context.Context, workspaceID string, ss []Sighting
 			if note.Discovery != DiscoveryOK {
 				msg = "Ports scanned. " + discoveryMessage(note.Discovery)
 			}
-			e, err := events.NewEvent(workspaceID, events.Info, KindPortScanned, msg,
+			e, err := events.NewEvent(workspaceID, events.Info, events.KindPortScanned, msg,
 				map[string]any{"discovery": note.Discovery, "source": SourceDiscovery})
 			if err != nil {
 				return nil, err

@@ -38,7 +38,7 @@ func TestConcurrentWritesPublishInCommitOrder(t *testing.T) {
 	go func() {
 		var out []events.Event
 		for ev := range sub.C {
-			if strings.HasPrefix(ev.Kind, "secret.") && ev.Kind != "secret.undeliverable" && ev.Kind != "secret.deliverable" {
+			if strings.HasPrefix(string(ev.Kind), "secret.") && ev.Kind != "secret.undeliverable" && ev.Kind != "secret.deliverable" {
 				out = append(out, ev)
 			}
 			if len(out) == writers*each {

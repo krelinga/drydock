@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/krelinga/drydock/internal/api"
+	"github.com/krelinga/drydock/internal/events"
 	"github.com/krelinga/drydock/internal/preview"
 )
 
@@ -80,8 +81,8 @@ func eventKinds(t *testing.T, r *running) []string {
 	}
 	var out []string
 	for _, e := range es {
-		if e.WorkspaceID == "wprev" && strings.HasPrefix(e.Kind, "port.") {
-			out = append(out, e.Kind)
+		if e.WorkspaceID == "wprev" && strings.HasPrefix(string(e.Kind), "port.") {
+			out = append(out, string(e.Kind))
 		}
 	}
 	return out
@@ -121,7 +122,7 @@ func TestPortRegistryOverTheSockets(t *testing.T) {
 	if resp := r.do(t, req{method: "PATCH", path: base + "/pprev", origin: uiOrigin, cookie: ui, body: `{"enabled":true}`}); resp.StatusCode != http.StatusAccepted {
 		t.Fatalf("enable = %d", resp.StatusCode)
 	}
-	if k := eventKinds(t, r); len(k) != 1 || k[0] != preview.KindPortEnabled {
+	if k := eventKinds(t, r); len(k) != 1 || k[0] != string(events.KindPortEnabled) {
 		t.Fatalf("events after enabling = %v", k)
 	}
 	readJSON(t, r.do(t, req{method: "GET", path: base, cookie: ui}), &list)
@@ -165,7 +166,7 @@ func TestPortRegistryOverTheSockets(t *testing.T) {
 	if !closes(ws, br, time.Second) {
 		t.Error("disabling the port left its websocket open")
 	}
-	if k := eventKinds(t, r); len(k) != 2 || k[1] != preview.KindPortDisabled {
+	if k := eventKinds(t, r); len(k) != 2 || k[1] != string(events.KindPortDisabled) {
 		t.Errorf("events after disabling = %v", k)
 	}
 	presp, _ := r.previewDo(t, "GET", "https://"+previewHost+"/after", http.Header{"Cookie": {preview.CookieName + "=" + pc}})
@@ -197,7 +198,7 @@ func TestPortRegistryOverTheSockets(t *testing.T) {
 	if len(list.Ports) != 1 || list.Ports[0].Slug == previewSlug || list.Ports[0].Enabled || !list.Ports[0].Manual {
 		t.Errorf("the port listed again = %+v; want a new, disabled row with a new slug", list.Ports)
 	}
-	if k := eventKinds(t, r); len(k) != 4 || k[2] != preview.KindPortRetired || k[3] != preview.KindPortAdded {
+	if k := eventKinds(t, r); len(k) != 4 || k[2] != string(events.KindPortRetired) || k[3] != string(events.KindPortAdded) {
 		t.Errorf("events = %v", k)
 	}
 }

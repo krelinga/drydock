@@ -224,7 +224,7 @@ func (s *Store) FailDangling(ctx context.Context, id, sentence string) (Step, er
 		var data string
 		err := tx.QueryRowContext(ctx, `SELECT data FROM event
 			WHERE kind = ? AND workspace_id = ? AND json_valid(data)
-			ORDER BY id DESC LIMIT 1`, KindStep, id).Scan(&data)
+			ORDER BY id DESC LIMIT 1`, events.KindWorkspaceStep, id).Scan(&data)
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, nil
 		}
@@ -270,7 +270,7 @@ func newStepEvent(id string, st Step, status string, level events.Level, detail 
 			msg = fmt.Sprintf("%s: done. %s", capitalize(label(st)), detail)
 		}
 	}
-	return events.NewEvent(id, level, KindStep, msg, data)
+	return events.NewEvent(id, level, events.KindWorkspaceStep, msg, data)
 }
 
 func label(s Step) string {

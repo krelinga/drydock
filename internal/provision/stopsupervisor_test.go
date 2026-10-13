@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/krelinga/drydock/internal/container"
+	"github.com/krelinga/drydock/internal/events"
 	"github.com/krelinga/drydock/internal/workspace"
 )
 
@@ -241,8 +242,8 @@ func TestAPausedContainerIsUnpausedForTheStop(t *testing.T) {
 				if want := pause == "none"; openAtStop != want {
 					t.Errorf("GitHub access open while the session server was stopped: %v, want %v", openAtStop, want)
 				}
-				if pause != "none" && e.kinds(t, v.ID, KindUnpaused) == 0 {
-					t.Errorf("no %s event: the unpause is not in the workspace's feed", KindUnpaused)
+				if pause != "none" && e.kinds(t, v.ID, string(events.KindContainerUnpaused)) == 0 {
+					t.Errorf("no %s event: the unpause is not in the workspace's feed", events.KindContainerUnpaused)
 				}
 				unpauses := 0
 				for _, a := range e.cli.callsTo(t, "docker") {
@@ -391,7 +392,7 @@ func TestAnUnpausedContainerIsPausedAgainWhenTheActionStopsShort(t *testing.T) {
 				e.p.idle()
 				// The re-pause is the job's, so the job's end comes after it
 				// (a rebuild's re-pause follows its run's move to failed).
-				if all := e.allEvents(t, v.ID); all[len(all)-1].Kind != workspace.KindJob {
+				if all := e.allEvents(t, v.ID); all[len(all)-1].Kind != events.KindWorkspaceJob {
 					last := all[len(all)-1]
 					t.Errorf("the last event is %s %s, not the job's end", last.Kind, last.Data)
 				}
@@ -455,8 +456,8 @@ func TestAnUnpausedContainerIsPausedAgainWhenTheActionStopsShort(t *testing.T) {
 				if status != "paused" {
 					t.Errorf("the container is %s after the %s stopped short, want paused again", status, c.action)
 				}
-				if e.kinds(t, v.ID, KindRepaused) == 0 {
-					t.Errorf("no %s event", KindRepaused)
+				if e.kinds(t, v.ID, string(events.KindContainerRepaused)) == 0 {
+					t.Errorf("no %s event", events.KindContainerRepaused)
 				}
 				switch c.action {
 				case ActStop, "shutdown":

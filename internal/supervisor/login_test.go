@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/krelinga/drydock/internal/claudetest"
+	"github.com/krelinga/drydock/internal/events"
 	"github.com/krelinga/drydock/internal/identity"
 	"github.com/krelinga/drydock/internal/life"
 	"github.com/krelinga/drydock/internal/login"
@@ -135,7 +136,7 @@ func TestASuccessfulHandshakeResumesAWaitingSupervisor(t *testing.T) {
 			select {
 			case ev := <-sub.C:
 				var d struct{ Login login.View }
-				if ev.Kind == login.KindLogin && json.Unmarshal(ev.Data, &d) == nil && d.Login.Phase == want {
+				if ev.Kind == events.KindAuthLogin && json.Unmarshal(ev.Data, &d) == nil && d.Login.Phase == want {
 					return
 				}
 			case <-deadline:
@@ -147,7 +148,7 @@ func TestASuccessfulHandshakeResumesAWaitingSupervisor(t *testing.T) {
 		evs, _ := r.log.Since(ctx, 0)
 		n := 0
 		for _, e := range evs {
-			if e.Kind == identity.KindIdentity {
+			if e.Kind == events.KindAuthIdentity {
 				n++
 			}
 		}

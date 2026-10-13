@@ -11,7 +11,7 @@ import (
 
 func jobOf(t *testing.T, e events.Event) JobData {
 	t.Helper()
-	if e.Kind != KindJob {
+	if e.Kind != events.KindWorkspaceJob {
 		t.Fatalf("%s is not a job end", e.Kind)
 	}
 	var d JobData
@@ -68,7 +68,7 @@ func TestEndingCarriesTheJobsEndInTheMovesCommit(t *testing.T) {
 		t.Fatal(err)
 	}
 	evs, _ := f.events.Since(ctx, before)
-	if len(evs) != 2 || evs[0].Kind != KindState || evs[1].ID != evs[0].ID+1 {
+	if len(evs) != 2 || evs[0].Kind != events.KindWorkspaceState || evs[1].ID != evs[0].ID+1 {
 		t.Fatalf("the last move wrote %+v", evs)
 	}
 	if d := jobOf(t, evs[1]); d != (JobData{Kind: "create", Outcome: JobFailed}) || evs[1].WorkspaceID != w.ID {
@@ -80,9 +80,9 @@ func TestEndingCarriesTheJobsEndInTheMovesCommit(t *testing.T) {
 	// Published together, in commit order, after the three earlier moves.
 	var got []string
 	for range 5 {
-		got = append(got, (<-sub.C).Kind)
+		got = append(got, string((<-sub.C).Kind))
 	}
-	if got[3] != KindState || got[4] != KindJob {
+	if got[3] != string(events.KindWorkspaceState) || got[4] != string(events.KindWorkspaceJob) {
 		t.Errorf("published %v", got)
 	}
 

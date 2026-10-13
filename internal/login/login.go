@@ -153,9 +153,9 @@ const (
 	ProblemShutdown    Problem = "shutdown"     // Drydock shut down mid-login
 )
 
-// KindLogin is the one event kind: every phase change, carrying the whole
-// view, as auth.identity carries the whole identity. data: {login: View}.
-const KindLogin = "auth.login"
+// events.KindAuthLogin is the one event kind: every phase change, carrying
+// the whole view, as auth.identity carries the whole identity. data: {login:
+// View}.
 
 // Defaults, each configuration on Manager.
 const (
@@ -566,7 +566,7 @@ func (m *Manager) emit(ctx context.Context, v View) {
 	}
 	ectx, cancel := sys.Cleanup(ctx, m.Clock, emitTimeout)
 	defer cancel()
-	m.Events.Emit(ectx, "", level, KindLogin, v.Message, map[string]any{"login": v})
+	m.Events.Emit(ectx, "", level, events.KindAuthLogin, v.Message, map[string]any{"login": v})
 }
 
 // message is the sentence for a phase. Never built from the stream or the code.

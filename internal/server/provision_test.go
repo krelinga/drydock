@@ -87,7 +87,7 @@ func TestWorkspaceRoutesRefusedOnceProvisionStops(t *testing.T) {
 	// started keeps writing its own (supervisor.state), which is not a job's.
 	var wrote int
 	if err := srv.DB.DB.QueryRow(`SELECT count(*) FROM event WHERE id > ? AND workspace_id = ? AND kind IN (?, ?, ?, ?)`,
-		mark, created.ID, workspace.KindState, workspace.KindStep, workspace.KindAction, workspace.KindJob).Scan(&wrote); err != nil {
+		mark, created.ID, events.KindWorkspaceState, events.KindWorkspaceStep, events.KindWorkspaceAction, events.KindWorkspaceJob).Scan(&wrote); err != nil {
 		t.Fatal(err)
 	}
 	if wrote != 0 {
@@ -133,7 +133,7 @@ func TestShutdownEndsARunInFlight(t *testing.T) {
 	}
 	var ended bool
 	srv.DB.DB.QueryRow(`SELECT EXISTS (SELECT 1 FROM event WHERE workspace_id = ? AND kind = ?)`,
-		created.ID, workspace.KindJob).Scan(&ended)
+		created.ID, events.KindWorkspaceJob).Scan(&ended)
 	if ended {
 		t.Fatal("control: the run held at step 8 has ended already")
 	}
@@ -169,7 +169,7 @@ func TestShutdownEndsARunInFlight(t *testing.T) {
 	var stepFailed bool
 	for _, ev := range evs {
 		var d struct{ Step, Status, Detail string }
-		if ev.Kind == workspace.KindStep && json.Unmarshal(ev.Data, &d) == nil &&
+		if ev.Kind == events.KindWorkspaceStep && json.Unmarshal(ev.Data, &d) == nil &&
 			d.Step == string(workspace.StepSessionServer) && d.Status == "failed" {
 			stepFailed = strings.Contains(d.Detail, "Drydock shut down")
 		}
@@ -179,7 +179,7 @@ func TestShutdownEndsARunInFlight(t *testing.T) {
 	}
 	// ForWorkspace is newest first.
 	var end workspace.JobData
-	if last := evs[0]; last.Kind != workspace.KindJob || json.Unmarshal(last.Data, &end) != nil ||
+	if last := evs[0]; last.Kind != events.KindWorkspaceJob || json.Unmarshal(last.Data, &end) != nil ||
 		end.Kind != "create" || end.Outcome != workspace.JobCancelled {
 		t.Errorf("the workspace's last event is %s %s; want the create's end, cancelled", last.Kind, last.Data)
 	}

@@ -21,10 +21,6 @@ import (
 // and continues the run; declining clears the request and leaves the
 // workspace stopped. Neither is a failure.
 
-// KindApproved is written when the operator approves a request: data
-// {repository_id, hash}. It is what settles the approve button.
-const KindApproved = "config.approved"
-
 // PendingApproval is the request a run stopped at. Settings is the whole
 // host-access subset being asked for (canonical JSON, a list of
 // {field, source, value}), Hash its hash; Added, Changed and Removed are how
@@ -125,7 +121,7 @@ func (s *Store) awaitApproval(ctx context.Context, id, detail string, p PendingA
 			}
 			return nil, ErrIllegalMove{From: w.State, To: Stopped}
 		}
-		es, err := one(events.NewEvent(id, events.Warn, KindState, message(Stopped, detail), map[string]any{
+		es, err := one(events.NewEvent(id, events.Warn, events.KindWorkspaceState, message(Stopped, detail), map[string]any{
 			"state": Stopped, "from": Building, "detail": detail, "approval": p.view(),
 		}))
 		return withEnd(ctx, id, &done, es, err)
@@ -190,7 +186,7 @@ func (s *Store) Approve(ctx context.Context, id, hash, by string) (PendingApprov
 			w.RepositoryID, p.Hash, string(p.Settings), id, by, now); err != nil {
 			return nil, err
 		}
-		return one(events.NewEvent(id, events.Warn, KindApproved,
+		return one(events.NewEvent(id, events.Warn, events.KindConfigApproved,
 			"Host access approved for this repository's configuration.",
 			map[string]any{"repository_id": w.RepositoryID, "hash": p.Hash}))
 	})
@@ -219,7 +215,7 @@ func (s *Store) Decline(ctx context.Context, id string) error {
 			}
 			return nil, ErrNoApproval
 		}
-		return one(events.NewEvent(id, events.Info, KindState, message(Stopped, DeclineDetail),
+		return one(events.NewEvent(id, events.Info, events.KindWorkspaceState, message(Stopped, DeclineDetail),
 			map[string]any{"state": Stopped, "from": Stopped, "detail": DeclineDetail}))
 	})
 	return err

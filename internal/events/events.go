@@ -25,6 +25,14 @@
 //
 // data is a JSON object for the reducer; message is prose nothing may parse.
 //
+// The kind registry: every kind the server emits is a Kind constant in
+// kinds.go, with its data shape and its Scope (read, or session for kinds a
+// scoped credential must not see), and Event.Kind, NewEvent and Emit take a
+// Kind. TestKindRegistry typechecks the module and fails on a kind spelled
+// anywhere else (Go converts an untyped literal silently), a Kind made from a
+// variable but in the log's scan of a stored row, a registered kind nothing
+// emits, and a kind without a scope. On the wire a kind is its string.
+//
 // Commit(ctx, fn) runs fn's transaction and appends the events it returns in
 // that same transaction, under the same lock, publishing only after the
 // commit: a row change and its event are one fact, so commit order is id order
@@ -73,8 +81,8 @@ type Event struct {
 	// WorkspaceID is empty for events about the whole system (auth.*).
 	WorkspaceID string `json:"workspace_id,omitempty"`
 	Level       Level  `json:"level"`
-	// Kind is dotted, entity first: workspace.state, session.seen, auth.identity.
-	Kind string `json:"kind"`
+	// Kind is one of the registry's (kinds.go).
+	Kind Kind `json:"kind"`
 	// Message is for a human, and nothing may parse it.
 	Message string `json:"message"`
 	// Data is what the reducer applies: a JSON object, or absent.
@@ -218,7 +226,7 @@ type prepared struct {
 }
 
 func prepare(e Event) (prepared, error) {
-	if e.Kind == "" {
+	if len(e.Kind) == 0 {
 		return prepared{}, errors.New("events: an event needs a kind")
 	}
 	switch e.Level {
@@ -300,7 +308,7 @@ func (l *Log) Broadcast(name string, v any) error {
 
 // NewEvent builds an Event whose Data is v marshalled: Commit's callers use
 // it as Emit's do implicitly.
-func NewEvent(workspaceID string, level Level, kind, message string, v any) (Event, error) {
+func NewEvent(workspaceID string, level Level, kind Kind, message string, v any) (Event, error) {
 	e := Event{WorkspaceID: workspaceID, Level: level, Kind: kind, Message: message}
 	if v != nil {
 		b, err := json.Marshal(v)
@@ -315,7 +323,7 @@ func NewEvent(workspaceID string, level Level, kind, message string, v any) (Eve
 // Emit is Append for callers that build Data from a Go value. Both are for
 // events with no row; one that describes a row change goes through Commit
 // (the row rule, in the package comment).
-func (l *Log) Emit(ctx context.Context, workspaceID string, level Level, kind, message string, data any) (Event, error) {
+func (l *Log) Emit(ctx context.Context, workspaceID string, level Level, kind Kind, message string, data any) (Event, error) {
 	e, err := NewEvent(workspaceID, level, kind, message, data)
 	if err != nil {
 		return Event{}, err
@@ -479,12 +487,15 @@ func (l *Log) forWorkspace(ctx context.Context, workspaceID string, limit int, e
 
 func scan(rows *sql.Rows) (Event, error) {
 	var e Event
-	var level, at string
+	var level, kind, at string
 	var data sql.NullString
-	if err := rows.Scan(&e.ID, &e.WorkspaceID, &level, &e.Kind, &e.Message, &data, &at); err != nil {
+	if err := rows.Scan(&e.ID, &e.WorkspaceID, &level, &kind, &e.Message, &data, &at); err != nil {
 		return Event{}, err
 	}
 	e.Level = Level(level)
+	// The one Kind made from a string (TestKindRegistry allows it here
+	// alone): the row was written from a registered constant.
+	e.Kind = Kind(kind)
 	if data.Valid {
 		e.Data = json.RawMessage(data.String)
 	}

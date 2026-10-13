@@ -752,7 +752,7 @@ func (s *Server) Serve(ctx context.Context) error {
 		defer close(reconciled)
 		if _, err := s.Reconciler.Run(ctx); err != nil && ctx.Err() == nil {
 			fmt.Fprintf(os.Stderr, "drydock: reconcile: %v\n", err)
-			s.Events.Emit(ctx, "", events.Warn, "system.reconcile", reconcileWarning(err), nil)
+			s.Events.Emit(ctx, "", events.Warn, events.KindSystemReconcile, reconcileWarning(err), nil)
 		}
 		// Then the helper containers an earlier process left (§6), of every
 		// kind internal/ephemeral knows — cleanup helpers, log probes,

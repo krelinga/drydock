@@ -315,7 +315,7 @@ func TestLoginManagerAgainstRealDocker(t *testing.T) {
 			select {
 			case ev := <-sub.C:
 				var d struct{ Login login.View }
-				if ev.Kind == login.KindLogin && json.Unmarshal(ev.Data, &d) == nil && d.Login.Phase == want {
+				if ev.Kind == events.KindAuthLogin && json.Unmarshal(ev.Data, &d) == nil && d.Login.Phase == want {
 					return d.Login
 				}
 			case <-deadline:
@@ -536,7 +536,7 @@ func TestLoginCancelDuringCreate(t *testing.T) {
 			select {
 			case ev := <-sub.C:
 				var d struct{ Login login.View }
-				if ev.Kind == login.KindLogin && json.Unmarshal(ev.Data, &d) == nil && d.Login.Phase == want {
+				if ev.Kind == events.KindAuthLogin && json.Unmarshal(ev.Data, &d) == nil && d.Login.Phase == want {
 					return d.Login
 				}
 			case <-deadline:

@@ -68,7 +68,7 @@ func (r *registry) kinds(t *testing.T) []string {
 		}
 		json.Unmarshal(e.Data, &d)
 		n := d.Port.ContainerPort + d.ContainerPort
-		out = append(out, e.Kind+":"+itoa(n))
+		out = append(out, string(e.Kind)+":"+itoa(n))
 	}
 	return out
 }

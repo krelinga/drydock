@@ -114,7 +114,7 @@ func TestSessionServerInARealContainer(t *testing.T) {
 	last := func() (workspace.SupervisorData, int64) {
 		evs, _ := log.ForWorkspace(ctx, ws, 200)
 		for _, e := range evs {
-			if e.Kind == workspace.KindSupervisor {
+			if e.Kind == events.KindSupervisorState {
 				var d workspace.SupervisorData
 				json.Unmarshal(e.Data, &d)
 				return d, e.ID

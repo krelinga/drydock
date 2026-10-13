@@ -157,23 +157,19 @@ func stateOf(s classify.IdentityState) State {
 	panic(fmt.Sprintf("identity: classifier state %d has no stored name", s))
 }
 
-// Event kinds.
-const (
-	// KindIdentity: the stored identity changed — its state, its account,
-	// its expiry — or a failing check recovered. data: {identity: View}.
-	KindIdentity = "auth.identity"
-	// KindCheckFailed: a check could not read its inputs. The stored state
-	// stands. data: {check_error: {at, problem, message}}.
-	KindCheckFailed = "auth.identity_check_failed"
-	// KindChecked: a check someone asked for (Trigger, behind POST
-	// /api/auth/claude/check) found nothing to announce — the same verdict,
-	// no failure to clear. It is that request's settling event (frontend
-	// §4.2): without it "Check now" stays in flight until a reload. A check
-	// nobody asked for — the interval's, boot's, a handshake's — stays
-	// silent when nothing changed, and OnChange is not called for this
-	// kind. data: {identity: View}, last_checked_at moved.
-	KindChecked = "auth.identity_checked"
-)
+// The watch's event kinds (events.KindAuthIdentity…):
+//
+//   - auth.identity: the stored identity changed — its state, its account,
+//     its expiry — or a failing check recovered. data: {identity: View}.
+//   - auth.identity_check_failed: a check could not read its inputs. The
+//     stored state stands. data: {check_error: {at, problem, message}}.
+//   - auth.identity_checked: a check someone asked for (Trigger, behind POST
+//     /api/auth/claude/check) found nothing to announce — the same verdict,
+//     no failure to clear. It is that request's settling event (frontend
+//     §4.2): without it "Check now" stays in flight until a reload. A check
+//     nobody asked for — the interval's, boot's, a handshake's — stays
+//     silent when nothing changed, and OnChange is not called for this
+//     kind. data: {identity: View}, last_checked_at moved.
 
 // DefaultInterval is §7.3's six hours.
 const DefaultInterval = 6 * time.Hour
@@ -418,7 +414,7 @@ func (w *Watch) check(ctx context.Context) (View, bool, error) {
 	return v, announced, err
 }
 
-// checked writes KindChecked: the stored view, as it stands. If the view
+// checked writes events.KindAuthIdentityChecked: the stored view, as it stands. If the view
 // cannot be read the answer is a failure, never silence.
 func (w *Watch) checked(ctx context.Context) {
 	v, err := w.Read(ctx)
@@ -426,7 +422,7 @@ func (w *Watch) checked(ctx context.Context) {
 		w.failed(ctx, &ReadError{Problem: ProblemUnknown, Detail: "reading the stored identity: " + err.Error()})
 		return
 	}
-	w.Events.Emit(ctx, "", events.Info, KindChecked, "Checked the Claude login: nothing has changed.", map[string]any{"identity": v})
+	w.Events.Emit(ctx, "", events.Info, events.KindAuthIdentityChecked, "Checked the Claude login: nothing has changed.", map[string]any{"identity": v})
 	w.at("announced")
 }
 
@@ -577,7 +573,7 @@ func (w *Watch) failed(ctx context.Context, re *ReadError) {
 	w.mu.Lock()
 	w.failure = ce
 	w.mu.Unlock()
-	e, err := events.NewEvent("", events.Warn, KindCheckFailed, ce.Message, map[string]any{"check_error": ce})
+	e, err := events.NewEvent("", events.Warn, events.KindAuthIdentityCheckFailed, ce.Message, map[string]any{"check_error": ce})
 	if err != nil {
 		w.logf("drydock: identity: %v", err)
 		return
@@ -694,12 +690,12 @@ func (w *Watch) store(ctx context.Context, id classify.Identity) (View, bool, er
 			prev.loginExpiresAt != loginExpires || prev.loggedInAt != loggedIn
 		if !changed && !recovered {
 			// Nothing is said here: a check someone asked for is answered by
-			// run, with KindChecked, and the interval's stays silent.
+			// run, with events.KindAuthIdentityChecked, and the interval's stays silent.
 			return nil, nil
 		}
 		announced = true
 		// This answers whoever asked for this check.
-		e, err := events.NewEvent("", levelOf(state), KindIdentity, message(state, id), map[string]any{"identity": v})
+		e, err := events.NewEvent("", levelOf(state), events.KindAuthIdentity, message(state, id), map[string]any{"identity": v})
 		return []events.Event{e}, err
 	})
 	if err != nil {

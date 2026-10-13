@@ -155,7 +155,7 @@ func TestRefreshListsAndProbes(t *testing.T) {
 	}
 
 	evs, _ := e.log.Since(context.Background(), 0)
-	if len(evs) != 1 || evs[0].Kind != KindRefreshed || string(evs[0].Data) != `{"added":5,"count":5,"removed":0}` {
+	if len(evs) != 1 || evs[0].Kind != events.KindRepoRefreshed || string(evs[0].Data) != `{"added":5,"count":5,"removed":0}` {
 		t.Errorf("events %+v", evs)
 	}
 }
@@ -386,7 +386,7 @@ func TestFailedRefreshKeepsTheCache(t *testing.T) {
 	}
 	evs, _ := e.log.Since(context.Background(), 0)
 	last := evs[len(evs)-1]
-	if last.Kind != KindRefreshFailed || !strings.Contains(last.Message, "401 (Bad credentials)") {
+	if last.Kind != events.KindRepoRefreshFailed || !strings.Contains(last.Message, "401 (Bad credentials)") {
 		t.Errorf("last event %+v", last)
 	}
 	// A page loaded after the event still learns of it: the list carries the
