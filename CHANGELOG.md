@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.11.0](https://github.com/krelinga/drydock/compare/v0.10.0...v0.11.0) (2026-10-13)
+
+
+### Features
+
+* say on the approval card that initializeCommand runs on the host ([#141](https://github.com/krelinga/drydock/issues/141)) ([3393fc3](https://github.com/krelinga/drydock/commit/3393fc370510bf01e330841a87b02957eff22069))
+* warn when the workspace root is not mounted nosuid,nodev ([#142](https://github.com/krelinga/drydock/issues/142)) ([a765790](https://github.com/krelinga/drydock/commit/a765790c9d139e9685461320bc171ee04ab07e63))
+
 ## [0.10.0](https://github.com/krelinga/drydock/compare/v0.9.2...v0.10.0) (2026-10-10)
 
 
