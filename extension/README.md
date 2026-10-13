@@ -90,6 +90,13 @@ from a tree item or its node; a mutating command never does.
   nothing by itself (the field is written on every keystroke): `StaleTokenWatch` waits for the
   value to hold still, and if it is a different valid origin, the focused local or SSH window asks
   once, *Sign out of <old>* or *Keep*. Meanwhile the token is sent nowhere.
+- **A stream belongs to the credential it opened with** (`src/credentialWatch.ts`): a sign-out, or
+  a sign-in with another token, closes it, and the next hold opens one with the token now stored.
+  This window's Sign In and Sign Out apply the change before their command returns; SecretStorage's
+  late `onDidChange` for the same change then finds nothing new, so it never closes the stream a
+  command opened since with the new token. A stopped stream settles nothing, so it takes every
+  mark with it (`src/live.ts`), and a clone or follow waiting on one ends and says why rather than
+  wait forever.
 - **Mutations only from local and SSH windows** (`src/windowRule.ts`, `src/dispatch.ts`): every
   command runs through the dispatcher, which refuses a `mutating` command in any other window,
   ignores arguments and returns `undefined`. `mutating` is required in the registry.
