@@ -6,7 +6,11 @@ being built in phase E1's series of PRs, and this directory holds what has lande
 
 ```sh
 npm ci && npm run check   # types (twice: whole, and the pure layer alone), specs, the bundle and its budget
+../test/extension/run.sh  # the client tier: this client against the real Drydock behind real Caddy
 ```
+
+The client tier's specs are `test/client/` (config `vitest.client.config.mts`); its stack and
+what it covers are `test/extension/README.md`.
 
 ## Layers
 

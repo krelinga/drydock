@@ -23,6 +23,7 @@ go build ./... && go vet ./... && go test ./...   # the whole suite; the Caddy t
 gofmt -l .                                        # must print nothing
 cd web && npm ci && npm run check                 # the UI: types, tests, dist is current, size budget
 cd extension && npm ci && npm run check           # the VS Code extension: types (pure layer alone too), specs, bundle
+test/extension/run.sh                             # its client tier: the real client vs real Drydock + Caddy (needs drydock.test → 127.0.0.1)
 test/install/run.sh                               # the installer, in a systemd container
 test/browser/run.sh                               # the browser tier: Chromium (+ Firefox, WebKit), Caddy, drydock (needs web/'s npm ci)
 go build -o drydock ./cmd/drydock                 # the one binary
@@ -69,7 +70,7 @@ printf "%s\n" "$PW" | ./drydock passwd --db x.db  # set the operator password (n
 | `extension/` ([README](extension/README.md)) | The VS Code extension (E1, in progress). Only `src/adapter` imports `vscode`; the rest is pure, over ports, sharing `web/src/core` by path. The token goes only to the origin it was stored for, on a path `contract.json` names (which `TestExtensionContract` holds to the server); a mutating command runs only in a local or SSH window. Its `version` is Drydock's (release-please `extra-files`). |
 | `feature/` ([README](feature/README.md)) | The devcontainer Feature and its in-container clients. **Bump its `version` with any change**, and never declare `dependsOn`. |
 | `deploy/` ([README](deploy/README.md)) | Caddyfiles and the installer. Everything that can refuse runs before anything is replaced. |
-| `test/install`, `test/container`, `test/browser`, `test/ansible`, `test/docs`, `test/component` | Each has a README naming what it covers. |
+| `test/install`, `test/container`, `test/browser`, `test/extension`, `test/harness`, `test/ansible`, `test/docs`, `test/component` | Each has a README naming what it covers. `test/harness` is the browser tier's and the extension client tier's shared Caddy, CA, tap and process helpers. |
 | `test/fixtures/` ([README](test/fixtures/README.md)) | The corpus from Claude Code `2.1.289` and devcontainer CLI `0.89.0`, plus `record.sh` (testing §11.1 step 3). |
 
 Three things about that code worth knowing before extending it:

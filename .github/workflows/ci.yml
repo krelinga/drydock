@@ -49,27 +49,40 @@ jobs:
       # internal/web/dist is exactly what these sources build.
       - run: npm run check
 
-  # The VS Code extension's unit and manifest tiers (vscode-extension §12.2,
-  # §12.3): plain Node, no editor. Types (with the pure layer compiled again
-  # with no ambient types), the specs, and the bundle within its budget. The
-  # client and extension-host tiers join this job as they land, in the
-  # Playwright image the browser job uses (§12.12). Not yet a required check.
+  # The VS Code extension (vscode-extension §12.12): its unit and manifest
+  # tiers (types, with the pure layer compiled again with no ambient types;
+  # the specs; the bundle within its budget), then the client tier
+  # (test/extension/run.sh): the extension's client on its production
+  # transport against the real Drydock (test/extension/stack, with the fake
+  # GitHub and fake devcontainer and docker executables) behind real Caddy
+  # with a throwaway CA, trusted through NODE_EXTRA_CA_CERTS only. Node has no
+  # host-resolver flag, so drydock.test goes into /etc/hosts first. On the
+  # bare runner: nothing here needs a browser; the extension-host tier, when
+  # it lands, moves the job into the Playwright image the browser job uses.
+  # Not yet a required check.
   extension:
     runs-on: ubuntu-latest
-    # Under a minute.
-    timeout-minutes: 10
-    defaults:
-      run:
-        working-directory: extension
+    # About two minutes, the Go build included.
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
       - uses: actions/setup-node@v5
         with:
           node-version: 24
           cache: npm
           cache-dependency-path: extension/package-lock.json
+      # The one Caddy pin, shared with the go and browser jobs.
+      - run: .github/actions/go-suite/install-caddy.sh
+      - name: drydock.test resolves to loopback
+        run: echo '127.0.0.1 drydock.test' | sudo tee -a /etc/hosts
       - run: npm ci
+        working-directory: extension
       - run: npm run check
+        working-directory: extension
+      - run: test/extension/run.sh
 
   # The browser tier (testing §10): real Chromium, real Caddy on the shipped
   # Caddyfile, the real `drydock serve`, and a throwaway CA trusted through

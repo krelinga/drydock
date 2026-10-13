@@ -167,7 +167,9 @@ export interface StaleDeps extends SessionDeps {
  *
  *   - from a local or SSH window (§8 rule 1: signing out is a mutation);
  *   - in the focused window, so one change is one question however many
- *     windows are open;
+ *     windows are open — and when a window gains the focus it checks again
+ *     (`focusChanged`), so a question no focused window was there to ask is
+ *     not stranded;
  *   - once per (token origin, new origin) pair in this window, and never
  *     while a question is already open.
  *
@@ -187,6 +189,18 @@ export class StaleTokenWatch {
       this.#cancel = null
       void this.check().catch((e: unknown) => this.d.log.warn(`stale token: ${errorLine(e)}`))
     })
+  }
+
+  /** The window's focus changed: a window that gains it checks, since a settle it missed asked nothing. */
+  focusChanged(focused: boolean): void {
+    if (!focused) return
+    void this.check().catch((e: unknown) => this.d.log.warn(`stale token: ${errorLine(e)}`))
+  }
+
+  /** Cancels a pending settle; the adapter registers it to run on deactivate. */
+  dispose(): void {
+    this.#cancel?.()
+    this.#cancel = null
   }
 
   /** Asks now, if there is anything to ask. Resolves to what was done. */

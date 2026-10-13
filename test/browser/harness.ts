@@ -39,13 +39,21 @@
 
 import { execFileSync, spawn, type ChildProcess } from 'node:child_process'
 import { createHash, randomBytes } from 'node:crypto'
-import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, openSync, rmSync, writeFileSync } from 'node:fs'
 import http from 'node:http'
 import net from 'node:net'
-import { networkInterfaces, tmpdir, userInfo } from 'node:os'
+import { networkInterfaces, tmpdir } from 'node:os'
 import path from 'node:path'
 import tls from 'node:tls'
 import { chromium, type Browser } from '@playwright/test'
+import { CaddyProc, type CaddyOptions, type CaddySite } from '../harness/caddy'
+import { makeCerts as makeCertsIn } from '../harness/certs'
+import { filesUnder, freePort, groupName, sleep, unixAnswers, waitFor } from '../harness/proc'
+import { COOKIE, Tap, type Seen } from '../harness/tap'
+
+// The shared pieces (test/harness): Caddy, the certificates, the tap and the
+// process helpers, which the VS Code extension's client tier runs too.
+export { CaddyProc, COOKIE, filesUnder, Tap, type CaddyOptions, type Seen }
 
 export const UI_HOST = 'drydock.test'
 export const PREVIEW_DOMAIN = 'drydock-preview.test'
@@ -68,249 +76,18 @@ export const PREVIEW = `https://${PREVIEW_HOST}`
  * handshake and ends on the UI's sign-in.
  */
 export const PREVIEW_PAGE = `${PREVIEW}/.drydock/denied`
-export const COOKIE = '__Host-drydock'
 /** The session cookie's name between a browser and the loopback front. */
 const LOOPBACK_COOKIE = 'drydock-loopback'
 
 export const REPO = path.resolve(__dirname, '..', '..')
 
-/** What the tap saw for one request. */
-export interface Seen {
-  seq: number
-  socket: 'api' | 'preview'
-  method: string
-  path: string
-  host: string
-  origin: string | null
-  referer: string | null
-  /** The value of the session cookie, if one arrived. */
-  session: string | null
-  cookieNames: string[]
-  secFetchSite: string | null
-  secFetchDest: string | null
-  secFetchMode: string | null
-  lastEventId: string | null
-  acceptEncoding: string | null
-  status: number | null
-  responseHeaders: http.IncomingHttpHeaders | null
-  /** The Upgrade header of a request relayed as an upgrade, else absent. */
-  upgrade?: string | null
-}
-
-class Tap {
-  readonly seen: Seen[] = []
-  private seq = 0
-  private server: http.Server
-
-  constructor(
-    readonly socket: 'api' | 'preview',
-    listen: string | { host: string; port: number },
-    upstream: string,
-    /** Rewrites forwarded headers, after the record is taken (the loopback front). */
-    rewrite?: { request?: (h: http.IncomingHttpHeaders) => void; response?: (h: http.IncomingHttpHeaders) => void },
-  ) {
-    this.server = http.createServer((req, res) => {
-      const cookies = parseCookies(req.headers.cookie)
-      const rec: Seen = {
-        seq: ++this.seq,
-        socket,
-        method: req.method ?? '',
-        path: req.url ?? '',
-        host: req.headers.host ?? '',
-        origin: header(req, 'origin'),
-        referer: header(req, 'referer'),
-        session: cookies.get(COOKIE) ?? null,
-        cookieNames: [...cookies.keys()],
-        secFetchSite: header(req, 'sec-fetch-site'),
-        secFetchDest: header(req, 'sec-fetch-dest'),
-        secFetchMode: header(req, 'sec-fetch-mode'),
-        lastEventId: header(req, 'last-event-id'),
-        acceptEncoding: header(req, 'accept-encoding'),
-        status: null,
-        responseHeaders: null,
-      }
-      this.seen.push(rec)
-      const headers = { ...req.headers }
-      rewrite?.request?.(headers)
-      const up = http.request(
-        { socketPath: upstream, method: req.method, path: req.url, headers },
-        (ur) => {
-          rec.status = ur.statusCode ?? null
-          rec.responseHeaders = ur.headers
-          const out = { ...ur.headers }
-          rewrite?.response?.(out)
-          res.writeHead(ur.statusCode ?? 502, out)
-          // Streams each chunk as it arrives: SSE frames are not held here.
-          ur.on('data', (c: Buffer) => res.write(c))
-          ur.on('end', () => res.end())
-          ur.on('error', () => res.destroy())
-        },
-      )
-      up.on('error', () => {
-        if (!res.headersSent) res.writeHead(502)
-        res.end()
-      })
-      res.on('close', () => up.destroy())
-      req.pipe(up)
-    })
-    // An upgrade (a preview's HMR websocket) is relayed byte for byte, and
-    // recorded like any request: the 101's status and headers are read off
-    // the first bytes back.
-    this.server.on('upgrade', (req: http.IncomingMessage, socket: net.Socket, head: Buffer) => {
-      const cookies = parseCookies(req.headers.cookie)
-      const rec: Seen = {
-        seq: ++this.seq,
-        socket: this.socket,
-        method: req.method ?? '',
-        path: req.url ?? '',
-        host: req.headers.host ?? '',
-        origin: header(req, 'origin'),
-        referer: header(req, 'referer'),
-        session: cookies.get(COOKIE) ?? null,
-        cookieNames: [...cookies.keys()],
-        secFetchSite: header(req, 'sec-fetch-site'),
-        secFetchDest: header(req, 'sec-fetch-dest'),
-        secFetchMode: header(req, 'sec-fetch-mode'),
-        lastEventId: header(req, 'last-event-id'),
-        acceptEncoding: header(req, 'accept-encoding'),
-        status: null,
-        responseHeaders: null,
-        upgrade: header(req, 'upgrade'),
-      }
-      this.seen.push(rec)
-      const up = net.connect(upstream)
-      const close = () => {
-        up.destroy()
-        socket.destroy()
-      }
-      up.on('error', close)
-      socket.on('error', close)
-      up.on('connect', () => {
-        let lines = `${req.method} ${req.url} HTTP/${req.httpVersion}\r\n`
-        for (let i = 0; i + 1 < req.rawHeaders.length; i += 2) lines += `${req.rawHeaders[i]}: ${req.rawHeaders[i + 1]}\r\n`
-        up.write(lines + '\r\n')
-        if (head.length) up.write(head)
-        let first = true
-        up.on('data', (c: Buffer) => {
-          if (first) {
-            first = false
-            const text = c.toString('latin1')
-            const end = text.indexOf('\r\n\r\n')
-            const [status, ...hs] = text.slice(0, end < 0 ? undefined : end).split('\r\n')
-            rec.status = Number((status ?? '').split(' ')[1]) || null
-            const h: http.IncomingHttpHeaders = {}
-            for (const l of hs) {
-              const i = l.indexOf(':')
-              if (i < 0) continue
-              const k = l.slice(0, i).trim().toLowerCase()
-              const v = l.slice(i + 1).trim()
-              if (k === 'set-cookie') h['set-cookie'] = [...(h['set-cookie'] ?? []), v]
-              else h[k] = v
-            }
-            rec.responseHeaders = h
-          }
-          socket.write(c)
-        })
-        socket.on('data', (c: Buffer) => up.write(c))
-        up.on('end', () => socket.end())
-        socket.on('end', () => up.end())
-        up.on('close', close)
-        socket.on('close', close)
-      })
-    })
-    this.listening = new Promise((r) => this.server.once('listening', r))
-    if (typeof listen === 'string') this.server.listen(listen)
-    else this.server.listen(listen.port, listen.host)
-  }
-
-  readonly listening: Promise<unknown>
-
-  /** The TCP port, for a tap listening on one. */
-  port(): number {
-    const a = this.server.address()
-    if (typeof a !== 'object' || !a) throw new Error('tap: not listening on TCP')
-    return a.port
-  }
-
-  clear(): void {
-    this.seen.length = 0
-  }
-
-  close(): Promise<void> {
-    this.server.closeAllConnections()
-    return new Promise((r) => this.server.close(() => r()))
-  }
-}
-
-function header(req: http.IncomingMessage, name: string): string | null {
-  const v = req.headers[name]
-  return typeof v === 'string' ? v : Array.isArray(v) ? v.join(', ') : null
-}
-
-function parseCookies(raw: string | undefined): Map<string, string> {
-  const out = new Map<string, string>()
-  for (const part of (raw ?? '').split(';')) {
-    const i = part.indexOf('=')
-    if (i > 0) out.set(part.slice(0, i).trim(), part.slice(i + 1).trim())
-  }
-  return out
-}
-
-async function freePort(): Promise<number> {
-  return new Promise((resolve, reject) => {
-    const s = net.createServer()
-    s.listen(0, '127.0.0.1', () => {
-      const a = s.address()
-      s.close(() => (typeof a === 'object' && a ? resolve(a.port) : reject(new Error('no port'))))
-    })
-  })
-}
-
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
-
-async function waitFor(what: string, ok: () => boolean | Promise<boolean>, log?: string): Promise<void> {
-  for (let i = 0; i < 150; i++) {
-    try {
-      if (await ok()) return
-    } catch {
-      /* not yet */
-    }
-    await sleep(100)
-  }
-  const tail = log ? `\n${safeRead(log)}` : ''
-  throw new Error(`${what} never came up${tail}`)
-}
-
-function safeRead(p: string): string {
-  try {
-    return readFileSync(p, 'utf8')
-  } catch {
-    return ''
-  }
-}
-
-/** A throwaway CA and two leaves, each with a subjectAltName (Chromium ignores CN). */
+/** A throwaway CA and two leaves (UI host, preview wildcard), each with a subjectAltName. */
 function makeCerts(dir: string): void {
-  mkdirSync(dir, { recursive: true })
-  const ossl = (...args: string[]) => execFileSync('openssl', args, { cwd: dir, stdio: ['ignore', 'ignore', 'pipe'] })
-  ossl('req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-sha256', '-days', '2',
-    '-keyout', 'ca.key', '-out', 'ca.crt', '-subj', '/CN=Drydock browser-tier throwaway CA',
-    '-addext', 'basicConstraints=critical,CA:TRUE,pathlen:0',
-    '-addext', 'keyUsage=critical,keyCertSign,cRLSign')
-  const leaf = (name: string, san: string) => {
-    writeFileSync(path.join(dir, `${name}.ext`), [
-      `subjectAltName=${san}`,
-      'basicConstraints=critical,CA:FALSE',
-      'keyUsage=critical,digitalSignature,keyEncipherment',
-      'extendedKeyUsage=serverAuth',
-    ].join('\n'))
-    ossl('req', '-newkey', 'rsa:2048', '-nodes', '-sha256', '-keyout', `${name}.key`, '-out', `${name}.csr`, '-subj', `/CN=${name}`)
-    ossl('x509', '-req', '-in', `${name}.csr`, '-CA', 'ca.crt', '-CAkey', 'ca.key', '-CAcreateserial',
-      '-out', `${name}.crt`, '-days', '2', '-sha256', '-extfile', `${name}.ext`)
-  }
-  leaf('ui', `DNS:${UI_HOST}`)
-  // One wildcard covers every preview slug; it matches exactly one label.
-  leaf('preview', `DNS:*.${PREVIEW_DOMAIN},DNS:${PREVIEW_DOMAIN}`)
+  makeCertsIn(dir, [
+    { name: 'ui', san: `DNS:${UI_HOST}` },
+    // One wildcard covers every preview slug; it matches exactly one label.
+    { name: 'preview', san: `DNS:*.${PREVIEW_DOMAIN},DNS:${PREVIEW_DOMAIN}` },
+  ], 'Drydock browser-tier throwaway CA')
 }
 
 /** A HOME whose NSS store trusts `ca` (or nothing, for the control). */
@@ -322,111 +99,7 @@ function makeHome(dir: string, ca: string | null): string {
   return dir
 }
 
-export interface CaddyOptions {
-  /** Serve the UI host this certificate instead of its own (the wrong-host test). */
-  uiCert?: { cert: string; key: string }
-}
-
-export class CaddyProc {
-  proc: ChildProcess | null = null
-  readonly httpsPort: number
-  readonly dir: string
-  private env: NodeJS.ProcessEnv
-
-  private constructor(stack: Stack, tag: string, httpsPort: number, httpPort: number, opts: CaddyOptions) {
-    this.httpsPort = httpsPort
-    this.dir = path.join(stack.root, `caddy-${tag}`)
-    mkdirSync(this.dir, { recursive: true, mode: 0o700 })
-    const c = stack.certs
-    this.env = {
-      ...process.env,
-      HOME: this.dir,
-      XDG_DATA_HOME: path.join(this.dir, 'data'),
-      XDG_CONFIG_HOME: path.join(this.dir, 'config'),
-      DRYDOCK_UI_HOST: UI_HOST,
-      DRYDOCK_UI_CERT: opts.uiCert?.cert ?? path.join(c, 'ui.crt'),
-      DRYDOCK_UI_KEY: opts.uiCert?.key ?? path.join(c, 'ui.key'),
-      DRYDOCK_PREVIEW_DOMAIN: PREVIEW_DOMAIN,
-      DRYDOCK_PREVIEW_CERT: path.join(c, 'preview.crt'),
-      DRYDOCK_PREVIEW_KEY: path.join(c, 'preview.key'),
-      DRYDOCK_API_SOCKET: stack.apiTapSock,
-      DRYDOCK_PREVIEW_SOCKET: stack.previewTapSock,
-      DRYDOCK_HTTPS_PORT: String(httpsPort),
-      DRYDOCK_HTTP_PORT: String(httpPort),
-      DRYDOCK_CADDY_ADMIN: `unix/${path.join(this.dir, 'admin.sock')}|0600`,
-      DRYDOCK_CADDY_SITES: stack.sites,
-    }
-  }
-
-  static async start(stack: Stack, tag: string, opts: CaddyOptions = {}): Promise<CaddyProc> {
-    const c = new CaddyProc(stack, tag, await freePort(), await freePort(), opts)
-    await c.run()
-    return c
-  }
-
-  /** (Re)starts on the same ports. */
-  async run(): Promise<void> {
-    const log = path.join(this.dir, 'caddy.log')
-    // The shipped file, byte for byte: a tested copy of a config is not a tested config.
-    this.proc = spawn('caddy', ['run', '--config', path.join(REPO, 'deploy', 'Caddyfile'), '--adapter', 'caddyfile'], {
-      env: this.env,
-      // Caddy logs to stderr; kept in the root for a failed run's post-mortem.
-      stdio: ['ignore', 'ignore', openSync(log, 'a')],
-    })
-    const port = this.httpsPort
-    await waitFor(`caddy (${path.basename(this.dir)})`, () => tlsAnswers(port), log)
-  }
-
-  /** SIGKILL: every connection through it drops at once, as a crashed proxy's would. */
-  async kill(): Promise<void> {
-    const p = this.proc
-    this.proc = null
-    if (!p || p.exitCode !== null) return
-    const gone = new Promise((r) => p.once('exit', r))
-    p.kill('SIGKILL')
-    await gone
-  }
-
-  async stop(): Promise<void> {
-    const p = this.proc
-    this.proc = null
-    if (!p || p.exitCode !== null) return
-    const gone = new Promise((r) => p.once('exit', r))
-    p.kill('SIGINT')
-    await Promise.race([gone, sleep(5000).then(() => p.kill('SIGKILL'))])
-  }
-}
-
-function tlsAnswers(port: number): Promise<boolean> {
-  return new Promise((resolve) => {
-    // rejectUnauthorized is off for this liveness probe ONLY: it asks "is
-    // something speaking TLS on the port yet", not "is it the right cert".
-    // The browser, which is what the assertions are about, validates fully.
-    const s = tls.connect({ host: '127.0.0.1', port, servername: UI_HOST, rejectUnauthorized: false }, () => {
-      s.end()
-      resolve(true)
-    })
-    s.on('error', () => resolve(false))
-  })
-}
-
 /** Reads the certificate a listener presents for `servername`. */
-/**
- * Every regular file under dir, recursively: what a sweep of the stack's root
- * reads — Caddy's log, Drydock's log (its stdout and stderr: the journal, in
- * production), the database and its WAL, the stand-in docker's argv log.
- */
-export function filesUnder(dir: string): string[] {
-  const out: string[] = []
-  for (const name of readdirSync(dir)) {
-    const p = path.join(dir, name)
-    const st = statSync(p, { throwIfNoEntry: false })
-    if (st?.isDirectory()) out.push(...filesUnder(p))
-    else if (st?.isFile()) out.push(p)
-  }
-  return out
-}
-
 export function presentedCert(port: number, servername: string): Promise<tls.PeerCertificate> {
   return new Promise((resolve, reject) => {
     const s = tls.connect({ host: '127.0.0.1', port, servername, rejectUnauthorized: false }, () => {
@@ -438,13 +111,23 @@ export function presentedCert(port: number, servername: string): Promise<tls.Pee
   })
 }
 
-export class Stack {
+export class Stack implements CaddySite {
   readonly root: string
   readonly certs: string
   readonly sites: string
   readonly run: string
   readonly apiTapSock: string
   readonly previewTapSock: string
+  // CaddySite: Caddy forwards to the taps.
+  readonly repo = REPO
+  readonly uiHost = UI_HOST
+  readonly previewDomain = PREVIEW_DOMAIN
+  get apiSocket(): string {
+    return this.apiTapSock
+  }
+  get previewSocket(): string {
+    return this.previewTapSock
+  }
   readonly db: string
   readonly password = `pw-${randomBytes(12).toString('hex')}`
   apiTap!: Tap
@@ -637,7 +320,7 @@ exit 0
       '--claude-volume', this.claudeVolume,
     ], { stdio: ['ignore', out, out], env: { ...process.env, PATH: `${this.fakeBin}:${process.env.PATH ?? ''}` } })
     const sock = path.join(this.run, 'http.sock')
-    await waitFor('drydock serve', () => unixAnswers(sock), log)
+    await waitFor('drydock serve', () => unixAnswers(sock, UI_HOST), log)
   }
 
   async stopDrydock(): Promise<void> {
@@ -751,17 +434,6 @@ exit 0
   }
 }
 
-function unixAnswers(sock: string): Promise<boolean> {
-  return new Promise((resolve) => {
-    const req = http.request({ socketPath: sock, path: '/', headers: { Host: UI_HOST } }, (res) => {
-      res.resume()
-      resolve(true)
-    })
-    req.on('error', () => resolve(false))
-    req.end()
-  })
-}
-
 /**
  * This host's first non-loopback IPv4 address: what the stand-in docker
  * reports as a preview container's address, on a bridge network. A release
@@ -825,12 +497,6 @@ function tcpAnswers(port: number): Promise<boolean> {
     })
     s.on('error', () => resolve(false))
   })
-}
-
-function groupName(): string {
-  // The process's primary group: Caddy runs as the same user, so it can
-  // reach a 0660 socket owned by it — the test's stand-in for the drydock group.
-  return execFileSync('id', ['-gn'], { encoding: 'utf8' }).trim() || String(userInfo().gid)
 }
 
 /**

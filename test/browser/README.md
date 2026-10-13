@@ -6,6 +6,9 @@ shipped Caddyfile. Run by `run.sh`, which resolves `@playwright/test` from `web/
 
 ## The stack
 
+Caddy, the CA, the tap and the process helpers are `test/harness/`'s, shared with the VS Code
+extension's client tier; `harness.ts` is this tier's stack around them.
+
 - `drydock serve` runs with a **stand-in `docker`** on its PATH (fakeclaude where the login
   container's claude would be) and its own `--claude-volume`, so the tier drives the login
   handshake through a reload (`login.spec.ts`, §10.2 item 12) and can never reach the host's Docker
