@@ -10,9 +10,10 @@ import { COMMANDS, type CommandDef, type CommandId } from './commands'
 import { Dispatcher, OPEN_IN_DRYDOCK, TOKEN_ENDED, type Handler } from './dispatch'
 import { openInBrowser, PASTE_TOKEN, signIn, signOut, type SessionDeps } from './session'
 import { cloneCommand, connectCommand, go, refreshRepositories } from './flows'
+import { approve, decline, reviewApproval } from './review'
 import { ELSEWHERE } from './windowRule'
 import { FakeWindow, MemoryLog, ORIGIN, RecordingOpener, ScriptedPrompter, TOKEN2, errorResponse, settingsOf } from '../test/fakes'
-import { flowWorld } from '../test/fakeDrydock'
+import { flowWorld, reviewWorld } from '../test/fakeDrydock'
 
 /** The real handlers over fakes, with an operator who says yes to everything. */
 function world(remoteName: string | undefined) {
@@ -28,6 +29,7 @@ function world(remoteName: string | undefined) {
   prompter.pickAnswers = Array(10).fill(0)
   prompter.dismissNow = true
   const session: SessionDeps = { prompter, opener, settings, credentials, client, log }
+  const r = reviewWorld(f)
   const handlers: Record<CommandId, Handler> = {
     'drydock.signIn': async () => void (await signIn(session)),
     'drydock.signOut': () => signOut(session),
@@ -37,6 +39,9 @@ function world(remoteName: string | undefined) {
     'drydock.clone': () => cloneCommand(f),
     'drydock.connect': () => connectCommand(f),
     'drydock.refreshRepositories': () => refreshRepositories(f),
+    'drydock.reviewApproval': (id) => reviewApproval(r, id),
+    'drydock.approve': () => approve(r),
+    'drydock.decline': () => decline(r),
   }
   const d: Dispatcher = new Dispatcher({ prompter, window, opener, settings, log, signIn: async () => void (await d.run('drydock.signIn')()) }, handlers)
   return { d, transport: f.server.transport, server: f.server, secrets, prompter, opener, log, live: f.live }
@@ -47,7 +52,7 @@ const MUTATING = COMMANDS.filter((c) => c.mutating).map((c) => c.id)
 describe('rule 1: no mutation outside local and SSH windows', () => {
   it('the registry marks the commands that change anything as mutating', () => {
     // A named list, so marking one of these read-only fails here by name.
-    expect(MUTATING).toEqual(['drydock.clone', 'drydock.refreshRepositories', 'drydock.signIn', 'drydock.signOut'])
+    expect(MUTATING).toEqual(['drydock.clone', 'drydock.refreshRepositories', 'drydock.approve', 'drydock.decline', 'drydock.signIn', 'drydock.signOut'])
   })
 
   it('every mutating command in an attached-container window sends nothing, stores nothing, and says why', async () => {
@@ -85,7 +90,7 @@ describe('rule 1: no mutation outside local and SSH windows', () => {
 describe('rule 2: only a read or a connect takes an id', () => {
   it('no mutating command takes an id; connect and Open in Drydock do (control)', () => {
     expect(COMMANDS.filter((c: CommandDef) => c.takesId === true && c.mutating)).toEqual([])
-    expect(COMMANDS.filter((c: CommandDef) => c.takesId === true).map((c) => c.id).sort()).toEqual(['drydock.connect', 'drydock.openInBrowser'])
+    expect(COMMANDS.filter((c: CommandDef) => c.takesId === true).map((c) => c.id).sort()).toEqual(['drydock.connect', 'drydock.openInBrowser', 'drydock.reviewApproval'])
   })
 
   it('a tree item\'s id reaches connect; anything not a workspace id is dropped, and the command asks', async () => {
@@ -146,6 +151,7 @@ describe('failures are shown, never thrown', () => {
     const throwing = (e: unknown): Record<CommandId, Handler> => ({
       'drydock.signIn': async () => {}, 'drydock.signOut': async () => {}, 'drydock.showLog': async () => {},
       'drydock.go': async () => {}, 'drydock.clone': async () => {}, 'drydock.connect': async () => {}, 'drydock.refreshRepositories': async () => {},
+      'drydock.reviewApproval': async () => {}, 'drydock.approve': async () => {}, 'drydock.decline': async () => {},
       'drydock.openInBrowser': async () => { throw e },
     })
     const deps = { prompter, window: new FakeWindow(), opener: new RecordingOpener(), settings: settingsOf(ORIGIN), log, signIn: async () => {} }

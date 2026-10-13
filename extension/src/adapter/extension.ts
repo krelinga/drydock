@@ -16,6 +16,7 @@ import type { Clock, Extensions, Log, Opener, Prompter, Secrets, Settings, Windo
 import { Live } from '../live'
 import { cloneCommand, connectCommand, go, openInDrydock, refreshRepositories, type FlowDeps } from '../flows'
 import { statusView } from '../status'
+import { Reviews, SCHEME, approve, decline, idOfURI, reviewApproval, type DocumentsPort, type ReviewDeps } from '../review'
 import { repositoryNodes, workspaceNodes, type TreeNode } from '../tree'
 import { StaleTokenWatch, openInBrowser, signIn, signOut, type SessionDeps } from '../session'
 import { originOf } from '../settings'
@@ -56,10 +57,15 @@ export function activate(context: vscode.ExtensionContext): Seam | undefined {
         : level === 'warning' ? vscode.window.showWarningMessage : vscode.window.showInformationMessage
       return Promise.resolve(show(text, ...actions))
     },
-    input: (opts) => Promise.resolve(vscode.window.showInputBox({
-      prompt: opts.prompt, password: opts.password ?? false, ignoreFocusOut: opts.ignoreFocusOut ?? false,
-      placeHolder: opts.placeHolder,
-    })),
+    input: (opts) => {
+      const cts = new vscode.CancellationTokenSource()
+      opts.cancel?.onCancel(() => cts.cancel())
+      return Promise.resolve(vscode.window.showInputBox({
+        prompt: opts.prompt, password: opts.password ?? false, ignoreFocusOut: opts.ignoreFocusOut ?? false,
+        placeHolder: opts.placeHolder,
+      }, cts.token)).finally(() => cts.dispose())
+    },
+    confirm: async (text, action) => (await vscode.window.showWarningMessage(text, { modal: true }, action)) === action,
     pick: async (items, opts) => {
       const picked = await vscode.window.showQuickPick(items.map((i) => ({ ...i, picked: false })), {
         placeHolder: opts.placeHolder, matchOnDescription: true,
@@ -93,6 +99,7 @@ export function activate(context: vscode.ExtensionContext): Seam | undefined {
     input: (o) => (seam.prompter ?? realPrompter).input(o),
     pick: (i, o) => (seam.prompter ?? realPrompter).pick(i, o),
     progress: (t, r) => (seam.prompter ?? realPrompter).progress(t, r),
+    confirm: (t, a) => (seam.prompter ?? realPrompter).confirm(t, a),
   }
   const window: Window = {
     remoteName: () => (seam.window ?? realWindow).remoteName(),
@@ -145,10 +152,17 @@ export function activate(context: vscode.ExtensionContext): Seam | undefined {
     bar.show()
   }
   const reread = async () => {
-    signedIn = (await credentials.read()) !== null
+    const c = await credentials.read()
+    const was = signedIn
+    signedIn = c !== null
     // The views' welcome content (package.json viewsWelcome) reads this.
     await vscode.commands.executeCommand('setContext', 'drydock.signedIn', signedIn)
+    // A stream belongs to the credential it opened with: signed out, or
+    // signed in with another token (the old one is revoked), it closes, and
+    // the next use opens one with the token now stored.
     if (!signedIn) live.close('signed_out')
+    // The secret changed while signed in before and after: a new token.
+    else if (was) live.close('signed_in_again')
     render()
   }
   context.subscriptions.push(
@@ -197,6 +211,28 @@ export function activate(context: vscode.ExtensionContext): Seam | undefined {
   context.subscriptions.push({ dispose: () => clearInterval(tick) })
   void reread()
 
+  // The host-access review documents (review.ts): drydock-approval:/<id>,
+  // read-only, rendered from the snapshot the approval sends the hash of.
+  const docsChanged = new vscode.EventEmitter<vscode.Uri>()
+  const documents: DocumentsPort = {
+    show: async (uri) => {
+      const doc = await vscode.workspace.openTextDocument(vscode.Uri.parse(uri, true))
+      await vscode.window.showTextDocument(doc, { viewColumn: vscode.ViewColumn.Beside, preview: true })
+    },
+    activeUri: () => vscode.window.activeTextEditor?.document.uri.toString(),
+    changed: (uri) => docsChanged.fire(vscode.Uri.parse(uri, true)),
+  }
+  const reviews = new Reviews({ ...flows, documents })
+  const reviewDeps: ReviewDeps = { ...flows, documents, reviews }
+  reviewDeps.review = flows.review = (id) => reviewApproval(reviewDeps, id)
+  context.subscriptions.push(docsChanged, vscode.workspace.registerTextDocumentContentProvider(SCHEME, {
+    onDidChange: docsChanged.event,
+    provideTextDocumentContent: (uri) => {
+      const id = idOfURI(uri.toString())
+      return id === null ? '' : reviews.text(id)
+    },
+  }))
+
   const handlers: Record<CommandId, Handler> = {
     'drydock.signIn': async () => {
       await signIn(session)
@@ -210,6 +246,9 @@ export function activate(context: vscode.ExtensionContext): Seam | undefined {
     'drydock.clone': () => cloneCommand(flows),
     'drydock.connect': (id) => connectCommand(flows, id),
     'drydock.refreshRepositories': () => refreshRepositories(flows),
+    'drydock.reviewApproval': (id) => reviewApproval(reviewDeps, id),
+    'drydock.approve': () => approve(reviewDeps),
+    'drydock.decline': () => decline(reviewDeps),
   }
   const dispatcher: Dispatcher = new Dispatcher(
     { prompter, window, opener, settings, log, signIn: async () => void (await dispatcher.run('drydock.signIn')()) },

@@ -27,6 +27,15 @@ import (
 // it differs from the subset last approved for the repository, which is what
 // the operator is shown. RemoveExisting is the stopped run's
 // --remove-existing-container, which the continued run keeps.
+//
+// Baseline is the hash of the approval Added, Changed and Removed were
+// computed against — the repository's current approval when the run
+// stopped — or "" when it had none. The operator approves Hash (the whole
+// subset) having been shown only its difference from that baseline, which
+// is sound only while the baseline is still the repository's current
+// approval; Approve checks it (vscode-extension §10.4). A request recorded
+// before this field existed decodes with "", so it is approved only for a
+// repository that still has no approval, and otherwise refused as stale.
 type PendingApproval struct {
 	Hash           string          `json:"hash"`
 	Settings       json.RawMessage `json:"settings"`
@@ -34,6 +43,7 @@ type PendingApproval struct {
 	Changed        json.RawMessage `json:"changed"`
 	Removed        json.RawMessage `json:"removed"`
 	RemoveExisting bool            `json:"remove_existing"`
+	Baseline       string          `json:"baseline"`
 }
 
 // ApprovalView is the part of a request the API serves and the event
@@ -64,7 +74,10 @@ var (
 	// ErrNoApproval: the workspace is not stopped waiting for an approval.
 	ErrNoApproval = errors.New("workspace: no host-access approval is pending for this workspace")
 	// ErrApprovalStale: the hash the operator approved is not the one the
-	// workspace is waiting on — the configuration changed after it was shown.
+	// workspace is waiting on — the configuration changed after it was
+	// shown — or the repository's approval changed since the request's
+	// difference was computed, so what was shown is no longer what approving
+	// adds.
 	ErrApprovalStale = errors.New("workspace: the approval is for a different host-access subset than the one pending")
 )
 
@@ -175,6 +188,21 @@ func (s *Store) Approve(ctx context.Context, id, hash, by string) (PendingApprov
 		}
 		var cur PendingApproval
 		if json.Unmarshal([]byte(still.String), &cur) != nil || cur.Hash != hash {
+			return nil, ErrApprovalStale
+		}
+		// What the operator was shown is the request's difference from its
+		// baseline: approving is sound only while that is still the
+		// repository's current approval. Today one workspace per repository
+		// keeps it so; this makes it a check rather than a coincidence.
+		var current string
+		switch err := tx.QueryRowContext(ctx, `SELECT hash FROM config_approval
+			WHERE repository_id = ? AND superseded_at IS NULL ORDER BY id DESC LIMIT 1`, w.RepositoryID).Scan(&current); {
+		case errors.Is(err, sql.ErrNoRows):
+			current = ""
+		case err != nil:
+			return nil, err
+		}
+		if current != cur.Baseline {
 			return nil, ErrApprovalStale
 		}
 		if _, err := tx.ExecContext(ctx, `UPDATE config_approval SET superseded_at = ?

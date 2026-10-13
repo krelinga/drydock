@@ -4,7 +4,7 @@
 
 import type { Clock } from '../../web/src/core/marks'
 import type {
-  HttpRequest, HttpResponse, Level, Log, Opener, PickItem, Prompter, Secrets, Settings, StreamResponse, Transport, Window,
+  Cancel, HttpRequest, HttpResponse, Level, Log, Opener, PickItem, Prompter, Secrets, Settings, StreamResponse, Transport, Window,
 } from '../src/ports'
 
 export const TOKEN = 'drydock_' + 'A'.repeat(20) + '_-' + 'b'.repeat(21)
@@ -123,9 +123,28 @@ export class ScriptedPrompter implements Prompter {
     return this.answers.shift()
   }
 
-  async input(opts: { prompt: string; password?: boolean }) {
+  async input(opts: { prompt: string; password?: boolean; ignoreFocusOut?: boolean; placeHolder?: string; cancel?: Cancel }) {
     this.inputs.push(opts)
+    if (this.inputGate !== null) {
+      // Held open until the spec releases it, or the cancel fires.
+      const gate = this.inputGate
+      const cancelled = new Promise<undefined>((r) => opts.cancel?.onCancel(() => r(undefined)))
+      const answer = await Promise.race([gate, cancelled])
+      this.inputGate = null
+      return answer
+    }
     return this.typed.shift()
+  }
+
+  /** When set, the next input waits for this (or its cancel) instead of answering from `typed`. */
+  inputGate: Promise<string | undefined> | null = null
+
+  /** Answers to confirm() calls, in order; undefined declines. */
+  confirms: boolean[] = []
+  confirmed: Array<{ text: string; action: string }> = []
+  async confirm(text: string, action: string) {
+    this.confirmed.push({ text, action })
+    return this.confirms.shift() ?? false
   }
 
   /** What each pick offered, and which item to answer with (an index, or undefined for Escape). */

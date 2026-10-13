@@ -25,7 +25,7 @@ import { pathFor } from './routes'
 import { EventStream, type Phase, type StopReason } from './stream'
 
 /** Why the stream stopped, when it did not stop for being idle. */
-export type EndReason = Exclude<StopReason, 'stopped'> | 'signed_out' | 'url_changed' | 'closed'
+export type EndReason = Exclude<StopReason, 'stopped'> | 'signed_out' | 'signed_in_again' | 'url_changed' | 'closed'
 
 /** How long the stream stays open after nothing holds it (§5.5). */
 export const IDLE_MS = 5 * 60_000

@@ -24,7 +24,7 @@ export interface TreeNode {
   /** A codicon name. */
   icon: string
   contextValue: string
-  command?: { id: 'drydock.connect' | 'drydock.openInBrowser'; arg: string }
+  command?: { id: 'drydock.connect' | 'drydock.openInBrowser' | 'drydock.reviewApproval'; arg: string }
   children?: TreeNode[]
 }
 
@@ -57,8 +57,11 @@ export function workspaceNodes(e: Entities): TreeNode[] {
         tooltip: [s.note, w.branch !== null ? `Branch ${pickText(w.branch)}` : null, running && host !== null ? `Connects over SSH to ${pickText(host)}` : null]
           .filter((x) => x !== null).join('\n') || undefined,
         icon: running ? 'vm-running' : w.state === 'failed' ? 'vm-outline' : 'vm',
-        contextValue: `workspace.${w.state}`,
-        command: running ? { id: 'drydock.connect', arg: w.id } : { id: 'drydock.openInBrowser', arg: w.id },
+        contextValue: w.approval !== null && w.state === 'stopped' ? 'workspace.needsApproval' : `workspace.${w.state}`,
+        // Opening the review document reads; it never approves (§10.4).
+        command: running ? { id: 'drydock.connect', arg: w.id }
+          : w.approval !== null && w.state === 'stopped' ? { id: 'drydock.reviewApproval', arg: w.id }
+          : { id: 'drydock.openInBrowser', arg: w.id },
         children,
       }
     })

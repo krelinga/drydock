@@ -53,6 +53,8 @@ export interface FlowDeps {
   connectWhenReady: () => boolean
   /** Workspaces this window followed to running: the hub's *ready* (§6.2). */
   ready: Set<string>
+  /** Opens a workspace's host-access review document (review.ts), when the window has one. */
+  review?: (id: string) => Promise<void>
 }
 
 const nameOf = (e: Entities, w: Workspace | null | undefined, fallback = 'The workspace') =>
@@ -145,6 +147,8 @@ async function act(d: FlowDeps, a: HubAction): Promise<void> {
       return connect(d, a.id)
     case 'open':
       return openInDrydock(d, a.id)
+    case 'review':
+      return d.review !== undefined ? d.review(a.id) : openInDrydock(d, a.id)
     case 'clone':
       return clone(d, a.repoId)
     case 'make_room':
@@ -214,7 +218,7 @@ export async function clone(d: FlowDeps, repoId: number): Promise<void> {
 export type FollowEnd = 'running' | 'failed' | 'approval' | 'stopped' | 'gone' | 'dismissed' | 'stream'
 
 /** Where a followed workspace is: an end, or the line to show while it moves. */
-export function followState(e: Entities, id: string): { end: Exclude<FollowEnd, 'dismissed' | 'stream'> | null; line: string } {
+export function followState(e: Entities, id: string, approved?: string): { end: Exclude<FollowEnd, 'dismissed' | 'stream'> | null; line: string } {
   const w = e.workspaces[id]
   if (w === undefined || e.gone[id] !== undefined) return { end: 'gone', line: 'Deleted.' }
   switch (w.state) {
@@ -223,6 +227,9 @@ export function followState(e: Entities, id: string): { end: Exclude<FollowEnd, 
     case 'failed':
       return { end: 'failed', line: cardStatus(w).line }
     case 'stopped':
+      // The request just approved, still on the entity until the run's
+      // next event arrives, is not the end of the follow that approval began.
+      if (w.approval !== null && w.approval.hash === approved) return { end: null, line: 'Approved; continuing…' }
       return w.approval !== null ? { end: 'approval', line: 'Needs host-access approval.' } : { end: 'stopped', line: 'Stopped.' }
   }
   const step = currentStep(w)
@@ -235,7 +242,7 @@ export function followState(e: Entities, id: string): { end: Exclude<FollowEnd, 
  * operator dismissing it ends the follow. Then says how it ended, with the
  * action that fits.
  */
-export async function follow(d: FlowDeps, id: string): Promise<FollowEnd> {
+export async function follow(d: FlowDeps, id: string, approved?: string): Promise<FollowEnd> {
   const release = await d.live.hold()
   let end: FollowEnd = 'dismissed'
   try {
@@ -243,7 +250,7 @@ export async function follow(d: FlowDeps, id: string): Promise<FollowEnd> {
     await d.prompter.progress(`Drydock: ${name}`, async (report, dismissed) => {
       let last = ''
       for (;;) {
-        const s = followState(d.live.entities, id)
+        const s = followState(d.live.entities, id, approved)
         if (s.end !== null) {
           end = s.end
           return
@@ -283,9 +290,13 @@ async function ending(d: FlowDeps, id: string, name: string, end: FollowEnd): Pr
       const s = w !== undefined ? cardStatus(w) : null
       return offerDrydock(d, 'error', `${name}: ${s?.line ?? 'Failed'}.${s?.note ? ` ${s.note}` : ''}`, id)
     }
-    case 'approval':
-      return offerDrydock(d, 'warning',
-        `${name} needs host-access approval: its configuration asks for access to this server. Review it in Drydock.`, id)
+    case 'approval': {
+      const sentence = `${name} needs host-access approval: its configuration asks for access to this server.`
+      // Review only opens the document; nothing here approves (§10.4).
+      if (d.review === undefined) return offerDrydock(d, 'warning', `${sentence} Review it in Drydock.`, id)
+      if ((await d.prompter.message('warning', sentence, ['Review'])) === 'Review') await d.review(id)
+      return
+    }
     case 'stopped':
       return offerDrydock(d, 'info', `${name} stopped.`, id)
     case 'gone':
@@ -302,6 +313,7 @@ export const STREAM_ENDED: Record<EndReason, string> = {
   unauthorized: 'the Drydock token was revoked or has expired. Sign in again with a new one.',
   sign_in: 'this VS Code is not signed in to Drydock any more.',
   signed_out: 'this VS Code signed out of Drydock.',
+  signed_in_again: 'this VS Code signed in to Drydock with another token. Follow it again from the hub.',
   not_configured: 'drydock.url no longer names a Drydock.',
   url_changed: 'drydock.url changed, so this window no longer follows that Drydock.',
   closed: 'the connection to Drydock was closed.',

@@ -93,7 +93,7 @@ jobs:
       # Name-constrained to the tier's own names, its key deleted once the
       # leaves are signed (system-ca.sh).
       - name: Trust the host tier's CA
-        run: echo "DRYDOCK_EXTENSION_CERTS=$(sudo test/extension/system-ca.sh install)" >> "$GITHUB_ENV"
+        run: dir=$(sudo test/extension/system-ca.sh install) && echo "DRYDOCK_EXTENSION_CERTS=$dir" >> "$GITHUB_ENV"
       - run: test/extension/run.sh host
 
   # The browser tier (testing §10): real Chromium, real Caddy on the shipped
