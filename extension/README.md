@@ -10,7 +10,10 @@ npm ci && npm run check   # types (twice: whole, and the pure layer alone), spec
 ```
 
 The client tier's specs are `test/client/` (config `vitest.client.config.mts`); its stack and
-what it covers are `test/extension/README.md`.
+what it covers are `test/extension/README.md`. The extension-host tier is `test/host/` (config
+`vitest.host.config.mts`, run by `../test/extension/run.sh host`): the pinned VS Code, checked by
+SHA-256, running `test/host/inner/suite.ts` against the same stack. In `ExtensionMode.Test` only,
+`activate` returns the seam (a Prompter, Opener, Window and Extensions a spec can replace).
 
 ## Layers
 
@@ -43,6 +46,12 @@ rewrites only the scheme of the server's own link, checks Remote - SSH and Dev C
 hands VS Code `vscode.openFolder` in a new window. The status bar (`src/status.ts`) is the running
 count, the stream's phase, and the one thing to act on: a token near expiry or a version mismatch.
 `test/fakeDrydock.ts` is a Drydock in memory for these flows' specs.
+
+(4b) The activity bar's *Drydock* container holds two tree views (`src/tree.ts`): *Workspaces*,
+each with its steps as children, Enter connecting to a running one and opening any other in
+Drydock; and *Repositories* without a workspace, cloned from the context menu. A shown view holds
+the stream. Only `drydock.connect` and `drydock.openInBrowser` take a workspace id (`takesId`),
+from a tree item or its node; a mutating command never does.
 
 ## Rules the code holds (design §4, §8)
 

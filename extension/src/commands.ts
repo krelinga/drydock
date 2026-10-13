@@ -12,16 +12,21 @@ export interface CommandDef {
   id: `drydock.${string}`
   title: string
   mutating: boolean
+  /**
+   * Takes a workspace id from a tree item (§8 rule 2): only a command that
+   * reads or connects may, never a mutating one (dispatch.spec.ts holds it).
+   */
+  takesId?: true
 }
 
 export const COMMANDS = [
   { id: 'drydock.go', title: 'Go to Workspace…', mutating: false },
   { id: 'drydock.clone', title: 'Clone Repository…', mutating: true },
-  { id: 'drydock.connect', title: 'Connect to Workspace…', mutating: false },
+  { id: 'drydock.connect', title: 'Connect to Workspace…', mutating: false, takesId: true },
   { id: 'drydock.refreshRepositories', title: 'Refresh Repositories', mutating: true },
   { id: 'drydock.signIn', title: 'Sign In', mutating: true },
   { id: 'drydock.signOut', title: 'Sign Out', mutating: true },
-  { id: 'drydock.openInBrowser', title: 'Open in Drydock', mutating: false },
+  { id: 'drydock.openInBrowser', title: 'Open in Drydock', mutating: false, takesId: true },
   { id: 'drydock.showLog', title: 'Show Log', mutating: false },
 ] as const satisfies readonly CommandDef[]
 

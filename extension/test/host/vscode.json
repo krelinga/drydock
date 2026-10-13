@@ -1,0 +1,7 @@
+{
+  "$comment": "The VS Code the extension-host tier runs (vscode-extension §12.5): downloaded by URL and checked against this SHA-256 before it is unpacked, never by @vscode/test-electron's own unchecked download. The SHA-256 is the one Microsoft's update API lists for this build, and the download was checked against it when pinned. engines.vscode is this version's minor (test/manifest.spec.ts). Bump with the vscode-bump ritual (§12.11).",
+  "version": "1.105.1",
+  "platform": "linux-x64",
+  "url": "https://vscode.download.prss.microsoft.com/dbazure/download/stable/7d842fb85a0275a4a8e4d7e040d2625abbf7f084/code-stable-x64-1760482455.tar.gz",
+  "sha256": "32a650f1a111df00354ad9571f57d12268376777677dd5af2162ead921067a89"
+}

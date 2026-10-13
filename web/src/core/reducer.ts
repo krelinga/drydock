@@ -772,12 +772,83 @@ function stub(id: string): Workspace {
  * a percent-encoded absolute path. An href is a capability to send the user
  * somewhere, so anything else — another scheme, another authority, a quote —
  * is no link.
+ *
+ * The hex payloads are decoded and held to what internal/vscode writes too:
+ * the container's is exactly `{"containerName":"/<docker name>"}` — the Dev
+ * Containers extension also reads a `settings.host` there, which would open
+ * its own connection somewhere else, so any other key or spelling is no link
+ * — and an SSH host's is `{hostName, user?, port?}` held to config's
+ * patterns. What the clients cannot check is which SSH host the server chose:
+ * that is shown (`vscodeSSHHost`), not verified.
  */
-const VSCODE_URL = /^vscode:\/\/vscode-remote\/attached-container\+[0-9a-f]+@ssh-remote\+[A-Za-z0-9._-]+(?:\/[A-Za-z0-9._~%-]*)+$/
+const VSCODE_URL = /^vscode:\/\/vscode-remote\/attached-container\+([0-9a-f]+)@ssh-remote\+([A-Za-z0-9._-]+)(?:\/[A-Za-z0-9._~%-]*)+$/
+/** internal/vscode's containerName. */
+const CONTAINER_NAME = /^\/[A-Za-z0-9][A-Za-z0-9_.-]*$/
+/** internal/config's sshHostName, sshUser and sshPort. */
+const SSH_HOST_NAME = /^[A-Za-z0-9](?:[A-Za-z0-9._-]{0,251}[A-Za-z0-9])?$/
+const SSH_USER = /^[A-Za-z0-9_][A-Za-z0-9_.-]{0,31}$/
+
+/** Lowercase hex as printable ASCII, or null: what internal/vscode hex-encodes is JSON of ASCII. */
+function hexText(hex: string): string | null {
+  if (hex.length % 2 !== 0 || !/^[0-9a-f]*$/.test(hex)) return null
+  let out = ''
+  for (let i = 0; i < hex.length; i += 2) {
+    const b = parseInt(hex.slice(i, i + 2), 16)
+    if (b < 0x20 || b > 0x7e) return null
+    out += String.fromCharCode(b)
+  }
+  return out
+}
+
+function jsonObject(text: string | null): Record<string, unknown> | null {
+  if (text === null) return null
+  try {
+    const v = JSON.parse(text) as unknown
+    return v !== null && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, unknown>) : null
+  } catch {
+    return null
+  }
+}
+
+/** The attached-container payload, if it is exactly internal/vscode's. */
+function containerPayloadOK(hex: string): boolean {
+  const text = hexText(hex)
+  const o = jsonObject(text)
+  if (o === null || Object.keys(o).length !== 1 || typeof o.containerName !== 'string') return false
+  if (!CONTAINER_NAME.test(o.containerName)) return false
+  // Exactly the bytes internal/vscode marshals: no spacing, no reordering.
+  return text === JSON.stringify({ containerName: o.containerName })
+}
+
+/** The SSH host a link names, as the operator would write it ([user@]host[:port]), or null when it is no host config writes. */
+function sshHostOf(part: string): string | null {
+  const o = jsonObject(hexText(part))
+  if (o === null) return SSH_HOST_NAME.test(part) && part === part.toLowerCase() ? part : null
+  const keys = Object.keys(o)
+  if (!keys.includes('hostName') || keys.some((k) => !['hostName', 'user', 'port'].includes(k))) return null
+  if (typeof o.hostName !== 'string' || !SSH_HOST_NAME.test(o.hostName)) return null
+  if (o.user !== undefined && (typeof o.user !== 'string' || !SSH_USER.test(o.user))) return null
+  if (o.port !== undefined && (typeof o.port !== 'number' || !Number.isInteger(o.port) || o.port < 1 || o.port > 65535)) return null
+  return `${o.user !== undefined ? `${o.user}@` : ''}${o.hostName}${o.port !== undefined ? `:${o.port}` : ''}`
+}
 
 /** A view's VS Code URL if it is one internal/vscode could have built, or null. */
 export function vscodeURL(u: unknown): string | null {
-  return typeof u === 'string' && VSCODE_URL.test(u) ? u : null
+  if (typeof u !== 'string') return null
+  const m = VSCODE_URL.exec(u)
+  if (m === null || !containerPayloadOK(m[1]!) || sshHostOf(m[2]!) === null) return null
+  return u
+}
+
+/**
+ * The SSH host a link connects through, for the operator to see: the server
+ * chose it (`--vscode-ssh-host`), and a client cannot check it was the right
+ * one. Null for anything vscodeURL refuses.
+ */
+export function vscodeSSHHost(u: unknown): string | null {
+  const ok = vscodeURL(u)
+  if (ok === null) return null
+  return sshHostOf(VSCODE_URL.exec(ok)![2]!)
 }
 
 function toVSCode(v: unknown): VSCode | null {

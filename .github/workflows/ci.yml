@@ -55,15 +55,14 @@ jobs:
   # (test/extension/run.sh): the extension's client on its production
   # transport against the real Drydock (test/extension/stack, with the fake
   # GitHub and fake devcontainer and docker executables) behind real Caddy
-  # with a throwaway CA, trusted through NODE_EXTRA_CA_CERTS only. Node has no
-  # host-resolver flag, so drydock.test goes into /etc/hosts first. On the
-  # bare runner: nothing here needs a browser; the extension-host tier, when
-  # it lands, moves the job into the Playwright image the browser job uses.
-  # Not yet a required check.
+  # with a throwaway CA, trusted through NODE_EXTRA_CA_CERTS only; then the
+  # extension-host tier (below). Node has no host-resolver flag, so
+  # drydock.test goes into /etc/hosts first. On the bare runner, which has
+  # xvfb and what Electron needs. Not yet a required check.
   extension:
     runs-on: ubuntu-latest
-    # About two minutes, the Go build included.
-    timeout-minutes: 15
+    # About three minutes, the Go build and the first VS Code download included.
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-go@v6
@@ -83,6 +82,19 @@ jobs:
       - run: npm run check
         working-directory: extension
       - run: test/extension/run.sh
+      # The extension-host tier: the pinned VS Code (checked by SHA-256,
+      # cached by version) under xvfb. Its extension host trusts the system
+      # store and not NODE_EXTRA_CA_CERTS (Spike 05 #1), so the tier's CA is
+      # put there first, as root, on a runner that lives for one job.
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/drydock-vscode
+          key: vscode-${{ hashFiles('extension/test/host/vscode.json') }}
+      # Name-constrained to the tier's own names, its key deleted once the
+      # leaves are signed (system-ca.sh).
+      - name: Trust the host tier's CA
+        run: echo "DRYDOCK_EXTENSION_CERTS=$(sudo test/extension/system-ca.sh install)" >> "$GITHUB_ENV"
+      - run: test/extension/run.sh host
 
   # The browser tier (testing §10): real Chromium, real Caddy on the shipped
   # Caddyfile, the real `drydock serve`, and a throwaway CA trusted through

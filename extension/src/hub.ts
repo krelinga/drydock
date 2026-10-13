@@ -16,7 +16,7 @@
 import { capacity } from '../../web/src/core/lib/capacity'
 import { escapeFormat } from '../../web/src/core/lib/text'
 import { cardStatus, rowAction, type FleetLogin } from '../../web/src/core/lib/workspaceCard'
-import { repoHeld, workspaceForRepo, type Entities, type Workspace } from '../../web/src/core/reducer'
+import { repoHeld, vscodeSSHHost, workspaceForRepo, type Entities, type Workspace } from '../../web/src/core/reducer'
 import type { PickItem } from './ports'
 
 export type HubAction =
@@ -25,8 +25,17 @@ export type HubAction =
   | { kind: 'clone'; repoId: number }
   | { kind: 'make_room' }
 
+/**
+ * Repository-written text for a quick pick: format characters escaped, and
+ * `$(…)`, which a quick pick renders as an icon, escaped as `\\$(…)` (VS
+ * Code's own escapeIcons), so a repository or branch name cannot draw one.
+ */
+export function pickText(s: string): string {
+  return escapeFormat(s).replace(/\$\(/g, '\\$(')
+}
+
 const nameOf = (w: Workspace, e: Entities) =>
-  escapeFormat(w.fullName ?? (w.repositoryId !== null ? e.repos[w.repositoryId]?.fullName : undefined) ?? w.id)
+  pickText(w.fullName ?? (w.repositoryId !== null ? e.repos[w.repositoryId]?.fullName : undefined) ?? w.id)
 
 /** The cap sentence a clone item carries when Drydock is full (§6.1, never a disabled item). */
 export const atCap = (cap: number) => `At the cap (${cap}): stop a workspace first`
@@ -41,10 +50,14 @@ export function hubItems(e: Entities, ready: ReadonlySet<string> = new Set(), fl
 
   for (const w of running) {
     const s = cardStatus(w, fleet)
+    // The SSH host the server's link names: shown, since it cannot be checked (§7.1).
+    const host = vscodeSSHHost(w.vscode?.url ?? null)
+    const detail = [w.branch !== null ? pickText(w.branch) : null, host !== null ? `over SSH to ${pickText(host)}` : null]
+      .filter((x) => x !== null).join(' · ')
     items.push({
       label: `$(vm-running) ${nameOf(w, e)}`,
       description: ready.has(w.id) ? `ready · ${s.line}` : s.line,
-      detail: w.branch !== null ? escapeFormat(w.branch) : undefined,
+      detail: detail === '' ? undefined : detail,
       value: { kind: 'connect', id: w.id },
     })
   }
@@ -64,9 +77,9 @@ export function hubItems(e: Entities, ready: ReadonlySet<string> = new Set(), fl
     if (ws !== null) continue
     if (rowAction({ repo, workspace: null, held: repoHeld(e, id) }) !== 'clone') continue
     if (cap.full && cap.cap !== null) {
-      items.push({ label: `$(repo) ${escapeFormat(repo.fullName)}`, description: atCap(cap.cap), value: { kind: 'make_room' } })
+      items.push({ label: `$(repo) ${pickText(repo.fullName)}`, description: atCap(cap.cap), value: { kind: 'make_room' } })
     } else {
-      items.push({ label: `$(repo) ${escapeFormat(repo.fullName)}`, description: 'Clone', value: { kind: 'clone', repoId: id } })
+      items.push({ label: `$(repo) ${pickText(repo.fullName)}`, description: 'Clone', value: { kind: 'clone', repoId: id } })
     }
   }
   return items

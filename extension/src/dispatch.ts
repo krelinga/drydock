@@ -15,7 +15,7 @@
 import { ApiError } from '../../web/src/core/errors'
 import { describeError } from '../../web/src/core/messages'
 import { NotConfigured, SignInNeeded } from './client'
-import { COMMANDS, type CommandId } from './commands'
+import { COMMANDS, type CommandDef, type CommandId } from './commands'
 import { errorLine } from './log'
 import type { Log, Opener, Prompter, Settings, Window } from './ports'
 import { originOf } from './settings'
@@ -36,7 +36,22 @@ export interface DispatchDeps {
   signIn: () => Promise<void>
 }
 
-export type Handler = () => Promise<void>
+/** A command's work. `id` is a workspace id from a tree item, only for a command that takes one. */
+export type Handler = (id?: string) => Promise<void>
+
+/** A workspace id as the server writes one: a ULID, and nothing a caller could use to aim elsewhere. */
+const WORKSPACE_ID = /^[0-9A-HJKMNP-TV-Z]{26}$/
+
+/**
+ * The workspace id a command was given: a tree item's command passes the id
+ * itself, and a tree item's context menu passes the node (tree.ts), whose
+ * key is the id. Anything else is no id.
+ */
+function workspaceIdOf(arg: unknown): string | undefined {
+  const v = typeof arg === 'string' ? arg
+    : arg !== null && typeof arg === 'object' && typeof (arg as { key?: unknown }).key === 'string' ? (arg as { key: string }).key : undefined
+  return v !== undefined && WORKSPACE_ID.test(v) ? v : undefined
+}
 
 export class Dispatcher {
   constructor(
@@ -44,18 +59,23 @@ export class Dispatcher {
     private readonly handlers: Readonly<Record<CommandId, Handler>>,
   ) {}
 
-  /** The command `id` as VS Code calls it: arguments ignored, nothing returned. */
+  /**
+   * The command `id` as VS Code calls it: nothing returned, and arguments
+   * ignored — but for a command that takes a workspace id (a read or a
+   * connect), which gets its first argument when it is one.
+   */
   run(id: CommandId): (...args: unknown[]) => Promise<undefined> {
-    const def = COMMANDS.find((c) => c.id === id)
+    const def: CommandDef | undefined = COMMANDS.find((c) => c.id === id)
     if (def === undefined) throw new Error(`unknown command ${id}`)
-    return async () => {
+    return async (...args: unknown[]) => {
+      const target = def.takesId === true && !def.mutating ? workspaceIdOf(args[0]) : undefined
       if (def.mutating && !mayMutate(this.deps.window.remoteName())) {
         this.deps.log.info(`${id}: refused in a ${this.deps.window.remoteName() ?? 'local'} window (§8 rule 1)`)
         await this.offerDrydock(ELSEWHERE)
         return undefined
       }
       try {
-        await this.handlers[id]()
+        await this.handlers[id](target)
       } catch (e) {
         await this.report(id, e)
       }
