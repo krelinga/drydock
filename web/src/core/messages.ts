@@ -83,7 +83,9 @@ const SENTENCES: Record<string, string> = {
   login_code_invalid: 'That looks like only part of the code. Copy the whole code Claude shows, both sides of the #.',
   login_not_awaiting_code: 'The login is not waiting for a code right now.',
   login_ended: 'That login has ended. Start a new one.',
-  unavailable: 'Drydock is shutting down. Try again in a moment.',
+  // 503: Drydock is shutting down, or could not read its credential store
+  // just now (a busy database). Neither is "signed out"; both pass.
+  unavailable: 'Drydock is busy or shutting down. Try again in a moment.',
   internal: 'Drydock hit an internal error. The host’s log has the detail.',
   network: 'Could not reach Drydock. Check the connection and try again.',
 }

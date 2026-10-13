@@ -109,6 +109,12 @@ func wrap(rt Route, g Gate) http.Handler {
 			if c, _ := CredentialFrom(authed.Context()); ok && c.Kind != auth.CredentialSession {
 				ok = false
 			}
+			// A store failure is no verdict on the cookie: the sign-in
+			// page is for someone signed out, not for a busy database.
+			if !ok && AuthUnavailable(authed) {
+				writeAuthUnavailable(w)
+				return
+			}
 			if !ok {
 				http.Redirect(w, r, g.SignInRedirect(r), http.StatusFound)
 				return

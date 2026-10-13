@@ -11,7 +11,9 @@
 // # Rules and details
 //
 // argon2id with a floor and rehash-on-sign-in; sessions stored only as
-// SHA-256; a lockout that is per-IP backoff plus a global cap, kept in
+// SHA-256, ErrNoSession the only verdict on a cookie (any other Lookup error
+// is the store, which the gate answers 503, never 401) and the idle slide
+// best-effort; a lockout that is per-IP backoff plus a global cap, kept in
 // auth_attempt so a restart does not reset it.
 //
 // API tokens (token.go): `drydock_` + 43 base64url characters, stored only as

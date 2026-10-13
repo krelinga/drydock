@@ -6,7 +6,8 @@ import { createPinia, setActivePinia } from 'pinia'
 import { toRaw } from 'vue'
 import { onUnauthorized } from '../api/client'
 import { FakeEventSource } from '../test/fakeEventSource'
-import { freshBackend, settle, useMockApi } from '../test/setup'
+import { http, HttpResponse } from 'msw'
+import { freshBackend, server, settle, useMockApi } from '../test/setup'
 import { CLONE_OK, REFRESHED, WS, stateEvent } from '../core/reducer.fixtures'
 import { MARKER_AFTER_MS, SLOW_AFTER_MS, useStreamStore } from './stream'
 
@@ -142,6 +143,28 @@ describe('a stream that fails for good (readyState CLOSED)', () => {
     FakeEventSource.latest().open()
     expect(refetch).toHaveBeenCalledTimes(1)
     expect(stream.phase).toBe('live')
+  })
+
+  it('a probe answered 503 (a busy session store) is a hard retry, never a sign-out', async () => {
+    freshBackend({ signedIn: true })
+    server.use(
+      http.get('/api/auth/session', () =>
+        HttpResponse.json(
+          { error: { code: 'unavailable', message: 'Drydock could not check this credential just now. Try again.' } },
+          { status: 503, headers: { 'Retry-After': '5' } },
+        ),
+      ),
+    )
+    const stream = useStreamStore()
+    const on401 = vi.fn()
+    onUnauthorized(on401)
+    stream.connect()
+    FakeEventSource.latest().open().refuse()
+    await settle()
+    expect(on401).not.toHaveBeenCalled()
+    expect(stream.phase).toBe('backoff')
+    await new Promise((r) => setTimeout(r, 1100))
+    expect(FakeEventSource.instances.length).toBe(2)
   })
 
   it('disconnect during the backoff cancels the retry', async () => {

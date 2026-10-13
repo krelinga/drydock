@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.12.1](https://github.com/krelinga/drydock/compare/v0.12.0...v0.12.1) (2026-10-13)
+
+
+### Bug Fixes
+
+* answer 503, not 401, when the session store fails, and sweep the logs for tokens ([#152](https://github.com/krelinga/drydock/issues/152)) ([7a8f7b7](https://github.com/krelinga/drydock/commit/7a8f7b7ae3e75b6d9411776b72ebb782e4e2e8a8))
+
+## [0.12.0](https://github.com/krelinga/drydock/compare/v0.11.0...v0.12.0) (2026-10-13)
+
+
+### Features
+
+* scoped API tokens on the server (phase T) ([#149](https://github.com/krelinga/drydock/issues/149)) ([cf38b10](https://github.com/krelinga/drydock/commit/cf38b100e6895240e2fd07e93dd98eb04a5a2c5d))
+* Settings section for API tokens ([#150](https://github.com/krelinga/drydock/issues/150)) ([fe74708](https://github.com/krelinga/drydock/commit/fe74708c237151e616177b57a28226d7e92e8a2f))
+
 ## [0.11.0](https://github.com/krelinga/drydock/compare/v0.10.0...v0.11.0) (2026-10-13)
 
 
