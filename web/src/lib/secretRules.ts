@@ -7,7 +7,7 @@
 // learning why at keystroke time and learning it at save time (frontend
 // §6.4). So each check returns exactly what the server would — the same
 // envelope code and the same detail text — and the form renders both through
-// the one lookup in api/messages.ts. A refusal looks the same whichever side
+// the one lookup in core/messages.ts. A refusal looks the same whichever side
 // caught it.
 //
 // The reserved list is copied, not generated. secretRules.spec.ts reads

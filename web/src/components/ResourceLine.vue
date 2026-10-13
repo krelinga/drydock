@@ -3,7 +3,7 @@
 // entities the reducer writes from the stream's `resources` frames and the
 // views. Unknown reads "—" and stale says so; lib/resources.ts has the rules.
 import { computed } from 'vue'
-import type { Workspace } from '../stores/reducer'
+import type { Workspace } from '../core/reducer'
 import { useStreamStore } from '../stores/stream'
 import { resourceLine } from '../lib/resources'
 

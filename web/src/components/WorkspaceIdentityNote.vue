@@ -5,8 +5,8 @@
 // to Claude there is, and ten cards with ten buttons is the failure §6.6 is
 // about. lib/identity.ts decides; this only renders.
 import { computed } from 'vue'
-import type { WorkspaceState } from '../api/types'
-import { cardOverlay } from '../lib/identity'
+import type { WorkspaceState } from '../core/types'
+import { cardOverlay } from '../core/lib/identity'
 import { useStreamStore } from '../stores/stream'
 
 // `part` places the two halves: the dot beside the status line, the sentence

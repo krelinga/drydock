@@ -11,8 +11,8 @@
 //     partial disk walk is a lower bound, "≥ 3.4 GB".
 // Sizes are decimal (GB = 10⁹ bytes), as the label says.
 
-import type { WorkspaceState } from '../api/types'
-import type { HostDisk, Resources } from '../stores/resources'
+import type { WorkspaceState } from '../core/types'
+import type { HostDisk, Resources } from '../core/resources'
 
 /** 1234567890 → "1.2 GB"; two significant figures under ten, whole numbers above. */
 export function formatBytes(n: number): string {

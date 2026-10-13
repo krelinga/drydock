@@ -10,8 +10,8 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import { RouterLink, useRoute } from 'vue-router'
 import * as api from '../api/client'
-import { describeError } from '../api/messages'
-import type { LogTail } from '../api/types'
+import { describeError } from '../core/messages'
+import type { LogTail } from '../core/types'
 import { useStreamStore } from '../stores/stream'
 
 const route = useRoute()

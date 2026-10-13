@@ -8,7 +8,7 @@
 // rules, and `login.spec.ts` reads internal/classify/login.go so the two
 // cannot drift silently.
 
-import type { LoginPhase } from '../api/types'
+import type { LoginPhase } from '../core/types'
 
 /** The rules a code can break, named as the server's refusal detail names them. */
 export type CodeRule = 'empty' | 'no_separator' | 'half_missing' | 'extra_hash' | 'bad_character'

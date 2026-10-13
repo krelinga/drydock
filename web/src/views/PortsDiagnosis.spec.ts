@@ -10,7 +10,7 @@ import { describe, expect, it } from 'vitest'
 import { FakeEventSource } from '../test/fakeEventSource'
 import { freshBackend, mountApp, settle, useMockApi } from '../test/setup'
 import { addMockPort, scanPorts, seedPorts, WS_REMOVED, WS_RUNNING } from '../mocks/backend'
-import { sentenceFor } from '../api/messages'
+import { sentenceFor } from '../core/messages'
 import { useStreamStore } from '../stores/stream'
 import { portRescanKey } from '../stores/ports'
 

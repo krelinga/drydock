@@ -3,7 +3,7 @@
 // listening, and nothing to say when there is nothing.
 
 import { describe, expect, it } from 'vitest'
-import type { Port } from '../stores/reducer'
+import type { Port } from '../core/reducer'
 import { portCount, portCountLabel, portCountText } from './portCount'
 
 function p(over: Partial<Port>): Port {

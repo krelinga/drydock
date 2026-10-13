@@ -10,7 +10,7 @@
 // running workspace) says how to turn it on instead. A card never does — one
 // fleet-wide setting gets one message, not one per card.
 import { computed } from 'vue'
-import { vscodeConfigured, vscodeLink, type Workspace } from '../stores/reducer'
+import { vscodeConfigured, vscodeLink, type Workspace } from '../core/reducer'
 
 const props = defineProps<{ workspace: Workspace; note?: boolean }>()
 const url = computed(() => vscodeLink(props.workspace))

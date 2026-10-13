@@ -14,9 +14,30 @@ npm run dev:mock            # the app against mocks/backend.ts
 `internal/web/dist` is **committed build output** — the Go build needs no Node, and
 `npm run check:dist` fails when it is stale. Never hand-edit `dist`; rebuild it.
 
-## State: `src/stores`
+## Core: `src/core`, shared with the VS Code extension
 
-- `reducer.ts` is the one pure writer of entity state. It applies events, `resync`, and three
+`src/core/` is the DOM-free half of the app (vscode-extension §5.2): the extension bundles it by
+path, so it runs *the* reducer, not a similar one. It holds `types.ts` (the wire), `reducer.ts`
+and `resources.ts`, `settle.ts` (each action's `OVER` predicate and its `settles*`, re-exported by
+the stores so no call site names it), `marks.ts` (the in-flight marks, on an injected `Clock`),
+`errors.ts` (`ApiError`, re-exported by `api/client.ts`), `messages.ts` (sentence per error code),
+and `lib/` — `workspaceCard`, `capacity`, `identity`, `portDiagnosis`, `time`, `approval` (what a
+host-access request says, rendered by the web card and the extension's review document alike)
+and `text` (`escapeFormat`: control, separator and Unicode format characters in
+repository-written text shown as `\uXXXX`, so none can forge a line or reorder what is read).
+
+**Nothing in core may reach the browser, Node or a package.** `core/tsconfig.json` compiles it
+with `lib: ["ES2023"]`, `types: []` and `noResolve` (so `window`, `setTimeout` and `import 'vue'`
+are errors), and `npm run typecheck` runs it; `core/boundary.spec.ts` fails by file on any import
+that is not a relative path inside core, and on any triple-slash directive (`/// <reference lib="dom" />`
+would put the DOM back past the compiler's rule, which cannot see it). Specs are exempt from both
+(they read Go source).
+What needs the browser — `api/client.ts`'s same-origin `fetch`, the `EventSource`, `lib/refetch.ts`
+— stays outside.
+
+## State: `src/core` and `src/stores`
+
+- `core/reducer.ts` is the one pure writer of entity state. It applies events, `resync`, and three
   snapshots — `GET /api/repos`, `GET /api/workspaces`, `GET /api/workspaces/:id` — each tagged with
   the stream position it was requested at. Each field carries the id of the event that last wrote
   it, so a replay changes nothing and a late event is a no-op.
@@ -27,10 +48,11 @@ npm run dev:mock            # the app against mocks/backend.ts
   by id — every event naming it but port discovery's (`data.source: "discovery"`, `inFeed`), which
   are the ports panel's and would crowd its history out (port forwarding §13 step 6; the server's
   `GET /api/workspaces/:id` leaves them out alike).
-- `workspaces.ts` holds the fetches and the mutations. A clone is settled by the create's
+- `stores/workspaces.ts` holds the fetches and the mutations. A clone is settled by the create's
   `workspace.state` carrying its `repository_id`, because the only workspace id before that is in
   the `202` body, which is never read.
-- `stream.ts` owns the `EventSource`, the in-flight set and the refetch hooks, and handles
+- `stores/stream.ts` owns the `EventSource` and the refetch hooks, holds the in-flight set (its
+  rules are `core/marks.ts`'s), and handles
   reconnects: a quiet marker after 5 s, and on `CLOSED` a session probe, then sign-out or a hard
   retry that resumes with `?last_event_id=`. The first `open` refetches when a snapshot was
   requested before it (the server subscribes before answering). Specs drive
@@ -42,13 +64,13 @@ npm run dev:mock            # the app against mocks/backend.ts
 
 **An in-flight mark ends two ways, by one predicate.** Each action's end is `OVER.*` over an
 `Outcome` (gone, state, stuck delete, failed stop), asked of each event (`settles*` in
-`stores/workspaces.ts`) and, after every snapshot (`stream.snapshot`), of the entities — but only
+`core/settle.ts`) and, after every snapshot (`stream.snapshot`), of the entities — but only
 for a mark whose request was accepted (its `2xx`) before that snapshot was requested
 (`snapshotTag`), since only such a body can tell *not begun* from *over*. That is what ends a mark
 whose settling event fell in a `resync` gap; a snapshot showing the action under way keeps it.
 Never clear a mark on the `202` or on the state move written before the action's end. A start
 settles when the workspace leaves its build, as a rebuild does, and a failed stop on its
-annotation. Settings' *Check now* settles on `settlesCheck` (`stores/identity.ts`):
+annotation. Settings' *Check now* settles on `settlesCheck` (`core/settle.ts`):
 `auth.identity`, `auth.identity_check_failed` or `auth.identity_checked` — the last is the healthy
 press's only answer.
 
@@ -62,7 +84,7 @@ decline (no job) keep their own rule; *Check now* and the catalog refresh are no
 
 ### Resources
 
-`stores/resources.ts` and `lib/resources.ts` drive the card's *"mem 1.2 GB · disk 3.4 GB"*
+`core/resources.ts` and `lib/resources.ts` drive the card's *"mem 1.2 GB · disk 3.4 GB"*
 (`components/ResourceLine.vue`) and the disk banner (`components/DiskBanner.vue`). The reducer's
 seventh input is the stream's named `resources` frame; resources live beside the workspaces
 (`entities.resources`, `entities.hostDisk`) and are versioned by the server's round time, not an
@@ -77,8 +99,8 @@ event id. Unknown is *"—"*, never 0; stale says so; memory only for `running`.
 - `components/ActionButton.vue` is frontend §4.2 for **every** mutating button: in flight until the
   settling event, *"no response yet"* after 10 s and never a failure, refusals by code,
   `in_progress` a note. A workspace's card action (Start, Stop, Rebuild, *Delete again*) is
-  `components/WorkspaceAction.vue`, chosen by `lib/workspaceCard.ts`.
-- `lib/workspaceCard.ts` is §6.1's table as a pure function of both halves: `supervisorHalf()`
+  `components/WorkspaceAction.vue`, chosen by `core/lib/workspaceCard.ts`.
+- `core/lib/workspaceCard.ts` is §6.1's table as a pure function of both halves: `supervisorHalf()`
   reads the reducer's supervisor entity (`supervisor.state` events, the views' `supervisor`), never
   `workspace.state`, and `cardStatus(w, fleet)` takes the fleet login (`stream.entities.identity`)
   for §6.6's override: a signed-out fleet leaves the card *Running* with no session action, and
@@ -90,13 +112,13 @@ event id. Unknown is *"—"*, never 0; stale says so; memory only for `running`.
   says whether a stop or delete is still running; a failed stop and a stuck delete are ended by the
   server's annotation, and `stopFailed`/`deleteStuck` read them — from the list alone too, via
   `lastAction`.
-- The occupied count is **counted, not stored** (`lib/capacity.ts`, against the cap
+- The occupied count is **counted, not stored** (`core/lib/capacity.ts`, against the cap
   `GET /api/workspaces` carries), and `capacity.spec.ts` reads `Occupying` out of
   `internal/workspace/state.go` so the client's rule cannot drift. At the cap an action that would
   take a slot is replaced by `MakeRoom`, never disabled, and Running sorts stoppable cards first.
 - A stopped workspace waiting on a host-access request (design §6) shows
-  `components/HostAccessApproval.vue` where its action would be — the added, changed and removed
-  settings as JSON text, the warning (root on the host when `privileged` is asked), *Approve and
+  `components/HostAccessApproval.vue` where its action would be — rendered from
+  `core/lib/approval.ts`: the added, changed and removed settings as escaped JSON text, the warning (root on the host when `privileged` is asked), *Approve and
   continue* (sends the request's own hash) and *Cancel* — on the card, the catalog row and the
   detail view alike; the request is the reducer's `approval`, written only by `workspace.state`
   events and the views.
@@ -141,7 +163,7 @@ The ports panel (frontend §6.3; port forwarding §13 step 4), on the workspace'
   title (`views/PortsDiscovery.spec.ts` asserts each). **Look for listening ports now** is the
   rescan, settled by that workspace's `port.scanned` newer than the press (`settlesRescan`), which
   changes no row.
-- **Diagnosis** (port forwarding §11, §13 step 6) is `lib/portDiagnosis.ts`, a pure function of
+- **Diagnosis** (port forwarding §11, §13 step 6) is `core/lib/portDiagnosis.ts`, a pure function of
   the row's `observedState`, `loopback`, `bindAddr` and `lastSeenAt`, the workspace's state and
   its discovery's (`entities.portDiscovery`, written by `port.scanned`, `port.discovery` and the
   list's `discovery`, versioned). A row listening on loopback only is greyed and says

@@ -6,7 +6,7 @@
 
 import { defineStore } from 'pinia'
 import * as api from '../api/client'
-import type { Device, SessionInfo } from '../api/types'
+import type { Device, SessionInfo } from '../core/types'
 
 export type SessionStatus = 'unknown' | 'signed-in' | 'signed-out'
 

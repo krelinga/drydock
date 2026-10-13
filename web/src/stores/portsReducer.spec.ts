@@ -4,8 +4,8 @@
 // negative case keeps a positive control in the same test.
 
 import { describe, expect, it } from 'vitest'
-import type { PortList, PortView, StreamEvent } from '../api/types'
-import { emptyEntities, portsOf, reduce, reduceAll, type Action, type Entities } from './reducer'
+import type { PortList, PortView, StreamEvent } from '../core/types'
+import { emptyEntities, portsOf, reduce, reduceAll, type Action, type Entities } from '../core/reducer'
 import { OVER_PORT, portEntityOutcome, portEventOutcome, settlesAdd, settlesPort, settlesRescan } from './ports'
 
 const WS = '01JA0000000000000000000001'

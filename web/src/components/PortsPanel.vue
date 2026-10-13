@@ -27,13 +27,14 @@
 // says when discovery cannot read the container, or is holding changes back,
 // so a broken scanner never looks like an empty list.
 import { computed, onMounted, ref, watch } from 'vue'
-import { diagnose, loopbackLead } from '../lib/portDiagnosis'
-import { relativeTime } from '../lib/time'
-import { describeError } from '../api/messages'
-import type { ProbeResult } from '../api/types'
+import { diagnose, loopbackLead } from '../core/lib/portDiagnosis'
+import { relativeTime } from '../core/lib/time'
+import { escapeFormat } from '../core/lib/text'
+import { describeError } from '../core/messages'
+import type { ProbeResult } from '../core/types'
 import ActionButton from './ActionButton.vue'
 import { useStreamRefetch } from '../lib/refetch'
-import { portsOf, type Port, type Workspace } from '../stores/reducer'
+import { portsOf, type Port, type Workspace } from '../core/reducer'
 import {
   portAddKey, portEnableKey, portHideKey, portHostKey, portRescanKey, portRetireKey, usePortsStore,
 } from '../stores/ports'
@@ -163,7 +164,7 @@ async function add(): Promise<void> {
       >
         <div class="head">
           <span class="num">{{ p.containerPort }}</span>
-          <span v-if="p.label" class="label" data-test="port-label">{{ p.label }}</span>
+          <span v-if="p.label" class="label" data-test="port-label">{{ escapeFormat(p.label) }}</span>
           <span v-for="b in provenance(p)" :key="b" class="badge" data-test="port-badge">{{ b }}</span>
           <span v-if="p.hidden" class="badge">hidden</span>
         </div>

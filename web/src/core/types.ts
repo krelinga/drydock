@@ -1,0 +1,651 @@
+// The API's shapes, as the Go handlers write them.
+//
+// Frontend §4.5 says these are to be *generated* from the Go structs, so the
+// contract has one source. No generator exists yet, so they are written by
+// hand and mirrored field for field from internal/api/session_routes.go
+// (deviceJSON), internal/api/problem.go (Error), internal/catalog/view.go
+// (View), internal/events/events.go (Event), internal/workspace/view.go and
+// internal/api/workspace_routes.go (View, WorkspaceList) and internal/secrets/store.go
+// (Meta, PutResult), with each event kind's `data`
+// read off the Emit call that writes it (see core/reducer.ts). This file is
+// the one to replace with generated output rather than extend much further.
+
+/** One signed-in device, from `GET /api/auth/session`. */
+export interface Device {
+  /** SHA-256 of the cookie: safe to display, useless as a cookie. */
+  id: string
+  label: string
+  created_ip: string
+  created_at: string
+  last_seen_at: string
+  expires_at: string
+  /** Frontend §4.5 #6: so revoking can warn that this one is you. */
+  is_current: boolean
+}
+
+/** `GET /api/auth/session`. */
+export interface SessionInfo {
+  current: string
+  devices: Device[]
+}
+
+/** The one error shape every route returns (frontend §4.5 #7). */
+export interface ErrorEnvelope {
+  error: {
+    code: string
+    message: string
+    /** Context for the code: which rule, which character. Shown as text, never parsed. */
+    detail?: string
+  }
+}
+
+/**
+ * The stable codes from internal/api/problem.go, plus two the client itself
+ * produces: `network` when no response arrived at all, and `unparseable` when
+ * one did but it was not the envelope (an HTML page where JSON was expected is
+ * exactly the bug frontend §3 rule 3 exists to prevent).
+ */
+export type ErrorCode =
+  | 'unauthenticated'
+  | 'forbidden_origin'
+  | 'forbidden_scope'
+  | 'forbidden_host'
+  | 'not_found'
+  | 'method_not_allowed'
+  | 'not_implemented'
+  | 'in_progress'
+  | 'at_capacity'
+  | 'confirm_mismatch'
+  | 'approval_not_pending'
+  | 'approval_stale'
+  | 'bad_request'
+  | 'bad_password'
+  | 'locked_out'
+  | 'not_configured'
+  | 'app_not_configured'
+  | 'secrets_not_configured'
+  | 'secret_name_invalid'
+  | 'secret_name_reserved'
+  | 'secret_value_required'
+  | 'secret_value_empty'
+  | 'secret_value_control_character'
+  | 'secret_value_too_long'
+  | 'secret_reach_required'
+  | 'secret_reach_too_long'
+  | 'secret_description_too_long'
+  | 'secret_description_invalid'
+  | 'unknown_repository'
+  | 'secret_exists'
+  | 'port_exists'
+  | 'too_many_ports'
+  | 'previews_not_configured'
+  | 'port_loopback'
+  | 'login_code_invalid'
+  | 'login_not_awaiting_code'
+  | 'login_ended'
+  | 'unavailable'
+  | 'internal'
+  | 'network'
+  | 'unparseable'
+
+/** `internal/workspace/state.go`. */
+export type WorkspaceState = 'pending' | 'cloning' | 'building' | 'running' | 'stopped' | 'failed' | 'deleting'
+
+export const WORKSPACE_STATES: readonly WorkspaceState[] = [
+  'pending', 'cloning', 'building', 'running', 'stopped', 'failed', 'deleting',
+]
+
+/**
+ * Design §6's eight steps, in the order a clone runs them. A step a run has
+ * not reached is simply absent from a workspace's `steps`.
+ */
+export const WORKSPACE_STEPS = [
+  'allocate', 'clone', 'resolve_config', 'credential_volume', 'broker_socket', 'up', 'verify', 'session_server',
+] as const
+
+/**
+ * `needs_approval` is resolve_config's stop for a host-access request
+ * (design §6): not a failure, and the run's last step.
+ */
+export type StepStatus = 'started' | 'done' | 'failed' | 'needs_approval'
+
+/**
+ * One entry of a configuration's host-access subset (internal/container
+ * HostSetting): a field, whether the repository's configuration or a
+ * Feature's or the image's metadata set it, and the host-affecting part of
+ * its value — JSON, shown as JSON, never interpreted.
+ */
+export interface HostSettingView {
+  field: string
+  source: 'repository' | 'feature_or_image' | string
+  value: unknown
+}
+
+/** A setting in both the approved subset and the current one, with another value. */
+export interface HostSettingChange {
+  field: string
+  source: 'repository' | 'feature_or_image' | string
+  from: unknown
+  to: unknown
+}
+
+/**
+ * The host-access request a stopped workspace waits on (internal/workspace
+ * ApprovalView): the hash to approve, and how the subset differs from what
+ * was last approved for the repository. Never the whole configuration.
+ */
+export interface ApprovalView {
+  hash: string
+  added: HostSettingView[]
+  changed: HostSettingChange[]
+  removed: HostSettingView[]
+}
+
+/** A step's latest status, as `GET /api/workspaces` reports it. */
+export interface StepView {
+  status: StepStatus
+  /** A `workspace.Public` sentence; never a raw error. */
+  detail?: string
+  at: string
+}
+
+/** One workspace, from `GET /api/workspaces` and `GET /api/workspaces/:id`. */
+export interface WorkspaceView {
+  id: string
+  repository_id: number
+  full_name: string
+  branch: string
+  state: WorkspaceState
+  state_detail: string | null
+  container_id: string | null
+  created_at: string
+  /** Keyed by step name; each step's latest status across runs. */
+  steps: Record<string, StepView>
+  /**
+   * The latest `workspace.action` event — a stop's or a delete's newest
+   * sub-step — or null when there has been none (frontend §4.5 #15). Absent
+   * from a server older than it.
+   */
+  last_action?: ActionView | null
+  /** The env_… the session server advertised (design §8): the card's only link. */
+  environment_id?: string | null
+  /** The latest `supervisor.state` event, or null when no server was ever started. */
+  supervisor?: SupervisorView | null
+  /** The latest `session.status` event, or null before one. */
+  session?: SessionView | null
+  /** The host-access request a stopped workspace waits on, or null (design §6). */
+  approval?: ApprovalView | null
+  /**
+   * What the workspace is using, as last measured (design §6 *Resources*),
+   * or null when nothing has been. Absent from a server older than it.
+   */
+  resources?: ResourcesView | null
+  /**
+   * The *Open in VS Code* link (internal/vscode), read from Docker as the
+   * view is served, never stored and never in an event. `configured` is
+   * whether the server was given `--vscode-ssh-host`; `url` is the
+   * vscode:// link to the running container, or null. Null or absent: the
+   * server says nothing about VS Code.
+   */
+  vscode?: VSCodeView | null
+}
+
+/** A view's VS Code state (internal/workspace VSCodeLink). */
+export interface VSCodeView {
+  configured: boolean
+  url: string | null
+}
+
+/** A container's memory as `docker stats` counts it (internal/workspace MemorySample). */
+export interface MemorySampleView {
+  bytes: number
+  at: string
+  /** The container measured, when there was one. */
+  container_id?: string
+  /** The latest attempt failed; `bytes` is the last good reading, from `at`. */
+  stale: boolean
+}
+
+/** What deleting the workspace would free (internal/workspace DiskSample). */
+export interface DiskSampleView {
+  /** directory_bytes + container_bytes. */
+  bytes: number
+  directory_bytes: number
+  /** The container's writable layer; null when it has no container. */
+  container_bytes: number | null
+  /** Part of the directory could not be read: `bytes` is a lower bound. */
+  partial: boolean
+  at: string
+  stale: boolean
+}
+
+/** One workspace's measurements; `boot` and `round` are the server's version for them. */
+export interface ResourcesView {
+  boot: string
+  round: number
+  /** Null with no reading — a stopped workspace has none. Never 0 for "unknown". */
+  memory: MemorySampleView | null
+  disk: DiskSampleView | null
+}
+
+/** The filesystem holding the workspaces, against the pre-flight's limit (design §12). */
+export interface HostDiskView {
+  used_bytes: number
+  total_bytes: number
+  limit_percent: number
+  over: boolean
+  at: string
+  boot: string
+  round: number
+}
+
+/**
+ * The stream's named `resources` frame: one sampling round. It has no id —
+ * it is a measurement, never persisted — and it lists every measured
+ * workspace by id.
+ */
+export interface ResourcesFrame {
+  boot: string
+  round: number
+  at: string
+  workspaces: Record<string, ResourcesView>
+  host: HostDiskView | null
+}
+
+/** `internal/supervisor` State; the database's CHECK constraint holds the same set. */
+export type SupervisorState =
+  | 'starting' | 'waiting_registration' | 'awaiting_login' | 'serving' | 'degraded' | 'exited'
+
+export const SUPERVISOR_STATES: readonly SupervisorState[] = [
+  'starting', 'waiting_registration', 'awaiting_login', 'serving', 'degraded', 'exited',
+]
+
+/**
+ * `supervisor.state`'s data (internal/workspace SupervisorData). `reason` is
+ * a code the card turns into a sentence — never the server's message — and
+ * `detail` is Drydock's own sentence for it.
+ */
+export interface SupervisorView {
+  state: SupervisorState
+  from?: string
+  reason?: string
+  detail?: string
+  restart_count: number
+  at: string
+}
+
+/** `session.status`'s data (internal/workspace SessionData). */
+export interface SessionView {
+  environment_id?: string
+  url?: string
+  capacity_used: number | null
+  capacity_total: number | null
+  sessions: number
+  at: string
+}
+
+/** One line of a session server's log (internal/api LogLine): redacted when written. */
+export interface LogLineView {
+  n: number
+  at: string
+  text: string
+}
+
+/** `GET /api/workspaces/:id/logs?tail=n`. `held` is false when Drydock has no log for it. */
+export interface LogTail {
+  lines: LogLineView[]
+  truncated: boolean
+  held: boolean
+}
+
+/** `GET /api/workspaces/:id/build-log`: the latest failed `up`'s last lines (design §12). */
+export interface BuildLogBody {
+  lines: string[]
+  at: string | null
+  /** False when Drydock holds none — not an empty log. */
+  held: boolean
+  /** Held but not served: the secret values to mask it of cannot be read. */
+  withheld?: boolean
+}
+
+/** `host_header` (port forwarding §8.3): what Host the dev server is sent. */
+export type HostHeader = 'localhost' | 'passthrough'
+
+/**
+ * One live forwarded_port row (internal/preview Port): from GET
+ * /api/workspaces/:id/ports and the `port.*` events, which carry it whole.
+ */
+export interface PortView {
+  id: string
+  workspace_id: string
+  container_port: number
+  slug: string
+  /** The preview host; null when no preview domain is configured. */
+  host: string | null
+  /** Set only while the port is enabled. */
+  url: string | null
+  label: string | null
+  upstream_scheme: 'http' | 'https'
+  host_header: HostHeader
+  enabled: boolean
+  hidden: boolean
+  declared: boolean
+  observed: boolean
+  manual: boolean
+  /** What discovery last saw the port bound to (PF §8.2): 0.0.0.0, ::, 127.0.0.1, … */
+  bind_addr: string | null
+  /**
+   * Discovery's classification of bind_addr: bound to loopback, so only the
+   * container itself can reach it and no preview of it can answer.
+   */
+  loopback: boolean
+  observed_state: 'listening' | 'gone' | 'never_seen' | null
+  last_seen_at: string | null
+  created_at: string | null
+}
+
+/**
+ * A workspace's port discovery (internal/preview DiscoveryOK, …): reading
+ * what the container listens on, unable to (`unavailable`), or reading it but
+ * holding changes back because its ports change faster than the budgets
+ * allow (`limited`). Reported by `port.scanned` and `port.discovery`, and
+ * carried by the port list.
+ */
+export type DiscoveryState = 'ok' | 'unavailable' | 'limited'
+
+/** `GET /api/workspaces/:id/ports` (internal/api PortList). */
+export interface PortList {
+  ports: PortView[]
+  /** Whether a preview domain is configured: without one nothing can be enabled. */
+  previews: boolean
+  /** Discovery's state as last reported; null when the server runs no scanner. */
+  discovery?: DiscoveryState | null
+}
+
+/** `GET /api/workspaces/:id/ports/:port/probe` (internal/preview ProbeResult). */
+export interface ProbeResult {
+  outcome: 'answering' | 'not_running' | 'refused' | 'timed_out' | 'lookup_failed' | 'loopback' | 'not_listening'
+  /** The sentence the proxy's own page says for the same outcome. */
+  message: string
+}
+
+/** One `workspace.action` event as the view reports it (internal/workspace ActionOutcome). */
+export interface ActionView {
+  action: string
+  step: string
+  status: StepStatus
+  detail?: string
+  at: string
+}
+
+/**
+ * The concurrent-container cap and how many workspaces count against it
+ * (frontend §4.5 #17): occupied is the list's own rows counted by
+ * `workspace.Occupying`. `cap` is null when there is none.
+ */
+export interface CapacityView {
+  cap: number | null
+  occupied: number
+}
+
+/** `GET /api/workspaces`: every workspace with a row, newest first, `deleting` included. */
+export interface WorkspaceList {
+  workspaces: WorkspaceView[]
+  /** Absent from a server older than §4.5 #17. */
+  capacity?: CapacityView
+  /** The workspace filesystem as last measured; null before that, absent from an older server. */
+  disk?: HostDiskView | null
+}
+
+/** `GET /api/workspaces/:id`: the view plus its latest 50 events, newest first. */
+export interface WorkspaceDetail extends WorkspaceView {
+  events: StreamEvent[]
+}
+
+/** One installation of the GitHub App, from `GET /api/repos`. */
+export interface InstallationView {
+  id: number
+  account: string
+  /** Where the operator adds or removes repositories (§9.4, frontend §4.5 #8). */
+  settings_url: string
+}
+
+/** One repository, joined with its newest workspace, from `GET /api/repos`. */
+export interface RepoView {
+  id: number
+  installation_id: number
+  full_name: string
+  default_branch: string
+  private: boolean
+  archived: boolean
+  /** Null is *unknown* — never render it as "no dev container". */
+  has_devcontainer: boolean | null
+  pushed_at: string | null
+  /** The installation no longer covers it, but a workspace still holds it. */
+  removed: boolean
+  workspace: { id: string; state: WorkspaceState } | null
+}
+
+/** `GET /api/repos`. */
+export interface CatalogView {
+  /** Null before the first refresh: "loading", not "empty". */
+  refreshed_at: string | null
+  /**
+   * The most recent refresh's failure, null when it succeeded — how a page
+   * loaded after the `repo.refresh_failed` event still learns of it. Its
+   * message is the server's sentence, shown as text and never parsed.
+   */
+  last_refresh_error: { at: string; message: string } | null
+  installations: InstallationView[]
+  repos: RepoView[]
+}
+
+/**
+ * One unnamed event on `GET /api/events` (internal/events.Event). `message`
+ * is for a human and nothing may parse it; `data` is what the reducer applies.
+ */
+export interface StreamEvent {
+  id: number
+  /** Absent for events about the whole system. */
+  workspace_id?: string
+  level: 'info' | 'warn' | 'error'
+  kind: string
+  message: string
+  data?: Record<string, unknown>
+  at: string
+}
+
+/** One repository a secret may reach (internal/secrets.Grant). */
+export interface SecretGrant {
+  repository_id: number
+  full_name: string
+}
+
+/**
+ * Everything about a secret except its value (internal/secrets.Meta). There
+ * is no field a value could go in, here or in the Go type: no route returns
+ * one (design §13.5, frontend §2.5).
+ */
+export interface SecretMeta {
+  name: string
+  /** The answer to "what can someone do with this?" (design §10.4). */
+  reach: string
+  description: string
+  /** Every repository, including ones added to the installation later. */
+  all_repos: boolean
+  grants: SecretGrant[]
+  created_at: string | null
+  /** Null until the value first changes. */
+  rotated_at: string | null
+  last_access_at: string | null
+  /** Workspace ids that have fetched it, most recent first. */
+  accessed_by: string[]
+}
+
+/**
+ * One stored secret that cannot be delivered (internal/secrets.UndeliverableSecret).
+ * `does_not_open`: the master key cannot decrypt it — storing the value again
+ * repairs it. `breaks_write_rules`: only a database edit makes one; deleting it
+ * is the repair.
+ */
+export interface UndeliverableSecret {
+  name: string
+  reason: 'does_not_open' | 'breaks_write_rules' | (string & {})
+}
+
+/**
+ * Why stored secrets cannot be delivered (internal/secrets.Undeliverable):
+ * while it holds, every workspace's commands fail (design §10.3). Names and
+ * reasons only — never a value.
+ */
+export interface Undeliverable {
+  since: string
+  secrets: UndeliverableSecret[]
+}
+
+/** `GET /api/secrets`. */
+/** A scope an API token may be minted with (vscode-extension §4.1). */
+export type TokenScope = 'read' | 'lifecycle' | 'approve'
+export const TOKEN_SCOPES: readonly TokenScope[] = ['read', 'lifecycle', 'approve']
+
+/**
+ * One API token's metadata, from `GET /api/tokens` and the `api_token.*`
+ * events (internal/auth.Token). There is no field for the token, and none
+ * for its hash: neither is ever sent but in the mint's own response.
+ */
+export interface ApiTokenMeta {
+  id: string
+  label: string
+  scopes: string[]
+  created_at: string
+  last_used_at: string | null
+  expires_at: string
+  revoked_at: string | null
+}
+
+/** `GET /api/tokens`. */
+export interface TokenList {
+  tokens: ApiTokenMeta[]
+}
+
+/**
+ * `POST /api/tokens`' 201: the metadata and, in `token`, the token itself —
+ * the one response that carries a credential. Shown once by the screen that
+ * asked, and never handed to the reducer.
+ */
+export interface MintedToken extends ApiTokenMeta {
+  token: string
+}
+
+export interface SecretList {
+  secrets: SecretMeta[]
+  /** Null when every stored secret can be delivered (frontend §4.5 #12). */
+  undeliverable?: Undeliverable | null
+}
+
+/** A running workspace a rotation reached (internal/secrets.StaleWorkspace). */
+export interface StaleWorkspace {
+  workspace_id: string
+  repository_id: number
+  full_name: string
+}
+
+/**
+ * Which running workspaces hold a rotated value, by what it costs them
+ * (design §10.3, frontend §4.5 #5). Both lists are always present.
+ */
+export interface Stale {
+  new_commands: StaleWorkspace[]
+  needs_supervisor_restart: StaleWorkspace[]
+}
+
+/** `PUT /api/secrets/:name`'s 200 body (internal/secrets.PutResult). */
+export interface PutSecretResult {
+  secret: SecretMeta
+  created: boolean
+  rotated: boolean
+  stale: Stale
+}
+
+/** `claude_identity.state` (design §4, §7.3): the five-way verdict, stored once by the watch. */
+export type IdentityState = 'ok' | 'expiring' | 'expired' | 'blanked' | 'absent'
+
+export const IDENTITY_STATES: readonly IdentityState[] = ['ok', 'expiring', 'expired', 'blanked', 'absent']
+
+/** The last identity check's failure (internal/identity.CheckError). Drydock's own sentence. */
+export interface IdentityCheckError {
+  at: string
+  /** docker | image | credentials | auth_status | disagree | foreign_volume | timeout | unknown */
+  problem: string
+  message: string
+}
+
+/**
+ * The stored identity (internal/identity.View), from `GET /api/auth/claude`
+ * and the `auth.identity` event. `state` is null until a check has ever
+ * succeeded — "not yet known", never one of the five.
+ */
+export interface IdentityView {
+  state: IdentityState | null
+  /** Only beside a login (ok, expiring, expired). */
+  account_email: string | null
+  /**
+   * The ACCESS token's expiry: about eight hours after a sign-in, moved by
+   * every refresh. Never a login countdown; past it is `expired`, which the
+   * next session server renews (design §7.3).
+   */
+  expires_at: string | null
+  /**
+   * The login's own end — the refresh token's, as Claude Code records it
+   * (`refreshTokenExpiresAt`). `expiring` counts down to this. Null when the
+   * credential file carries none.
+   */
+  login_expires_at: string | null
+  /** When Drydock first saw this login. */
+  logged_in_at: string | null
+  last_checked_at: string | null
+  /** The shared credential volume's name. */
+  volume: string
+  /** Null when the last check succeeded. The stored state stands either way. */
+  check_error: IdentityCheckError | null
+}
+
+/** `internal/login.Phase` (design §7.2, frontend §6.2). */
+export type LoginPhase =
+  | 'starting' | 'awaiting_code' | 'submitting' | 'invalid_code'
+  | 'succeeded' | 'timed_out' | 'failed' | 'cancelled'
+
+export const LOGIN_PHASES: readonly LoginPhase[] = [
+  'starting', 'awaiting_code', 'submitting', 'invalid_code', 'succeeded', 'timed_out', 'failed', 'cancelled',
+]
+
+/** The terminal phases: nothing more will happen to this login. */
+export const LOGIN_ENDED: readonly LoginPhase[] = ['succeeded', 'timed_out', 'failed', 'cancelled']
+
+/**
+ * The login handshake (internal/login.View), from `GET /api/auth/claude` and
+ * the `auth.login` event. There is no field a code could go in: the code goes
+ * up, and nothing about it comes back down (frontend §2.5).
+ */
+export interface LoginView {
+  login_id: string
+  phase: LoginPhase
+  /** The authorize URL, from awaiting_code on. */
+  url: string | null
+  /** When an unfinished login times out, from awaiting_code on. */
+  deadline: string | null
+  started_at: string
+  ended_at: string | null
+  /** How many codes have been typed. */
+  attempts: number
+  /** docker | volume | volume_owner | image | start | no_url | url | exited | output | shutdown */
+  problem: string | null
+  /** Drydock's sentence for the phase. Shown, never parsed. */
+  message: string
+}
+
+/** `GET /api/auth/claude`. `login` is the handshake in progress, or one that ended minutes ago; else null. */
+export interface ClaudeIdentityBody {
+  identity: IdentityView
+  login: LoginView | null
+}

@@ -5,7 +5,7 @@ import { freshBackend, mountApp, server, settle, useMockApi } from '../test/setu
 import { useStreamStore } from '../stores/stream'
 import { emit } from '../mocks/backend'
 import { FakeEventSource } from '../test/fakeEventSource'
-import { emptyEntities, reduce, tokenList } from '../stores/reducer'
+import { emptyEntities, reduce, tokenList } from '../core/reducer'
 
 useMockApi()
 

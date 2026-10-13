@@ -18,7 +18,7 @@
 // things for the same word.
 import { computed, onMounted } from 'vue'
 import { RouterLink } from 'vue-router'
-import { describeError } from '../api/messages'
+import { describeError } from '../core/messages'
 import ActionButton from '../components/ActionButton.vue'
 import MakeRoom from '../components/MakeRoom.vue'
 import PortCount from '../components/PortCount.vue'
@@ -28,12 +28,13 @@ import OpenInVSCode from '../components/OpenInVSCode.vue'
 import WorkspaceAction from '../components/WorkspaceAction.vue'
 import WorkspaceIdentityNote from '../components/WorkspaceIdentityNote.vue'
 import { catalogEvent, useCatalogStore, type CatalogRow } from '../stores/catalog'
-import { becameRunning, type Workspace } from '../stores/reducer'
+import { becameRunning, type Workspace } from '../core/reducer'
 import { useStreamStore } from '../stores/stream'
 import { cloneKey, useWorkspacesStore } from '../stores/workspaces'
 import { useStreamRefetch } from '../lib/refetch'
-import { relativeTime } from '../lib/time'
-import { cardStatus, rowAction, stoppable, withRoom, type CardAction } from '../lib/workspaceCard'
+import { relativeTime } from '../core/lib/time'
+import { escapeFormat } from '../core/lib/text'
+import { cardStatus, rowAction, stoppable, withRoom, type CardAction } from '../core/lib/workspaceCard'
 
 const catalog = useCatalogStore()
 const workspaces = useWorkspacesStore()
@@ -86,7 +87,7 @@ function rowNote(r: CatalogRow): string | null {
         <li v-for="r in catalog.running" :key="r.workspace.id" class="row" data-test="running-row">
           <div class="head">
             <RouterLink :to="wsLink(r.workspace)" class="name" data-test="ws-link">
-              {{ r.repo?.fullName ?? r.workspace.fullName ?? r.workspace.id }}
+              {{ escapeFormat(r.repo?.fullName ?? r.workspace.fullName ?? r.workspace.id) }}
             </RouterLink>
             <span class="state" :class="status(r.workspace).tone" data-test="running-state">
               <WorkspaceIdentityNote :state="r.workspace.state" part="dot" />
@@ -171,8 +172,8 @@ function rowNote(r: CatalogRow): string | null {
             :class="{ removed: r.repo.removed }" data-test="repo"
           >
             <div class="head">
-              <RouterLink v-if="r.workspace" :to="wsLink(r.workspace)" class="name">{{ r.repo.fullName }}</RouterLink>
-              <span v-else class="name">{{ r.repo.fullName }}</span>
+              <RouterLink v-if="r.workspace" :to="wsLink(r.workspace)" class="name">{{ escapeFormat(r.repo.fullName) }}</RouterLink>
+              <span v-else class="name">{{ escapeFormat(r.repo.fullName) }}</span>
               <span v-if="r.workspace" class="state" :class="status(r.workspace).tone" data-test="repo-state">
                 {{ status(r.workspace).line }}
               </span>

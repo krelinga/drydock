@@ -19,10 +19,10 @@ import { http, HttpResponse, sse, type HttpHandler } from 'msw'
 import type {
   ActionView, ApiTokenMeta, ApprovalView, BuildLogBody, DiscoveryState, PortList, PortView, ProbeResult, HostDiskView, ResourcesView, HostSettingView, CatalogView, Device, IdentityState, IdentityView, InstallationView, LoginView, PutSecretResult, RepoView, SecretMeta, SessionInfo, SessionView, Stale, StaleWorkspace, SupervisorView,
   StepView, StreamEvent, Undeliverable, UndeliverableSecret, WorkspaceDetail, WorkspaceList, WorkspaceState, WorkspaceView,
-} from '../api/types'
+} from '../core/types'
 import { checkDescription, checkName, checkReach, checkValue, type SecretRefusal } from '../lib/secretRules'
 import { acceptsCode, checkCodeShape, loginLive } from '../lib/login'
-import { bindWhere, loopbackSentence } from '../lib/portDiagnosis'
+import { bindWhere, loopbackSentence } from '../core/lib/portDiagnosis'
 
 export const MOCK_PASSWORD = 'drydock'
 const LOCKOUT_AFTER = 5

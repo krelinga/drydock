@@ -10,11 +10,11 @@
 // entity. Its row in the list arrives as api_token.created, like a token
 // minted on another device.
 import { computed, onMounted, onUnmounted, ref } from 'vue'
-import { describeError } from '../api/messages'
-import { TOKEN_SCOPES, type TokenScope } from '../api/types'
-import { relativeTime } from '../lib/time'
+import { describeError } from '../core/messages'
+import { TOKEN_SCOPES, type TokenScope } from '../core/types'
+import { relativeTime } from '../core/lib/time'
 import { useStreamRefetch } from '../lib/refetch'
-import type { ApiToken } from '../stores/reducer'
+import type { ApiToken } from '../core/reducer'
 import { useSessionStore } from '../stores/session'
 import { useStreamStore } from '../stores/stream'
 import { CREATE_TOKEN_KEY, DEFAULT_TOKEN_DAYS, TOKEN_LIFETIMES, revokeTokenKey, useTokensStore } from '../stores/tokens'

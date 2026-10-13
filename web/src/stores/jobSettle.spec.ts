@@ -8,7 +8,7 @@
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { createPinia, setActivePinia } from 'pinia'
-import type { StreamEvent } from '../api/types'
+import type { StreamEvent } from '../core/types'
 import { FakeEventSource } from '../test/fakeEventSource'
 import { freshBackend, settle, useMockApi } from '../test/setup'
 import { playScript, WS_FAILED, WS_RUNNING, type MockBackend } from '../mocks/backend'

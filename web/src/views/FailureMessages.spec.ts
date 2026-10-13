@@ -9,7 +9,7 @@ import type { VueWrapper } from '@vue/test-utils'
 import { FakeEventSource } from '../test/fakeEventSource'
 import { freshBackend, mountApp, settle, useMockApi } from '../test/setup'
 import { MOCK_PASSWORD, WS_FAILED, WS_REMOVED, WS_RUNNING } from '../mocks/backend'
-import type { StreamEvent } from '../api/types'
+import type { StreamEvent } from '../core/types'
 
 useMockApi()
 

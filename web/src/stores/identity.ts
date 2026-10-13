@@ -17,10 +17,14 @@
 
 import { defineStore } from 'pinia'
 import * as api from '../api/client'
-import { LOGIN_ENDED, type ClaudeIdentityBody, type StreamEvent } from '../api/types'
-import { loginEnding } from '../lib/identity'
-import type { ClaudeIdentity } from './reducer'
+import { LOGIN_ENDED, type ClaudeIdentityBody, type StreamEvent } from '../core/types'
+import { loginEnding } from '../core/lib/identity'
+import type { ClaudeIdentity } from '../core/reducer'
 import { useStreamStore } from './stream'
+import { settlesCheck } from '../core/settle'
+
+// Shared with the extension (vscode-extension §5.2); re-exported.
+export { CHECK_SETTLERS, settlesCheck } from '../core/settle'
 
 export const CHECK_KEY = 'claude:check'
 export const LOGIN_BEGIN_KEY = 'claude:login:begin'
@@ -31,16 +35,6 @@ export const LOGIN_CANCEL_KEY = 'claude:login:cancel'
 function loginPhase(ev: StreamEvent): string | null {
   const l = (ev.data ?? {}).login as { phase?: unknown } | undefined
   return l !== undefined && l !== null && typeof l.phase === 'string' ? l.phase : null
-}
-
-/**
- * The events that end a requested check: the verdict changed or a failure
- * cleared, the check failed, or — the common, healthy case — it found
- * nothing to announce.
- */
-export const CHECK_SETTLERS: readonly string[] = ['auth.identity', 'auth.identity_check_failed', 'auth.identity_checked']
-export function settlesCheck(ev: StreamEvent): boolean {
-  return CHECK_SETTLERS.includes(ev.kind)
 }
 
 let inFlight: Promise<void> | null = null

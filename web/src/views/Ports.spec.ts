@@ -88,6 +88,21 @@ describe('the ports panel', () => {
     expect(b.events.slice(-2).map((e) => e.kind)).toEqual(['port.enabled', 'port.disabled'])
   })
 
+  it("a label the container declared with a bidi override is shown escaped, never as itself", async () => {
+    // portsAttributes labels come from devcontainer.json, which the container can write.
+    const RLO = '‮'
+    const b = freshBackend({ signedIn: true })
+    addMockPort(b, WS_RUNNING, 3000, { label: `api${RLO}nimda`, declared: true })
+    addMockPort(b, WS_RUNNING, 3001, { label: 'plain', declared: true })
+    const { wrapper } = await mountApp(`/ws/${WS_RUNNING}`)
+    FakeEventSource.latest().open().pipe(b)
+    await settle()
+    expect(row(wrapper, 3000).find('[data-test="port-label"]').text()).toBe('api\\u202Enimda')
+    expect(wrapper.text()).not.toContain(RLO)
+    // Control: a plain label is shown exactly.
+    expect(row(wrapper, 3001).find('[data-test="port-label"]').text()).toBe('plain')
+  })
+
   it('a change made on another device reaches this page by its event alone', async () => {
     const b = freshBackend({ signedIn: true })
     seedPorts(b)

@@ -9,10 +9,10 @@
 // event, so the last-access column is only as fresh as the last list.
 import { computed, onMounted } from 'vue'
 import { RouterLink } from 'vue-router'
-import { describeError } from '../../api/messages'
+import { describeError } from '../../core/messages'
 import { useStreamRefetch } from '../../lib/refetch'
-import { relativeTime } from '../../lib/time'
-import type { Secret } from '../../stores/reducer'
+import { relativeTime } from '../../core/lib/time'
+import type { Secret } from '../../core/reducer'
 import { useSecretsStore } from '../../stores/secrets'
 import { useStreamStore } from '../../stores/stream'
 import { useWorkspacesStore } from '../../stores/workspaces'

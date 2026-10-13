@@ -15,8 +15,8 @@
 
 import { defineStore } from 'pinia'
 import * as api from '../api/client'
-import type { MintedToken, TokenList, TokenScope } from '../api/types'
-import { tokenList, type ApiToken } from './reducer'
+import type { MintedToken, TokenList, TokenScope } from '../core/types'
+import { tokenList, type ApiToken } from '../core/reducer'
 import { useStreamStore } from './stream'
 
 export const CREATE_TOKEN_KEY = 'token:create'

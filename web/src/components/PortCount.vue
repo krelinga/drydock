@@ -9,7 +9,7 @@ import { computed, onMounted, watch } from 'vue'
 import { portCount, portCountLabel, portCountText } from '../lib/portCount'
 import { useStreamRefetch } from '../lib/refetch'
 import { usePortsStore } from '../stores/ports'
-import { portsOf, type Workspace } from '../stores/reducer'
+import { portsOf, type Workspace } from '../core/reducer'
 import { useStreamStore } from '../stores/stream'
 
 // panel: the page's ports panel loads them, so the count only reads them.

@@ -13,7 +13,7 @@
 // catalog is the authority on those two, and it is what the read-only badge
 // reads, so the row and the badge say one thing.
 
-import type { StreamEvent } from '../api/types'
+import type { StreamEvent } from '../core/types'
 
 export interface GitHubAccess {
   ok: boolean

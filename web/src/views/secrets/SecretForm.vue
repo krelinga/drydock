@@ -49,7 +49,7 @@
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { RouterLink } from 'vue-router'
 import { ApiError } from '../../api/client'
-import { describeError, sentenceFor } from '../../api/messages'
+import { describeError, sentenceFor } from '../../core/messages'
 import {
   MAX_DESCRIPTION_LEN, MAX_REACH_LEN, checkDescription, checkName, checkReach, checkValue, type SecretRefusal,
 } from '../../lib/secretRules'

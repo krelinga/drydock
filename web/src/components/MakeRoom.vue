@@ -7,7 +7,7 @@
 // /api/workspaces and the count the stream keeps (lib/capacity.ts).
 import { computed } from 'vue'
 import { RouterLink } from 'vue-router'
-import { capacity } from '../lib/capacity'
+import { capacity } from '../core/lib/capacity'
 import { useStreamStore } from '../stores/stream'
 
 const stream = useStreamStore()

@@ -9,7 +9,7 @@ import { http, HttpResponse } from 'msw'
 import { FakeEventSource } from '../../test/fakeEventSource'
 import { freshBackend, mountApp, server, settle, useMockApi } from '../../test/setup'
 import { emit, recordSecretFetch, secretMeta, secretUndeliverable, WS_RUNNING, type MockBackend } from '../../mocks/backend'
-import { sentenceFor } from '../../api/messages'
+import { sentenceFor } from '../../core/messages'
 
 useMockApi()
 

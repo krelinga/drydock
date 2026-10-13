@@ -12,7 +12,7 @@ import { freshBackend, mountApp, settle, useMockApi } from '../test/setup'
 import { playScript, WS_RUNNING } from '../mocks/backend'
 import { useStreamStore } from '../stores/stream'
 import { approveKey } from '../stores/workspaces'
-import type { HostSettingView } from '../api/types'
+import type { HostSettingView } from '../core/types'
 
 useMockApi()
 
@@ -89,6 +89,19 @@ describe('Host-access approval', () => {
     expect(panel.find('[data-test="approval-privileged"]').exists()).toBe(true)
     expect(panel.find('[data-test="approval-initialize-command"]').exists()).toBe(false)
     expect(panel.text()).not.toContain('initializeCommand runs on this server')
+  })
+
+  it('a value the container wrote with a newline or a bidi override is shown escaped, never as itself', async () => {
+    const RLO = '‮'
+    const { wrapper } = await askedOnRebuild([
+      { field: 'initializeCommand', source: 'repository', value: `echo ok\n${RLO}eslaf :degelivirp` },
+      { field: 'runArgs', source: 'repository', value: ['--network=host'] },
+    ])
+    const values = card(wrapper).findAll('[data-test="approval-setting"] .value').map((v) => v.text())
+    expect(values[0]).toBe('"echo ok\\n\\u202Eeslaf :degelivirp"')
+    expect(card(wrapper).find('[data-test="approval"]').text()).not.toContain(RLO)
+    // Control: a plain value is shown exactly as its JSON.
+    expect(values[1]).toBe('["--network=host"]')
   })
 
   it('Approve and continue sends the shown hash and settles when the build ends, not on the 202', async () => {
