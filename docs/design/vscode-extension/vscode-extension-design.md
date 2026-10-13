@@ -25,11 +25,11 @@
 | Commands | Every action is a `drydock.*` command in the palette. A single *Go to Workspace…* quick pick is the hub. One default keybinding, and a test checks it for conflicts. A tree view is the secondary surface. | §6 |
 | Connect | `vscode.openFolder` on the `vscode-remote://` form of the server's own link, in a new window. Not `openExternal` on the `vscode://` link. Remote-SSH and Dev Containers are checked for at connect time, **not** declared as `extensionDependencies`. | §7 |
 | Commands as attack surface | Code in an attached container can run commands in that window, ours included. **The primary control: outside an allowlist of window kinds (local, `ssh-remote`), the extension does not mutate at all.** Depth: commands ignore arguments that could cause a mutation, return nothing, and E2's lifecycle mutations confirm in a modal. The extension cannot make a container window safer than the attach itself (§8.2). | §8 |
-| Version skew | A new authenticated `GET /api/meta` returns `{version, api}`. The extension declares the `api` range it speaks. A Go test pins the routes the extension uses, and the client tier checks the event kinds it reads were actually emitted. Outside the range, a mutation is replaced by *Install the matching extension*. | §9.1 |
+| Version skew | A new authenticated `GET /api/meta` returns `{version, api}`. The extension declares the `api` range it speaks. A Go test pins the routes and event kinds the extension uses, the kinds against a new **event-kind registry** in `internal/events` (§9.1). The client tier checks the event kinds it reads were actually emitted. Outside the range, a mutation is replaced by *Install the matching extension*. | §9.1 |
 | Release | A `.vsix` uploaded to every Drydock release under a fixed name (`drydock-vscode.vsix`) by the existing release-please flow. Not the Marketplace, at least at first. | §9.2 |
 | Approvals | **In E1** (the owner's decision: docker-in-docker repositories stop at `needs_approval` right after clone, so clone → connect dead-ends without it). They come from a read-only **review document** showing exactly what the web card shows, and are confirmed by **typing the repository's full name**. They are allowed only from local and SSH windows. The approval sends the hash of the request that document rendered, never a hash it did not show. | §10.4 |
-| Phasing | **T** (server): API tokens, scopes, `GET /api/meta`. **E1**: sign in with a token, catalog, clone, follow, **host-access approval**, connect. **E2**: start, stop, rebuild, delete, logs, Claude status. **E3**: the Claude login, ports. **Secrets stay in the web UI.** | §10 |
-| Settled by the owner | One default keybinding, `ctrl+alt+shift+d` / `cmd+alt+shift+d` (§6.2). Updates from GitHub releases (§9.2). The SSH host is the server's `--vscode-ssh-host` alone, with no per-laptop override (§7.3). Off-LAN use is Tailscale's job, with no relay (§2.1). No standalone CLI for now (§3.3). No event-kind registry: the observation check stands (§9.1). One Drydock (§6.4). Mutations only from local and SSH windows (§8). Typed-name approval (§10.4). | |
+| Phasing | **R** (server, a small PR first): the event-kind registry. **T** (server): API tokens, scopes, `GET /api/meta`. **E1**: sign in with a token, catalog, clone, follow, **host-access approval**, connect. **E2**: start, stop, rebuild, delete, logs, Claude status. **E3**: the Claude login, ports. **Secrets stay in the web UI.** | §10 |
+| Settled by the owner | One default keybinding, `ctrl+alt+shift+d` / `cmd+alt+shift+d` (§6.2). Updates from GitHub releases (§9.2). The SSH host is the server's `--vscode-ssh-host` alone, with no per-laptop override (§7.3). Off-LAN use is Tailscale's job, with no relay (§2.1). No standalone CLI for now (§3.3). An **event-kind registry, added now** (§9.1, §10.0), so the contract is checked statically and the context is in the code rather than in memory. One Drydock (§6.4). Mutations only from local and SSH windows (§8). Typed-name approval, revisited only if it proves too much friction (§10.4). | |
 | Testing | Unit (Vitest, no `vscode`) · manifest contract · **client tier** (the protocol client against real Drydock behind real Caddy, no VS Code) · **extension-host tier** (`@vscode/test-cli`, headless under xvfb, running the bundle unpacked from the `.vsix`) · a nightly keyboard smoke test on the installed `.vsix` · Spike 05 for the VS Code behaviour this design assumes and has not measured · and rituals for the real Remote-SSH attach, which CI cannot reach. | §12 |
 
 ## 1. Problem & goals
@@ -38,7 +38,7 @@ The operator spends the working day in VS Code on a laptop, connected over Remot
 
 ### Functional requirements
 
-- **First a server phase, T: API tokens** (§4, §10.0). Then **E1, the extension's first iteration:** sign in with a token, see the repositories the GitHub App can reach (`GET /api/repos`), clone one (`POST /api/workspaces`), follow its eight steps to `running`, and connect: open the running container in a new VS Code window at the clone's folder. Also: the running workspaces, *Connect* to any of them, and *Open in Drydock* (the web UI page) for anything the extension does not do itself.
+- **First two server phases: R, the event-kind registry, and T, API tokens** (§9.1, §4, §10.0, §10.0a). Then **E1, the extension's first iteration:** sign in with a token, see the repositories the GitHub App can reach (`GET /api/repos`), clone one (`POST /api/workspaces`), follow its eight steps to `running`, and connect: open the running container in a new VS Code window at the clone's folder. Also: the running workspaces, *Connect* to any of them, and *Open in Drydock* (the web UI page) for anything the extension does not do itself.
 - **From the keyboard alone.** Every action is a command. The hub is one quick pick reachable by one shortcut, and the whole of E1's flow (shortcut, type part of a name, Enter, Enter) needs no mouse.
 - **Host-access approval in E1.** A repository that uses docker-in-docker asks for `privileged`, and its first clone stops at `needs_approval` before any container exists (overall §6, step 3). Without approval in the extension, the E1 flow would end with *go to the browser* for exactly the repositories the owner uses most (§10.4).
 - **Eventually, most of the web UI.** E2 and E3 add the workspace lifecycle, logs, the Claude identity and login, and ports (§10). Secrets stay web-only (§10.6).
@@ -383,12 +383,17 @@ The extension declares `drydock.apiRange: [min, max]` in its own `package.json`.
 | `< min` | Reads only: the lists, follow, and connect, which use routes that have not changed since Phase 2. Mutations are replaced by *This Drydock is older than this extension supports. Upgrade Drydock, or install the extension from its release.* |
 | `> max` | The same, with *This extension is older than the Drydock it is talking to* and *Install the matching extension* as the replacement action. |
 
-**The contract is pinned by tests, not by memory**, in two halves, because routes and event kinds exist in the code in different ways.
+**The contract is pinned by tests, not by memory**, statically, in two halves.
 
-- **Routes, statically.** `extension/contract.json` lists every route name the extension calls, with method and pattern. A Go test (`internal/api`, `TestExtensionContract`) fails when one is missing from `api.Table` or differs. The route table is data (testing §5.1), so this is exact. The failure message says *bump `api` in `internal/api/meta.go` or keep the route*. Mutation-checked by renaming `workspaces.create`'s pattern.
-- **Event kinds, by observation.** There is no one place that lists the kinds the server emits. They are `Kind*` constants in several packages (`internal/workspace/workspace.go`, `internal/catalog`, `internal/preview/registry.go`) and bare literals at call sites (`"token.refused"` in `internal/broker/broker.go`, others in `internal/reconcile` and `internal/secrets`). A scan of constants would fail on literal kinds and pass on a constant no longer emitted. So the check is made where kinds are real: **the client tier records the kind of every event it receives**, across its scenarios, into `test/extension/client/kinds-seen.json`, and a spec asserts every kind `contract.json` lists as *read* was seen, by name. A kind the scenarios cannot provoke is listed with `"unexercised": "<why>"` and is checked by nothing. The list says so, and the reviewer of a change to it sees what is uncovered. Mutation-checked by changing `workspace.KindJob`'s value.
+- **Routes.** `extension/contract.json` lists every route name the extension calls, with method and pattern. A Go test (`internal/api`, `TestExtensionContract`) fails when one is missing from `api.Table` or differs. The route table is data (testing §5.1), so this is exact. The failure message says *bump `api` in `internal/api/meta.go` or keep the route*. Mutation-checked by renaming `workspaces.create`'s pattern.
+- **Event kinds, against a registry** (owner's decision: add it now, so the context lives in the code rather than in anyone's memory). Today there is no one place that lists the kinds the server emits. About forty are `Kind*` string constants spread over a dozen packages (`internal/workspace`, `internal/catalog`, `internal/preview`, `internal/secrets`, `internal/identity`, `internal/login`, …), and some are bare literals at call sites (`"token.refused"` in `internal/broker/broker.go`, others in `internal/reconcile` and `internal/secrets`). Phase R (§10.0) makes one:
+  - **`internal/events/kinds.go`** declares `type Kind string` and every kind the server emits as a constant of that type, each with a one-line comment naming its data shape. That is the table at the top of `web/src/stores/reducer.ts`, moved to where the kinds are made. The packages' existing `Kind*` constants become references to these (`workspace.KindState = events.KindWorkspaceState`) or are removed, and every literal is replaced. `NewEvent` and `Emit` take a `Kind`. The wire format does not change: a kind is still its string.
+  - **A meta-test, `TestKindRegistry`**, typechecks every non-test package with `go/types` and fails, by file and line, on **any constant value of type `events.Kind` spelled anywhere but `kinds.go`**. Typing the parameter alone would not do it, since Go converts an untyped string literal to `Kind` silently. The type checker records that conversion, which is what the test reads. So `Emit(…, "token.refused2", …)` fails by name, and so does a `Kind` built from a literal and passed through a helper. The same test fails on a registry constant **no emit site uses**, so a kind that stops being emitted cannot linger as a false promise. Its control: the scan finds the known `events.KindWorkspaceState` use in `internal/workspace`, and the set of registry constants is non-empty. Mutation-checked three ways: a literal kind at an `Emit`, an unused constant added to `kinds.go`, and a `Kind(someString)` conversion from a variable (which the test refuses, since a kind from a variable cannot be checked).
+  - **`TestExtensionContract`** checks every kind `contract.json` lists as *read* against the registry's constants, read from `kinds.go`, statically, in the ordinary `go test`. The failure says *bump `api` or keep the kind*.
 
-**Decided: no event-kind registry.** A registry in `internal/events` (every `Emit`/`Append` kind drawn from it, enforced by extending `TestRowRule`'s call-site scan) would make this half static and complete. It would also touch every package that emits, and add a rule every new event must follow, all to protect one client's reads. The observation check costs nothing outside the extension's tests, and its `unexercised` list says exactly what it does not cover. Revisit only if a renamed kind actually gets past it.
+**The observation check is gone.** The client tier no longer tallies the kinds it saw against the contract: the registry answers "does the server emit this kind?" for every kind, not just the ones a scenario happens to provoke, and there is no `unexercised` list to maintain. The client tier still **records real event payloads** for the unit tier's fake transport and the SSE parser's specs (§12.4), and that is the check on a kind's *shape*, which a name-only registry cannot give.
+
+A cheap follow-on the registry makes possible, not required by the extension: a web spec that reads `kinds.go` (as `lib/capacity.spec.ts` reads `Occupying` from Go) and fails when the reducer's comment table or its handled kinds name a kind the server does not emit.
 
 ### 9.2  Release: a `.vsix` on every Drydock release
 
@@ -405,12 +410,20 @@ The extension lives in **`extension/`** (beside `web/` and `feature/`) and is ve
 
 Each phase states when it is done, as overall §14 does.
 
-### 10.0  T: API tokens (server, before E1)
+### 10.0  R: the event-kind registry (server, a small PR first)
+
+The registry of §9.1, on its own and first. It is a refactor with no behaviour change, so the existing suite is its proof (the `go test` and the browser tier see the same wire). It is independent of tokens, so it does not wait on T or hold it up. Doing it first means T's new `token.created`/`token.revoked` are born in the registry.
+
+**Done when:** `kinds.go` names every kind the server emits, no `Kind`-typed constant is spelled outside it (`TestKindRegistry`, mutation-checked as §9.1 says), no registered kind is unused, and the suite passes unchanged.
+
+**Size:** small but wide. One new file of about forty constants with their shape comments; a mechanical edit at every emit site in roughly a dozen packages; one meta-test of a few hundred lines (the `go/types` load is the only new machinery, and `TestContextRule`'s and `TestRowRule`'s AST walks are the precedent). An afternoon to a day.
+
+### 10.0a  T: API tokens (server, before E1)
 
 The owner's decision: build the credential the extension will keep, before the extension, rather than ship a cookie path and retire it (§4).
 - The `api_token` table, with design §4's schema and the golden schema updated.
 - `Authenticate` with a bearer, the `Scope` column and its step in `wrap` and `Unrouted`, `forbidden_scope`, and the scope meta-test.
-- The four token routes (§4.2), with `token.created`/`token.revoked` events carrying metadata only.
+- The four token routes (§4.2), with `token.created`/`token.revoked` events (registered in `kinds.go`) carrying metadata only.
 - `Alive` generalised to credentials.
 - The token as `approved_by`.
 - *Sign out everywhere* split into its own `session` route (`DELETE /api/auth/sessions`), so scopes stay keyed on route names.
@@ -539,13 +552,14 @@ The owner's decision on approvals does not extend to secrets, and nothing argues
 | Change | Phase | Where |
 |---|---|---|
 | `GET /api/meta` → `{version, api, credential}`, `AuthRequired`, scope `read`. `version` threaded from `main.version` into `config.Config`. | T | `internal/api` route table + handler, `cmd/drydock`, overall §5 |
+| **Phase R**: `internal/events/kinds.go` (`type Kind`, every emitted kind), the ~40 constants and the literals migrated, `NewEvent`/`Emit` taking a `Kind`, `TestKindRegistry` | R | `internal/events` and every emitting package |
 | `TestExtensionContract` over `extension/contract.json` | E1 | `internal/api` |
 | Release: `extra-files`, the `.vsix` asset, `verify`'s list | E1 | `release-please-config.json`, `.github/workflows/release-please.yml` |
 | Not the server, but in the same E1 core PR: the web card renders from core's `lib/approval.ts`, and repository-sourced strings have Unicode format characters escaped (§10.4) | E1 | `web/src/core`, `web/src/components/HostAccessApproval.vue` |
 | Recommended: a pending request records the hash of the approval it was diffed against, and `Approve` refuses (`approval_stale`) when the repository's current approval is no longer that one (§10.4) | E1 | `internal/workspace/approval.go` |
-| **Phase T**, all of §10.0: `api_token`, bearer `Authenticate`, the `Scope` column and step, `forbidden_scope`, the four token routes, `Alive` for credentials, the token as `approved_by`, *Sign out everywhere* as its own route, Settings' *Tokens* | T | `internal/auth`, `internal/api`, `internal/store`, `web/`, overall §4, §5, §13.2, CLAUDE.md |
+| **Phase T**, all of §10.0a: `api_token`, bearer `Authenticate`, the `Scope` column and step, `forbidden_scope`, the four token routes, `Alive` for credentials, the token as `approved_by`, *Sign out everywhere* as its own route, Settings' *Tokens* | T | `internal/auth`, `internal/api`, `internal/store`, `web/`, overall §4, §5, §13.2, CLAUDE.md |
 
-Optional, and not a prerequisite: a registry of event kinds in `internal/events`, which would make the event half of the contract static (§9.1).
+
 
 Nothing in E1 or E2 needs a new mutating route, a new event or a change to an existing response.
 
@@ -634,7 +648,7 @@ What the stand-ins must answer is exactly what the eight steps and the link ask:
 | A revoked token ends the stream: *Revoke* in Settings (from the harness's cookie session) → the server's next heartbeat `Alive` check closes the stream (it cannot send a status mid-stream), the client's reconnect gets the `401`, the one 401 path runs, and the stored token is cleared. *Sign Out* revokes the token itself (`DELETE /api/auth/token`), and a later request with it is `401` | Before the revocation the stream delivered events |
 | SSE reconnect with `Last-Event-ID`: kill Caddy, restart it, and events written meanwhile arrive once each, in order. Past the replay window → `resync` → refetch | Events before the kill arrived |
 | **Clone and follow, end to end**: `POST /api/workspaces` → the mark ends on `settlesClone` → the reducer reaches `running` → the refetched view carries a `vscode.url` that `vscodeURL` accepts | |
-| **The event kinds the extension reads were all seen** (§9.1): every kind received is recorded, and each kind `contract.json` lists as read and not `unexercised` is among them | The recorded set is non-empty and contains `workspace.state` |
+| **Real payloads are recorded** for the unit tier's fake transport and the SSE parser's specs, one per kind a scenario produces (the kinds themselves are checked statically against the registry, §9.1) | The recording is non-empty and includes `workspace.state` |
 | `GET /api/meta` answers the stack's `{version, api}` | |
 | **Approval, as the API does it**: clone `drydock-fixture/dind` → `stopped` with an `approval` carrying `privileged` → `POST …/config-approval` with that hash → `config.approved` with the same hash → `running` | |
 | **A stale hash is refused**: decline, switch the fixture to the `initializeCommand` variant, start again → a new request B. Approve with A → `409 approval_stale`, nothing recorded | Approve with B → `202` |
@@ -692,7 +706,7 @@ It runs **nightly in its own workflow** (`.github/workflows/extension-nightly.ym
 - **Newer server, current extension**: the stack sets `meta.API = max + 1` (a field on the handler struct, with no build-time constant to override). The extension-host tier asserts every mutating command is replaced by *Install the matching extension* and sends nothing (tap). Read commands and connect still work, which is the control.
 - **Older server, current extension**: the client and extension-host tiers run once against the **previous release's binary**: downloaded by tag, checked against that release's `SHA256SUMS`, and run as the browser tier runs `drydock serve`. It has no `/api/meta`, so `404` → `api 0` → read-only. `serve` cannot be pointed at the fake App, so its repository list is `app_not_configured`, which the extension must show as that sentence. The control is that **the workspace list, the identity and the stream** load from it (the list empty, since without an App it can clone nothing).
 - **Older extension, current server**: once a release carries a `.vsix`, the extension-host tier also unpacks **the previous release's `.vsix`** and runs its own E1 specs against today's stack. It must either work fully (within range) or show the update action, and never fail in some third way. This is what checks the server's claim that an additive change did not need an `api` bump.
-- **Contract drift**: `TestExtensionContract` for routes (§9.1), in the ordinary `go test`, and the client tier's seen-kinds check for events.
+- **Contract drift**: `TestExtensionContract` for routes and for event kinds against the registry (§9.1), both static, in the ordinary `go test`.
 
 ### 12.8  Security tests
 
