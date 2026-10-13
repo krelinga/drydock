@@ -215,10 +215,10 @@ export async function clone(d: FlowDeps, repoId: number): Promise<void> {
   }
 }
 
-export type FollowEnd = 'running' | 'failed' | 'approval' | 'stopped' | 'gone' | 'dismissed' | 'stream'
+export type FollowEnd = 'running' | 'failed' | 'approval' | 'stopped' | 'gone' | 'dismissed' | 'stream' | 'unanswered'
 
 /** Where a followed workspace is: an end, or the line to show while it moves. */
-export function followState(e: Entities, id: string, approved?: string): { end: Exclude<FollowEnd, 'dismissed' | 'stream'> | null; line: string } {
+export function followState(e: Entities, id: string, approved?: string): { end: Exclude<FollowEnd, 'dismissed' | 'stream' | 'unanswered'> | null; line: string } {
   const w = e.workspaces[id]
   if (w === undefined || e.gone[id] !== undefined) return { end: 'gone', line: 'Deleted.' }
   switch (w.state) {
@@ -242,7 +242,7 @@ export function followState(e: Entities, id: string, approved?: string): { end: 
  * operator dismissing it ends the follow. Then says how it ended, with the
  * action that fits.
  */
-export async function follow(d: FlowDeps, id: string, approved?: string): Promise<FollowEnd> {
+export async function follow(d: FlowDeps, id: string, approved?: { hash: string; key: string }): Promise<FollowEnd> {
   const release = await d.live.hold()
   let end: FollowEnd = 'dismissed'
   try {
@@ -250,9 +250,15 @@ export async function follow(d: FlowDeps, id: string, approved?: string): Promis
     await d.prompter.progress(`Drydock: ${name}`, async (report, dismissed) => {
       let last = ''
       for (;;) {
-        const s = followState(d.live.entities, id, approved)
+        // The request an approval just sent is passed over only while that
+        // approval's mark is in flight and not yet slow: past that, a request
+        // still showing is not "continuing" any more.
+        const mark = approved === undefined ? undefined : d.live.marks.inFlight[approved.key]
+        const waiting = approved !== undefined && mark !== undefined && !mark.slow
+        const s = followState(d.live.entities, id, waiting ? approved.hash : undefined)
         if (s.end !== null) {
-          end = s.end
+          const same = d.live.entities.workspaces[id]?.approval?.hash
+          end = s.end === 'approval' && approved !== undefined && same === approved.hash ? 'unanswered' : s.end
           return
         }
         if (s.line !== last) report((last = s.line))
@@ -301,6 +307,9 @@ async function ending(d: FlowDeps, id: string, name: string, end: FollowEnd): Pr
       return offerDrydock(d, 'info', `${name} stopped.`, id)
     case 'gone':
       return void (await d.prompter.message('info', `${name} was deleted.`))
+    case 'unanswered':
+      return offerDrydock(d, 'warning',
+        `${name}: Drydock has not said what became of the approval yet, so this follow stopped. Drydock shows where it is.`, id)
     case 'stream':
       return void (await d.prompter.message('warning', `Stopped following ${name}: ${STREAM_ENDED[d.live.endedBy ?? 'closed']}`))
     case 'dismissed':

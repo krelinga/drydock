@@ -9,6 +9,7 @@ import { describe, expect, it } from 'vitest'
 import { approvalSections, PRIVILEGED_SENTENCE, INITIALIZE_COMMAND_SENTENCE } from '../../web/src/core/lib/approval'
 import { stateEvent } from '../../web/src/core/reducer.fixtures'
 import { CONNECT } from './flows'
+import { SLOW_AFTER_MS } from '../../web/src/core/marks'
 import { NO_APPROVE_SCOPE, NOT_APPROVED_NAME, REVIEW_IN_DRYDOCK, STALE, approve, decline, renderReview, reviewApproval, snapshotOf, uriOf } from './review'
 import { hubItems } from './hub'
 import { DIND_WS, HASH_A, HASH_B, LINK, REQ_A, REQ_B, event, flowWorld, reviewWorld, withPending, type ReviewWorld } from '../test/fakeDrydock'
@@ -110,6 +111,33 @@ describe('approve exactly what was shown', () => {
     expect(r.opener.folders).toHaveLength(1)
   })
 
+  it('an approval nothing answers ends its follow once the mark is slow, saying so, rather than "continuing" forever', async () => {
+    const r = await opened()
+    r.server.holdApproveEvents = true
+    r.prompter.typed = [NAME]
+    const done = approve(r)
+    await flush()
+    expect(approvals(r)).toHaveLength(1)
+    expect(r.prompter.progresses.at(-1)?.reports).toContain('Approved; continuing…')
+    r.clock.advance(SLOW_AFTER_MS)
+    await flush()
+    r.clock.advance(1_000)
+    await done
+    expect(r.prompter.texts().at(-1)).toContain('Drydock has not said what became of the approval yet')
+  })
+
+  it('a request that changes as the box answers is caught by the re-check after it: nothing is sent', async () => {
+    const r = await opened()
+    r.prompter.input = async function (opts) {
+      this.inputs.push(opts)
+      // The new request lands just as the operator presses Enter: the box has answered.
+      r.live.dispatch({ type: 'event', event: event(402, 'workspace.state', DIND_WS, { state: 'stopped', from: 'stopped', approval: REQ_B }) })
+      return NAME
+    }
+    await approve(r)
+    expect(approvals(r)).toEqual([])
+  })
+
   it('the name must be exactly the full name: case, whitespace and the short name each send nothing', async () => {
     for (const wrong of ['Drydock-fixture/dind', ` ${NAME}`, `${NAME} `, 'dind', '']) {
       const r = await opened()
@@ -161,6 +189,11 @@ describe('approve exactly what was shown', () => {
     const f = flowWorld()
     withPending(f)
     const r = reviewWorld(f)
+    // The workspaces are loaded, a request pending among them, so nothing but
+    // the rule keeps approve from taking that one.
+    const release = await r.live.hold()
+    expect(snapshotOf(r.live.entities, DIND_WS)?.hash).toBe(HASH_A)
+    release()
     r.prompter.pickAnswers = [0]
     r.prompter.typed = [NAME]
     await approve(r)
