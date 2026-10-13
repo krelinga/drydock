@@ -69,13 +69,20 @@ remove)
   rm -f "/usr/local/share/ca-certificates/$name"
   update-ca-certificates --fresh >/dev/null 2>&1
   if [ -n "$dir" ]; then
-    # Only a directory install made: under /tmp, its name, and its marker.
-    case "$dir" in
-    /tmp/drydock-host-ca.*) ;;
-    *) echo "$0: $dir is not a directory install made" >&2; exit 1 ;;
-    esac
-    [ -f "$dir/.drydock-host-ca" ] && [ ! -L "$dir" ] || { echo "$0: $dir is not a directory install made" >&2; exit 1; }
-    rm -rf -- "$dir"
+    # Only a directory install made: refused unless, once canonicalised, it
+    # is exactly mktemp's name under /tmp, a real directory (not a link),
+    # owned by the user install handed it to, and carrying install's marker.
+    not_ours() { echo "$0: $dir is not a directory install made: $1" >&2; exit 1; }
+    [ -L "$dir" ] && not_ours 'a symbolic link'
+    real=$(realpath -e -- "$dir" 2>/dev/null) || not_ours 'it does not exist'
+    [[ "$real" =~ ^/tmp/drydock-host-ca\.[A-Za-z0-9]{8}$ ]] || not_ours "its real path is $real"
+    [ -d "$real" ] && [ ! -L "$real" ] || not_ours 'not a directory'
+    owner=$(stat -c %u -- "$real")
+    want=${SUDO_UID:-0}
+    [ "$owner" = "$want" ] || not_ours "it is owned by uid $owner, not $want"
+    [ -f "$real/.drydock-host-ca" ] && [ ! -L "$real/.drydock-host-ca" ] || not_ours 'it has no marker'
+    rm -rf -- "$real"
+    dir=$real
   fi
   echo "untrusted $name${dir:+ and removed $dir}" >&2
   ;;
