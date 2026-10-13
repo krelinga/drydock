@@ -1318,7 +1318,9 @@ until it is set, the workspace page says how to turn it on. The rest is the runb
 it is this play's to do:
 
 - The SSH user needs Docker access on the server (the `docker` group: root on this host by
-  another name). The play does not add your account to it; that is your decision.
+  another name). The play does not add your account to it; that is your decision. If your
+  everyday account holds anything sensitive, the runbook recommends a dedicated account for
+  attaching (`drydock-attach@<server>`, as `drydock_vscode_ssh_host`) instead.
 - VS Code needs the *Remote - SSH* and *Dev Containers* extensions, and asks to confirm opening the
   link.
 - Never use VS Code's own *Rebuild Container* on a workspace: it would replace Drydock's container
