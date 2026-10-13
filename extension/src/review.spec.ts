@@ -91,6 +91,25 @@ describe('approve exactly what was shown', () => {
     expect(r.opener.folders).toHaveLength(1)
   })
 
+  it('a stream lagging the 202 does not end the follow at the request just approved', async () => {
+    const r = await opened()
+    r.server.holdApproveEvents = true
+    r.prompter.typed = [NAME]
+    r.prompter.message = async function (level, text, actions = []) {
+      this.shown.push({ level, text, actions })
+      return text.includes(' is running.') ? CONNECT : undefined
+    }
+    const done = approve(r)
+    await flush()
+    expect(approvals(r)).toHaveLength(1)
+    // Still following: the entity still shows the approved request.
+    expect(r.prompter.texts().filter((t) => t.includes('needs host-access approval'))).toEqual([])
+    r.server.workspaces = r.server.workspaces.map((w) => (w.id === DIND_WS ? { ...w, state: 'running', approval: null, vscode: { configured: true, url: LINK } } : w))
+    r.server.emit(event(500, 'config.approved', DIND_WS, { repository_id: 3, hash: HASH_A }), stateEvent(501, DIND_WS, 'running', { from: 'building' }))
+    await done
+    expect(r.opener.folders).toHaveLength(1)
+  })
+
   it('the name must be exactly the full name: case, whitespace and the short name each send nothing', async () => {
     for (const wrong of ['Drydock-fixture/dind', ` ${NAME}`, `${NAME} `, 'dind', '']) {
       const r = await opened()

@@ -88,5 +88,16 @@ it('the extension-host specs pass in the pinned VS Code', async () => {
   } catch {
     report = '(no results written)'
   }
+  if (code !== 0) {
+    // What the stack saw, for a failure in CI.
+    const tail = (f: string) => {
+      try {
+        return readFileSync(f, 'utf8').split('\n').slice(-40).join('\n')
+      } catch {
+        return ''
+      }
+    }
+    console.error(`stack.log (tail):\n${tail(path.join(stack.root, 'stack.log'))}`)
+  }
   expect(code, report).toBe(0)
 }, 900_000)

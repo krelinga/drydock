@@ -45,12 +45,24 @@ async function until(what: string, ok: () => boolean | Promise<boolean>, ms = 60
 const results: Array<{ name: string; ok: boolean; error?: string }> = []
 const spike: Record<string, unknown> = {}
 
-async function spec(name: string, fn: () => Promise<void>): Promise<void> {
+/** One spec, bounded: a hang fails it by name rather than the whole run at the outer timeout. */
+async function spec(name: string, fn: () => Promise<void>, ms = 45_000): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined
   try {
-    await fn()
+    await Promise.race([fn(), new Promise((_r, reject) => { timer = setTimeout(() => reject(new Error(`timed out after ${ms} ms`)), ms) })])
     results.push({ name, ok: true })
   } catch (e) {
-    results.push({ name, ok: false, error: e instanceof Error ? `${e.message}\n${e.stack ?? ''}` : String(e) })
+    let tap = ''
+    try {
+      tap = JSON.stringify((await ctl<TapRecord[]>('GET', '/tap')).slice(-15))
+    } catch {
+      /* the stack is gone */
+    }
+    results.push({ name, ok: false, error: `${e instanceof Error ? `${e.message}\n${e.stack ?? ''}` : String(e)}\nlast requests: ${tap}` })
+  } finally {
+    clearTimeout(timer)
+    // Written after every spec, so a run cut short still says how far it got.
+    if (OUT !== '') writeFileSync(OUT, JSON.stringify({ results, spike }, null, 2))
   }
 }
 
@@ -181,7 +193,7 @@ export async function run(): Promise<void> {
     assert.ok(p.progresses.length >= 1, 'the follow was a progress notification')
     const creates = (await ctl<TapRecord[]>('GET', '/tap')).filter((t) => t.method === 'POST' && t.path === '/api/workspaces')
     assert.equal(creates.length, 1)
-  })
+  }, 120_000)
 
   await spec("E1's docker-in-docker flow: clone, Review opens the document, the typed name approves its hash, and it runs to Connect", async () => {
     // A token that may approve: signing in with it revokes the first.
@@ -214,7 +226,7 @@ export async function run(): Promise<void> {
     await until('connected', () => opener.folders.length > 0)
     const links = await ctl<Record<string, string | null>>('GET', '/links')
     assert.deepEqual(opener.folders, [links['drydock-fixture/dind']!.replace('vscode://vscode-remote/', 'vscode-remote://')])
-  })
+  }, 120_000)
 
   await spec("VS Code's default keybindings can be read, none uses the hub's chord, and ctrl+shift+p is found (the control)", async () => {
     let text: string | null = null

@@ -141,6 +141,9 @@ describe('clone and follow', () => {
       state: 'stopped', from: 'failed', approval: { hash: 'sha256:a', added: [{ field: 'privileged', source: 'feature_or_image', value: true }], changed: [], removed: [] },
     }) })
     expect(followState(w.live.entities, NEW_WS).end).toBe('approval')
+    // The request a follow's own approval sent is not its end; another one is.
+    expect(followState(w.live.entities, NEW_WS, 'sha256:a').end).toBeNull()
+    expect(followState(w.live.entities, NEW_WS, 'sha256:other').end).toBe('approval')
     w.live.dispatch({ type: 'event', event: event(4, 'workspace.gone', NEW_WS, {}) })
     expect(followState(w.live.entities, NEW_WS).end).toBe('gone')
   })

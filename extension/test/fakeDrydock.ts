@@ -39,6 +39,8 @@ export class FakeDrydock {
   api = 1
   version = 'v0.12.2'
   scopes = ['read', 'lifecycle', 'approve', 'self']
+  /** When set, an approval's events are left for the spec to emit: the stream lagging the 202. */
+  holdApproveEvents = false
   /** The request the server holds (what the approve route checks a hash against), or null. */
   pending: { id: string; hash: string } | null = null
   nextId = 100
@@ -100,10 +102,12 @@ export class FakeDrydock {
         if (hash !== this.pending.hash) return errorResponse(409, 'approval_stale')
         const id = ap[1]!
         this.pending = null
-        queueMicrotask(() => this.emit(
-          event(this.nextId++, 'config.approved', id, { repository_id: 3, hash }),
-          event(this.nextId++, 'workspace.state', id, { state: 'building', from: 'stopped' }),
-        ))
+        if (!this.holdApproveEvents) {
+          queueMicrotask(() => this.emit(
+            event(this.nextId++, 'config.approved', id, { repository_id: 3, hash }),
+            event(this.nextId++, 'workspace.state', id, { state: 'building', from: 'stopped' }),
+          ))
+        }
         return jsonResponse(202, {})
       }
       const id = ap[1]!

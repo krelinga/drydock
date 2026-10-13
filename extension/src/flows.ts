@@ -218,7 +218,7 @@ export async function clone(d: FlowDeps, repoId: number): Promise<void> {
 export type FollowEnd = 'running' | 'failed' | 'approval' | 'stopped' | 'gone' | 'dismissed' | 'stream'
 
 /** Where a followed workspace is: an end, or the line to show while it moves. */
-export function followState(e: Entities, id: string): { end: Exclude<FollowEnd, 'dismissed' | 'stream'> | null; line: string } {
+export function followState(e: Entities, id: string, approved?: string): { end: Exclude<FollowEnd, 'dismissed' | 'stream'> | null; line: string } {
   const w = e.workspaces[id]
   if (w === undefined || e.gone[id] !== undefined) return { end: 'gone', line: 'Deleted.' }
   switch (w.state) {
@@ -227,6 +227,9 @@ export function followState(e: Entities, id: string): { end: Exclude<FollowEnd, 
     case 'failed':
       return { end: 'failed', line: cardStatus(w).line }
     case 'stopped':
+      // The request just approved, still on the entity until the run's
+      // next event arrives, is not the end of the follow that approval began.
+      if (w.approval !== null && w.approval.hash === approved) return { end: null, line: 'Approved; continuing…' }
       return w.approval !== null ? { end: 'approval', line: 'Needs host-access approval.' } : { end: 'stopped', line: 'Stopped.' }
   }
   const step = currentStep(w)
@@ -239,7 +242,7 @@ export function followState(e: Entities, id: string): { end: Exclude<FollowEnd, 
  * operator dismissing it ends the follow. Then says how it ended, with the
  * action that fits.
  */
-export async function follow(d: FlowDeps, id: string): Promise<FollowEnd> {
+export async function follow(d: FlowDeps, id: string, approved?: string): Promise<FollowEnd> {
   const release = await d.live.hold()
   let end: FollowEnd = 'dismissed'
   try {
@@ -247,7 +250,7 @@ export async function follow(d: FlowDeps, id: string): Promise<FollowEnd> {
     await d.prompter.progress(`Drydock: ${name}`, async (report, dismissed) => {
       let last = ''
       for (;;) {
-        const s = followState(d.live.entities, id)
+        const s = followState(d.live.entities, id, approved)
         if (s.end !== null) {
           end = s.end
           return

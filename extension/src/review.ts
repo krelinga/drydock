@@ -269,7 +269,7 @@ export async function approve(d: ReviewDeps): Promise<void> {
     }
     d.log.info(`approved host access for workspace ${id} (${s.hash})`)
     // The approve job resumes the run: followed to running, then Connect.
-    await follow(d, id)
+    await follow(d, id, s.hash)
   } finally {
     release()
   }
