@@ -10,8 +10,16 @@
 // follows them on screen, and the zero-width characters (U+200B–U+200D,
 // U+FEFF) that hide a difference between two strings that look the same.
 // Each is replaced by its escape, `\uXXXX` (or `\u{XXXXX}` past the BMP), so
-// it shows as six visible characters where it was. Everything else, accented
-// letters and emoji included, is left alone.
+// it shows as six visible characters where it was. Accented letters and plain
+// emoji are left alone.
+//
+// The trade, made deliberately: the zero-width joiner (U+200D) and the tag
+// characters (U+E0020–U+E007F) are format characters too, and they are what
+// build a ZWJ emoji sequence (👩‍💻) and a subdivision flag (🏴󠁧󠁢󠁳󠁣󠁴󠁿). Those are shown
+// as their parts with escapes between them. Telling a joiner in an emoji
+// from one hiding a difference between two names would mean parsing emoji
+// sequences, and this text is a branch name or a setting, where a mangled
+// emoji costs nothing and a hidden character is the attack.
 
 const INVISIBLE = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu
 

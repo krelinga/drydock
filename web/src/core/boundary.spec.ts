@@ -37,6 +37,16 @@ export function specifiers(src: string): string[] {
   return out
 }
 
+/**
+ * Each triple-slash directive in `src` (`/// <reference lib="dom" />`,
+ * `types=`, `path=`, `no-default-lib`): any one would let a core module pull
+ * the DOM, Node or a package's types back in past core/tsconfig.json, so core
+ * has none.
+ */
+export function directives(src: string): string[] {
+  return [...src.matchAll(/^\s*\/\/\/\s*<[^\n]*/gm)].map((m) => m[0].trim())
+}
+
 /** Why `spec`, imported by `file`, breaks the boundary, or null when it is inside core. */
 export function violation(file: string, spec: string): string | null {
   if (!spec.startsWith('./') && !spec.startsWith('../')) return `imports ${spec}, which is not a relative path inside core/`
@@ -64,6 +74,23 @@ describe('core boundary', () => {
     expect(files.map((f) => relative(CORE, f))).toContain('reducer.ts')
     expect(seen).toContain('./types')
     expect(bad).toEqual([])
+  })
+
+  it('no core module carries a triple-slash directive', () => {
+    const files = modules(CORE)
+    const bad = files.flatMap((f) => directives(readFileSync(f, 'utf8')).map((d) => `${relative(CORE, f)}: ${d}`))
+    expect(files.length).toBeGreaterThan(0)
+    expect(bad).toEqual([])
+  })
+
+  it('finds each directive form, and none in a clean module (control)', () => {
+    expect(directives('/// <reference lib="dom" />\nexport const w = window')).toEqual(['/// <reference lib="dom" />'])
+    expect(directives('  ///<reference types="node"/>')).toEqual(['///<reference types="node"/>'])
+    expect(directives('/// <reference path="../x.d.ts" />')).toHaveLength(1)
+    expect(directives('/// <amd-module name="x" />')).toHaveLength(1)
+    // A clean module, and the comments core really uses, pass.
+    expect(directives(readFileSync(join(CORE, 'marks.ts'), 'utf8'))).toEqual([])
+    expect(directives('// a comment\n/** a doc */\nexport const x = 1 // trailing /// <ref')).toEqual([])
   })
 
   it('names each kind of import that breaks it, and passes one that does not (control)', () => {

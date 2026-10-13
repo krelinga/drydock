@@ -5,7 +5,9 @@
   // errors here; and `noResolve` adds nothing to the program but core's own
   // files, so `import 'vue'` (or anything outside core) does not resolve. Specs are excluded:
   // they run under Vitest and may read Go source with node:fs. The boundary
-  // spec (boundary.spec.ts) is the named rule beside this compiler one.
+  // spec (boundary.spec.ts) is the named rule beside this compiler one, and the
+  // only one that refuses a `/// <reference lib="dom" />`, which this config
+  // cannot.
   "compilerOptions": {
     "target": "ES2022",
     "module": "ESNext",

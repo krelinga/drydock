@@ -29,7 +29,9 @@ repository-written text shown as `\uXXXX`, so none can forge a line or reorder w
 **Nothing in core may reach the browser, Node or a package.** `core/tsconfig.json` compiles it
 with `lib: ["ES2023"]`, `types: []` and `noResolve` (so `window`, `setTimeout` and `import 'vue'`
 are errors), and `npm run typecheck` runs it; `core/boundary.spec.ts` fails by file on any import
-that is not a relative path inside core. Specs are exempt from both (they read Go source).
+that is not a relative path inside core, and on any triple-slash directive (`/// <reference lib="dom" />`
+would put the DOM back past the compiler's rule, which cannot see it). Specs are exempt from both
+(they read Go source).
 What needs the browser — `api/client.ts`'s same-origin `fetch`, the `EventSource`, `lib/refetch.ts`
 — stays outside.
 

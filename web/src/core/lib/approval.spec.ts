@@ -109,6 +109,8 @@ describe('repository-written text is shown, never interpreted', () => {
     expect(escapeFormat('a\u0085b﻿c')).toBe('a\\u0085b\\uFEFFc')
     expect(escapeFormat('x\u{E0041}y')).toBe('x\\u{E0041}y')
     expect(escapeFormat('⁦iso⁩')).toBe('\\u2066iso\\u2069')
+    // The deliberate trade (text.ts): a ZWJ emoji is shown as its parts.
+    expect(escapeFormat('👩‍💻')).toBe('👩\\u200D💻')
   })
 
   it('a value the server left out shows as nothing', () => {
