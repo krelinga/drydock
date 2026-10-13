@@ -143,14 +143,32 @@ func (s *Service) SetPassword(ctx context.Context, password string) error {
 	if len(password) < 12 {
 		return errors.New("password must be at least 12 characters: it is the only credential between the LAN and code execution on this host (§13.5)")
 	}
-	if err := s.storeHash(ctx, password); err != nil {
+	h, err := Hash(password, s.Params, s.Random)
+	if err != nil {
 		return err
 	}
-	if err := s.Sessions.RevokeAll(ctx); err != nil {
+	// One transaction: a new password never stands beside a session or a
+	// token minted under the old one.
+	tx, err := s.DB.BeginTx(ctx, nil)
+	if err != nil {
 		return err
 	}
-	return s.Tokens.RevokeAll(ctx)
+	defer tx.Rollback()
+	now := ts(s.Clock.Now().UTC())
+	if _, err := tx.ExecContext(ctx, upsertHash, h, now); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM auth_session`); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE api_token SET revoked_at = ? WHERE revoked_at IS NULL`, now); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
+
+const upsertHash = `INSERT INTO operator (id, password_hash, updated_at) VALUES (1, ?, ?)
+		 ON CONFLICT(id) DO UPDATE SET password_hash = excluded.password_hash, updated_at = excluded.updated_at`
 
 // Alive reports whether a credential is still live, writing nothing: the
 // event stream asks it on every heartbeat, so a signed-out session's or a
@@ -170,9 +188,6 @@ func (s *Service) storeHash(ctx context.Context, password string) error {
 	if err != nil {
 		return err
 	}
-	_, err = s.DB.ExecContext(ctx,
-		`INSERT INTO operator (id, password_hash, updated_at) VALUES (1, ?, ?)
-		 ON CONFLICT(id) DO UPDATE SET password_hash = excluded.password_hash, updated_at = excluded.updated_at`,
-		h, ts(s.Clock.Now().UTC()))
+	_, err = s.DB.ExecContext(ctx, upsertHash, h, ts(s.Clock.Now().UTC()))
 	return err
 }

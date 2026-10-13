@@ -104,7 +104,7 @@ func TestTokenRevokeAndList(t *testing.T) {
 	ctx := context.Background()
 	v, tok, _ := r.svc.Tokens.Create(ctx, "laptop", []Scope{ScopeRead}, 0)
 	r.clock.Advance(time.Hour)
-	other, _, _ := r.svc.Tokens.Create(ctx, "desktop", []Scope{ScopeLifecycle}, 0)
+	other, _, _ := r.svc.Tokens.Create(ctx, "desktop", []Scope{ScopeRead, ScopeLifecycle}, 0)
 	got, err := r.svc.Tokens.Revoke(ctx, tok.ID)
 	if err != nil || got.RevokedAt == nil {
 		t.Fatalf("revoke = %+v, %v", got, err)
@@ -157,6 +157,9 @@ func TestTokenMintRefusals(t *testing.T) {
 		"control character": {"a\nb", []Scope{ScopeRead}, 0, ErrTokenLabel},
 		"format character":  {"a‮b", []Scope{ScopeRead}, 0, ErrTokenLabel},
 		"no scopes":         {"x", nil, 0, ErrTokenScopes},
+		"lifecycle only":    {"x", []Scope{ScopeLifecycle}, 0, ErrTokenScopes},
+		"approve only":      {"x", []Scope{ScopeApprove}, 0, ErrTokenScopes},
+		"no read":           {"x", []Scope{ScopeLifecycle, ScopeApprove}, 0, ErrTokenScopes},
 		"session":           {"x", []Scope{ScopeSession}, 0, ErrTokenScopes},
 		"self":              {"x", []Scope{ScopeSelf}, 0, ErrTokenScopes},
 		"twice":             {"x", []Scope{ScopeRead, ScopeRead}, 0, ErrTokenScopes},

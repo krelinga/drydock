@@ -2315,7 +2315,7 @@ export function handlersFor(b: MockBackend): HttpHandler[] {
       const scopes = Array.isArray(body?.scopes) ? (body.scopes as string[]) : []
       const days = typeof body?.expires_in_days === 'number' ? body.expires_in_days : 90
       const known = ['read', 'lifecycle', 'approve']
-      if (body === null || label === '' || [...label].length > 100 || scopes.length === 0 ||
+      if (body === null || label === '' || [...label].length > 100 || !scopes.includes('read') ||
         scopes.some((s, i) => !known.includes(s) || scopes.indexOf(s) !== i) ||
         !Number.isInteger(days) || days < 1 || days > 365) {
         return envelope(400, 'bad_request', 'That is not a token Drydock can mint.')

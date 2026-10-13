@@ -40,6 +40,9 @@ describe('Settings → API tokens', () => {
     expect(checked('read')).toBe(true)
     expect(checked('lifecycle')).toBe(true)
     expect(checked('approve')).toBe(false)
+    // read is every token's: shown on, and not something to untick.
+    expect(section(wrapper).find('[data-test="token-scope-read"] input').attributes('disabled')).toBeDefined()
+    expect(section(wrapper).find('[data-test="token-scope-lifecycle"] input').attributes('disabled')).toBeUndefined()
     expect((section(wrapper).find('[data-test="token-days"]').element as HTMLSelectElement).value).toBe('90')
     // The sample's current device is "iPhone Safari".
     expect((section(wrapper).find('[data-test="token-label"]').element as HTMLInputElement).value).toBe('VS Code on iPhone')

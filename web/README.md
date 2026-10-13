@@ -189,7 +189,7 @@ Settings' *API tokens* section (vscode-extension §4.2), `id="tokens"` so `/sett
   which shows it once from a local ref and clears it on *Done* or unmount; the body's metadata is
   dropped, and the row arrives by its event. `views/tokens.spec.ts` is the canary: the token is in
   no store, storage, history, URL, request URL, event or entity.
-- *Create token*: `read` and `lifecycle` ticked, `approve` off beside the approval card's sentence,
+- *Create token*: `read` always on (the server refuses a token without it), `lifecycle` ticked, `approve` off beside the approval card's sentence,
   90 days. Its mark ends with the response (the body is the result, as a secret `PUT`'s is).
   *Revoke* is an `ActionButton`, in flight until that token's `api_token.revoked` (or a snapshot
   showing it revoked).

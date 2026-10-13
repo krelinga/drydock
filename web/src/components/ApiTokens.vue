@@ -29,7 +29,7 @@ useStreamRefetch({ refetch: () => tokens.load() })
 
 // What each scope lets the token do, in the words of vscode-extension §4.1.
 const SCOPE_TEXT: Record<TokenScope, { name: string; does: string }> = {
-  read: { name: 'Read', does: 'Workspaces, repositories, ports, logs and the event stream. Never secrets.' },
+  read: { name: 'Read (always)', does: 'Workspaces, repositories, ports, logs and the event stream. Never secrets.' },
   lifecycle: { name: 'Lifecycle', does: 'Clone, start, stop, rebuild and delete workspaces; restart session servers; ports; the Claude login.' },
   approve: { name: 'Approve host access', does: 'Approve or decline what a dev container asks of this server.' },
 }
@@ -52,7 +52,7 @@ const minted = ref<{ id: string; token: string } | null>(null)
 const copied = ref(false)
 
 const createFlight = computed(() => stream.inFlight[CREATE_TOKEN_KEY] ?? null)
-const chosen = computed(() => TOKEN_SCOPES.filter((s) => scopes.value[s]))
+const chosen = computed(() => TOKEN_SCOPES.filter((s) => s === 'read' || scopes.value[s]))
 const labelOk = computed(() => {
   const l = label.value.trim()
   return l.length > 0 && [...l].length <= 100
@@ -131,7 +131,9 @@ const live = computed(() => tokens.list.filter((t) => t.revokedAt === null && !e
       <fieldset class="scopes">
         <legend>It may</legend>
         <label v-for="s in TOKEN_SCOPES" :key="s" class="scope" :data-test="`token-scope-${s}`">
-          <input v-model="scopes[s]" type="checkbox">
+          <!-- read is every token's: GET /api/meta, how a client checks a
+               pasted token, needs it, and the server refuses a mint without. -->
+          <input v-model="scopes[s]" type="checkbox" :disabled="s === 'read'">
           <span>
             <b>{{ SCOPE_TEXT[s].name }}</b>
             <span class="does">{{ SCOPE_TEXT[s].does }}</span>

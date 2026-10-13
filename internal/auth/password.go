@@ -15,13 +15,15 @@
 // auth_attempt so a restart does not reset it.
 //
 // API tokens (token.go): `drydock_` + 43 base64url characters, stored only as
-// SHA-256 in api_token under a random `tok_…` id; scoped read, lifecycle,
-// approve (a Credential adds self, which every token holds; a cookie session
+// SHA-256 in api_token under a random `tok_…` id; scoped read (required),
+// lifecycle, approve (a Credential adds self, which every token holds; a cookie session
 // holds every scope but self, session included, which no token can); 90 days
 // by default, a year at most, no idle expiry. Create and Revoke commit the row
 // with api_token.created/revoked (metadata only); a lookup is never a sign-in
-// attempt and writes only last_used_at, at most once a minute. SetPassword
-// revokes every token as it ends every session. Service.Alive answers for
+// attempt and writes only last_used_at, at most once a minute and
+// best-effort; a store error is not ErrNoToken, and the gate answers it 503
+// (api.AuthUnavailable), never 401. SetPassword revokes every token as it
+// ends every session, in one transaction with the new hash. Service.Alive answers for
 // either credential, for the stream's heartbeat.
 package auth
 

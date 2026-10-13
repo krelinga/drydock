@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"errors"
 	"net"
 	"net/http"
 	"net/url"
@@ -31,6 +32,20 @@ type SessionGate struct {
 
 type sessionKey struct{}
 type credentialKey struct{}
+type unavailableKey struct{}
+
+// AuthUnavailable reports whether a refused Authenticate refused because the
+// credential store failed, not because the credential is bad. wrap and
+// Unrouted answer it 503 unavailable: a 401 is a client's authoritative
+// "this credential is over", and a busy database is not that.
+func AuthUnavailable(r *http.Request) bool {
+	v, _ := r.Context().Value(unavailableKey{}).(bool)
+	return v
+}
+
+func markUnavailable(r *http.Request) *http.Request {
+	return r.WithContext(context.WithValue(r.Context(), unavailableKey{}, true))
+}
 
 // SessionFrom returns the cookie session the gate attached to a request's
 // context. A request a token authenticated has none: a handler that acts on
@@ -76,8 +91,11 @@ func (g SessionGate) Authenticate(r *http.Request) (*http.Request, bool) {
 			return r, false
 		}
 		tok, err := g.Tokens.Lookup(r.Context(), value)
-		if err != nil {
+		if errors.Is(err, auth.ErrNoToken) {
 			return r, false
+		}
+		if err != nil {
+			return markUnavailable(r), false
 		}
 		return WithCredential(r, auth.TokenCredential(tok)), true
 	}
