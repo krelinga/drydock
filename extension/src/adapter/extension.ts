@@ -9,6 +9,7 @@
 import * as vscode from 'vscode'
 import { COMMANDS, type CommandId } from '../commands'
 import { CredentialStore } from '../credential'
+import { CredentialWatch } from '../credentialWatch'
 import { DrydockClient } from '../client'
 import { Dispatcher, type Handler } from '../dispatch'
 import { redacting } from '../log'
@@ -168,18 +169,14 @@ export function activate(context: vscode.ExtensionContext): Seam | undefined {
     bar.backgroundColor = v.warning ? new vscode.ThemeColor('statusBarItem.warningBackground') : undefined
     bar.show()
   }
+  // A stream belongs to the credential it opened with (credentialWatch.ts):
+  // a change closes it before anything else is awaited, and this window's
+  // own Sign In and Sign Out apply theirs before their command returns.
+  const watch = new CredentialWatch({ credentials, live })
   const reread = async () => {
-    const c = await credentials.read()
-    const was = signedIn
-    signedIn = c !== null
+    signedIn = await watch.check()
     // The views' welcome content (package.json viewsWelcome) reads this.
     await vscode.commands.executeCommand('setContext', 'drydock.signedIn', signedIn)
-    // A stream belongs to the credential it opened with: signed out, or
-    // signed in with another token (the old one is revoked), it closes, and
-    // the next use opens one with the token now stored.
-    if (!signedIn) live.close('signed_out')
-    // The secret changed while signed in before and after: a new token.
-    else if (was) live.close('signed_in_again')
     render()
   }
   context.subscriptions.push(
@@ -269,9 +266,19 @@ export function activate(context: vscode.ExtensionContext): Seam | undefined {
 
   const handlers: Record<CommandId, Handler> = {
     'drydock.signIn': async () => {
-      await signIn(session)
+      try {
+        await signIn(session)
+      } finally {
+        await reread()
+      }
     },
-    'drydock.signOut': () => signOut(session),
+    'drydock.signOut': async () => {
+      try {
+        await signOut(session)
+      } finally {
+        await reread()
+      }
+    },
     'drydock.openInBrowser': (id) => (id === undefined ? openInBrowser(session) : openInDrydock(flows, id)),
     'drydock.showLog': async () => {
       channel.show(true)

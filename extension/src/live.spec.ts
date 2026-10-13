@@ -8,7 +8,7 @@ import { stateEvent } from '../../web/src/core/reducer.fixtures'
 import { IDLE_MS } from './live'
 import { statusView, MARKER_AFTER_MS, EXPIRY_WARN_MS } from './status'
 import { NEW_WS, WS, flowWorld } from '../test/fakeDrydock'
-import { flush } from '../test/fakes'
+import { FakeStream, flush } from '../test/fakes'
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 
@@ -60,6 +60,36 @@ describe('Live', () => {
     await flush()
     expect(count(`/api/workspaces/${NEW_WS}`)).toBe(0)
     release()
+  })
+})
+
+describe('a stopped stream takes its marks with it', () => {
+  it('closed, or ended by a 401, no mark stays in flight to hold the stream or refuse a retry; open, a mark stays (the control)', async () => {
+    const w = flowWorld()
+    const release = await w.live.hold()
+    w.live.marks.begin('repo:2:clone', () => false)
+    release()
+    w.clock.advance(IDLE_MS)
+    await flush()
+    // The control: an open stream keeps the mark, and the mark holds it.
+    expect(w.live.marks.has('repo:2:clone')).toBe(true)
+    expect(w.live.held).toBe(true)
+    expect(w.live.streaming).toBe(true)
+    w.live.close('signed_in_again')
+    expect(w.live.marks.inFlight).toEqual({})
+    expect(w.live.held).toBe(false)
+
+    const again = await w.live.hold()
+    w.live.marks.begin('repo:2:clone', () => false)
+    w.server.transport.streamRoute = () => new FakeStream(401)
+    w.server.stream!.end()
+    await flush()
+    w.clock.advance(1_000)
+    await flush()
+    expect(w.live.endedBy).toBe('unauthorized')
+    expect(w.live.marks.inFlight).toEqual({})
+    again()
+    expect(w.live.held).toBe(false)
   })
 })
 
