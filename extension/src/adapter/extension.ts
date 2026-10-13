@@ -152,10 +152,17 @@ export function activate(context: vscode.ExtensionContext): Seam | undefined {
     bar.show()
   }
   const reread = async () => {
-    signedIn = (await credentials.read()) !== null
+    const c = await credentials.read()
+    const was = signedIn
+    signedIn = c !== null
     // The views' welcome content (package.json viewsWelcome) reads this.
     await vscode.commands.executeCommand('setContext', 'drydock.signedIn', signedIn)
+    // A stream belongs to the credential it opened with: signed out, or
+    // signed in with another token (the old one is revoked), it closes, and
+    // the next use opens one with the token now stored.
     if (!signedIn) live.close('signed_out')
+    // The secret changed while signed in before and after: a new token.
+    else if (was) live.close('signed_in_again')
     render()
   }
   context.subscriptions.push(

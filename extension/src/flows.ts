@@ -313,6 +313,7 @@ export const STREAM_ENDED: Record<EndReason, string> = {
   unauthorized: 'the Drydock token was revoked or has expired. Sign in again with a new one.',
   sign_in: 'this VS Code is not signed in to Drydock any more.',
   signed_out: 'this VS Code signed out of Drydock.',
+  signed_in_again: 'this VS Code signed in to Drydock with another token. Follow it again from the hub.',
   not_configured: 'drydock.url no longer names a Drydock.',
   url_changed: 'drydock.url changed, so this window no longer follows that Drydock.',
   closed: 'the connection to Drydock was closed.',
