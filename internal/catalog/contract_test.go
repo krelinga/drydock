@@ -31,7 +31,15 @@ func TestContractRefresh(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	res, err := cat.Refresh(ctx)
+	// Refresh is a positive control, retried on GitHub's not-found lag. Only
+	// its error is retried: Refresh re-probes only new or changed repositories,
+	// so a has_devcontainer value read wrongly cannot be fixed by running it
+	// again, and the per-repository badges below are never retried.
+	var res Result
+	err = b.RetryPositiveControl(t, "refresh", func() (e error) {
+		res, e = cat.Refresh(ctx)
+		return e
+	})
 	if err != nil {
 		t.Fatalf("refresh (live=%v): %v", b.Live, err)
 	}

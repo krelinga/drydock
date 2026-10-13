@@ -47,7 +47,11 @@ func newContractEnv(t *testing.T) *contractEnv {
 	if err != nil {
 		t.Fatal(err)
 	}
-	repos, err := b.Client.Repositories(ctx, tok)
+	var repos []github.Repository
+	err = b.RetryPositiveControl(t, "listing the testbed", func() (e error) {
+		repos, e = b.Client.Repositories(ctx, tok)
+		return e
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -117,19 +121,36 @@ func (ce *contractEnv) git(t *testing.T, workspaceOf, dir string, args ...string
 	return out.String(), err
 }
 
+// gitOK is git for a call EXPECTED TO SUCCEED, retried on GitHub's not-found
+// lag (Backend.RetryPositiveControl). Never use it for a call that is
+// expected to be refused.
+func (ce *contractEnv) gitOK(t *testing.T, workspaceOf, dir string, args ...string) (string, error) {
+	t.Helper()
+	var out string
+	err := ce.backend.RetryPositiveControl(t, "git "+args[0], func() error {
+		var e error
+		out, e = ce.git(t, workspaceOf, dir, args...)
+		if e != nil {
+			e = fmt.Errorf("%w: %s", e, out)
+		}
+		return e
+	})
+	return out, err
+}
+
 // From A's socket: A's refs are readable, B's are not — and B's own socket
 // reads B, so the refusal is about the socket and not about B.
 func TestContractGitReachesOnlyItsOwnRepository(t *testing.T) {
 	ce := newContractEnv(t)
 	a, b := githubtest.TestbedA, githubtest.TestbedB
-	out, err := ce.git(t, a, "", "ls-remote", ce.backend.GitURL(t, a))
+	out, err := ce.gitOK(t, a, "", "ls-remote", ce.backend.GitURL(t, a))
 	if err != nil || !strings.Contains(out, "refs/heads/main") {
 		t.Fatalf("A's socket reading A: %v\n%s", err, out)
 	}
 	if out, err := ce.git(t, a, "", "ls-remote", ce.backend.GitURL(t, b)); err == nil {
 		t.Errorf("A's socket read B:\n%s", out)
 	}
-	if out, err := ce.git(t, b, "", "ls-remote", ce.backend.GitURL(t, b)); err != nil {
+	if out, err := ce.gitOK(t, b, "", "ls-remote", ce.backend.GitURL(t, b)); err != nil {
 		t.Errorf("control: B's socket reading B: %v\n%s", err, out)
 	}
 	// On the fake, the remote saw the token the broker minted — the helper's
@@ -160,7 +181,7 @@ func TestContractPushABranch(t *testing.T) {
 	ce := newContractEnv(t)
 	a, b := githubtest.TestbedA, githubtest.TestbedB
 	work := t.TempDir()
-	if out, err := ce.git(t, a, work, "clone", "-q", "--depth", "1", ce.backend.GitURL(t, a), "repo"); err != nil {
+	if out, err := ce.gitOK(t, a, work, "clone", "-q", "--depth", "1", ce.backend.GitURL(t, a), "repo"); err != nil {
 		t.Fatalf("clone: %v\n%s", err, out)
 	}
 	repo := filepath.Join(work, "repo")
@@ -214,6 +235,8 @@ func TestContractGHScopeMints(t *testing.T) {
 	ctx := context.Background()
 	ce := newContractEnv(t)
 	for _, own := range []string{githubtest.TestbedA, githubtest.TestbedB} {
+		// Not retried: a refusal here is a closed-set reason (a 404 maps to
+		// "revoked"), and widening a retry to it would hide a scoping bug.
 		answer := ce.ask(t, ce.ws[own], "GET-TOKEN scope=gh")
 		value, ok := answerToken(answer)
 		if !ok {
@@ -223,7 +246,11 @@ func TestContractGHScopeMints(t *testing.T) {
 		// The token is for this socket's repository alone: GitHub lists
 		// exactly it. Run for both testbeds, each is the other's control —
 		// a listing that came back with every repository would fail one.
-		repos, err := ce.backend.Client.Repositories(ctx, github.NewToken(value, time.Time{}))
+		var repos []github.Repository
+		err := ce.backend.RetryPositiveControl(t, "listing with "+own+"'s gh token", func() (e error) {
+			repos, e = ce.backend.Client.Repositories(ctx, github.NewToken(value, time.Time{}))
+			return e
+		})
 		if err != nil {
 			t.Errorf("listing with %s's gh token: %v", own, err)
 			continue
