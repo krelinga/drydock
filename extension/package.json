@@ -207,12 +207,14 @@
     "typecheck": "tsc -p tsconfig.json && tsc -p src/tsconfig.pure.json",
     "test": "vitest run",
     "bundle": "node scripts/bundle.mjs",
-    "check": "npm run typecheck && npm run test && npm run bundle"
+    "check": "npm run typecheck && npm run test && npm run bundle",
+    "package": "node scripts/bundle.mjs && vsce package --no-dependencies --skip-license --out dist/drydock-vscode.vsix"
   },
   "devDependencies": {
     "@types/node": "24.19.1",
     "@types/vscode": "1.105.0",
     "@vscode/test-electron": "3.1.0",
+    "@vscode/vsce": "4.0.0",
     "esbuild": "0.28.2",
     "typescript": "6.0.3",
     "vitest": "5.0.3"

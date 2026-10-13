@@ -6,8 +6,8 @@
 //     relative paths, and only into src/, the extension's two JSON files, or
 //     web/src/core — never the web app around core, never a package or a
 //     `node:` module;
-//   - src/node imports nothing but relative paths (Node's globals are its
-//     reason to exist);
+//   - src/node imports nothing but relative paths and Node's built-ins
+//     (Node is its reason to exist);
 //   - nowhere in the extension's sources: a way to turn TLS validation off,
 //     a child process (the extension spawns nothing, so there is no argv
 //     sink to sweep), a webview, or a triple-slash directive (which would
@@ -56,6 +56,8 @@ export function layerOf(file: string): Layer {
 export function importViolation(file: string, spec: string): string | null {
   const layer = layerOf(file)
   if (spec === 'vscode') return layer === 'adapter' ? null : 'imports vscode outside src/adapter'
+  // src/node is Node's glue (fetch, crypto, fs for a download): its built-ins, and nothing else.
+  if (layer === 'node' && spec.startsWith('node:')) return null
   if (!spec.startsWith('./') && !spec.startsWith('../')) return `imports ${spec}, which is not a relative path`
   if (layer !== 'pure') return null
   const target = resolve(dirname(file), spec)
@@ -116,6 +118,9 @@ describe('extension boundary', () => {
     const node = join(SRC, 'node', 'transport.ts')
     expect(importViolation(pure, 'vscode')).toContain('outside src/adapter')
     expect(importViolation(node, 'vscode')).toContain('outside src/adapter')
+    expect(importViolation(node, 'node:crypto')).toBeNull()
+    expect(importViolation(adapter, 'node:crypto')).toContain('not a relative path')
+    expect(importViolation(node, 'undici')).toContain('not a relative path')
     expect(importViolation(adapter, 'vscode')).toBeNull()
     expect(importViolation(pure, 'node:fs')).toContain('not a relative path')
     expect(importViolation(pure, '../../web/src/stores/stream')).toContain('outside')

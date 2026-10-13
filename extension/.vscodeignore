@@ -1,0 +1,7 @@
+# The .vsix carries the bundle and what VS Code reads about it, nothing else:
+# no sources (core is bundled in), no tests, no node_modules (--no-dependencies).
+**
+!dist/extension.js
+!package.json
+!README.md
+!media/drydock.svg

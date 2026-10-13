@@ -18,6 +18,7 @@ import { ApiError } from '../../web/src/core/errors'
 import { errorLine } from './log'
 import { atCap, cloneItems, connectItems, hubItems, type HubAction } from './hub'
 import { vsixURL } from './handshake'
+import { installMatching, type Updater } from './update'
 import { remoteURI } from './link'
 import type { EndReason, Live } from './live'
 import type { Clock, Extensions, Log, Opener, Prompter, Settings, Window } from './ports'
@@ -55,6 +56,8 @@ export interface FlowDeps {
   ready: Set<string>
   /** Opens a workspace's host-access review document (review.ts), when the window has one. */
   review?: (id: string) => Promise<void>
+  /** Installs a release's extension (update.ts); without one, the skew's action opens the release in the browser. */
+  updater?: Updater
 }
 
 const nameOf = (e: Entities, w: Workspace | null | undefined, fallback = 'The workspace') =>
@@ -99,12 +102,18 @@ async function offerDrydock(d: FlowDeps, level: 'info' | 'warning' | 'error', se
 async function skewAllows(d: FlowDeps): Promise<boolean> {
   const s = d.live.skew()
   if (s === null || s.kind === 'ok') return true
-  const url = s.kind === 'server_newer' ? vsixURL(d.live.meta?.version) : null
-  if (s.kind !== 'server_newer' || url === null) {
+  const version = d.live.meta?.version
+  const url = s.kind === 'server_newer' ? vsixURL(version) : null
+  if (s.kind !== 'server_newer' || url === null || version === undefined) {
     await d.prompter.message('warning', s.sentence)
     return false
   }
-  if ((await d.prompter.message('warning', `${s.sentence} Install the extension from Drydock ${d.live.meta!.version}'s release.`, [s.action])) === s.action) {
+  if (d.updater !== undefined) {
+    // §9.2: the release's own .vsix, checked against its SHA256SUMS, installed here.
+    await installMatching({ ...d, updater: d.updater }, version, s.sentence)
+    return false
+  }
+  if ((await d.prompter.message('warning', `${s.sentence} Install the extension from Drydock ${version}'s release.`, [s.action])) === s.action) {
     await d.opener.openExternal(url)
   }
   return false

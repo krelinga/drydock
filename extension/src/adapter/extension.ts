@@ -16,6 +16,8 @@ import type { Clock, Extensions, Log, Opener, Prompter, Secrets, Settings, Windo
 import { Live } from '../live'
 import { cloneCommand, connectCommand, go, openInDrydock, refreshRepositories, type FlowDeps } from '../flows'
 import { statusView } from '../status'
+import { installMatching, versionNotice, type Updater } from '../update'
+import { downloadRelease } from '../node/update'
 import { Reviews, SCHEME, approve, decline, idOfURI, reviewApproval, type DocumentsPort, type ReviewDeps } from '../review'
 import { repositoryNodes, workspaceNodes, type TreeNode } from '../tree'
 import { StaleTokenWatch, openInBrowser, signIn, signOut, type SessionDeps } from '../session'
@@ -132,8 +134,18 @@ export function activate(context: vscode.ExtensionContext): Seam | undefined {
   // flows over it (flows.ts).
   const live = new Live({ client, clock, log })
   context.subscriptions.push({ dispose: () => live.close() })
+  // §9.2's update path: the release's .vsix, checked, then installed by VS Code.
+  const updater: Updater = {
+    install: async (version) => {
+      const file = await downloadRelease(version)
+      await vscode.commands.executeCommand('workbench.extensions.installExtension', vscode.Uri.file(file))
+    },
+    reload: async () => {
+      await vscode.commands.executeCommand('workbench.action.reloadWindow')
+    },
+  }
   const flows: FlowDeps = {
-    live, client, prompter, opener, extensions, window, settings, clock, log, ready: new Set(),
+    live, client, prompter, opener, extensions, window, settings, clock, log, ready: new Set(), updater,
     connectWhenReady: () => vscode.workspace.getConfiguration('drydock').get<boolean>('connectWhenReady', false),
   }
 
@@ -206,6 +218,16 @@ export function activate(context: vscode.ExtensionContext): Seam | undefined {
     return provider
   })
   context.subscriptions.push({ dispose: live.onChange(() => { for (const t of trees) t.refresh() }) })
+
+  // One quiet notice per window when this Drydock's release is not this
+  // extension's, once the handshake says so (§9.1).
+  let noticed = false
+  context.subscriptions.push({ dispose: live.onChange(() => {
+    if (noticed || live.meta === null) return
+    noticed = true
+    const text = live.skew()?.kind === 'ok' ? versionNotice(live.meta) : null
+    if (text !== null) void installMatching({ prompter, window, log, updater }, live.meta.version, text, 'info').catch((e: unknown) => log.warn(`update: ${String(e)}`))
+  }) })
 
   const tick = setInterval(render, 2_000)
   context.subscriptions.push({ dispose: () => clearInterval(tick) })
