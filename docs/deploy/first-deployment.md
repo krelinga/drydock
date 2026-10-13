@@ -1259,18 +1259,24 @@ turn it on instead.
   anything sensitive: SSH keys to other machines, cloud or registry credentials, other projects'
   secrets, or a password manager. In the `docker` group, everything that runs as that account
   becomes a way to root and to Drydock's keys. That includes its shell startup files, every VS Code
-  extension, and every tool and build it runs. The attaching VS Code also talks to a container that
-  an agent controls. A dedicated account does not make Docker access any less than root. What it
-  does is keep root out of the account that runs everything else, so that a compromise of that
-  account's software does not also hand over this host. And if something in a workspace ever does
-  reach the attaching account, that account holds nothing worth taking. Give it no password, only
-  your laptop's SSH key, and use it for nothing but this:
+  extension, and every tool and build it runs. A dedicated account does not make Docker access any
+  less than root, and a compromise of it is still a compromise of this host. What it does is keep
+  root out of the account that runs everything else, so that a compromise of that account's
+  software does not also hand over this host. Give it no password and only your laptop's SSH key,
+  and use it for nothing but attaching:
   ```sh
+  # On the server:
   sudo adduser --disabled-password --gecos '' drydock-attach
   sudo usermod -aG docker drydock-attach
   sudo install -d -m 0700 -o drydock-attach -g drydock-attach ~drydock-attach/.ssh
-  # then put your laptop's public key in ~drydock-attach/.ssh/authorized_keys (drydock-attach's, 0600)
+  # From your laptop (your public key, under whatever name it has):
+  scp ~/.ssh/id_ed25519.pub <your-ssh-user>@<server>:drydock-attach.pub
+  # On the server again:
+  sudo install -m 0600 -o drydock-attach -g drydock-attach ~/drydock-attach.pub ~drydock-attach/.ssh/authorized_keys
+  rm ~/drydock-attach.pub
   ```
+  If the server's `sshd` restricts logins with `AllowUsers` or `AllowGroups`, add the account
+  there too, or Remote-SSH gets `Permission denied`.
   Then point Remote-SSH at `drydock-attach@<server>`, and use that address for `--vscode-ssh-host`
   below. On a server where your account can already do anything (`sudo` without a password, say)
   and holds nothing worth more than the server itself, adding that account to the group is the
