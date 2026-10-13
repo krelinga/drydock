@@ -24,6 +24,9 @@ import type { Clock, Log } from './ports'
 import { pathFor } from './routes'
 import { EventStream, type Phase, type StopReason } from './stream'
 
+/** Why the stream stopped, when it did not stop for being idle. */
+export type EndReason = Exclude<StopReason, 'stopped'> | 'signed_out' | 'url_changed' | 'closed'
+
 /** How long the stream stays open after nothing holds it (§5.5). */
 export const IDLE_MS = 5 * 60_000
 
@@ -39,6 +42,8 @@ export class Live {
   entities: Entities = emptyEntities()
   meta: Meta | null = null
   phase: Phase = 'idle'
+  /** Why the stream last stopped other than by idling; null while it runs or after an idle close. */
+  endedBy: EndReason | null = null
   /** When `phase` last changed, on the injected clock: what the status bar's quiet marker reads. */
   phaseSince = 0
   readonly marks: Marks
@@ -76,6 +81,7 @@ export class Live {
         this.#changed()
       },
       ended: (reason) => {
+        this.endedBy = reason
         this.#cancelIdle()
         this.#settle(reason === 'unauthorized' ? new ApiError(401, 'unauthenticated')
           : reason === 'sign_in' ? new SignInNeeded('none') : new NotConfigured())
@@ -156,11 +162,13 @@ export class Live {
   }
 
   /** Closes the stream now (sign-out, deactivate). */
-  close(): void {
+  close(reason: EndReason = 'closed'): void {
+    if (this.#stream.running) this.endedBy = reason
     this.#cancelIdle()
     this.marks.clear()
     this.#fresh = false
     this.#stream.stop()
+    this.#changed()
   }
 
   #fresh = false
@@ -175,6 +183,7 @@ export class Live {
     if (this.#stream.running && this.#fresh) return Promise.resolve()
     const p = new Promise<void>((resolve, reject) => this.#waiters.push({ resolve, reject }))
     if (!this.#stream.running) {
+      this.endedBy = null
       this.#fresh = false
       this.#stream.start()
     }

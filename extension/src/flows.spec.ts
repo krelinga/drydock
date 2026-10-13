@@ -8,14 +8,14 @@ import { stateEvent, stepEvent, wsView } from '../../web/src/core/reducer.fixtur
 import type { WorkspaceView } from '../../web/src/core/types'
 import {
   CONNECT, DEV_CONTAINERS, INSTALL_REMOTES, NEEDS_REMOTES, NO_CONTAINER, NO_SSH_HOST, OPEN_IN_DRYDOCK, REMOTE_SSH, TRY_AGAIN,
-  clone, cloneCommand, connect, followState, go, refreshRepositories,
+  STREAM_ENDED, clone, cloneCommand, connect, followState, go, refreshRepositories,
 } from './flows'
 import { atCap, hubItems } from './hub'
 import { IDLE_MS } from './live'
 import { SERVER_NEWER } from './handshake'
 import { ELSEWHERE } from './windowRule'
 import { LINK, NEW_WS, WS, event, flowWorld, type FlowWorld } from '../test/fakeDrydock'
-import { ORIGIN, flush } from '../test/fakes'
+import { FakeStream, ORIGIN, flush } from '../test/fakes'
 
 const REMOTE = LINK.replace('vscode://vscode-remote/', 'vscode-remote://')
 
@@ -100,7 +100,7 @@ describe('clone and follow', () => {
   it('sends the create, learns the workspace from the stream (never the 202), follows it to running and offers Connect', async () => {
     const w = flowWorld()
     cloning(w)
-    answering(w, (t, a) => (t.endsWith('is running.') ? CONNECT : undefined))
+    answering(w, (t) => (t.includes(' is running.') ? CONNECT : undefined))
     w.server.workspaces.push({ ...wsView({ id: NEW_WS, repository_id: 2, full_name: 'krelinga/homelab', state: 'running' }), vscode: { configured: true, url: LINK } } as WorkspaceView)
     const done = clone(w, 2)
     await flush()
@@ -109,7 +109,7 @@ describe('clone and follow', () => {
     w.server.emit(stateEvent(203, NEW_WS, 'running', { from: 'building', container_id: 'c1' }))
     await done
     expect(w.prompter.progresses[0]!.reports).toContain('Cloning…')
-    expect(w.prompter.shown.map((s) => s.text)).toContain('krelinga/homelab is running.')
+    expect(w.prompter.shown.map((s) => s.text)).toContain('krelinga/homelab is running. Connect opens it over SSH to devbox.')
     // Connect used the workspace the stream named, refetched for its link.
     expect(w.server.sent('GET', `/api/workspaces/${NEW_WS}`).length).toBeGreaterThan(0)
     expect(w.server.sent('GET', '/api/workspaces/01JA00000000000000000DECOY')).toEqual([])
@@ -200,6 +200,65 @@ describe('clone and follow', () => {
     w.prompter.pickAnswers = [0]
     await go(w)
     expect(w.opener.folders).toEqual([REMOTE])
+  })
+})
+
+describe('a follow ends when the stream does', () => {
+  it('signed out under it: the notification closes and says why', async () => {
+    const w = flowWorld()
+    answering(w)
+    const done = clone(w, 2)
+    await flush()
+    expect(w.prompter.progresses).toHaveLength(1)
+    w.live.close('signed_out')
+    w.clock.advance(1_000)
+    await done
+    expect(w.prompter.shown.at(-1)!.text).toBe(`Stopped following krelinga/homelab: ${STREAM_ENDED.signed_out}`)
+  })
+
+  it('a 401 on the reconnect: the same, with the token sentence; a follow that reaches running is the control', async () => {
+    const w = flowWorld()
+    answering(w)
+    const done = clone(w, 2)
+    await flush()
+    w.server.transport.streamRoute = () => new FakeStream(401)
+    w.server.stream!.end()
+    await flush()
+    w.clock.advance(1_000)
+    await flush()
+    w.clock.advance(1_000)
+    await done
+    expect(w.live.endedBy).toBe('unauthorized')
+    expect(w.prompter.shown.at(-1)!.text).toBe(`Stopped following krelinga/homelab: ${STREAM_ENDED.unauthorized}`)
+  })
+})
+
+describe('what the operator sees of repository-written text and the SSH host', () => {
+  it('a name carrying $(…) or a bidi override cannot draw an icon or reorder the pick', async () => {
+    const w = flowWorld()
+    w.server.catalog.repos[1] = { ...w.server.catalog.repos[1]!, full_name: 'evil/$(warning)x\u202E' }
+    const release = await opened(w)
+    const labels = hubItems(w.live.entities).map((i) => i.label)
+    release()
+    expect(labels).toContain('$(repo) evil/\\$(warning)x\\u202E')
+    // Control: the extension's own icons are untouched.
+    expect(labels[0]).toBe('$(vm-running) krelinga/drydock')
+  })
+
+  it('the SSH host the server chose is shown on the hub item and when a follow ends at running', async () => {
+    const w = flowWorld()
+    const release = await opened(w)
+    expect(hubItems(w.live.entities)[0]!.detail).toBe('main · over SSH to devbox')
+    release()
+    answering(w)
+    w.server.onCreate = (repoId) => [event(200, 'workspace.state', NEW_WS, { state: 'pending', repository_id: repoId })]
+    w.server.workspaces.push({ ...wsView({ id: NEW_WS, repository_id: 2, state: 'running' }), vscode: { configured: true, url: LINK } } as WorkspaceView)
+    const done = clone(w, 2)
+    await flush()
+    w.server.emit(stateEvent(203, NEW_WS, 'running', { from: 'building' }))
+    await flush()
+    await done
+    expect(w.prompter.shown.map((x) => x.text)).toContain('krelinga/homelab is running. Connect opens it over SSH to devbox.')
   })
 })
 

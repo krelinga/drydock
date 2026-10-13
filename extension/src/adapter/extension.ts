@@ -110,7 +110,7 @@ export function activate(context: vscode.ExtensionContext): void {
   }
   const reread = async () => {
     signedIn = (await credentials.read()) !== null
-    if (!signedIn) live.close()
+    if (!signedIn) live.close('signed_out')
     render()
   }
   context.subscriptions.push(
@@ -155,7 +155,7 @@ export function activate(context: vscode.ExtensionContext): void {
       if (e.affectsConfiguration('drydock.url')) {
         stale.changed()
         // The stream was for the old origin; the next use opens one for the new.
-        live.close()
+        live.close('url_changed')
         render()
       }
     }),

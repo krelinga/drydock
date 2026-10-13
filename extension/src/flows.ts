@@ -13,12 +13,13 @@ import { cloneOverIn, settlesClone, settlesRefresh } from '../../web/src/core/se
 import { capacity } from '../../web/src/core/lib/capacity'
 import { escapeFormat } from '../../web/src/core/lib/text'
 import { cardStatus, stepTitle } from '../../web/src/core/lib/workspaceCard'
-import { currentStep, vscodeConfigured, vscodeLink, workspaceForRepo, type Entities, type Workspace } from '../../web/src/core/reducer'
+import { currentStep, vscodeConfigured, vscodeLink, vscodeSSHHost, workspaceForRepo, type Entities, type Workspace } from '../../web/src/core/reducer'
 import { ApiError } from '../../web/src/core/errors'
+import { errorLine } from './log'
 import { atCap, cloneItems, connectItems, hubItems, type HubAction } from './hub'
 import { vsixURL } from './handshake'
 import { remoteURI } from './link'
-import type { Live } from './live'
+import type { EndReason, Live } from './live'
 import type { Clock, Extensions, Log, Opener, Prompter, Settings, Window } from './ports'
 import { pathFor } from './routes'
 import { originOf } from './settings'
@@ -57,6 +58,11 @@ export interface FlowDeps {
 const nameOf = (e: Entities, w: Workspace | null | undefined, fallback = 'The workspace') =>
   w === null || w === undefined ? fallback
     : escapeFormat(w.fullName ?? (w.repositoryId !== null ? e.repos[w.repositoryId]?.fullName : undefined) ?? w.id)
+
+/** The SSH host a workspace's link names (vscodeSSHHost), shown because it cannot be verified. */
+export function sshHostOf(w: Workspace | undefined): string | null {
+  return w === undefined ? null : vscodeSSHHost(w.vscode?.url ?? null)
+}
 
 /** Runs `fn` with the stream held (§5.5). */
 async function held<T>(d: FlowDeps, fn: () => Promise<T>): Promise<T> {
@@ -205,10 +211,10 @@ export async function clone(d: FlowDeps, repoId: number): Promise<void> {
   }
 }
 
-export type FollowEnd = 'running' | 'failed' | 'approval' | 'stopped' | 'gone' | 'dismissed'
+export type FollowEnd = 'running' | 'failed' | 'approval' | 'stopped' | 'gone' | 'dismissed' | 'stream'
 
 /** Where a followed workspace is: an end, or the line to show while it moves. */
-export function followState(e: Entities, id: string): { end: Exclude<FollowEnd, 'dismissed'> | null; line: string } {
+export function followState(e: Entities, id: string): { end: Exclude<FollowEnd, 'dismissed' | 'stream'> | null; line: string } {
   const w = e.workspaces[id]
   if (w === undefined || e.gone[id] !== undefined) return { end: 'gone', line: 'Deleted.' }
   switch (w.state) {
@@ -244,6 +250,12 @@ export async function follow(d: FlowDeps, id: string): Promise<FollowEnd> {
         }
         if (s.line !== last) report((last = s.line))
         if (dismissed()) return
+        // The stream ended under the follow (a 401, a sign-out, drydock.url
+        // changed): nothing more will arrive, so the notification closes.
+        if (!d.live.streaming) {
+          end = 'stream'
+          return
+        }
         await nextChange(d, 1_000)
       }
     })
@@ -259,7 +271,11 @@ async function ending(d: FlowDeps, id: string, name: string, end: FollowEnd): Pr
     case 'running': {
       d.ready.add(id)
       if (d.connectWhenReady()) return connect(d, id)
-      if ((await d.prompter.message('info', `${name} is running.`, [CONNECT])) === CONNECT) await connect(d, id)
+      // The view carries the link, and with it the SSH host to name (§2.6).
+      await d.live.loadWorkspace(id).catch((e: unknown) => d.log.warn(`reading the workspace: ${errorLine(e)}`))
+      const host = sshHostOf(d.live.entities.workspaces[id])
+      const via = host === null ? '' : ` Connect opens it over SSH to ${host}.`
+      if ((await d.prompter.message('info', `${name} is running.${via}`, [CONNECT])) === CONNECT) await connect(d, id)
       return
     }
     case 'failed': {
@@ -274,9 +290,21 @@ async function ending(d: FlowDeps, id: string, name: string, end: FollowEnd): Pr
       return offerDrydock(d, 'info', `${name} stopped.`, id)
     case 'gone':
       return void (await d.prompter.message('info', `${name} was deleted.`))
+    case 'stream':
+      return void (await d.prompter.message('warning', `Stopped following ${name}: ${STREAM_ENDED[d.live.endedBy ?? 'closed']}`))
     case 'dismissed':
       return
   }
+}
+
+/** Why a follow stopped when the stream did, in a sentence (§5.4). */
+export const STREAM_ENDED: Record<EndReason, string> = {
+  unauthorized: 'the Drydock token was revoked or has expired. Sign in again with a new one.',
+  sign_in: 'this VS Code is not signed in to Drydock any more.',
+  signed_out: 'this VS Code signed out of Drydock.',
+  not_configured: 'drydock.url no longer names a Drydock.',
+  url_changed: 'drydock.url changed, so this window no longer follows that Drydock.',
+  closed: 'the connection to Drydock was closed.',
 }
 
 // ---- connect --------------------------------------------------------------
@@ -337,7 +365,10 @@ export async function connect(d: FlowDeps, id: string): Promise<void> {
       if ((await d.prompter.message('warning', NEEDS_REMOTES, [INSTALL_REMOTES])) !== INSTALL_REMOTES) return
       for (const x of missing) await d.extensions.install(x)
     }
-    d.log.info(`connecting to workspace ${id}`)
+    // The server chose the SSH host (--vscode-ssh-host) and the extension
+    // cannot check it was the right one: it is said, in the hub, the
+    // notification and here.
+    d.log.info(`connecting to workspace ${id} over SSH to ${vscodeSSHHost(vscodeLink(w)) ?? 'an unknown host'}`)
     await d.opener.openFolder(uri)
   })
 }

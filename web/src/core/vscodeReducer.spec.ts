@@ -7,7 +7,7 @@ import type { WorkspaceView } from './types'
 import { newBackend, vscodeURLFor, WS_RUNNING, workspaceList } from '../mocks/backend'
 import { WS, listBody, stateEvent, wsView } from './reducer.fixtures'
 import {
-  becameRunning, emptyEntities, reduce, reduceAll, vscodeConfigured, vscodeLink, vscodeURL, type Entities,
+  becameRunning, emptyEntities, reduce, reduceAll, vscodeConfigured, vscodeLink, vscodeSSHHost, vscodeURL, type Entities,
 } from './reducer'
 
 // internal/vscode's golden shape: {"containerName":"/mock_1"} in hex, then
@@ -61,6 +61,50 @@ describe('the VS Code link', () => {
       expect(vscodeLink(e.workspaces[WS]!), String(bad)).toBeNull()
     }
     expect(vscodeURL(GOOD)).toBe(GOOD) // control
+  })
+
+  it('decodes the container payload and takes only exactly {"containerName":"/<name>"}', () => {
+    const hex = (t: string) => [...t].map((c) => c.charCodeAt(0).toString(16).padStart(2, '0')).join('')
+    const link = (payload: string) => `vscode://vscode-remote/attached-container+${payload}@ssh-remote+devbox/workspaces/repo`
+    for (const bad of [
+      // The extension's own settings.host would open a connection of its choosing.
+      '{"containerName":"/x","settings":{"host":"ssh://evil.example"}}',
+      '{"containerName":"x"}',
+      '{"containerName":"/-x"}',
+      '{"containerName":"/x y"}',
+      '{ "containerName":"/x"}',
+      '{"containerName":"/x","containerName":"/y"}',
+      '{"containername":"/x"}',
+      '["/x"]',
+      '"/x"',
+      'not json',
+    ]) {
+      expect(vscodeURL(link(hex(bad))), bad).toBeNull()
+    }
+    expect(vscodeURL(link('7b2')), 'odd length').toBeNull()
+    expect(vscodeURL(link('7bff7d')), 'not ASCII').toBeNull()
+    // Control: internal/vscode's own spelling.
+    expect(vscodeURL(link(hex('{"containerName":"/modest_herschel"}')))).not.toBeNull()
+  })
+
+  it('takes an SSH authority only as internal/vscode writes it, and says which host it is', () => {
+    const hex = (t: string) => [...t].map((c) => c.charCodeAt(0).toString(16).padStart(2, '0')).join('')
+    const container = hex('{"containerName":"/x"}')
+    const link = (ssh: string) => `vscode://vscode-remote/attached-container+${container}@ssh-remote+${ssh}/workspaces/repo`
+    expect(vscodeSSHHost(GOOD)).toBe('owner@devbox.lan')
+    expect(vscodeSSHHost(link('devbox'))).toBe('devbox')
+    expect(vscodeSSHHost(link(hex('{"hostName":"DevBox","user":"owner","port":2222}')))).toBe('owner@DevBox:2222')
+    for (const bad of [
+      hex('{"hostName":"devbox","proxyCommand":"x"}'),
+      hex('{"user":"owner"}'),
+      hex('{"hostName":"-oProxyCommand=x"}'),
+      hex('{"hostName":"devbox","port":0}'),
+      hex('{"hostName":"devbox","user":"a b"}'),
+      'DevBox',
+    ]) {
+      expect(vscodeURL(link(bad)), bad).toBeNull()
+      expect(vscodeSSHHost(link(bad)), bad).toBeNull()
+    }
   })
 
   it('is hidden once a state event is newer than the view that carried it', () => {
