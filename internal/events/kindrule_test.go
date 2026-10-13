@@ -41,6 +41,12 @@ import (
 //     variables, closures and single-result helpers.
 //  4. Every registered kind has a scope in Scopes, and every key of Scopes is
 //     registered.
+//
+// What it cannot see, so no code does it: a Kind made by a generic conversion
+// (T(s) with T ~string), and a Kind written by reflection — json.Unmarshal
+// into an Event, or database/sql's Scan into a *Kind (scan reads a string and
+// converts it, which rule 2 allows there alone). Rule 3 does not follow a
+// kind through a struct field, a map or a multi-value return.
 
 // kindFromRow is the one place a Kind may be made from a string: the log's
 // scan of a stored row, whose kind was a registered constant when written.
@@ -74,7 +80,8 @@ type listedPkg struct {
 // *types.Var at a call site in another).
 func loadModule(t *testing.T, root string) (*token.FileSet, []*checkedPkg) {
 	t.Helper()
-	cmd := exec.Command("go", "list", "-export", "-deps", "-json=ImportPath,Dir,Export,GoFiles,CgoFiles,Module", "./...")
+	// The toolchain running this test, not whatever go is first on PATH.
+	cmd := exec.Command(filepath.Join(runtime.GOROOT(), "bin", "go"), "list", "-export", "-deps", "-json=ImportPath,Dir,Export,GoFiles,CgoFiles,Module", "./...")
 	cmd.Dir = root
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
@@ -454,7 +461,7 @@ func TestKindRegistry(t *testing.T) {
 	values := map[Kind]string{}
 	for name, c := range r.Registered {
 		if len(r.Used[c]) == 0 {
-			t.Errorf("kinds.go: %s is registered but nothing emits it: remove it, so the registry promises only what the server sends", name)
+			t.Errorf("kinds.go: %s is registered but nothing emits it: remove it, so the registry promises only what the server sends. (Emitted means reaching NewEvent's or Emit's kind, or an Event's Kind, directly or through parameters, variables, closures and single-result helpers; a struct field, a map or a multi-value return is not followed, so pass the constant directly or extend analyzeKinds.)", name)
 		}
 		k := Kind(constant.StringVal(c.Val()))
 		if other, dup := values[k]; dup {

@@ -139,7 +139,9 @@ const (
 )
 
 // Scopes is every registered kind's scope. The stream filter for scoped
-// credentials reads it; a cookie session sees every kind.
+// credentials reads it, and must deny a kind missing from it (fail closed);
+// a cookie session sees every kind. token.issued and token.refused are the
+// broker's GitHub-token events, read: a scope name, never a token.
 var Scopes = map[Kind]Scope{
 	KindWorkspaceState:   ScopeRead,
 	KindWorkspaceStep:    ScopeRead,
