@@ -177,8 +177,27 @@ with the `all_repos` confirm, the two-kinds rotate result, delete.
   meanwhile is the server's `412 secret_exists`, on the name field. The edit form sends no such
   header.
 
+## API tokens: `src/components/ApiTokens.vue`, `src/stores/tokens.ts`
+
+Settings' *API tokens* section (vscode-extension §4.2), `id="tokens"` so `/settings#tokens` lands on it.
+
+- Token entities (`entities.tokens`, by id) are written only by `GET /api/tokens` (the `tokens`
+  snapshot) and `api_token.created`/`api_token.revoked`, which carry the whole metadata; each is
+  versioned by event id, and a revocation is never undone by a later event. A token is revoked,
+  never deleted, so the list drops nothing an event wrote after it was asked for.
+- The mint's `201` carries the token. `tokens.create` returns only `{id, token}` to the component,
+  which shows it once from a local ref and clears it on *Done* or unmount; the body's metadata is
+  dropped, and the row arrives by its event. `views/tokens.spec.ts` is the canary: the token is in
+  no store, storage, history, URL, request URL, event or entity.
+- *Create token*: `read` always on (the server refuses a token without it), `lifecycle` ticked, `approve` off beside the approval card's sentence,
+  90 days. Its mark ends with the response (the body is the result, as a secret `PUT`'s is).
+  *Revoke* is an `ActionButton`, in flight until that token's `api_token.revoked` (or a snapshot
+  showing it revoked).
+
 ## The mock backend: `src/mocks/backend.ts`
 
+- It serves the token routes; `tokens` holds the metadata and `tokenValues` each minted token,
+  which only the mint's `201` carries, for the canary spec.
 - `supervisor: true` plays the session server (`dev:mock` sets it; specs default to false).
 - It serves the workspace routes with the cap and the duplicate check; `scriptMode: 'manual'`
   holds a create's events for a spec to play with `playScript`. `schedule` ends every job's script

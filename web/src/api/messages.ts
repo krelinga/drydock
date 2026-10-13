@@ -19,6 +19,9 @@ const SENTENCES: Record<string, string> = {
     'No GitHub App is set up yet, and Drydock needs one to list repositories and to clone, start or rebuild a workspace.',
   forbidden_origin: "This request did not come from Drydock's own page. Reload and try again.",
   forbidden_host: 'This page was not reached at Drydock’s own address.',
+  // An API token without the route's scope (vscode-extension §4.1). The web
+  // UI holds a session, which never gets this but on the token-only route.
+  forbidden_scope: 'This credential may not do that.',
   not_found: 'Drydock has no such thing.',
   method_not_allowed: 'This page asked Drydock for something the wrong way. Reload and try again.',
   not_implemented: 'That is not built yet.',

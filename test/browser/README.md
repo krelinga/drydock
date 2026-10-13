@@ -22,7 +22,8 @@ shipped Caddyfile. Run by `run.sh`, which resolves `@playwright/test` from `web/
 The `__Host-` cookie and its illegal variants, the `SameSite=Lax` split, the `Origin` belt,
 cross-origin reads, framing both ways, the CSP as served, SSE through Caddy's `encode`, the
 browser's own `Last-Event-ID` replay, sign-in with `return`, the mid-session `401`, a wrong-host
-certificate refused, and the preview handshake (`preview.spec.ts`: a signed-in click to a preview
+certificate refused, Settings' API tokens (`tokens.spec.ts`: a token minted on the page reads
+`GET /api/meta` as a bearer with no cookie at the server, and is `401` once revoked there), and the preview handshake (`preview.spec.ts`: a signed-in click to a preview
 host lands, after three redirects observed at both taps, on the hardcoded upstream with only the
 host-only preview cookie in the jar there and the token in no file under the root; not signed in,
 sign-in and back; *Sign out everywhere* bounces the next preview request; forged cookies and

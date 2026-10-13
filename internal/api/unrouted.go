@@ -26,6 +26,10 @@ func Unrouted(gate Gate, apiMux *http.ServeMux) http.Handler {
 			return
 		}
 		authed, ok := gate.Authenticate(r)
+		if !ok && AuthUnavailable(authed) {
+			writeAuthUnavailable(w)
+			return
+		}
 		if !ok {
 			WriteError(w, http.StatusUnauthorized, CodeUnauthenticated, "Sign in to continue.", "")
 			return

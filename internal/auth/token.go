@@ -137,7 +137,7 @@ var (
 	// ErrTokenLabel, ErrTokenScopes, ErrTokenLifetime: a mint refused
 	// before anything is written.
 	ErrTokenLabel    = errors.New("a token needs a label of 1 to 100 printable characters")
-	ErrTokenScopes   = errors.New("a token needs one or more of read, lifecycle and approve, each once")
+	ErrTokenScopes   = errors.New("a token needs read, and may add lifecycle and approve, each once")
 	ErrTokenLifetime = errors.New("a token lasts from one day to a year")
 )
 
@@ -167,8 +167,10 @@ func WellFormedToken(s string) bool {
 	return true
 }
 
-// NormalizeScopes checks a mint's scopes: one or more of the grantable
-// three, none twice, returned in GrantableScopes order.
+// NormalizeScopes checks a mint's scopes: read, plus any of lifecycle and
+// approve, none twice, returned in GrantableScopes order. read is required
+// because GET /api/meta, which is how a client checks a pasted token, is
+// read-scoped: a token without it could never be verified.
 func NormalizeScopes(in []Scope) ([]Scope, error) {
 	seen := map[Scope]bool{}
 	for _, s := range in {
@@ -187,7 +189,7 @@ func NormalizeScopes(in []Scope) ([]Scope, error) {
 			out = append(out, g)
 		}
 	}
-	if len(out) == 0 {
+	if !seen[ScopeRead] {
 		return nil, ErrTokenScopes
 	}
 	return out, nil
@@ -260,9 +262,13 @@ func (t *Tokens) Create(ctx context.Context, label string, scopes []Scope, lifet
 }
 
 // Lookup resolves a bearer value to a live token: well-formed, known,
-// unrevoked and unexpired, or ErrNoToken whichever it is not. It is never a
+// unrevoked and unexpired, or ErrNoToken whichever it is not. Any other
+// error is the store failing, which says nothing about the token: the gate
+// answers it 503, never the 401 a client takes as revocation. It is never a
 // sign-in attempt and never touches the lockout (§4.3): a stale token in a
-// busy client must not lock the operator out of the web UI.
+// busy client must not lock the operator out of the web UI. The
+// last_used_at write is best-effort: a busy database delays the bookkeeping,
+// never the request.
 func (t *Tokens) Lookup(ctx context.Context, value string) (Token, error) {
 	if !WellFormedToken(value) {
 		return Token{}, ErrNoToken
@@ -276,10 +282,9 @@ func (t *Tokens) Lookup(ctx context.Context, value string) (Token, error) {
 		return Token{}, ErrNoToken
 	}
 	if tok.LastUsedAt == nil || !now.Before(tok.LastUsedAt.Add(tokenTouchEvery)) {
-		if _, err := t.DB.ExecContext(ctx, `UPDATE api_token SET last_used_at = ? WHERE id = ?`, ts(now), tok.ID); err != nil {
-			return Token{}, fmt.Errorf("touch token: %w", err)
+		if _, err := t.DB.ExecContext(ctx, `UPDATE api_token SET last_used_at = ? WHERE id = ?`, ts(now), tok.ID); err == nil {
+			tok.LastUsedAt = &now
 		}
-		tok.LastUsedAt = &now
 	}
 	return tok, nil
 }

@@ -269,7 +269,7 @@ func TestTokenRoutesOverTheRealGate(t *testing.T) {
 	// Refused mints write nothing.
 	before := do("GET", "/api/tokens", "", cookie, "").Body.String()
 	for _, body := range []string{``, `{}`, `{"label":"","scopes":["read"]}`, `{"label":"x","scopes":[]}`,
-		`{"label":"x","scopes":["session"]}`, `{"label":"x","scopes":["self"]}`, `{"label":"x","scopes":["read","read"]}`,
+		`{"label":"x","scopes":["session"]}`, `{"label":"x","scopes":["lifecycle"]}`, `{"label":"x","scopes":["lifecycle","approve"]}`, `{"label":"x","scopes":["self"]}`, `{"label":"x","scopes":["read","read"]}`,
 		`{"label":"x","scopes":["read"],"expires_in_days":0}`, `{"label":"x","scopes":["read"],"expires_in_days":366}`,
 		`{"label":"a\u0007b","scopes":["read"]}`, `{"label":"x","scopes":["read"],"extra":1}`,
 		`{"label":"` + strings.Repeat("x", 101) + `","scopes":["read"]}`} {
@@ -303,4 +303,64 @@ func scopeStrings(s []auth.Scope) []string {
 		out[i] = string(x)
 	}
 	return out
+}
+
+// TestStoreFailureIsNot401 (review of #149): a 401 is a client's
+// authoritative "this token is over", so only a bad token earns one. A
+// failed last_used_at write is best-effort — the request still passes — and
+// a failed read is 503 unavailable, the token kept. The controls: the token
+// passes before either failure, and a revoked one is still 401.
+func TestStoreFailureIsNot401(t *testing.T) {
+	b := newBearerRig(t)
+	tok, meta := b.mint(t, auth.ScopeRead)
+	mux := Build(MuxAPI, b.gate, MetaRoutes{}.Handlers())
+	get := func(bearer string) *httptest.ResponseRecorder {
+		r := httptest.NewRequest("GET", "https://drydock.example.com/api/meta", nil)
+		r.Host = "drydock.example.com"
+		r.Header.Set("Authorization", "Bearer "+bearer)
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, r)
+		return rec
+	}
+	if rec := get(tok); rec.Code != http.StatusOK {
+		t.Fatalf("control: %d", rec.Code)
+	}
+	db := b.svc.DB
+	used := func() string {
+		var u string
+		db.QueryRow(`SELECT last_used_at FROM api_token WHERE id = ?`, meta.ID).Scan(&u)
+		return u
+	}
+	first := used()
+
+	// The write fails; the request does not.
+	if _, err := db.Exec(`CREATE TRIGGER no_touch BEFORE UPDATE OF last_used_at ON api_token BEGIN SELECT RAISE(ABORT, 'busy'); END`); err != nil {
+		t.Fatal(err)
+	}
+	b.clock.Advance(2 * time.Minute)
+	if rec := get(tok); rec.Code != http.StatusOK {
+		t.Errorf("a failed last_used_at write = %d; want 200", rec.Code)
+	}
+	if first == "" || used() != first {
+		t.Errorf("last_used_at %q → %q; the trigger should have refused the second write", first, used())
+	}
+
+	// The read fails: 503, never 401.
+	if _, err := db.Exec(`ALTER TABLE api_token RENAME TO api_token_gone`); err != nil {
+		t.Fatal(err)
+	}
+	rec := get(tok)
+	if rec.Code != http.StatusServiceUnavailable || errCodeOf(rec) != CodeUnavailable || rec.Header().Get("Retry-After") == "" {
+		t.Errorf("a failed read = %d %s; want 503 unavailable with Retry-After", rec.Code, rec.Body)
+	}
+	if _, err := db.Exec(`ALTER TABLE api_token_gone RENAME TO api_token`); err != nil {
+		t.Fatal(err)
+	}
+	// Control: a bad token is still 401.
+	if _, err := b.svc.Tokens.Revoke(context.Background(), meta.ID); err != nil {
+		t.Fatal(err)
+	}
+	if rec := get(tok); rec.Code != http.StatusUnauthorized {
+		t.Errorf("a revoked token = %d; want 401", rec.Code)
+	}
 }

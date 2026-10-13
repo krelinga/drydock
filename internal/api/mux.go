@@ -91,6 +91,10 @@ func wrap(rt Route, g Gate) http.Handler {
 		switch rt.Auth {
 		case AuthRequired:
 			authed, ok := g.Authenticate(r)
+			if !ok && AuthUnavailable(authed) {
+				writeAuthUnavailable(w)
+				return
+			}
 			if !ok {
 				WriteError(w, http.StatusUnauthorized, CodeUnauthenticated,
 					"Sign in to continue.", "")
@@ -151,6 +155,14 @@ func wrap(rt Route, g Gate) http.Handler {
 		}
 		rt.Handler(w, r)
 	})
+}
+
+// writeAuthUnavailable is the answer when the credential store failed: 503,
+// with Retry-After, so a client keeps its credential and tries again.
+func writeAuthUnavailable(w http.ResponseWriter) {
+	w.Header().Set("Retry-After", "5")
+	WriteError(w, http.StatusServiceUnavailable, CodeUnavailable,
+		"Drydock could not check this credential just now. Try again.", "")
 }
 
 // mayReach is the scope step: the request's credential holds the route's

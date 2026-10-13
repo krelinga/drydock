@@ -77,6 +77,9 @@
 //                                           is what settles "Check now" (§4.2)
 //   auth.login         {login}              internal/login: the handshake's
 //                                           every phase change, the whole view
+//   api_token.created  {token}              internal/auth: a token minted —
+//   api_token.revoked  {token}              or revoked — its metadata, never
+//                                           the token (vscode-extension §4.2)
 //
 // The login handshake (design §7.2) is one fleet-wide value beside the
 // identity, written by the same snapshot's `login` and by auth.login, and
@@ -108,6 +111,14 @@
 // (`stale` in secret.rotated is the operation's result, not the secret's
 // state; it is shown by the screen that asked — views/secrets — and not kept.)
 //
+// API tokens have an eighth input, `tokens` — a GET /api/tokens body — and
+// are written by it and by the two api_token.* events, and by nothing else.
+// POST /api/tokens answers 201 with the token and its metadata; that body is
+// not an input, for the reason the secret PUT's is not, and because the
+// token in it must reach nothing but the screen that shows it once
+// (components/ApiTokens.vue). A token is revoked, never deleted, so the list
+// never drops one an event wrote after it was asked for.
+//
 // Every other kind (token.*, container.unclaimed, system.reconcile, and
 // whatever a later phase adds) advances the stream position and changes no
 // workspace or repository: if it names a workspace it joins that workspace's
@@ -118,7 +129,7 @@
 import {
   IDENTITY_STATES, LOGIN_PHASES, WORKSPACE_STATES, WORKSPACE_STEPS, type CatalogView, type ClaudeIdentityBody,
   type IdentityCheckError, type IdentityState, type InstallationView, type LoginPhase, type RepoView, type SecretList,
-  type SecretMeta, type StepStatus, type StreamEvent, type ApprovalView, type WorkspaceDetail, type WorkspaceList, type WorkspaceState,
+  type SecretMeta, type ApiTokenMeta, type TokenList, type TokenScope, TOKEN_SCOPES, type StepStatus, type StreamEvent, type ApprovalView, type WorkspaceDetail, type WorkspaceList, type WorkspaceState,
   type WorkspaceView, SUPERVISOR_STATES, type SupervisorState, type HostDiskView, type ResourcesView,
   type HostHeader, type PortList, type PortView, type DiscoveryState,
 } from '../api/types'
@@ -361,6 +372,23 @@ export interface Secret {
 }
 
 /**
+ * One API token's metadata (vscode-extension §4.2). There is no field for the
+ * token or its hash, and nothing that writes this type could fill one.
+ */
+export interface ApiToken {
+  id: string
+  label: string
+  /** The grantable scopes it holds, in display order; an unknown one is dropped. */
+  scopes: TokenScope[]
+  createdAt: string
+  lastUsedAt: string | null
+  expiresAt: string
+  revokedAt: string | null
+  /** The id of the event (or snapshot position) that last wrote it. */
+  at: number
+}
+
+/**
  * Stored secrets cannot be delivered: every workspace's commands fail until
  * it is fixed. From GET /api/secrets' `undeliverable` or `secret.undeliverable`,
  * whichever is newer; `secret.deliverable` or a snapshot reporting null clears it.
@@ -458,6 +486,10 @@ export interface Entities {
   secretsDeleted: Record<string, number>
   /** Null until a GET /api/secrets has been applied: "not loaded", distinct from "none". */
   secretsLoaded: boolean
+  /** By id. Only GET /api/tokens and api_token.* events write it. */
+  tokens: Record<string, ApiToken>
+  /** False until a GET /api/tokens has been applied: "not loaded", distinct from "none". */
+  tokensLoaded: boolean
   /** Null while delivery works, or before anything has said otherwise. */
   secretFault: SecretFault | null
   /** The event id (or snapshot position) that last wrote `secretFault`, set or cleared. */
@@ -504,6 +536,7 @@ export type Action =
   | { type: 'workspaces'; at: number; view: WorkspaceList }
   | { type: 'workspace'; at: number; view: WorkspaceDetail }
   | { type: 'secrets'; at: number; view: SecretList }
+  | { type: 'tokens'; at: number; view: TokenList }
   | { type: 'identity'; at: number; view: ClaudeIdentityBody }
   | { type: 'resources'; frame: unknown }
   | { type: 'ports'; at: number; workspaceId: string; view: PortList }
@@ -525,6 +558,8 @@ export function emptyEntities(): Entities {
     secrets: {},
     secretsDeleted: {},
     secretsLoaded: false,
+    tokens: {},
+    tokensLoaded: false,
     secretFault: null,
     secretFaultAt: 0,
     cap: null,
@@ -573,6 +608,8 @@ export function reduce(prev: Entities, action: Action): Entities {
     }
     case 'secrets':
       return applySecretList(prev, action.at, action.view)
+    case 'tokens':
+      return applyTokenList(prev, action.at, action.view)
     case 'ports':
       return applyPortList(prev, action.at, action.workspaceId, action.view)
     case 'identity': {
@@ -829,6 +866,7 @@ function applyEvent(prev: Entities, ev: StreamEvent): Entities {
   }
 
   if (ev.kind.startsWith('secret.')) return applySecretEvent(base, ev)
+  if (ev.kind === 'api_token.created' || ev.kind === 'api_token.revoked') return applyTokenEvent(base, ev)
   if (ev.kind.startsWith('auth.identity')) return applyIdentityEvent(base, ev)
   if (ev.kind === 'auth.login') return applyLoginEvent(base, ev)
 
@@ -1395,6 +1433,67 @@ function applySecretList(prev: Entities, at: number, view: SecretList): Entities
     secretsLoaded: true,
     ...fault,
   }
+}
+
+/**
+ * A token's metadata, field by named field. Nothing is spread from the input,
+ * so a `token` — the mint's body, were it ever handed here — cannot reach the
+ * store, and so cannot reach a template.
+ */
+function toToken(m: unknown, at: number): ApiToken | null {
+  if (m === null || typeof m !== 'object') return null
+  const v = m as Partial<Record<keyof ApiTokenMeta, unknown>>
+  const id = str(v.id)
+  const createdAt = str(v.created_at)
+  const expiresAt = str(v.expires_at)
+  if (id === null || createdAt === null || expiresAt === null) return null
+  const held = Array.isArray(v.scopes) ? v.scopes : []
+  return {
+    id,
+    label: typeof v.label === 'string' ? v.label : '',
+    scopes: TOKEN_SCOPES.filter((s) => held.includes(s)),
+    createdAt,
+    lastUsedAt: strOrNull(v.last_used_at),
+    expiresAt,
+    revokedAt: strOrNull(v.revoked_at),
+    at,
+  }
+}
+
+/** api_token.created and api_token.revoked: the whole metadata, versioned per id. */
+function applyTokenEvent(base: Entities, ev: StreamEvent): Entities {
+  const t = toToken((ev.data ?? {}).token, ev.id)
+  if (t === null) return base
+  const cur = base.tokens[t.id]
+  if (cur !== undefined && cur.at >= ev.id) return base
+  // A revocation is final: a later event can never un-revoke it.
+  if (cur?.revokedAt != null && t.revokedAt === null) return base
+  return { ...base, tokens: { ...base.tokens, [t.id]: t } }
+}
+
+/**
+ * Merges a GET /api/tokens body taken when the stream stood at `at`. Tokens
+ * are revoked, never deleted, so the list names every one there is; a token
+ * an event newer than `at` wrote keeps the event's version, and one minted
+ * after `at` is kept though the list does not name it.
+ */
+function applyTokenList(prev: Entities, at: number, view: TokenList): Entities {
+  const tokens: Record<string, ApiToken> = {}
+  for (const m of Array.isArray(view?.tokens) ? view.tokens : []) {
+    const t = toToken(m, at)
+    if (t === null) continue
+    const cur = prev.tokens[t.id]
+    tokens[t.id] = cur !== undefined && cur.at > at ? cur : t
+  }
+  for (const [id, t] of Object.entries(prev.tokens)) {
+    if (tokens[id] === undefined && t.at > at) tokens[id] = t
+  }
+  return { ...prev, lastEventId: Math.max(prev.lastEventId, at), tokens, tokensLoaded: true }
+}
+
+/** Every token, newest first. */
+export function tokenList(e: Entities): ApiToken[] {
+  return Object.values(e.tokens).sort((a, b) => b.createdAt.localeCompare(a.createdAt) || a.id.localeCompare(b.id))
 }
 
 const PORT_WRITES = new Set(['port.added', 'port.enabled', 'port.disabled', 'port.updated'])
