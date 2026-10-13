@@ -42,7 +42,11 @@ func testbed(t *testing.T, b githubtest.Backend, in github.Installation) map[str
 	if err != nil {
 		t.Fatal(err)
 	}
-	repos, err := b.Client.Repositories(context.Background(), tok)
+	var repos []github.Repository
+	err = b.RetryPositiveControl(t, "listing the testbed", func() (e error) {
+		repos, e = b.Client.Repositories(context.Background(), tok)
+		return e
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -118,7 +122,11 @@ func TestContractContents(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	dir, err := b.Client.Contents(ctx, tok, githubtest.TestbedA, ".devcontainer", "main")
+	var dir []github.ContentEntry
+	err = b.RetryPositiveControl(t, "contents of testbed-a .devcontainer", func() (e error) {
+		dir, e = b.Client.Contents(ctx, tok, githubtest.TestbedA, ".devcontainer", "main")
+		return e
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -129,7 +137,11 @@ func TestContractContents(t *testing.T) {
 	if !found {
 		t.Errorf("%s/.devcontainer listed %+v; want devcontainer.json as a file", githubtest.TestbedA, dir)
 	}
-	file, err := b.Client.Contents(ctx, tok, githubtest.TestbedB, "README.md", "main")
+	var file []github.ContentEntry
+	err = b.RetryPositiveControl(t, "contents of testbed-b README.md", func() (e error) {
+		file, e = b.Client.Contents(ctx, tok, githubtest.TestbedB, "README.md", "main")
+		return e
+	})
 	if err != nil || len(file) != 1 || file[0].Type != "file" || file[0].Name != "README.md" {
 		t.Errorf("a file: %+v %v", file, err)
 	}
@@ -159,12 +171,19 @@ func TestContractScopedToken(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	listed, err := b.Client.Repositories(ctx, tok)
+	var listed []github.Repository
+	err = b.RetryPositiveControl(t, "listing with the scoped token", func() (e error) {
+		listed, e = b.Client.Repositories(ctx, tok)
+		return e
+	})
 	if err != nil || len(listed) != 1 || listed[0].ID != a.ID {
 		t.Errorf("a token scoped to %s lists %+v (%v)", a.FullName, listed, err)
 	}
 	// Control: it can read its own repository…
-	if _, err := b.Client.Contents(ctx, tok, a.FullName, ".devcontainer", "main"); err != nil {
+	if err := b.RetryPositiveControl(t, "the scoped token reading its own repository", func() error {
+		_, e := b.Client.Contents(ctx, tok, a.FullName, ".devcontainer", "main")
+		return e
+	}); err != nil {
 		t.Fatalf("control: the scoped token cannot read its own repository: %v", err)
 	}
 	// …and not the other one. 404, not 403: GitHub does not confirm the

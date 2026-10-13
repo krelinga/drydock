@@ -2,6 +2,7 @@ package catalog
 
 import (
 	"context"
+	"fmt"
 	"path/filepath"
 	"testing"
 
@@ -31,16 +32,32 @@ func TestContractRefresh(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	res, err := cat.Refresh(ctx)
-	if err != nil {
+	// The positive controls retry on GitHub's not-found lag: a Refresh that
+	// fails not-found, or reads testbed-a (which has a dev container) as
+	// having none, because the probe's 404 came from a fresh token's lag.
+	// Testbed-b's expected "none" is a negative and is never retried.
+	var res Result
+	var v View
+	err = b.RetryPositiveControl(t, "refresh", func() error {
+		var e error
+		if res, e = cat.Refresh(ctx); e != nil {
+			return e
+		}
+		if v, e = cat.List(ctx); e != nil {
+			return e
+		}
+		for _, r := range v.Repos {
+			if r.FullName == githubtest.TestbedA && (r.HasDevcontainer == nil || !*r.HasDevcontainer) {
+				return fmt.Errorf("%s read as having no dev container: not found", r.FullName)
+			}
+		}
+		return nil
+	})
+	if err != nil && v.Repos == nil {
 		t.Fatalf("refresh (live=%v): %v", b.Live, err)
 	}
 	if res.Count != 2 {
 		t.Errorf("refreshed %d repositories; want the two testbeds", res.Count)
-	}
-	v, err := cat.List(ctx)
-	if err != nil {
-		t.Fatal(err)
 	}
 	want := map[string]bool{githubtest.TestbedA: true, githubtest.TestbedB: false}
 	for _, r := range v.Repos {
