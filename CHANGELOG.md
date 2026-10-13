@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.17.2](https://github.com/krelinga/drydock/compare/v0.17.1...v0.17.2) (2026-10-13)
+
+
+### Bug Fixes
+
+* apply a sign-in to the extension's stream before the command returns, and never wait on a stopped stream ([#173](https://github.com/krelinga/drydock/issues/173)) ([7a0c958](https://github.com/krelinga/drydock/commit/7a0c958a7a5a22ebc1ca17071d3e347214675e3d))
+
 ## [0.17.1](https://github.com/krelinga/drydock/compare/v0.17.0...v0.17.1) (2026-10-13)
 
 
