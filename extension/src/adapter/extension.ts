@@ -164,15 +164,31 @@ export function activate(context: vscode.ExtensionContext): Seam | undefined {
   ].map(({ view, nodes }) => {
     const provider = new NodeTree(nodes)
     const tv = vscode.window.createTreeView(view, { treeDataProvider: provider })
+    // One hold while the view is visible. A hold still being taken when the
+    // view is hidden is released as soon as it arrives, never kept.
     let release: (() => void) | null = null
-    context.subscriptions.push(tv, tv.onDidChangeVisibility((e) => {
-      if (e.visible && release === null) {
-        live.hold().then((r) => { release = r }, (err: unknown) => log.warn(`${view}: ${String(err)}`))
-      } else if (!e.visible && release !== null) {
+    let visible = false
+    let taking = false
+    const follow = (shown: boolean) => {
+      visible = shown
+      if (shown && release === null && !taking) {
+        taking = true
+        live.hold().then((r) => {
+          taking = false
+          if (visible) release = r
+          else r()
+        }, (err: unknown) => {
+          taking = false
+          log.warn(`${view}: ${String(err)}`)
+        })
+      } else if (!shown && release !== null) {
         release()
         release = null
       }
-    }))
+    }
+    context.subscriptions.push(tv, tv.onDidChangeVisibility((e) => follow(e.visible)), { dispose: () => follow(false) })
+    // A view already shown when the extension activates holds the stream now.
+    if (tv.visible) follow(true)
     return provider
   })
   context.subscriptions.push({ dispose: live.onChange(() => { for (const t of trees) t.refresh() }) })

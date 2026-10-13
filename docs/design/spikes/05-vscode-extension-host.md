@@ -75,16 +75,24 @@ is there). No default binding uses the hub's chord on Linux; `ctrl+shift+p` is
 ## Reproducing
 
 ```sh
-cd extension && npm ci
-sudo ../test/extension/system-ca.sh install /tmp/drydock-host-ca
-DRYDOCK_EXTENSION_CERTS=/tmp/drydock-host-ca DRYDOCK_HOST_RESULTS=/tmp/results.json ../test/extension/run.sh host
-sudo ../test/extension/system-ca.sh remove /tmp/drydock-host-ca
+cd extension && npm ci && cd ..
+dir=$(sudo test/extension/system-ca.sh install)   # name-constrained; its key deleted once the leaves are signed
+DRYDOCK_EXTENSION_CERTS=$dir DRYDOCK_HOST_RESULTS=/tmp/results.json test/extension/run.sh host
+sudo test/extension/system-ca.sh remove "$dir"    # untrusts it and deletes the directory
 ```
 
 `/tmp/results.json` holds each spec's result and the measurements above (`spike`). For #1's
-negative, run the same without `system-ca.sh` (with `DRYDOCK_EXTENSION_CERTS` naming a CA made by
-any other means): the sign-in spec fails and the wrong-host spec reports
-`UNABLE_TO_VERIFY_LEAF_SIGNATURE`.
+negative — the CA named by `NODE_EXTRA_CA_CERTS` alone, not in the system store — run
+`DRYDOCK_SPIKE_05_NEGATIVE=1 DRYDOCK_HOST_RESULTS=/tmp/negative.json test/extension/run.sh host`:
+the run fails, the sign-in spec with nothing reaching the tap, and `1-wrong-host-control` is absent
+because the wrong-host fetch failed with `UNABLE_TO_VERIFY_LEAF_SIGNATURE` instead.
+
+**The system-store CA** (`system-ca.sh`) is a root trusted machine-wide for the run, so it is held
+to what the run needs: critical `nameConstraints` permitting only `drydock.test`,
+`drydock-preview.test` (and its subdomains) and `other.test`, and excluding every IP address; its
+private key deleted as soon as the three leaves are signed; its directory made by `mktemp` as root,
+`0700`, and trusted before it is handed to the invoking user. `run.sh host` refuses a trusted CA
+without the constraint, or with its key still on disk.
 
 The items marked *laptop ritual* belong to `test/rituals/vscode-bump.md` and
 `test/rituals/vscode-connect.md` (§12.11), which E1's last PRs write; until then they stay open in

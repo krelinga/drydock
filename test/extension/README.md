@@ -46,9 +46,12 @@ name: the client fails with `ERR_TLS_CERT_ALTNAME_INVALID` and the tap records n
 downloaded by URL and checked by SHA-256 before it is unpacked, cached in `~/.cache/drydock-vscode`)
 under `xvfb-run`, running `inner/suite.ts` against this stack. VS Code's extension host does not
 trust a CA named by `NODE_EXTRA_CA_CERTS` (Spike 05 #1) but does read the system store, so this
-tier's CA must be put there first by `system-ca.sh` (as root; `remove` takes it out). CI does it on a
-runner that lives one job; `run.sh host` refuses until the system store verifies the CA, and never
-edits it.
+tier's CA must be put there first by `system-ca.sh` (as root; `remove` untrusts it and deletes its
+directory). That CA is name-constrained (critical) to the tier's names alone, its key is deleted
+once the leaves are signed, and its directory is made by `mktemp`. CI does it on a runner that lives
+one job; `run.sh host` refuses until the system store verifies the CA, and refuses a CA without the
+constraint or with its key on disk; it never edits the store. `DRYDOCK_SPIKE_05_NEGATIVE=1` runs the
+tier on `NODE_EXTRA_CA_CERTS` alone, Spike 05 #1's negative, which is expected to fail.
 
 ## The specs
 

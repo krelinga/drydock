@@ -90,11 +90,11 @@ jobs:
         with:
           path: ~/.cache/drydock-vscode
           key: vscode-${{ hashFiles('extension/test/host/vscode.json') }}
+      # Name-constrained to the tier's own names, its key deleted once the
+      # leaves are signed (system-ca.sh).
       - name: Trust the host tier's CA
-        run: sudo test/extension/system-ca.sh install "$RUNNER_TEMP/drydock-host-ca"
+        run: echo "DRYDOCK_EXTENSION_CERTS=$(sudo test/extension/system-ca.sh install)" >> "$GITHUB_ENV"
       - run: test/extension/run.sh host
-        env:
-          DRYDOCK_EXTENSION_CERTS: ${{ runner.temp }}/drydock-host-ca
 
   # The browser tier (testing §10): real Chromium, real Caddy on the shipped
   # Caddyfile, the real `drydock serve`, and a throwaway CA trusted through
