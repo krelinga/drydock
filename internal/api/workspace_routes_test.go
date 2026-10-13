@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/krelinga/drydock/internal/auth"
 	"github.com/krelinga/drydock/internal/events"
 	"github.com/krelinga/drydock/internal/provision"
 	"github.com/krelinga/drydock/internal/workspace"
@@ -250,15 +251,25 @@ func TestLifecycleRoutesMapEachRefusalToItsCode(t *testing.T) {
 }
 
 // TestApproveCarriesTheHashAndTheSession: the hash is passed through as
-// sent, the approver is the session the gate attached (here none, so
-// "unknown"), and a body without a hash is bad_request with nothing done —
-// beside the control that a hash is accepted.
+// sent, the approver is the credential the gate attached — the session's
+// id, or an API token's (vscode-extension §10.0a) — and a body without a
+// hash is bad_request with nothing done, beside the control that a hash is
+// accepted.
 func TestApproveCarriesTheHashAndTheSession(t *testing.T) {
 	p := &stubProvisioner{}
 	mux := workspaceMux(p, stubReader{})
 	rec := call(mux, "POST", "/api/workspaces/W1/config-approval", `{"hash":"sha256:ab"}`)
-	if rec.Code != 202 || strings.TrimSpace(rec.Body.String()) != `{}` || len(p.acted) != 1 || p.acted[0] != "approve W1 sha256:ab unknown" {
+	if rec.Code != 202 || strings.TrimSpace(rec.Body.String()) != `{}` || len(p.acted) != 1 || p.acted[0] != "approve W1 sha256:ab "+operator.ID {
 		t.Errorf("control: %d %s %q", rec.Code, rec.Body, p.acted)
+	}
+	// A token with approve is recorded by its id.
+	p.acted = nil
+	tok := auth.TokenCredential(auth.Token{ID: "tok_approver", Scopes: []auth.Scope{auth.ScopeApprove}})
+	g := allOpen
+	g.cred = &tok
+	byToken := Build(MuxAPI, g, WorkspaceRoutes{Provisioner: p, Workspaces: stubReader{}, Events: stubEvents{}}.Handlers())
+	if rec := call(byToken, "POST", "/api/workspaces/W1/config-approval", `{"hash":"sha256:ab"}`); rec.Code != 202 || len(p.acted) != 1 || p.acted[0] != "approve W1 sha256:ab tok_approver" {
+		t.Errorf("by a token: %d %s %q; want the token's id as the approver", rec.Code, rec.Body, p.acted)
 	}
 	for _, body := range []string{``, `{}`, `{"hash":""}`, `{"hash":"x"} {}`, `not json`} {
 		p.acted = nil

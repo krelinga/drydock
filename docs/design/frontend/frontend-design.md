@@ -275,7 +275,7 @@ Two more surfaced when Phase 1 built the device list and the sign-in screen agai
 
 | # | Addition | Why the UI cannot work without it |
 |---|---|---|
-| 10 | **Revoke one device**: a `DELETE` on a single session by its id. Today `DELETE /api/auth/session` signs out the current device, or with `?all=true` every device. | §5's device list exists so a lost phone can be signed out. With only "this one" and "all", the operator's only move against one lost device is to sign out everything — workable, and what the Settings screen offers until this lands, but not the design. |
+| 10 | **Revoke one device**: a `DELETE` on a single session by its id. Today `DELETE /api/auth/session` signs out the current device, and `DELETE /api/auth/sessions` every device (it was `?all=true` on the first until phase T split it, vscode-extension §10.0a). | §5's device list exists so a lost phone can be signed out. With only "this one" and "all", the operator's only move against one lost device is to sign out everything — workable, and what the Settings screen offers until this lands, but not the design. |
 | 11 | **The failed-attempt notice reaches the client.** The server already counts bad-password attempts since the last successful sign-in, and their sources (`auth.SignInResult`), but the sign-in `POST` answers `204` with no body, so the count is computed and dropped. Either a body on that response or a field on `GET /api/auth/session`, shown once. | §8's last bullet and overall §12: a stale saved password on a forgotten device shows up only here. A count nobody sees is the same as no count. |
 
 Three more surfaced when Phase 4 built the secrets screens against `internal/api/secret_routes.go`:

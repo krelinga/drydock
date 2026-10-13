@@ -78,10 +78,23 @@ type listedPkg struct {
 // own packages import each other from source, so an object is one object
 // across the whole module (a parameter of a helper in one package is the same
 // *types.Var at a call site in another).
+// goTool is the toolchain running this test, not whatever go is first on
+// PATH — when it can be found. Under `go test -trimpath` with no GOROOT in
+// the environment, runtime.GOROOT() is empty, and so is a path it does not
+// hold a go binary at; then the go on PATH is the best there is.
+func goTool() string {
+	if root := runtime.GOROOT(); root != "" {
+		p := filepath.Join(root, "bin", "go")
+		if _, err := os.Stat(p); err == nil {
+			return p
+		}
+	}
+	return "go"
+}
+
 func loadModule(t *testing.T, root string) (*token.FileSet, []*checkedPkg) {
 	t.Helper()
-	// The toolchain running this test, not whatever go is first on PATH.
-	cmd := exec.Command(filepath.Join(runtime.GOROOT(), "bin", "go"), "list", "-export", "-deps", "-json=ImportPath,Dir,Export,GoFiles,CgoFiles,Module", "./...")
+	cmd := exec.Command(goTool(), "list", "-export", "-deps", "-json=ImportPath,Dir,Export,GoFiles,CgoFiles,Module", "./...")
 	cmd.Dir = root
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr

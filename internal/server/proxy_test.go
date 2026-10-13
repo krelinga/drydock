@@ -478,7 +478,7 @@ func TestRevocationClosesOpenWebsockets(t *testing.T) {
 	}
 
 	// Sign out everywhere: closed at once — well inside one recheck.
-	if resp := r.do(t, req{method: "DELETE", path: "/api/auth/session?all=true", origin: uiOrigin, cookie: ui}); resp.StatusCode != http.StatusNoContent {
+	if resp := r.do(t, req{method: "DELETE", path: "/api/auth/sessions", origin: uiOrigin, cookie: ui}); resp.StatusCode != http.StatusNoContent {
 		t.Fatalf("sign out everywhere = %d", resp.StatusCode)
 	}
 	if !closes(ws, br, time.Second) {

@@ -187,7 +187,7 @@ func New(ctx context.Context, cfg config.Config, env sys.Env) (*Server, error) {
 	// its own (PF §5), and with its revocation by the schema's cascade.
 	previews := &preview.Service{DB: db.DB, Clock: env.Clock, Random: env.Random,
 		Domain: cfg.PreviewDomain, AuthIdle: auth.IdleLifetime}
-	gate := api.SessionGate{Sessions: svc.Sessions, UIOrigin: cfg.UIOrigin, UIHost: cfg.UIHost, Previews: previews}
+	gate := api.SessionGate{Sessions: svc.Sessions, Tokens: svc.Tokens, UIOrigin: cfg.UIOrigin, UIHost: cfg.UIHost, Previews: previews}
 
 	ui, err := web.New(web.Dist())
 	if err != nil {
@@ -197,6 +197,8 @@ func New(ctx context.Context, cfg config.Config, env sys.Env) (*Server, error) {
 
 	s := &Server{DB: db, Auth: svc, Events: events.New(db.DB, env.Clock), reconciled: make(chan struct{}),
 		Previews: previews, clock: env.Clock}
+	// A token's mint and revocation are each a row and its event, one fact.
+	svc.Tokens.Events = s.Events
 	s.Workspaces = &workspace.Store{DB: db.DB, Events: s.Events, Env: env, Root: cfg.WorkspaceRoot, Cap: cfg.ContainerCap}
 	// Drydock's own uid owns the shared credential volume (§7.1): the dev
 	// container CLI, run as Drydock, gives every workspace's remote user
@@ -352,7 +354,13 @@ func New(ctx context.Context, cfg config.Config, env sys.Env) (*Server, error) {
 	for name, h := range (api.RepoRoutes{Catalog: repoCatalog}).Handlers() {
 		handlers[name] = h
 	}
-	for name, h := range (api.EventRoutes{Log: s.Events, Clock: env.Clock, Alive: svc.Sessions.Alive}).Handlers() {
+	for name, h := range (api.EventRoutes{Log: s.Events, Clock: env.Clock, Alive: svc.Alive}).Handlers() {
+		handlers[name] = h
+	}
+	for name, h := range (api.TokenRoutes{Tokens: svc.Tokens}).Handlers() {
+		handlers[name] = h
+	}
+	for name, h := range (api.MetaRoutes{Version: cfg.Version}).Handlers() {
 		handlers[name] = h
 	}
 	for name, h := range (api.SecretRoutes{Store: secretRoutes}).Handlers() {

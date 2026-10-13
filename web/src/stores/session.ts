@@ -40,9 +40,12 @@ export const useSessionStore = defineStore('session', {
         : null
       await this.load()
     },
-    /** Ends this session, or every session. The caller routes to /signin. */
+    /**
+     * Ends this session, or every browser session (`DELETE /api/auth/sessions`,
+     * its own route since phase T). The caller routes to /signin.
+     */
     async signOut(everywhere: boolean): Promise<void> {
-      await api.send('DELETE', everywhere ? '/api/auth/session?all=true' : '/api/auth/session')
+      await api.send('DELETE', everywhere ? '/api/auth/sessions' : '/api/auth/session')
       this.failedNotice = null
     },
   },

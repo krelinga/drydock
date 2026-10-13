@@ -102,11 +102,12 @@ describe('SettingsView device list', () => {
     expect(b.signedIn).toBe(true)
     expect(router.currentRoute.value.name).toBe('settings')
 
-    // Positive control: confirming sends ?all=true and signs this device out.
+    // Positive control: confirming sends DELETE /api/auth/sessions and signs
+    // this device out.
     await wrapper.find('[data-test="sign-out-everywhere"]').trigger('click')
     await wrapper.find('[data-test="confirm"]').trigger('click')
     await settle()
-    expect(deletes().map((r) => new URL(r.url).search)).toEqual(['?all=true'])
+    expect(deletes().map((r) => new URL(r.url).pathname + new URL(r.url).search)).toEqual(['/api/auth/sessions'])
     expect(router.currentRoute.value.name).toBe('signin')
     expect(router.currentRoute.value.query.return).toBeUndefined()
     expect(useSessionStore().devices).toEqual([])

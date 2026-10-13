@@ -19,6 +19,17 @@
 // route unauthenticated fails the count assertion by name, and deleting the
 // Origin check fails 14. Keep that property.
 //
+// Scopes (vscode-extension §4, scope_test.go): the gate accepts a session
+// cookie or `Authorization: Bearer drydock_…`, never both (401), and attaches
+// an auth.Credential. Every API route declares a Scope, checked after auth and
+// before Origin (403 forbidden_scope); unset is closed to every token. A
+// bearer on an AuthRedirect route is refused at auth, before scope, and an
+// undeclared path is session-scoped (Unrouted). Mutation-checked: a session
+// route marked lifecycle, a cleared scope, and /preview/authorize answering a
+// bearer each fail by name. The stream and the workspace view's events carry
+// only kinds the credential may see (MaySee: events.Scopes, failing closed),
+// a hidden event sent as its id alone so the position still moves.
+//
 // PUT /api/secrets/:name is one route with two meanings: create-or-replace, or
 // with `If-None-Match: *` a create that refuses a stored name `412
 // secret_exists` (any other If-None-Match is bad_request). A route refused
@@ -59,7 +70,11 @@
 // events are events.Log.Feed: the workspace's history without discovery's.
 package api
 
-import "net/http"
+import (
+	"net/http"
+
+	"github.com/krelinga/drydock/internal/auth"
+)
 
 // Mux names the listener a route is served on. The two are separate processes'
 // worth of trust: MuxAPI is the operator's own origin, MuxPreview is an origin
@@ -153,6 +168,14 @@ type Route struct {
 	Mux Mux
 	// Auth is the gate applied before Handler runs.
 	Auth Auth
+	// Scope is what a credential must hold to reach the route
+	// (vscode-extension §4.1): read, lifecycle, approve, self, or session
+	// for a route no token can reach. Checked after auth and before Origin.
+	// Unset is refused to every token, as if it were session, and
+	// TestEveryAPIRouteDeclaresAScope fails on it by name: a route added
+	// later is closed to tokens until someone decides otherwise. Preview
+	// mux routes declare none; no token authenticates there.
+	Scope auth.Scope
 	// Mutating marks a state-changing route, which additionally gets the
 	// exact-match, fail-closed Origin check from design §13.3. It is not
 	// derived from Method: POST /api/repos/refresh mutates, and a future
@@ -181,7 +204,7 @@ var Table = []Route{
 		// rate-limited and lockout-guarded one (§13.2), which is not a
 		// coincidence: being reachable without a credential is exactly
 		// what makes those necessary.
-		Auth: AuthNone, Mutating: true,
+		Auth: AuthNone, Mutating: true, Scope: auth.ScopeSession,
 		Name: "auth.session.create", Doc: "POST /api/auth/session",
 	},
 	{
@@ -191,24 +214,77 @@ var Table = []Route{
 		// device list, so an unauthenticated 200 here would hand out the
 		// operator's signed-in devices; and the frontend depends on it
 		// answering 401 when signed out (frontend §2.2, §4.4).
-		Auth: AuthRequired,
+		Auth: AuthRequired, Scope: auth.ScopeSession,
 		Name: "auth.session.read", Doc: "GET /api/auth/session",
 	},
 	{
 		Method: "DELETE", Pattern: "/api/auth/session", Mux: MuxAPI,
-		Auth: AuthRequired, Mutating: true,
+		// Sign this device out.
+		Auth: AuthRequired, Mutating: true, Scope: auth.ScopeSession,
 		Name: "auth.session.delete", Doc: "DELETE /api/auth/session",
+	},
+	{
+		Method: "DELETE", Pattern: "/api/auth/sessions", Mux: MuxAPI,
+		// Sign out everywhere (§13.2): every browser session, a route of
+		// its own so that scopes stay keyed on route names. API tokens are
+		// revoked in Settings' Tokens, one by one.
+		Auth: AuthRequired, Mutating: true, Scope: auth.ScopeSession,
+		Name: "auth.sessions.delete", Doc: "DELETE /api/auth/sessions",
+	},
+	{
+		Method: "DELETE", Pattern: "/api/auth/token", Mux: MuxAPI,
+		// A token revoking itself (vscode-extension §4.2): the extension's
+		// Sign Out ends the credential rather than forgetting it. self is
+		// every token's scope and no cookie session's, which signs out
+		// through its own route.
+		Auth: AuthRequired, Mutating: true, Scope: auth.ScopeSelf,
+		Name: "auth.token.delete", Doc: "DELETE /api/auth/token",
+	},
+
+	// ---- API tokens (vscode-extension §4.2) ------------------------------
+	//
+	// Minted, listed and revoked by the operator's browser session alone:
+	// no token can mint another, or list or revoke one but itself.
+	{
+		Method: "GET", Pattern: "/api/tokens", Mux: MuxAPI,
+		// Every token's metadata: never the token, never its hash.
+		Auth: AuthRequired, Scope: auth.ScopeSession,
+		Name: "tokens.list", Doc: "GET /api/tokens",
+	},
+	{
+		Method: "POST", Pattern: "/api/tokens", Mux: MuxAPI,
+		// 201 with the token: the one response in the API that carries a
+		// credential, which is what minting is. Settled by
+		// api_token.created, which carries the metadata alone.
+		Auth: AuthRequired, Mutating: true, Scope: auth.ScopeSession,
+		Name: "tokens.create", Doc: "POST /api/tokens",
+	},
+	{
+		Method: "DELETE", Pattern: "/api/tokens/{id}", Mux: MuxAPI,
+		// Settled by api_token.revoked.
+		Auth: AuthRequired, Mutating: true, Scope: auth.ScopeSession,
+		Name: "tokens.revoke", Doc: "DELETE /api/tokens/:id",
+	},
+
+	// ---- the handshake (vscode-extension §9.1) ---------------------------
+	{
+		Method: "GET", Pattern: "/api/meta", Mux: MuxAPI,
+		// {version, api, credential}: what this server is, and what the
+		// caller's credential may do. Authenticated on purpose: an open
+		// route would be a second AuthNone.
+		Auth: AuthRequired, Scope: auth.ScopeRead,
+		Name: "meta.read", Doc: "GET /api/meta",
 	},
 
 	// ---- repositories ----------------------------------------------------
 	{
 		Method: "GET", Pattern: "/api/repos", Mux: MuxAPI,
-		Auth: AuthRequired,
+		Auth: AuthRequired, Scope: auth.ScopeRead,
 		Name: "repos.list", Doc: "GET /api/repos",
 	},
 	{
 		Method: "POST", Pattern: "/api/repos/refresh", Mux: MuxAPI,
-		Auth: AuthRequired, Mutating: true,
+		Auth: AuthRequired, Mutating: true, Scope: auth.ScopeLifecycle,
 		Name: "repos.refresh", Doc: "POST /api/repos/refresh",
 	},
 
@@ -220,37 +296,37 @@ var Table = []Route{
 		// a workspace whose repository the installation dropped (§12), or
 		// a second workspace for one repository, has nowhere to appear in
 		// that join.
-		Auth: AuthRequired,
+		Auth: AuthRequired, Scope: auth.ScopeRead,
 		Name: "workspaces.list", Doc: "GET /api/workspaces",
 	},
 	{
 		Method: "POST", Pattern: "/api/workspaces", Mux: MuxAPI,
-		Auth: AuthRequired, Mutating: true,
+		Auth: AuthRequired, Mutating: true, Scope: auth.ScopeLifecycle,
 		Name: "workspaces.create", Doc: "POST /api/workspaces",
 	},
 	{
 		Method: "GET", Pattern: "/api/workspaces/{id}", Mux: MuxAPI,
-		Auth: AuthRequired,
+		Auth: AuthRequired, Scope: auth.ScopeRead,
 		Name: "workspaces.read", Doc: "GET /api/workspaces/:id",
 	},
 	{
 		Method: "DELETE", Pattern: "/api/workspaces/{id}", Mux: MuxAPI,
-		Auth: AuthRequired, Mutating: true,
+		Auth: AuthRequired, Mutating: true, Scope: auth.ScopeLifecycle,
 		Name: "workspaces.delete", Doc: "DELETE /api/workspaces/:id",
 	},
 	{
 		Method: "POST", Pattern: "/api/workspaces/{id}/start", Mux: MuxAPI,
-		Auth: AuthRequired, Mutating: true,
+		Auth: AuthRequired, Mutating: true, Scope: auth.ScopeLifecycle,
 		Name: "workspaces.start", Doc: "POST /api/workspaces/:id/start",
 	},
 	{
 		Method: "POST", Pattern: "/api/workspaces/{id}/stop", Mux: MuxAPI,
-		Auth: AuthRequired, Mutating: true,
+		Auth: AuthRequired, Mutating: true, Scope: auth.ScopeLifecycle,
 		Name: "workspaces.stop", Doc: "POST /api/workspaces/:id/stop",
 	},
 	{
 		Method: "POST", Pattern: "/api/workspaces/{id}/rebuild", Mux: MuxAPI,
-		Auth: AuthRequired, Mutating: true,
+		Auth: AuthRequired, Mutating: true, Scope: auth.ScopeLifecycle,
 		Name: "workspaces.rebuild", Doc: "POST /api/workspaces/:id/rebuild",
 	},
 	{
@@ -258,19 +334,19 @@ var Table = []Route{
 		// Design §6: approve the host-access request a stopped workspace is
 		// waiting on, by the hash the operator was shown, and continue its
 		// run. Settled by config.approved.
-		Auth: AuthRequired, Mutating: true,
+		Auth: AuthRequired, Mutating: true, Scope: auth.ScopeApprove,
 		Name: "workspaces.approve", Doc: "POST /api/workspaces/:id/config-approval",
 	},
 	{
 		Method: "DELETE", Pattern: "/api/workspaces/{id}/config-approval", Mux: MuxAPI,
 		// Decline it: the request is dropped, the workspace stays stopped.
 		// Settled by the workspace.state event that carries no request.
-		Auth: AuthRequired, Mutating: true,
+		Auth: AuthRequired, Mutating: true, Scope: auth.ScopeApprove,
 		Name: "workspaces.decline", Doc: "DELETE /api/workspaces/:id/config-approval",
 	},
 	{
 		Method: "POST", Pattern: "/api/workspaces/{id}/supervisor", Mux: MuxAPI,
-		Auth: AuthRequired, Mutating: true,
+		Auth: AuthRequired, Mutating: true, Scope: auth.ScopeLifecycle,
 		Name: "workspaces.supervisor", Doc: "POST /api/workspaces/:id/supervisor",
 	},
 	{
@@ -278,7 +354,7 @@ var Table = []Route{
 		// Frontend §4.5 #4: the supervisor's ring buffer is in process
 		// memory by design (§8), so the UI has no other way in. Redacted,
 		// never persisted.
-		Auth: AuthRequired,
+		Auth: AuthRequired, Scope: auth.ScopeRead,
 		Name: "workspaces.logs", Doc: "GET /api/workspaces/:id/logs?tail=n",
 	},
 	{
@@ -286,7 +362,7 @@ var Table = []Route{
 		// Design §12, *Image build fails*: the last 50 lines of the latest
 		// failed `devcontainer up`, held in memory, redacted, never
 		// persisted — the detail view's, beside the step's sentence.
-		Auth: AuthRequired,
+		Auth: AuthRequired, Scope: auth.ScopeRead,
 		Name: "workspaces.build_log", Doc: "GET /api/workspaces/:id/build-log",
 	},
 
@@ -299,21 +375,21 @@ var Table = []Route{
 		Method: "GET", Pattern: "/api/workspaces/{id}/ports", Mux: MuxAPI,
 		// Every live row, with its provenance flags and its URL while
 		// enabled. Hidden rows only with ?hidden=true.
-		Auth: AuthRequired,
+		Auth: AuthRequired, Scope: auth.ScopeRead,
 		Name: "ports.list", Doc: "GET /api/workspaces/:id/ports",
 	},
 	{
 		Method: "POST", Pattern: "/api/workspaces/{id}/ports", Mux: MuxAPI,
 		// Add a port by hand: a new row, disabled, with a freshly minted
 		// slug. Settled by port.added.
-		Auth: AuthRequired, Mutating: true,
+		Auth: AuthRequired, Mutating: true, Scope: auth.ScopeLifecycle,
 		Name: "ports.add", Doc: "POST /api/workspaces/:id/ports",
 	},
 	{
 		Method: "POST", Pattern: "/api/workspaces/{id}/ports/rescan", Mux: MuxAPI,
 		// Discovery's (PF §8.2, §13 step 5): a scan now rather than at the
 		// next interval. Settled by port.scanned for this workspace.
-		Auth: AuthRequired, Mutating: true,
+		Auth: AuthRequired, Mutating: true, Scope: auth.ScopeLifecycle,
 		Name: "ports.rescan", Doc: "POST /api/workspaces/:id/ports/rescan",
 	},
 	{
@@ -322,21 +398,21 @@ var Table = []Route{
 		// Enabling is the click that makes a URL live; disabling ends the
 		// port's preview sessions and closes its open websockets at once.
 		// Settled by port.enabled, port.disabled or port.updated.
-		Auth: AuthRequired, Mutating: true,
+		Auth: AuthRequired, Mutating: true, Scope: auth.ScopeLifecycle,
 		Name: "ports.update", Doc: "PATCH /api/workspaces/:id/ports/:port",
 	},
 	{
 		Method: "DELETE", Pattern: "/api/workspaces/{id}/ports/{port}", Mux: MuxAPI,
 		// Retire: a soft delete that keeps the slug spent for good (PF §4).
 		// Settled by port.retired.
-		Auth: AuthRequired, Mutating: true,
+		Auth: AuthRequired, Mutating: true, Scope: auth.ScopeLifecycle,
 		Name: "ports.retire", Doc: "DELETE /api/workspaces/:id/ports/:port",
 	},
 	{
 		Method: "GET", Pattern: "/api/workspaces/{id}/ports/{port}/probe", Mux: MuxAPI,
 		// Dial it now through the proxy's own dial and say what happened.
 		// A read: it connects and closes, and changes nothing.
-		Auth: AuthRequired,
+		Auth: AuthRequired, Scope: auth.ScopeRead,
 		Name: "ports.probe", Doc: "GET /api/workspaces/:id/ports/:port/probe",
 	},
 
@@ -345,12 +421,12 @@ var Table = []Route{
 		Method: "GET", Pattern: "/api/secrets", Mux: MuxAPI,
 		// Names, reach, grants, last access. Never values — there is no
 		// route shape that returns one, and no column behind it (§4).
-		Auth: AuthRequired,
+		Auth: AuthRequired, Scope: auth.ScopeSession,
 		Name: "secrets.list", Doc: "GET /api/secrets",
 	},
 	{
 		Method: "PUT", Pattern: "/api/secrets/{name}", Mux: MuxAPI,
-		Auth: AuthRequired, Mutating: true,
+		Auth: AuthRequired, Mutating: true, Scope: auth.ScopeSession,
 		// Create-or-replace; with If-None-Match: * a create that refuses a
 		// stored name (412 secret_exists). One route either way, so every
 		// meta-test covers both.
@@ -358,19 +434,19 @@ var Table = []Route{
 	},
 	{
 		Method: "DELETE", Pattern: "/api/secrets/{name}", Mux: MuxAPI,
-		Auth: AuthRequired, Mutating: true,
+		Auth: AuthRequired, Mutating: true, Scope: auth.ScopeSession,
 		Name: "secrets.delete", Doc: "DELETE /api/secrets/:name",
 	},
 	{
 		Method: "PUT", Pattern: "/api/secrets/{name}/grants", Mux: MuxAPI,
-		Auth: AuthRequired, Mutating: true,
+		Auth: AuthRequired, Mutating: true, Scope: auth.ScopeSession,
 		Name: "secrets.grants.put", Doc: "PUT /api/secrets/:name/grants",
 	},
 
 	// ---- Claude identity and the login handshake (design §7.2, §7.3) ----
 	{
 		Method: "GET", Pattern: "/api/auth/claude", Mux: MuxAPI,
-		Auth: AuthRequired,
+		Auth: AuthRequired, Scope: auth.ScopeRead,
 		Name: "claude.identity.read", Doc: "GET /api/auth/claude",
 	},
 	{
@@ -378,12 +454,12 @@ var Table = []Route{
 		// Check the login now rather than at the next six-hourly poll
 		// (§7.3): after fixing something from a shell, or to see a login
 		// made in a workspace's terminal. Joins a check already running.
-		Auth: AuthRequired, Mutating: true,
+		Auth: AuthRequired, Mutating: true, Scope: auth.ScopeLifecycle,
 		Name: "claude.identity.check", Doc: "POST /api/auth/claude/check",
 	},
 	{
 		Method: "POST", Pattern: "/api/auth/claude/login", Mux: MuxAPI,
-		Auth: AuthRequired, Mutating: true,
+		Auth: AuthRequired, Mutating: true, Scope: auth.ScopeLifecycle,
 		Name: "claude.login.begin", Doc: "POST /api/auth/claude/login",
 	},
 	{
@@ -391,14 +467,14 @@ var Table = []Route{
 		// Carries the one-time login code. Redact-by-default applies to
 		// this request's body everywhere it could be written down: the
 		// event log, an error string, a panic dump (Spike 01, §13.5).
-		Auth: AuthRequired, Mutating: true,
+		Auth: AuthRequired, Mutating: true, Scope: auth.ScopeLifecycle,
 		Name: "claude.login.code", Doc: "POST /api/auth/claude/login/:lid/code",
 	},
 	{
 		Method: "DELETE", Pattern: "/api/auth/claude/login/{lid}", Mux: MuxAPI,
 		// §7.2's cancel: a wedged or abandoned login must never need a
 		// restart of Drydock. Kills the process and removes the container.
-		Auth: AuthRequired, Mutating: true,
+		Auth: AuthRequired, Mutating: true, Scope: auth.ScopeLifecycle,
 		Name: "claude.login.cancel", Doc: "DELETE /api/auth/claude/login/:lid",
 	},
 
@@ -407,7 +483,7 @@ var Table = []Route{
 		Method: "GET", Pattern: "/api/events", Mux: MuxAPI,
 		// Needs id: on every event, Last-Event-ID replay from a bounded
 		// window, a resync event, and a ~20s heartbeat (frontend §4.5 #1).
-		Auth: AuthRequired,
+		Auth: AuthRequired, Scope: auth.ScopeRead,
 		Name: "events.stream", Doc: "GET /api/events",
 	},
 
@@ -423,7 +499,7 @@ var Table = []Route{
 		// the very request it exists to serve — the token is single-use,
 		// 60-second, and bound to both the session and the one preview
 		// host, which is what carries the safety here instead.
-		Auth: AuthRedirect,
+		Auth: AuthRedirect, Scope: auth.ScopeSession,
 		Name: "preview.authorize", Doc: "GET /preview/authorize",
 	},
 

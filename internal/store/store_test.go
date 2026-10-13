@@ -198,6 +198,7 @@ func TestSchemaHasNothingToSteal(t *testing.T) {
 		{"operator", "password_hash"}, {"auth_session", "id"},
 		{"token_grant", "permissions"},
 		{"preview_session", "id"}, {"forwarded_port", "slug"},
+		{"api_token", "token_hash"},
 	}
 	have := map[column]bool{}
 	for _, c := range cols {
@@ -248,6 +249,26 @@ func TestEnumerationsAreEnforced(t *testing.T) {
 	}
 	if _, err := db.Exec(`INSERT INTO secret (id, name, ciphertext, nonce, reach) VALUES ('b','B',x'00',x'00','reads staging data')`); err != nil {
 		t.Errorf("secret refused a real reach: %v", err)
+	}
+
+	// api_token: a scope is 0 or 1, a token holds at least one, and its
+	// label is not blank.
+	token := func(id, label string, read, lifecycle, approve int) error {
+		_, err := db.Exec(`INSERT INTO api_token (id, token_hash, label, scope_read, scope_lifecycle, scope_approve, created_at, expires_at)
+			VALUES (?, ?, ?, ?, ?, ?, 'x', 'x')`, id, "h-"+id, label, read, lifecycle, approve)
+		return err
+	}
+	if err := token("t1", "laptop", 1, 0, 0); err != nil {
+		t.Errorf("control: api_token refused a read token: %v", err)
+	}
+	for name, err := range map[string]error{
+		"no scope":      token("t2", "laptop", 0, 0, 0),
+		"a scope of 2":  token("t3", "laptop", 2, 0, 0),
+		"a blank label": token("t4", "  ", 1, 0, 0),
+	} {
+		if err == nil {
+			t.Errorf("api_token accepted %s", name)
+		}
 	}
 }
 

@@ -129,6 +129,8 @@ type req struct {
 	method, path, body string
 	origin, host, ip   string
 	cookie             string
+	// bearer, when set, is sent as Authorization: Bearer <bearer>.
+	bearer string
 	// ifNoneMatch, when set, is sent as If-None-Match: the secret create.
 	ifNoneMatch string
 }
@@ -160,6 +162,9 @@ func (r *running) do(t *testing.T, q req) *http.Response {
 	hr.Header.Set("X-Forwarded-For", ip) // what Caddy sets; see clientIP
 	if q.cookie != "" {
 		hr.AddCookie(&http.Cookie{Name: "__Host-drydock", Value: q.cookie})
+	}
+	if q.bearer != "" {
+		hr.Header.Set("Authorization", "Bearer "+q.bearer)
 	}
 	resp, err := r.client.Do(hr)
 	if err != nil {
@@ -363,7 +368,7 @@ func TestEveryRouteIsGatedEndToEnd(t *testing.T) {
 			}
 			// The control: with a cookie it gets past the gate. Unimplemented
 			// routes answer 501; the session routes answer their own codes.
-			if rt.Name == "auth.session.delete" {
+			if rt.Name == "auth.session.delete" || rt.Name == "auth.sessions.delete" {
 				return // would sign the shared cookie out from under the other subtests
 			}
 			authed := r.do(t, req{method: rt.Method, path: path(rt), origin: uiOrigin, cookie: cookie})
@@ -631,7 +636,7 @@ func TestUnknownUIPathFallsBackToIndex(t *testing.T) {
 func TestUnknownAPIPathIsGatedAndJSON(t *testing.T) {
 	r := start(t)
 	cookie := r.signIn(t)
-	for _, p := range []string{"/api", "/api/", "/api/typo", "/api/auth/sessions", "/api/workspaces/x/y/z"} {
+	for _, p := range []string{"/api", "/api/", "/api/typo", "/api/auth/sessionz", "/api/workspaces/x/y/z"} {
 		for _, m := range []string{"GET", "POST"} {
 			anon := r.do(t, req{method: m, path: p, origin: uiOrigin})
 			if msg := isEnvelope(t, anon, http.StatusUnauthorized, api.CodeUnauthenticated); msg != "" {

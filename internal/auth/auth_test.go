@@ -16,6 +16,7 @@ import (
 
 	"golang.org/x/crypto/argon2"
 
+	"github.com/krelinga/drydock/internal/events"
 	"github.com/krelinga/drydock/internal/store"
 	"github.com/krelinga/drydock/internal/sys"
 )
@@ -54,6 +55,7 @@ func newRig(t *testing.T) *rig {
 	svc := &Service{
 		DB: db.DB, Clock: clock, Random: random, Params: Floor,
 		Sessions: &Sessions{DB: db.DB, Clock: clock, Random: random},
+		Tokens:   &Tokens{DB: db.DB, Clock: clock, Random: random, Events: events.New(db.DB, clock)},
 		Limiter:  &Limiter{DB: db.DB, Clock: clock, Policy: DefaultPolicy},
 	}
 	return &rig{dir: dir, db: db, clock: clock, svc: svc}

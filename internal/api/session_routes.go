@@ -11,7 +11,8 @@ import (
 	"github.com/krelinga/drydock/internal/auth"
 )
 
-// SessionRoutes are the three /api/auth/session handlers (design §5, §13.2).
+// SessionRoutes are the /api/auth/session handlers and sign-out-everywhere's
+// DELETE /api/auth/sessions (design §5, §13.2).
 type SessionRoutes struct {
 	Auth *auth.Service
 	// Revoked is told of each sign-out once its sessions are gone: all for
@@ -24,9 +25,10 @@ type SessionRoutes struct {
 // Handlers returns the map Build consumes, keyed by route Name.
 func (s SessionRoutes) Handlers() map[string]http.HandlerFunc {
 	return map[string]http.HandlerFunc{
-		"auth.session.create": s.signIn,
-		"auth.session.read":   s.read,
-		"auth.session.delete": s.signOut,
+		"auth.session.create":  s.signIn,
+		"auth.session.read":    s.read,
+		"auth.session.delete":  s.signOut,
+		"auth.sessions.delete": s.signOutEverywhere,
 	}
 }
 
@@ -119,22 +121,42 @@ func (s SessionRoutes) read(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, out)
 }
 
-// signOut ends this session, or every session with ?all=true — design §13.2's
-// one-click response to a lost phone.
+// signOut ends this session. Sign out everywhere is its own route now
+// (DELETE /api/auth/sessions), so scopes stay keyed on route names; the
+// ?all=true this route once took is refused rather than ignored, since
+// ignoring it would sign one device out of a request that asked for all.
 func (s SessionRoutes) signOut(w http.ResponseWriter, r *http.Request) {
-	cur, _ := SessionFrom(r.Context())
-	var err error
-	if r.URL.Query().Get("all") == "true" {
-		err = s.Auth.Sessions.RevokeAll(r.Context())
-	} else {
-		err = s.Auth.Sessions.Revoke(r.Context(), cur.ID)
+	if r.URL.Query().Has("all") {
+		WriteError(w, http.StatusBadRequest, CodeBadRequest,
+			"Sign out everywhere is DELETE /api/auth/sessions.", "")
+		return
 	}
-	if err != nil {
+	cur, ok := SessionFrom(r.Context())
+	if !ok {
+		WriteError(w, http.StatusForbidden, CodeForbiddenScope, "This credential may not do that.", "")
+		return
+	}
+	if err := s.Auth.Sessions.Revoke(r.Context(), cur.ID); err != nil {
 		WriteError(w, http.StatusInternalServerError, CodeInternal, "Sign-out failed.", "")
 		return
 	}
 	if s.Revoked != nil {
-		s.Revoked(r.URL.Query().Get("all") == "true", cur.ID)
+		s.Revoked(false, cur.ID)
+	}
+	setSessionCookie(w, "", 0)
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// signOutEverywhere ends every browser session — design §13.2's one-click
+// response to a lost phone. API tokens are not sessions and are revoked in
+// Settings' Tokens; `drydock passwd` ends both.
+func (s SessionRoutes) signOutEverywhere(w http.ResponseWriter, r *http.Request) {
+	if err := s.Auth.Sessions.RevokeAll(r.Context()); err != nil {
+		WriteError(w, http.StatusInternalServerError, CodeInternal, "Sign-out failed.", "")
+		return
+	}
+	if s.Revoked != nil {
+		s.Revoked(true, "")
 	}
 	setSessionCookie(w, "", 0)
 	w.WriteHeader(http.StatusNoContent)

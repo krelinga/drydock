@@ -297,4 +297,29 @@ CREATE TABLE preview_session (
 CREATE INDEX preview_session_auth ON preview_session (auth_session_id);
 CREATE INDEX preview_session_port ON preview_session (forwarded_port_id);
 `,
+
+	// 9 — API tokens (vscode-extension §4, phase T). A token is a scoped,
+	// revocable credential minted in Settings for a client that is not a
+	// browser. Like auth_session, the table holds the token's SHA-256 and
+	// never the token; unlike it, the row's id is not that hash but a random
+	// name of its own, because Settings lists tokens by id and the hash is
+	// not shown anywhere. The three grantable scopes are columns, so the
+	// vocabulary is the schema's (a CHECK each) and a token with none is
+	// refused; `self` is every token's and `session` no token's, so neither
+	// is stored. A row is revoked, never deleted, so Settings can say when.
+	`
+CREATE TABLE api_token (
+  id               TEXT PRIMARY KEY,         -- random; not derived from the token
+  token_hash       TEXT NOT NULL UNIQUE,     -- sha256 of the token; never the token
+  label            TEXT NOT NULL CHECK (length(trim(label)) BETWEEN 1 AND 100),
+  scope_read       INTEGER NOT NULL CHECK (scope_read IN (0,1)),
+  scope_lifecycle  INTEGER NOT NULL CHECK (scope_lifecycle IN (0,1)),
+  scope_approve    INTEGER NOT NULL CHECK (scope_approve IN (0,1)),
+  created_at       TEXT NOT NULL,
+  last_used_at     TEXT,
+  expires_at       TEXT NOT NULL,
+  revoked_at       TEXT,
+  CHECK (scope_read + scope_lifecycle + scope_approve > 0)
+);
+`,
 }

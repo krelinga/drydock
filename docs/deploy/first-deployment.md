@@ -682,7 +682,7 @@ the master key), it starts Drydock again before it exits and says so:
 13. `==> starting drydock`, then `==> restarting caddy`. It fails unless the running Drydock is
     the installed binary.
 14. **It asks for the operator password**: `New password:` and `Again:`, without echo. Then
-    `Password set. Every existing session has been signed out.`
+    `Password set. Every existing session has been signed out, and every API token revoked.`
 15. It runs the end-to-end check: `https://drydock.example.com/api/auth/session` through Caddy,
     resolved to `127.0.0.1`, must answer `401` over a certificate it verified, against
     `--ca-cert` if you gave one and the system's trust store otherwise. It prints nothing when the
@@ -1466,7 +1466,8 @@ None of the following is a deployment fault. These are the phases still being bu
 | Settings | `/etc/drydock/drydock.env`. The effective command line is in `systemctl cat drydock`. |
 
 To change the password: `sudo -u drydock drydock passwd --db /var/lib/drydock/drydock.db`. This
-signs out every device. A device can also be signed out from **Settings**.
+signs out every device and revokes every API token. A device can also be signed out from
+**Settings**.
 
 ### 10.4 Uninstall
 

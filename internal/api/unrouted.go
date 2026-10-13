@@ -10,7 +10,8 @@ import "net/http"
 // declared route (401) from an undeclared one (404) and read the API surface
 // off a server it cannot use — the same oracle Build's ordering closes for
 // declared-but-unbuilt routes. So an undeclared path goes through the gate's
-// own order: Host, then session, and only then a JSON 404 (or 405 when the
+// own order: Host, then credential, then scope (none is declared, so no
+// token passes), and only then a JSON 404 (or 405 when the
 // path exists under another method). Never HTML, never the SPA.
 func Unrouted(gate Gate, apiMux *http.ServeMux) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -24,8 +25,16 @@ func Unrouted(gate Gate, apiMux *http.ServeMux) http.Handler {
 				"This request was not addressed to Drydock.", "")
 			return
 		}
-		if _, ok := gate.Authenticate(r); !ok {
+		authed, ok := gate.Authenticate(r)
+		if !ok {
 			WriteError(w, http.StatusUnauthorized, CodeUnauthenticated, "Sign in to continue.", "")
+			return
+		}
+		// Scope, as wrap's third step: an undeclared path declares no
+		// scope, so it is session-scoped, and a token learns nothing of
+		// which paths exist under other methods.
+		if !mayReach(authed, Route{}) {
+			WriteError(w, http.StatusForbidden, CodeForbiddenScope, "This credential may not do that.", "")
 			return
 		}
 		// The mux's fallback for an unmatched request is either NotFound or,
