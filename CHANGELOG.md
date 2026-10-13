@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.17.1](https://github.com/krelinga/drydock/compare/v0.17.0...v0.17.1) (2026-10-13)
+
+
+### Bug Fixes
+
+* skip the vsix only when the tag truly has no package script, and record only real dismissals ([#170](https://github.com/krelinga/drydock/issues/170)) ([d241ed9](https://github.com/krelinga/drydock/commit/d241ed979883f211c8894cbe5ae445d409dc6a72))
+
 ## [0.17.0](https://github.com/krelinga/drydock/compare/v0.16.0...v0.17.0) (2026-10-13)
 
 
