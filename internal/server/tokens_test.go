@@ -315,6 +315,24 @@ func captureStderr(t *testing.T, dir string) {
 	})
 }
 
+// plantStderr writes one canary each way the server's stderr is reached —
+// through os.Stderr (the server's Logf) and to fd 2 directly (the log
+// package's default logger, an http.Server with no ErrorLog, a child) — and
+// returns them by way, for a sweep's control that captureStderr caught both:
+// under -json those are two descriptors.
+func plantStderr(t *testing.T) map[string]string {
+	t.Helper()
+	planted := map[string]string{
+		"through os.Stderr": "CANARY_" + randomAlnum(24),
+		"to fd 2":           "CANARY_" + randomAlnum(24),
+	}
+	fmt.Fprintln(os.Stderr, "drydock: a planted line", planted["through os.Stderr"])
+	if _, err := syscall.Write(2, []byte("drydock: a planted line "+planted["to fd 2"]+"\n")); err != nil {
+		t.Fatal(err)
+	}
+	return planted
+}
+
 // TestTokenCanarySweep (testing §4.2, vscode-extension §10.0a): a token
 // minted through the API and then used — meta, a list, the stream, a
 // refusal for scope, revoking itself — is found nowhere under the server's
@@ -343,8 +361,7 @@ func TestTokenCanarySweep(t *testing.T) {
 		t.Fatalf("self-revoke = %d", resp.StatusCode)
 	}
 	r.stop()
-	planted := "CANARY_" + randomAlnum(24)
-	fmt.Fprintln(os.Stderr, "drydock: a planted line", planted)
+	planted := plantStderr(t)
 
 	sum := sha256.Sum256([]byte(tok))
 	dbBytes := ""
@@ -358,7 +375,7 @@ func TestTokenCanarySweep(t *testing.T) {
 	needles := forms(tok)
 	needles["the random part"] = strings.TrimPrefix(tok, "drydock_")
 	var files int
-	var plantedIn []string
+	plantedIn := map[string][]string{}
 	filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
 		if err != nil || d.IsDir() || d.Type()&fs.ModeSocket != 0 {
 			return nil
@@ -368,8 +385,10 @@ func TestTokenCanarySweep(t *testing.T) {
 			return nil
 		}
 		files++
-		if strings.Contains(string(b), planted) {
-			plantedIn = append(plantedIn, filepath.Base(p))
+		for way, c := range planted {
+			if strings.Contains(string(b), c) {
+				plantedIn[way] = append(plantedIn[way], filepath.Base(p))
+			}
 		}
 		for form, n := range needles {
 			if strings.Contains(string(b), n) {
@@ -381,8 +400,10 @@ func TestTokenCanarySweep(t *testing.T) {
 	if files < 2 {
 		t.Fatalf("control: the sweep read %d files", files)
 	}
-	if len(plantedIn) != 1 || plantedIn[0] != "stderr.log" {
-		t.Fatalf("control: a canary written to the server's stderr was found in %v; want [stderr.log]", plantedIn)
+	for way := range planted {
+		if in := plantedIn[way]; len(in) != 1 || in[0] != "stderr.log" {
+			t.Fatalf("control: a canary written to the server's stderr %s was found in %v; want [stderr.log]", way, in)
+		}
 	}
 	procs, _ := os.ReadDir("/proc")
 	for _, d := range procs {
