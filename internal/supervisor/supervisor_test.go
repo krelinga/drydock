@@ -87,15 +87,26 @@ func TestAnIDTheModelPrintedIsNotASession(t *testing.T) {
 
 // A session announced long after the start still upserts: the tail is
 // continuous, not a scrape at startup.
+//
+// Serving is decided by the status block (`Connected`, `Capacity: N/M`),
+// which the server prints before `Session started`, so a read that splits
+// the stream reports serving before the first session is in the window, and
+// that is right: serving is not "has a session" (#178). The fake writes in
+// pieces, so the test always meets that order rather than on a slow read
+// alone, and waits for each session rather than reading them at serving.
 func TestASessionAnnouncedLaterStillUpserts(t *testing.T) {
 	r := newRig(t)
+	r.pace = claudetest.Pace{Chunk: 1000, Delay: dur(20 * time.Millisecond)}
 	r.claude(claudetest.Step{Mode: claudetest.RCServeDelayedSession, SessionDelay: dur(700 * time.Millisecond)})
 	r.start()
 	r.waitState(Serving, ReasonServing)
-	if n := len(r.sessions()); n != 1 {
-		t.Fatalf("%d sessions before the delay, want 1", n)
-	}
+	r.waitFor(10*time.Second, "the first session", func() bool { return slices.Contains(r.sessions(), sessFix) })
 	r.waitFor(10*time.Second, "the second session", func() bool { return len(r.sessions()) == 2 })
+	var primary string
+	var n int
+	if err := r.db.QueryRow(`SELECT count(*), max(id) FROM rc_session WHERE is_primary = 1`).Scan(&n, &primary); err != nil || n != 1 || primary != sessFix {
+		t.Errorf("%d primary sessions, %q (%v); want one, the first announced, %s", n, primary, err, sessFix)
+	}
 }
 
 // All four refusals exit 1, and they lead to four different places. Exit

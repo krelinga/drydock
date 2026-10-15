@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -162,12 +163,32 @@ func TestAStrayServerIsStoppedBeforeTheNextStart(t *testing.T) {
 	}
 }
 
-// Restart: the same environment, the same session, nothing counted.
+// Restart: the same environment, the same session, nothing counted. Serving
+// precedes the session in the stream (#178), so the fake writes in pieces and
+// the test waits for each run's record of the session rather than reading it
+// at serving.
 func TestRestartKeepsTheEnvironment(t *testing.T) {
 	r := newRig(t)
+	r.pace = claudetest.Pace{Chunk: 1000, Delay: dur(20 * time.Millisecond)}
 	r.claude(claudetest.Step{Mode: claudetest.RCServe})
+	// recorded counts the session.status events naming the session: one per
+	// run that recorded it.
+	recorded := func() int {
+		evs, err := r.log.ForWorkspace(context.Background(), wsID, 1000)
+		if err != nil {
+			t.Fatal(err)
+		}
+		n := 0
+		for _, e := range evs {
+			if e.Kind == events.KindSessionStatus && strings.Contains(e.Message, sessFix) {
+				n++
+			}
+		}
+		return n
+	}
 	r.start()
 	r.waitState(Serving, ReasonServing)
+	r.waitFor(10*time.Second, "the first run to record the session", func() bool { return recorded() == 1 })
 	first := r.pid()
 	if err := r.m.Restart(context.Background(), wsID); err != nil {
 		t.Fatal(err)
@@ -191,10 +212,11 @@ func TestRestartKeepsTheEnvironment(t *testing.T) {
 	}
 	r.waitFor(10*time.Second, "a new server", func() bool { p := r.pid(); return p != first && p != 0 })
 	r.waitState(Serving, ReasonServing)
+	r.waitFor(10*time.Second, "the new run to record the session", func() bool { return recorded() == 2 })
 	if got := r.environment(); got != envFixed {
 		t.Errorf("environment %q, want %q", got, envFixed)
 	}
-	if got := r.sessions(); len(got) != 1 {
+	if got := r.sessions(); !slices.Equal(got, []string{sessFix}) {
 		t.Errorf("sessions %v: the reconnected session is the same row", got)
 	}
 	if _, n := r.row(); n != 0 {
