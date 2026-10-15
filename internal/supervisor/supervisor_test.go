@@ -103,8 +103,9 @@ func TestASessionAnnouncedLaterStillUpserts(t *testing.T) {
 	r.waitFor(10*time.Second, "the first session", func() bool { return slices.Contains(r.sessions(), sessFix) })
 	r.waitFor(10*time.Second, "the second session", func() bool { return len(r.sessions()) == 2 })
 	var primary string
-	if err := r.db.QueryRow(`SELECT id FROM rc_session WHERE is_primary = 1`).Scan(&primary); err != nil || primary != sessFix {
-		t.Errorf("primary session %q (%v), want the first announced, %s", primary, err, sessFix)
+	var n int
+	if err := r.db.QueryRow(`SELECT count(*), max(id) FROM rc_session WHERE is_primary = 1`).Scan(&n, &primary); err != nil || n != 1 || primary != sessFix {
+		t.Errorf("%d primary sessions, %q (%v); want one, the first announced, %s", n, primary, err, sessFix)
 	}
 }
 
