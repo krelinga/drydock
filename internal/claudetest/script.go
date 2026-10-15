@@ -173,10 +173,11 @@ const (
 	// Connected, a session announced in an OSC 8 hyperlink (BEL-terminated
 	// on 2.1.289) and the status block reprinted in place by cursor
 	// movement. It then serves until SIGTERM, when it writes the recorded
-	// shutdown and exits 0 — as it does for a SIGTERM that lands earlier,
-	// while the startup is written or the session held back, since the
-	// real server prints its shutdown whenever SIGTERM lands. SessionDelay
-	// holds back the session.
+	// shutdown and exits 0. SessionDelay holds back the session; a SIGTERM
+	// that lands earlier still yields exactly env-status-block (the rest of
+	// the startup, then the shutdown), since the corpus records SIGTERM
+	// only with the session announced. In every serve mode an early
+	// SIGTERM ends in env-status-block.
 	RCServe RCMode = "serve"
 	// RCServeDelayedSession replays session-ids-delayed: a second session
 	// announced SessionDelay after the first.

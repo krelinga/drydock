@@ -616,10 +616,16 @@ func (f *fake) serve(s claudetest.Step) int {
 	}
 	// stop is the clean stop: the recorded shutdown section ends with
 	// `Environment preserved`, and the next start is accepted at once
-	// (Spike 02). That is why the supervisor sends SIGTERM first. A real
-	// server prints it whenever SIGTERM lands, so a SIGTERM that arrives
-	// during a pause — or before one, while the startup is still being
-	// written — ends the same way as one that arrives while serving.
+	// (Spike 02). That is why the supervisor sends SIGTERM first.
+	//
+	// The corpus records SIGTERM only while serving one announced session,
+	// so every SIGTERM ends a stream that is a recording: one that lands
+	// while a session or the model's prose is held back gets the
+	// one-session run's remainder first, never a shutdown of a session the
+	// stream has not announced. (A server stopped before its session
+	// arrives would need its own recording, made with record.sh, to
+	// model.) The channel buffers a SIGTERM that lands mid-write, so the
+	// next pause, or the wait below, takes it.
 	stop := func() int {
 		f.replay(os.Stdout, shutdown)
 		return 0
@@ -627,6 +633,10 @@ func (f *fake) serve(s claudetest.Step) int {
 
 	switch s.Mode {
 	case claudetest.RCServe:
+		if s.SessionDelay <= 0 {
+			f.replay(os.Stdout, running)
+			break
+		}
 		// Hold the session back by splitting the recording at the
 		// repaint that announces it.
 		i := bytes.Index(running, []byte("Session started"))
@@ -636,10 +646,11 @@ func (f *fake) serve(s claudetest.Step) int {
 		}
 		i = bytes.LastIndexByte(running[:i], '\n') + 1
 		f.replay(os.Stdout, running[:i])
-		if !pause(s.SessionDelay.D()) {
+		held := pause(s.SessionDelay.D())
+		f.replay(os.Stdout, running[i:])
+		if !held {
 			return stop()
 		}
-		f.replay(os.Stdout, running[i:])
 	case claudetest.RCServeDelayedSession:
 		later := f.mustPrefix(f.read(claudetest.FixtureDelayedSession), running, "session-url-osc8 of session-ids-delayed")
 		f.replay(os.Stdout, running)
