@@ -264,16 +264,22 @@ func readUntil(t *testing.T, resp *http.Response, line string) string {
 	}
 }
 
-// captureStderr points this process's fd 2 at <dir>/stderr.log until the
+// captureStderr points this process's stderr at <dir>/stderr.log until the
 // test ends, so a canary sweep of dir reads what the server wrote to stderr —
 // the journal, in production — as the browser tier reads drydock.log. The
-// server runs in-process and writes os.Stderr from several packages; fd 2 is
-// the one place all of them (and the log package, and any child that
-// inherits it) meet, and swapping the descriptor races with nothing, where
-// assigning os.Stderr would race with every goroutine reading it. Nothing in
-// the package runs in parallel. On the way out what was captured is copied to
-// the real stderr; a crash before then leaves it in the file, whose path is
-// printed first.
+// server runs in-process and writes os.Stderr from several packages; swapping
+// descriptors races with nothing, where assigning os.Stderr would race with
+// every goroutine reading it. Nothing in the package runs in parallel.
+//
+// Two descriptors, because os.Stderr is not always fd 2: under `go test
+// -json` (the nightly stress job, #177) the testing package sets os.Stderr =
+// os.Stdout so test2json reads one ordered stream, and every write through
+// os.Stderr lands on fd 1. So the descriptor behind os.Stderr is swapped, and
+// fd 2 as well: the log package's default logger and any child that inherits
+// it write there. Under -json the first also carries the test's own framing
+// while the capture lasts; it is copied back, in order, before the test ends.
+// On the way out what was captured is copied to the real stderr; a crash
+// before then leaves it in the file, whose path is printed first.
 func captureStderr(t *testing.T, dir string) {
 	t.Helper()
 	path := filepath.Join(dir, "stderr.log")
@@ -281,17 +287,27 @@ func captureStderr(t *testing.T, dir string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	saved, err := syscall.Dup(2)
-	if err != nil {
-		t.Fatal(err)
+	fds := []int{2}
+	if fd := int(os.Stderr.Fd()); fd != 2 {
+		fds = append(fds, fd)
+	}
+	saved := make([]int, len(fds))
+	for i, fd := range fds {
+		if saved[i], err = syscall.Dup(fd); err != nil {
+			t.Fatal(err)
+		}
 	}
 	fmt.Fprintf(os.Stderr, "%s: the server's stderr is in %s until the test ends\n", t.Name(), path)
-	if err := syscall.Dup3(int(f.Fd()), 2, 0); err != nil {
-		t.Fatal(err)
+	for _, fd := range fds {
+		if err := syscall.Dup3(int(f.Fd()), fd, 0); err != nil {
+			t.Fatal(err)
+		}
 	}
 	t.Cleanup(func() {
-		syscall.Dup3(saved, 2, 0)
-		syscall.Close(saved)
+		for i, fd := range fds {
+			syscall.Dup3(saved[i], fd, 0)
+			syscall.Close(saved[i])
+		}
 		f.Close()
 		if b, _ := os.ReadFile(path); len(b) > 0 {
 			os.Stderr.Write(b)
