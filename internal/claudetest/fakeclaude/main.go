@@ -614,6 +614,16 @@ func (f *fake) serve(s claudetest.Step) int {
 			return true
 		}
 	}
+	// stop is the clean stop: the recorded shutdown section ends with
+	// `Environment preserved`, and the next start is accepted at once
+	// (Spike 02). That is why the supervisor sends SIGTERM first. A real
+	// server prints it whenever SIGTERM lands, so a SIGTERM that arrives
+	// during a pause — or before one, while the startup is still being
+	// written — ends the same way as one that arrives while serving.
+	stop := func() int {
+		f.replay(os.Stdout, shutdown)
+		return 0
+	}
 
 	switch s.Mode {
 	case claudetest.RCServe:
@@ -627,30 +637,26 @@ func (f *fake) serve(s claudetest.Step) int {
 		i = bytes.LastIndexByte(running[:i], '\n') + 1
 		f.replay(os.Stdout, running[:i])
 		if !pause(s.SessionDelay.D()) {
-			return 0
+			return stop()
 		}
 		f.replay(os.Stdout, running[i:])
 	case claudetest.RCServeDelayedSession:
 		later := f.mustPrefix(f.read(claudetest.FixtureDelayedSession), running, "session-url-osc8 of session-ids-delayed")
 		f.replay(os.Stdout, running)
 		if !pause(s.SessionDelay.D()) {
-			return 0
+			return stop()
 		}
 		f.replay(os.Stdout, later)
 		shutdown = nil // the recording's shutdown belongs to the one-session run
 	case claudetest.RCServeModelOutputID:
 		f.replay(os.Stdout, running)
 		if !pause(s.SessionDelay.D()) {
-			return 0
+			return stop()
 		}
 		f.replay(os.Stdout, f.read(claudetest.FixtureModelOutputID))
 		shutdown = nil
 	}
 
 	<-term
-	// SIGTERM is the clean stop: the recorded shutdown section ends with
-	// `Environment preserved`, and the next start is accepted at once
-	// (Spike 02). That is why the supervisor sends it first.
-	f.replay(os.Stdout, shutdown)
-	return 0
+	return stop()
 }

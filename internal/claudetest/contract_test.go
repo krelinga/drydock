@@ -546,6 +546,70 @@ func TestServeHoldsTheSessionBack(t *testing.T) {
 	}
 }
 
+// A real server prints its shutdown whenever SIGTERM lands, so a SIGTERM that
+// arrives while the fake is still writing its startup, or while it holds the
+// session back, ends with the recorded shutdown and exit 0 — not a silent
+// exit, which reads as an unclean stop. Each early case signals while the
+// session is held back for a minute, so the SIGTERM wins deterministically;
+// the control is the same comparison after a SIGTERM that lands while
+// serving, whose stream is the whole recording.
+func TestServeSIGTERMDuringStartupStillShutsDownCleanly(t *testing.T) {
+	running := tr(t, claudetest.FixtureServeRunning)
+	whole := tr(t, claudetest.FixtureServe)
+	shutdown := whole[len(running):]
+	if !bytes.Contains(shutdown, []byte("Environment preserved")) {
+		t.Fatal("corpus: the recorded shutdown does not say the environment was preserved")
+	}
+	held := claudetest.Duration(time.Minute)
+	for _, c := range []struct {
+		name  string
+		step  claudetest.Step
+		pace  claudetest.Pace
+		until []byte   // signal once the output contains this
+		want  []string // the sessions announced before the shutdown
+	}{
+		{"held back", claudetest.Step{Mode: claudetest.RCServe, SessionDelay: held}, claudetest.Pace{}, []byte("Connected"), nil},
+		{"mid-write", claudetest.Step{Mode: claudetest.RCServe, SessionDelay: held},
+			claudetest.Pace{Chunk: 16, Delay: claudetest.Duration(2 * time.Millisecond)}, []byte("Environment"), nil},
+		// The second session is held back, so the stream before the shutdown
+		// is the first session's and the whole is the one-session recording.
+		{"delayed session, held back", claudetest.Step{Mode: claudetest.RCServeDelayedSession, SessionDelay: held}, claudetest.Pace{}, running, []string{recordedSession}},
+		{"control: serving", claudetest.Step{Mode: claudetest.RCServe}, claudetest.Pace{}, running, []string{recordedSession}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			f := claudetest.Install(t, claudetest.Script{Pace: c.pace, RemoteControl: []claudetest.Step{c.step}})
+			tm := f.Start(t, 200, serveArgs...)
+			if _, err := tm.WaitFor(settle, c.until); err != nil {
+				t.Fatal(err)
+			}
+			if err := tm.Signal(syscall.SIGTERM); err != nil {
+				t.Fatal(err)
+			}
+			exited, rc, out := tm.Wait(settle)
+			if !exited || rc != 0 {
+				t.Fatalf("after SIGTERM: exited %v rc %d", exited, rc)
+			}
+			if !bytes.HasSuffix(out, shutdown) {
+				t.Fatalf("the stream does not end with the recorded shutdown (%d bytes): ends %q", len(out), out[max(0, len(out)-80):])
+			}
+			before := out[:len(out)-len(shutdown)]
+			if !bytes.HasPrefix(running, before) {
+				t.Fatalf("before the shutdown: %s", diverges(before, running))
+			}
+			// The sessions say when the SIGTERM landed: one held back was
+			// never announced. (The shutdown names the session itself, so
+			// it is read from the stream before the shutdown.)
+			if d, _ := classify.ClassifyDiscovery(before); !slices.Equal(d.SessionIDs, c.want) {
+				t.Fatalf("sessions %q, want %q", d.SessionIDs, c.want)
+			}
+			if c.want != nil && !bytes.Equal(out, whole) {
+				t.Fatalf("serving, then SIGTERM: %s", diverges(out, whole))
+			}
+			f.NoViolations(t)
+		})
+	}
+}
+
 func TestServeDelayedSecondSessionIsTheFixture(t *testing.T) {
 	f := rcFake(t, claudetest.Step{Mode: claudetest.RCServeDelayedSession, SessionDelay: claudetest.Duration(300 * time.Millisecond)})
 	tm := f.Start(t, 200, serveArgs...)
