@@ -48,6 +48,9 @@ type rig struct {
 	docker string // the fake docker's argv log
 	devc   string // the fake devcontainer's argv log
 	fake   *claudetest.Fake
+	// pace, set before claude, is how the fake writes what it replays: in
+	// pieces, as a real PTY read can deliver it.
+	pace claudetest.Pace
 }
 
 type rigOpt func(*rig, *Policy)
@@ -187,7 +190,7 @@ func (r *rig) script(name, body string) {
 // container's `claude`.
 func (r *rig) claude(steps ...claudetest.Step) *claudetest.Fake {
 	r.t.Helper()
-	f := claudetest.Install(r.t, claudetest.Script{Version: claudetest.Version, RemoteControl: steps})
+	f := claudetest.Install(r.t, claudetest.Script{Version: claudetest.Version, RemoteControl: steps, Pace: r.pace})
 	if err := os.Link(f.Path, filepath.Join(r.bin, "claude")); err != nil {
 		r.t.Fatal(err)
 	}
