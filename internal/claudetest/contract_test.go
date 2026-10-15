@@ -546,6 +546,68 @@ func TestServeHoldsTheSessionBack(t *testing.T) {
 	}
 }
 
+// A SIGTERM that lands before the fake has written all it holds still ends in
+// a recording, byte for byte, and exit 0: env-status-block, the one stream
+// the corpus has a SIGTERM in. It is never a silent exit (which the
+// supervisor reads as an unclean stop), and never a shutdown of a session the
+// stream has not announced. Each early case proves it was early from what had
+// arrived when it signalled; the held ones hold for a minute, so the SIGTERM
+// wins deterministically. The control signals while serving.
+func TestServeEarlySIGTERMIsStillTheRecording(t *testing.T) {
+	running := tr(t, claudetest.FixtureServeRunning)
+	whole := tr(t, claudetest.FixtureServe)
+	const envID = "env_01SWWUTySnsAEuAGMd6azA24"
+	held := claudetest.Duration(time.Minute)
+	contains := func(s string) func([]byte) bool {
+		return func(b []byte) bool { return bytes.Contains(b, []byte(s)) }
+	}
+	for _, c := range []struct {
+		name  string
+		step  claudetest.Step
+		pace  claudetest.Pace
+		until func([]byte) bool // signal once the output satisfies this
+		early func([]byte) bool // what had arrived then shows the signal was early
+	}{
+		// The session held back: signalled once connected, before it.
+		{"session held back", claudetest.Step{Mode: claudetest.RCServe, SessionDelay: held}, claudetest.Pace{},
+			contains("Connected"), func(b []byte) bool { return !bytes.Contains(b, []byte("Session started")) }},
+		// Paced, no hold (the supervisor's case): signalled once the
+		// environment has registered, while the startup is still being
+		// written — less than half of it has arrived.
+		{"mid-write", claudetest.Step{Mode: claudetest.RCServe}, claudetest.Pace{Chunk: 16, Delay: claudetest.Duration(2 * time.Millisecond)},
+			contains(envID), func(b []byte) bool { return len(b) < len(running)/2 }},
+		{"second session held back", claudetest.Step{Mode: claudetest.RCServeDelayedSession, SessionDelay: held}, claudetest.Pace{},
+			reaches(running), func(b []byte) bool { return !bytes.Contains(b, []byte("SYNTHETICDELAYED")) }},
+		{"model output held back", claudetest.Step{Mode: claudetest.RCServeModelOutputID, SessionDelay: held}, claudetest.Pace{},
+			reaches(running), func(b []byte) bool { return !bytes.Contains(b, []byte("SYNTHETICMODELOUTPUT")) }},
+		{"control: serving", claudetest.Step{Mode: claudetest.RCServe}, claudetest.Pace{},
+			reaches(running), func([]byte) bool { return true }},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			f := claudetest.Install(t, claudetest.Script{Pace: c.pace, RemoteControl: []claudetest.Step{c.step}})
+			tm := f.Start(t, 200, serveArgs...)
+			at, err := tm.WaitOutput(settle, c.until)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := tm.Signal(syscall.SIGTERM); err != nil {
+				t.Fatal(err)
+			}
+			if !c.early(at) {
+				t.Fatalf("signalled too late to test an early SIGTERM (%d bytes had arrived)", len(at))
+			}
+			exited, rc, out := tm.Wait(settle)
+			if !exited || rc != 0 {
+				t.Fatalf("after SIGTERM: exited %v rc %d", exited, rc)
+			}
+			if !bytes.Equal(out, whole) {
+				t.Fatalf("not env-status-block: %s", diverges(out, whole))
+			}
+			f.NoViolations(t)
+		})
+	}
+}
+
 func TestServeDelayedSecondSessionIsTheFixture(t *testing.T) {
 	f := rcFake(t, claudetest.Step{Mode: claudetest.RCServeDelayedSession, SessionDelay: claudetest.Duration(300 * time.Millisecond)})
 	tm := f.Start(t, 200, serveArgs...)
