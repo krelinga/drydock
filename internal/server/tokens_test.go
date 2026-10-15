@@ -264,16 +264,22 @@ func readUntil(t *testing.T, resp *http.Response, line string) string {
 	}
 }
 
-// captureStderr points this process's fd 2 at <dir>/stderr.log until the
+// captureStderr points this process's stderr at <dir>/stderr.log until the
 // test ends, so a canary sweep of dir reads what the server wrote to stderr —
 // the journal, in production — as the browser tier reads drydock.log. The
-// server runs in-process and writes os.Stderr from several packages; fd 2 is
-// the one place all of them (and the log package, and any child that
-// inherits it) meet, and swapping the descriptor races with nothing, where
-// assigning os.Stderr would race with every goroutine reading it. Nothing in
-// the package runs in parallel. On the way out what was captured is copied to
-// the real stderr; a crash before then leaves it in the file, whose path is
-// printed first.
+// server runs in-process and writes os.Stderr from several packages; swapping
+// descriptors races with nothing, where assigning os.Stderr would race with
+// every goroutine reading it. Nothing in the package runs in parallel.
+//
+// Two descriptors, because os.Stderr is not always fd 2: under `go test
+// -json` (the nightly stress job, #177) the testing package sets os.Stderr =
+// os.Stdout so test2json reads one ordered stream, and every write through
+// os.Stderr lands on fd 1. So the descriptor behind os.Stderr is swapped, and
+// fd 2 as well: the log package's default logger and any child that inherits
+// it write there. Under -json the first also carries the test's own framing
+// while the capture lasts; it is copied back, in order, before the test ends.
+// On the way out what was captured is copied to the real stderr; a crash
+// before then leaves it in the file, whose path is printed first.
 func captureStderr(t *testing.T, dir string) {
 	t.Helper()
 	path := filepath.Join(dir, "stderr.log")
@@ -281,22 +287,50 @@ func captureStderr(t *testing.T, dir string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	saved, err := syscall.Dup(2)
-	if err != nil {
-		t.Fatal(err)
+	fds := []int{2}
+	if fd := int(os.Stderr.Fd()); fd != 2 {
+		fds = append(fds, fd)
+	}
+	saved := make([]int, len(fds))
+	for i, fd := range fds {
+		if saved[i], err = syscall.Dup(fd); err != nil {
+			t.Fatal(err)
+		}
 	}
 	fmt.Fprintf(os.Stderr, "%s: the server's stderr is in %s until the test ends\n", t.Name(), path)
-	if err := syscall.Dup3(int(f.Fd()), 2, 0); err != nil {
-		t.Fatal(err)
+	for _, fd := range fds {
+		if err := syscall.Dup3(int(f.Fd()), fd, 0); err != nil {
+			t.Fatal(err)
+		}
 	}
 	t.Cleanup(func() {
-		syscall.Dup3(saved, 2, 0)
-		syscall.Close(saved)
+		for i, fd := range fds {
+			syscall.Dup3(saved[i], fd, 0)
+			syscall.Close(saved[i])
+		}
 		f.Close()
 		if b, _ := os.ReadFile(path); len(b) > 0 {
 			os.Stderr.Write(b)
 		}
 	})
+}
+
+// plantStderr writes one canary each way the server's stderr is reached —
+// through os.Stderr (the server's Logf) and to fd 2 directly (the log
+// package's default logger, an http.Server with no ErrorLog, a child) — and
+// returns them by way, for a sweep's control that captureStderr caught both:
+// under -json those are two descriptors.
+func plantStderr(t *testing.T) map[string]string {
+	t.Helper()
+	planted := map[string]string{
+		"through os.Stderr": "CANARY_" + randomAlnum(24),
+		"to fd 2":           "CANARY_" + randomAlnum(24),
+	}
+	fmt.Fprintln(os.Stderr, "drydock: a planted line", planted["through os.Stderr"])
+	if _, err := syscall.Write(2, []byte("drydock: a planted line "+planted["to fd 2"]+"\n")); err != nil {
+		t.Fatal(err)
+	}
+	return planted
 }
 
 // TestTokenCanarySweep (testing §4.2, vscode-extension §10.0a): a token
@@ -327,8 +361,7 @@ func TestTokenCanarySweep(t *testing.T) {
 		t.Fatalf("self-revoke = %d", resp.StatusCode)
 	}
 	r.stop()
-	planted := "CANARY_" + randomAlnum(24)
-	fmt.Fprintln(os.Stderr, "drydock: a planted line", planted)
+	planted := plantStderr(t)
 
 	sum := sha256.Sum256([]byte(tok))
 	dbBytes := ""
@@ -342,7 +375,7 @@ func TestTokenCanarySweep(t *testing.T) {
 	needles := forms(tok)
 	needles["the random part"] = strings.TrimPrefix(tok, "drydock_")
 	var files int
-	var plantedIn []string
+	plantedIn := map[string][]string{}
 	filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
 		if err != nil || d.IsDir() || d.Type()&fs.ModeSocket != 0 {
 			return nil
@@ -352,8 +385,10 @@ func TestTokenCanarySweep(t *testing.T) {
 			return nil
 		}
 		files++
-		if strings.Contains(string(b), planted) {
-			plantedIn = append(plantedIn, filepath.Base(p))
+		for way, c := range planted {
+			if strings.Contains(string(b), c) {
+				plantedIn[way] = append(plantedIn[way], filepath.Base(p))
+			}
 		}
 		for form, n := range needles {
 			if strings.Contains(string(b), n) {
@@ -365,8 +400,10 @@ func TestTokenCanarySweep(t *testing.T) {
 	if files < 2 {
 		t.Fatalf("control: the sweep read %d files", files)
 	}
-	if len(plantedIn) != 1 || plantedIn[0] != "stderr.log" {
-		t.Fatalf("control: a canary written to the server's stderr was found in %v; want [stderr.log]", plantedIn)
+	for way := range planted {
+		if in := plantedIn[way]; len(in) != 1 || in[0] != "stderr.log" {
+			t.Fatalf("control: a canary written to the server's stderr %s was found in %v; want [stderr.log]", way, in)
+		}
 	}
 	procs, _ := os.ReadDir("/proc")
 	for _, d := range procs {

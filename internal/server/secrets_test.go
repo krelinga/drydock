@@ -317,6 +317,7 @@ func TestSecretsCanarySweep(t *testing.T) {
 	}
 
 	// ---- the sweep ----
+	planted := plantStderr(t)
 	sinks := map[string]string{"SSE transcript": transcript}
 	for i, b := range bodies {
 		sinks[fmt.Sprintf("response body %d", i)] = b
@@ -338,6 +339,11 @@ func TestSecretsCanarySweep(t *testing.T) {
 	})
 	if len(tree) < 2 {
 		t.Fatalf("control: the sweep found only %v", tree)
+	}
+	for way, c := range planted {
+		if !strings.Contains(sinks["file /stderr.log"], c) {
+			t.Fatalf("control: a canary written to the server's stderr %s is not in the swept stderr.log", way)
+		}
 	}
 	dbBytes := ""
 	for _, suffix := range []string{"", "-wal"} {
