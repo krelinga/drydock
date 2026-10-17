@@ -73,6 +73,7 @@ func (e *env) awaitLanded(t *testing.T) {
 func TestADeleteFindsTheContainerAStoppedUpWasCreating(t *testing.T) {
 	ctx := context.Background()
 	e := lifecycleEnv(t)
+	e.p.Containers.UpSettle = 0 // UpSettle's own 3 s; the create lands at 200 ms
 	landingUp(t, e)
 	w, err := e.p.Create(ctx, alpha, "")
 	if err != nil {
@@ -112,6 +113,7 @@ func TestADeleteFindsTheContainerAStoppedUpWasCreating(t *testing.T) {
 func TestAStoppedUpRecordsTheContainerItWasCreating(t *testing.T) {
 	ctx := context.Background()
 	e := lifecycleEnv(t)
+	e.p.Containers.UpSettle = 0 // UpSettle's own 3 s; the create lands at 200 ms
 	landingUp(t, e)
 	w, err := e.p.Create(ctx, alpha, "")
 	if err != nil {
