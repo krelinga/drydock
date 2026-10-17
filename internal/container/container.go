@@ -32,7 +32,10 @@
 // devcontainer.json exits 0, so "names no image" is checked here), run with
 // --include-merged-configuration and an id-label no container carries, so the
 // merged configuration is computed from what up will read, never from an old
-// container's labels.
+// container's labels. Each read has its own bound on the Manager's clock
+// (ReadConfigurationTimeout, three minutes): past it the CLI's process group
+// — the CLI leaves its docker clients running when stopped — is stopped and
+// the error is a ReadTimeoutError.
 //
 // HostAccessOf (policy.go) is the **host-access subset**: every field outside
 // an allowlist, from the configuration and the merged one (a Feature's
@@ -191,6 +194,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/krelinga/drydock/internal/classify"
 	"github.com/krelinga/drydock/internal/config"
@@ -227,8 +231,12 @@ type Manager struct {
 	// when it is nil.
 	Guard *dockerguard.Guard
 	// Clock is what the ephemeral helpers' removals are bounded and settled
-	// on (internal/ephemeral); nil is the real clock.
+	// on (internal/ephemeral), and read-configuration's bound; nil is the
+	// real clock.
 	Clock sys.Clock
+	// ReadTimeout bounds one ReadConfiguration; 0 is
+	// ReadConfigurationTimeout.
+	ReadTimeout time.Duration
 	// Logf is the service log, told about a helper's removal that failed
 	// after its run; nil drops it (boot's sweep removes what was left).
 	Logf func(string, ...any)

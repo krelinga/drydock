@@ -29,6 +29,12 @@
 // since read-configuration fails silently — gets
 // mcr.microsoft.com/devcontainers/base:debian written *beside* the clone.
 //
+// Step 3's read-configuration has a bound of its own
+// (container.ReadConfigurationTimeout, three minutes, on the Manager's clock),
+// not only the run's: it waits on the Docker daemon, and a daemon that stops
+// answering would otherwise hold the workspace for the whole ProvisionTimeout.
+// Past it the step fails with ReadTimeoutSentence.
+//
 // Step 3 stops the workspace's containers, then computes the host-access
 // subset and, unless it is within the repository's current approved set
 // (container.Covered), returns workspace.NeedsApproval before any up — on

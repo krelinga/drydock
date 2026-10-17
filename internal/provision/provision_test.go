@@ -903,6 +903,71 @@ func countOf(list []string, s string) int {
 	return n
 }
 
+// TestAHungReadConfigurationFailsStepThree: read-configuration has a bound
+// of its own (container.ReadConfigurationTimeout), far inside the run's: one
+// that never answers fails resolve_config with ReadTimeoutSentence when the
+// injected clock reaches it, the run's 30 minutes still far off, and no up
+// runs. The control is the same run a moment short of the bound, still
+// building with step 3 started. The test bounds itself in real time, so a
+// read with no bound of its own fails it by name rather than hanging.
+func TestAHungReadConfigurationFailsStepThree(t *testing.T) {
+	e := newEnv(t)
+	e.cli.readConfig = "echo 'a CLI log line' >&2; exec sleep 300"
+	e.wire(t)
+	clock := sys.NewFakeClock(time.Now())
+	e.p.Workspaces.Env.Clock = clock
+	e.p.Containers.Clock = clock
+	e.p.Timeout = 30 * time.Minute
+	w, err := e.p.Create(context.Background(), alpha, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	stop := func() { e.shutdown(15 * time.Second) }
+	for deadline := time.Now().Add(20 * time.Second); len(e.cli.callsTo(t, "read-configuration")) == 0 ||
+		clock.WaitingFor(container.ReadConfigurationTimeout) == 0; time.Sleep(20 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			stop()
+			t.Fatal("read-configuration never started under a bound of its own")
+		}
+	}
+	clock.Advance(container.ReadConfigurationTimeout - time.Second)
+	time.Sleep(200 * time.Millisecond)
+	if v := e.view(t, w.ID); v.State != workspace.Building || v.Steps[workspace.StepResolveConfig].Status != "started" {
+		stop()
+		t.Fatalf("control: short of the bound: %s %+v", v.State, v.Steps[workspace.StepResolveConfig])
+	}
+	clock.Advance(time.Second)
+	idle := make(chan struct{})
+	go func() { e.p.idle(); close(idle) }()
+	select {
+	case <-idle:
+	case <-time.After(20 * time.Second):
+		stop()
+		t.Fatal("the run did not end at read-configuration's bound")
+	}
+	v := e.view(t, w.ID)
+	st := v.Steps[workspace.StepResolveConfig]
+	if v.State != workspace.Failed || st.Status != "failed" || !strings.HasSuffix(st.Detail, ": "+ReadTimeoutSentence(container.ReadConfigurationTimeout)) ||
+		!strings.Contains(st.Detail, "within 3 minutes,") {
+		t.Errorf("after the bound: %s %+v", v.State, st)
+	}
+	if n := len(e.cli.callsTo(t, "up")); n != 0 {
+		t.Errorf("up ran %d times after step 3 failed", n)
+	}
+}
+
+// TestProse: durations in a sentence are the operator's words, not Go's.
+func TestProse(t *testing.T) {
+	for d, want := range map[time.Duration]string{
+		3 * time.Minute: "3 minutes", time.Minute: "1 minute", 90 * time.Second: "90 seconds",
+		time.Second: "1 second", 2 * time.Hour: "2 hours", 1500 * time.Millisecond: "2 seconds",
+	} {
+		if got := prose(d); got != want {
+			t.Errorf("prose(%s) = %q, want %q", d, got, want)
+		}
+	}
+}
+
 // TestInterruptedRunsSayWhy: a run past its timeout, and a run cut off by
 // shutdown, each fail the step they were on with a sentence naming the
 // interruption — not left building, and not the cancelled subprocess's

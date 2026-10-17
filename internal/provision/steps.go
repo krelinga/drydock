@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/krelinga/drydock/internal/classify"
 	"github.com/krelinga/drydock/internal/clone"
@@ -74,6 +75,35 @@ func (r *runState) allocate(_ context.Context, w workspace.Workspace) error {
 	return nil
 }
 
+// ReadTimeoutSentence is step 3's detail when read-configuration did not
+// answer within its own bound (container.ReadConfigurationTimeout). The
+// read pulls nothing and builds nothing, so what it waits on is Docker or a
+// registry — said so, since the operator can check both.
+func ReadTimeoutSentence(limit time.Duration) string {
+	return fmt.Sprintf("devcontainer did not finish reading the dev container configuration within %s, so Drydock stopped it. "+
+		"The read builds nothing; it waits only on Docker and on the registries its image and Features come from, so one of those is not answering. "+
+		"Starting the workspace again tries again.", prose(limit))
+}
+
+// prose is a duration as an operator reads it: "3 minutes", "90 seconds",
+// never Go's "3m0s".
+func prose(d time.Duration) string {
+	unit := func(n int64, one string) string {
+		if n == 1 {
+			return "1 " + one
+		}
+		return fmt.Sprintf("%d %ss", n, one)
+	}
+	switch {
+	case d >= time.Hour && d%time.Hour == 0:
+		return unit(int64(d/time.Hour), "hour")
+	case d >= time.Minute && d%time.Minute == 0:
+		return unit(int64(d/time.Minute), "minute")
+	default:
+		return unit(int64(d.Round(time.Second)/time.Second), "second")
+	}
+}
+
 // resolveConfig is §6 step 3. A repository with no devcontainer.json is not a
 // disqualification: Drydock writes its minimal config to
 // /srv/drydock/ws/<id>/.drydock/devcontainer.json — beside the clone, never in
@@ -136,7 +166,11 @@ func (r *runState) resolveConfig(ctx context.Context, w workspace.Workspace) err
 	}
 	c, err := r.p.Containers.ReadConfiguration(ctx, w.HostPath, r.override)
 	var readErr *container.ReadError
+	var readTimeout *container.ReadTimeoutError
 	switch {
+	case errors.As(err, &readTimeout):
+		r.p.logTail(ctx, w.ID, "read-configuration", []byte(readTimeout.Stderr))
+		return workspace.Public(ReadTimeoutSentence(readTimeout.Limit), err)
 	case errors.Is(err, container.ErrUnbuildable):
 		return workspace.Public("The repository's devcontainer.json names no image, Dockerfile or Compose file; it may not parse.", err)
 	case errors.As(err, &readErr):

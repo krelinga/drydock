@@ -7,6 +7,8 @@ import (
 	"os/exec"
 	"syscall"
 	"time"
+
+	"github.com/krelinga/drydock/internal/sys"
 )
 
 // DefaultWaitDelay is Exec's WaitDelay when it sets none: how long a
@@ -52,17 +54,69 @@ func (e Exec) command(ctx context.Context, c Cmd) (*exec.Cmd, error) {
 	return cmd, nil
 }
 
+// errGroupRunOnly is Start or StartPTY given a Cmd with Group: the group is
+// signalled by Run alone, and dropping the flag would leave the children it
+// asked to be stopped running.
+var errGroupRunOnly = errors.New("subproc: Group is for Run only; Start and StartPTY would not signal the group")
+
 // Run executes to completion. A non-zero exit is data in ExitCode, never Err.
 func (e Exec) Run(ctx context.Context, c Cmd) Result {
 	cmd, err := e.command(ctx, c)
 	if err != nil {
 		return Result{ExitCode: -1, Err: err}
 	}
-	return result(cmd.Run(), ctx)
+	if !c.Group {
+		return result(cmd.Run(), ctx)
+	}
+	// The group is the program's pid; signalling -pid reaches every member
+	// still in it, the program's children included.
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	// The SIGTERM starts the group's grace: WaitDelay, the same wind-down a
+	// plain Run gets (shutdown's budget counts it once), for the program and
+	// its children alike. Cancel runs before Wait returns, so grace is set
+	// by the time Run reads it.
+	var grace <-chan time.Time
+	stop := func() {}
+	cmd.Cancel = func() error {
+		grace, stop = sys.NewTimer(sys.RealClock{}, cmd.WaitDelay)
+		return syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM)
+	}
+	err = cmd.Run()
+	if ctx.Err() != nil && cmd.Process != nil {
+		reapGroup(cmd.Process.Pid, grace)
+	}
+	stop()
+	return result(err, ctx)
+}
+
+// reapGroup waits for a cancelled group to empty and SIGKILLs what is left
+// when grace fires — at once, when no grace was started (the program had
+// exited before its context ended, so nothing was sent a SIGTERM). The
+// SIGKILL is not sent the moment the program exits: a child handling its
+// SIGTERM — a docker client cleaning up — must get to finish.
+//
+// The group's id stays reserved while any member lives, so the signals reach
+// another group only if this one emptied and its pid was reissued to a new
+// group leader between two polls.
+func reapGroup(pgid int, grace <-chan time.Time) {
+	for grace != nil && syscall.Kill(-pgid, 0) == nil {
+		tick, stop := sys.NewTimer(sys.RealClock{}, 20*time.Millisecond)
+		select {
+		case <-grace:
+			grace = nil
+		case <-tick:
+		}
+		stop()
+	}
+	// ESRCH — nothing left — is the usual answer.
+	syscall.Kill(-pgid, syscall.SIGKILL)
 }
 
 // Start launches c and returns without waiting.
 func (e Exec) Start(ctx context.Context, c Cmd) (Process, error) {
+	if c.Group {
+		return nil, errGroupRunOnly
+	}
 	cmd, err := e.command(ctx, c)
 	if err != nil {
 		return nil, err

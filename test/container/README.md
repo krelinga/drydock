@@ -70,10 +70,12 @@ What it covers:
 
 ## Network-bound steps are bounded
 
-`devcontainer up` is cut off after 6 minutes and `docker pull` after 3 (one retry, for a pull), by
-`bound_test.go`, so a hang fails its own test inside the package's timeout (`-timeout 20m` in
+`devcontainer up` is cut off after 6 minutes, `devcontainer read-configuration` after 2 (inside
+Drydock's own three-minute bound on it, so the dump lands first) and `docker pull` after 3 (one
+retry, for a pull), by `bound_test.go`, so a hang fails its own test inside the package's timeout (`-timeout 20m` in
 `.github/actions/go-suite`; CI run 37899159383 hung 9m50s in one `up` and took the whole package
 down). On a cut-off the CLI's stdout and stderr tails, the process tree and `docker ps -a` are
 printed to stderr under a `BOUND:` heading *before* the CLI is stopped, which names the fetch it
 was stuck in. `up` is never retried: that would hide the flake the dump exists to name. Use
-`manager(p)` or `newServer`, never a bare `subproc.Exec{}` or `server.New`, for anything that runs `up`.
+`manager(p)` or `newServer`, never a bare `subproc.Exec{}` or `server.New`, for anything that runs `up`
+or `read-configuration`.

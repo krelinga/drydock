@@ -18,9 +18,11 @@ import (
 	"github.com/krelinga/drydock/internal/sys"
 )
 
-// This file bounds the two things in the tier that talk to the network and
-// can wait forever: `devcontainer up` (the Feature from ghcr, the Claude Code
-// download in the Feature's install.sh, apt, base images, buildx) and
+// This file bounds the three things in the tier that talk to the network or
+// the daemon and can wait forever: `devcontainer up` (the Feature from ghcr,
+// the Claude Code download in the Feature's install.sh, apt, base images,
+// buildx), `devcontainer read-configuration` (a docker ps and image inspect,
+// and the Features' and image's metadata from their registries) and
 // `docker pull`. CI run 37899159383 sat 9m50s in one `up` until Go's 10-minute
 // package timeout panicked the whole package, with nothing in the log to say
 // what the CLI was waiting on.
@@ -38,6 +40,11 @@ const (
 	// times that, so a slow runner does not trip it, and a hang is cut off
 	// with room left in the package timeout for the other tests' results.
 	upLimit = 6 * time.Minute
+	// readLimit: read-configuration takes about a second. Drydock bounds it
+	// itself (container.ReadConfigurationTimeout, three minutes); this is
+	// inside that so the dump lands while the CLI is still in whatever it
+	// was waiting on, before Drydock's own bound stops it.
+	readLimit = 2 * time.Minute
 	// pullLimit: a base image is a few tens of MB.
 	pullLimit = 3 * time.Minute
 	// dumpTail is how much of each stream is dumped.
@@ -64,7 +71,8 @@ func pullImage(t *testing.T, img string) {
 	t.Fatalf("docker pull %s: %v: %s", img, err, tailString(out))
 }
 
-// newServer is server.New with the provisioner's `devcontainer up` bounded.
+// newServer is server.New with the provisioner's `devcontainer up` and
+// read-configuration bounded.
 func newServer(ctx context.Context, cfg config.Config) (*server.Server, error) {
 	srv, err := server.New(ctx, cfg, sys.Production())
 	if err == nil {
@@ -73,12 +81,13 @@ func newServer(ctx context.Context, cfg config.Config) (*server.Server, error) {
 	return srv, err
 }
 
-// boundedRunner is a subproc.Runner that gives `devcontainer up` a deadline
-// and dumps what it knows when the deadline passes. Everything else, and
-// Start, is the inner runner's.
+// boundedRunner is a subproc.Runner that gives `devcontainer up` and
+// `devcontainer read-configuration` a deadline each and dumps what it knows
+// when the deadline passes. Everything else, and Start, is the inner
+// runner's.
 type boundedRunner struct {
 	Inner subproc.Runner
-	// Limit overrides upLimit (to prove the dump path).
+	// Limit overrides upLimit and readLimit (to prove the dump path).
 	Limit time.Duration
 	// Out is where a dump goes; nil is stderr.
 	Out io.Writer
@@ -93,12 +102,15 @@ func (b boundedRunner) Start(ctx context.Context, c subproc.Cmd) (subproc.Proces
 }
 
 func (b boundedRunner) Run(ctx context.Context, c subproc.Cmd) subproc.Result {
-	if c.Name != "devcontainer" || len(c.Args) == 0 || c.Args[0] != "up" {
+	if c.Name != "devcontainer" || len(c.Args) == 0 {
 		return b.Inner.Run(ctx, c)
 	}
-	limit := b.Limit
+	limit := map[string]time.Duration{"up": upLimit, "read-configuration": readLimit}[c.Args[0]]
 	if limit == 0 {
-		limit = upLimit
+		return b.Inner.Run(ctx, c)
+	}
+	if b.Limit != 0 {
+		limit = b.Limit
 	}
 	var out, errb ring
 	c.Stdout = tee(c.Stdout, &out)
@@ -130,7 +142,7 @@ func (b boundedRunner) Run(ctx context.Context, c subproc.Cmd) subproc.Result {
 
 func dumpHang(dst io.Writer, limit time.Duration, c subproc.Cmd, stdout, stderr *ring) {
 	var w strings.Builder
-	fmt.Fprintf(&w, "\nBOUND: `devcontainer up` still running after %s; stopping it. Workspace folder: %s\n", limit, flagValue(c.Args, "--workspace-folder"))
+	fmt.Fprintf(&w, "\nBOUND: `devcontainer %s` still running after %s; stopping it. Workspace folder: %s\n", c.Args[0], limit, flagValue(c.Args, "--workspace-folder"))
 	fmt.Fprintf(&w, "--- devcontainer stdout (tail) ---\n%s\n--- devcontainer stderr (tail) ---\n%s\n", stdout.String(), stderr.String())
 	w.WriteString("--- processes (what it was waiting on) ---\n")
 	w.WriteString(shell("ps", "-eo", "pid,ppid,etime,args", "--forest", "--width", "200"))

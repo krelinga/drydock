@@ -42,6 +42,9 @@ func (e Exec) StartPTY(ctx context.Context, c Cmd, cols, rows int) (Process, *os
 	if c.Stdin != nil || c.Stdout != nil || c.Stderr != nil {
 		return nil, nil, errors.New("subproc: a PTY is the child's stdio; Stdin, Stdout and Stderr must be nil")
 	}
+	if c.Group {
+		return nil, nil, errGroupRunOnly
+	}
 	cmd, err := e.command(ctx, c)
 	if err != nil {
 		return nil, nil, err
