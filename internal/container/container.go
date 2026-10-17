@@ -84,8 +84,19 @@
 // clone or does not parse, is refused.
 //
 // Each up gets its own TMPDIR: the CLI stages Features in a folder named by
-// the millisecond, and concurrent creates shared one. --override-config goes
-// to exec as well as up — exec reads the config too.
+// the millisecond, and concurrent creates shared one. And each up gets a
+// fresh BUILDX_CONFIG inside it, removed after (#182): buildx hands BuildKit
+// that staged folder as a named build context keyed by the folder's
+// **basename** (<CLI version>-<millisecond>) and buildx's node id
+// (BUILDX_CONFIG/.buildNodeID) — not the folder's path — and a later build
+// under the same key re-sends only the files whose path, size, mode or mtime
+// changed. Creates started together share a millisecond (three of four,
+// measured), so one workspace's build could install another's bytes for a
+// Feature file that differed only in content (test/container's
+// TestFeaturesAreThisBuildsOwn). A new node id per up means no key is ever
+// shared: the context is sent whole. The cost is that up uses the docker
+// context's default builder, never one `docker buildx use` chose.
+// --override-config goes to exec as well as up — exec reads the config too.
 //
 // The broker is mounted as the workspace's **directory**, UpSpec.BrokerDir at
 // BrokerMountPoint (/run/drydock), so the socket is at
@@ -574,12 +585,19 @@ func (m Manager) Up(ctx context.Context, s UpSpec) (classify.Container, []byte, 
 		return classify.Container{}, nil, fmt.Errorf("container: docker guard: %w", err)
 	}
 	defer dockerguard.RemovePolicy(dir)
+	// A buildx config of this up's own, so BuildKit reuses no earlier
+	// build's copy of the Features (see the package comment).
+	buildx, err := os.MkdirTemp(s.TempDir, "buildx-")
+	if err != nil {
+		return classify.Container{}, nil, fmt.Errorf("container: buildx config: %w", err)
+	}
+	defer os.RemoveAll(buildx)
 	var stdout bytes.Buffer
 	// The tail, not the head: the lines that say why an up failed come last
 	// (tail.go).
 	stderr := newTail(UpStderrTail)
 	cmd := subproc.Cmd{Name: "devcontainer", Args: withDockerPath(args, dp), Stdout: &stdout, Stderr: stderr,
-		Env: withTempDir(os.Environ(), s.TempDir)}
+		Env: withEnv(os.Environ(), "TMPDIR", s.TempDir, "BUILDX_CONFIG", buildx)}
 	res := m.Run.Run(ctx, cmd)
 	c, cerr := classify.ClassifyContainer(stdout.Bytes())
 	// A refusal is read first: the CLI reports it only as a failed docker
@@ -790,13 +808,21 @@ func remoteEnvArgs(env map[string]string) ([]string, error) {
 	return args, nil
 }
 
-// withTempDir is env with TMPDIR set to dir, replacing any TMPDIR in it.
-func withTempDir(env []string, dir string) []string {
-	out := make([]string, 0, len(env)+1)
-	for _, kv := range env {
-		if !strings.HasPrefix(kv, "TMPDIR=") {
-			out = append(out, kv)
+// withEnv is env with each key of kv (key, value, key, value…) set to its
+// value, replacing any the environment already has.
+func withEnv(env []string, kv ...string) []string {
+	out := make([]string, 0, len(env)+len(kv)/2)
+	for _, e := range env {
+		keep := true
+		for i := 0; i < len(kv); i += 2 {
+			keep = keep && !strings.HasPrefix(e, kv[i]+"=")
+		}
+		if keep {
+			out = append(out, e)
 		}
 	}
-	return append(out, "TMPDIR="+dir)
+	for i := 0; i < len(kv); i += 2 {
+		out = append(out, kv[i]+"="+kv[i+1])
+	}
+	return out
 }

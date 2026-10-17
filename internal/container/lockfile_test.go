@@ -44,6 +44,46 @@ func TestUpRunsWithItsOwnTempDir(t *testing.T) {
 	}
 }
 
+// Each up runs with a BUILDX_CONFIG of its own, new for that up and inside
+// its TMPDIR, replacing Drydock's: BuildKit keys its copy of the Features'
+// build context by the staged folder's basename (named by the millisecond)
+// and buildx's node id, which lives there, and re-sends only the files whose
+// size or mtime changed — so a shared one let a workspace build another's
+// Feature bytes (test/container's
+// TestFeaturesAreThisBuildsOwn is that, for real). The control is the
+// inherited one, which up does not see, and two ups, which see two.
+func TestUpRunsWithAFreshBuildxConfig(t *testing.T) {
+	inherited := t.TempDir()
+	t.Setenv("BUILDX_CONFIG", inherited)
+	out := filepath.Join(t.TempDir(), "buildx")
+	// What up saw, and whether it existed, empty, while up ran.
+	run, _ := fakes(t, map[string]string{"devcontainer": `{ echo "$BUILDX_CONFIG"; [ -d "$BUILDX_CONFIG" ] && [ -z "$(ls -A "$BUILDX_CONFIG")" ] && echo fresh; } >> ` + out +
+		"\ncat <<'EOF'\n" + fixture(t, "up-ok.json") + "\nEOF\n"})
+	m := guarded(t, run, "drydock")
+	s := upSpec(t)
+	for range 2 {
+		if _, _, err := m.Up(context.Background(), s); err != nil {
+			t.Fatal(err)
+		}
+	}
+	b, _ := os.ReadFile(out)
+	lines := strings.Split(strings.TrimSpace(string(b)), "\n")
+	if len(lines) != 4 || lines[1] != "fresh" || lines[3] != "fresh" {
+		t.Fatalf("up saw:\n%s", b)
+	}
+	for _, dir := range []string{lines[0], lines[2]} {
+		if dir == inherited || filepath.Dir(dir) != s.TempDir {
+			t.Errorf("up saw BUILDX_CONFIG=%q, want one inside %s (inherited %q)", dir, s.TempDir, inherited)
+		}
+		if _, err := os.Stat(dir); !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("%s outlived its up: %v", dir, err)
+		}
+	}
+	if lines[0] == lines[2] {
+		t.Errorf("two ups shared BUILDX_CONFIG %s", lines[0])
+	}
+}
+
 func has(args []string, flag string) bool {
 	for _, a := range args {
 		if a == flag {
