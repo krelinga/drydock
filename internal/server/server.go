@@ -595,11 +595,15 @@ func apiSocketHandler(gate api.Gate, apiMux *http.ServeMux, ui http.Handler) htt
 //   - each workspace job in flight, whose step's subprocess is SIGTERMed as
 //     its context ends and wound down within subproc's 5 s WaitDelay, after
 //     which it writes the step's failure, its move to failed and its
-//     workspace.job end to the local database — about 5 s. A job that had
+//     workspace.job end to the local database — about 5 s; one cut off inside
+//     devcontainer up first looks for the container its killed docker run
+//     may still be creating, for up to container.UpSettle (3 s), whose last
+//     docker ps winds down too: 5 + 3 + 5 = 13 s at worst. A job that had
 //     unpaused a paused container also pauses it again, under provision's
 //     RepauseTimeout (20 s), whose own last docker command may need one more
-//     wind-down: 5 + 20 + 5 = 30 s at worst, which repauseFits below holds
-//     inside this wait, so an operator's pause is never left undone by a
+//     wind-down: 5 + 20 + 5 = 30 s at worst — never after a cut-off up, which
+//     has passed the stop that leaves nothing to pause — which jobFits below
+//     holds inside this wait, so an operator's pause is never left undone by a
 //     shutdown. A job still running at the deadline anyway (a database write
 //     that hangs) is named in the log, and whatever it opens after that is
 //     refused by the broker, which CloseAll has closed for good; a job cut
@@ -635,12 +639,22 @@ func apiSocketHandler(gate api.Gate, apiMux *http.ServeMux, ui http.Handler) htt
 // two: 35 s.
 const workShutdownWait = 35 * time.Second
 
-// repauseFits does not compile when a stop cut off by shutdown — its
-// subprocess's wind-down, the re-pause's bound, the re-pause's own last
-// wind-down — could outlast workShutdownWait: a negative constant does not
-// convert to uint64. Lengthen RepauseTimeout or shorten this wait and the
-// build says so, rather than a comment no one re-reads.
-const repauseFits = uint64(workShutdownWait - provision.RepauseTimeout - 2*subproc.DefaultWaitDelay)
+// jobFits does not compile when the worst path one job cut off by shutdown
+// can take could outlast workShutdownWait: a negative constant does not
+// convert to uint64. Lengthen RepauseTimeout or UpSettle, or shorten this
+// wait, and the build says so, rather than a comment no one re-reads.
+//
+// The job's two cleanup bounds are the alternatives of one path, never its
+// sum. A rebuild that unpaused a container and is cut off before its step 3
+// has stopped it re-pauses (its subprocess's wind-down, RepauseTimeout, the
+// re-pause's own last wind-down); a run cut off inside up has passed step 3,
+// whose stop provision records, so it skips the re-pause and only settles
+// (up's group wind-down, container.UpSettle, its last docker ps's
+// wind-down). provision's TestARebuildCutOffInUpDoesNotRepause holds that
+// apart.
+const jobFits = uint64(workShutdownWait - max(
+	subproc.DefaultWaitDelay+provision.RepauseTimeout+subproc.DefaultWaitDelay,
+	subproc.DefaultWaitDelay+container.UpSettle+subproc.DefaultWaitDelay))
 
 // secretValues are the values of the secrets a workspace's repository is
 // granted, for its session server's log to mask. Asked on every terminal

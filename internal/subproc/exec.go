@@ -95,6 +95,14 @@ func (e Exec) Run(ctx context.Context, c Cmd) Result {
 // SIGKILL is not sent the moment the program exits: a child handling its
 // SIGTERM — a docker client cleaning up — must get to finish.
 //
+// A context that ends just after the program exited successfully, before
+// Run reads ctx.Err(), takes this path too, with no grace: the group is
+// SIGKILLed at once. For up that kills the docker run --sig-proxy=false
+// client a successful up leaves attached, which is harmless — with no -i
+// and no --rm, the container and its log are untouched by the client's end
+// (measured: a cancel after the start left the container running), and the
+// result is still the success the program reported.
+//
 // The group's id stays reserved while any member lives, so the signals reach
 // another group only if this one emptied and its pid was reissued to a new
 // group leader between two polls.

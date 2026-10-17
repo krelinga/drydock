@@ -24,6 +24,9 @@ import (
 // survive a run.
 type runState struct {
 	p *Provisioner
+	// un is what a rebuild unpaused before the run, marked stopped by step
+	// 3; nil for any other run.
+	un *unpaused
 	// override is the --override-config path, empty when the repository
 	// has its own devcontainer.json.
 	override string
@@ -132,6 +135,9 @@ func (r *runState) resolveConfig(ctx context.Context, w workspace.Workspace) err
 	}
 	if err != nil {
 		return workspace.Public("Drydock could not stop the workspace's container before reading its configuration.", err)
+	}
+	if r.un != nil {
+		r.un.stopped = true
 	}
 	// The first of the two that is there is also the path VS Code labels a
 	// container for the clone with; with neither — Drydock's minimal

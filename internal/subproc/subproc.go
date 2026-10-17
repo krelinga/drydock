@@ -18,8 +18,8 @@
 // inherits, a non-zero exit is data, and cancelling sends SIGTERM — to the
 // program's whole process group, and SIGKILL to what remains when the
 // WaitDelay grace from that SIGTERM ends, when the Cmd asks for Group (a
-// program that leaves its children running when stopped: read-configuration's
-// docker clients). StartPTY is
+// program that leaves its children running when stopped: the devcontainer
+// CLI's docker clients, under read-configuration and up). StartPTY is
 // the same rules on a terminal (internal/pty composed, not reimplemented): the
 // supervisor's and the login handshake's way to start a child that must see a
 // PTY.
@@ -59,7 +59,8 @@ type Cmd struct {
 	// otherwise outlive it: the devcontainer CLI does not stop the docker
 	// clients it started when it is told to stop (measured on 0.89.0, a
 	// `docker ps` the daemon never answered outlived a SIGTERMed
-	// read-configuration). Run only: Exec's Start and StartPTY refuse it,
+	// read-configuration, and a build, a docker run and a postCreateCommand's
+	// docker exec outlived a SIGTERMed up). Run only: Exec's Start and StartPTY refuse it,
 	// since the group is signalled by Run's own cancel and wait.
 	Group bool
 }

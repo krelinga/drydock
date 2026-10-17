@@ -35,6 +35,13 @@
 // answering would otherwise hold the workspace for the whole ProvisionTimeout.
 // Past it the step fails with ReadTimeoutSentence.
 //
+// Step 6's up, cut off (the run's timeout, shutdown, a delete), returns the
+// container its killed docker run may still have been creating, once it lands
+// (container.UpSettle), and the step records it on the row like a failed
+// postCreateCommand's; nothing removes it. A delete waits for the run it
+// cancelled, so its containers sub-step lists what landed and removes it,
+// rather than leaving boot to adopt a deleted workspace's container.
+//
 // Step 3 stops the workspace's containers, then computes the host-access
 // subset and, unless it is within the repository's current approved set
 // (container.Covered), returns workspace.NeedsApproval before any up — on
@@ -566,7 +573,7 @@ func (p *Provisioner) Create(ctx context.Context, repositoryID int64, branch str
 		return workspace.Workspace{}, err
 	}
 	a.launch(w.ID, JobCreate, func(ctx context.Context) error {
-		return p.run(ctx, w.ID, workspace.StepAllocate, false)
+		return p.run(ctx, w.ID, workspace.StepAllocate, false, nil)
 	})
 	return w, nil
 }
@@ -747,10 +754,13 @@ func (p *Provisioner) restartWith(ctx context.Context, id string, rebuild bool, 
 			// writes it after the re-pause instead.
 			runCtx = workspace.WithJob(ctx, nil)
 		}
-		err := p.run(runCtx, id, first, removeExisting)
+		err := p.run(runCtx, id, first, removeExisting, un)
 		// A run that failed or was cancelled before step 3 stopped the old
 		// container leaves it running: what was unpaused is paused again.
-		// After a run that got that far there is nothing running to pause.
+		// After a run that got that far there is nothing running to pause,
+		// and repause does not look (un.stopped). A run with something
+		// unpaused is a rebuild of a running workspace, so its first step
+		// is step 3: every such run that reaches up has stopped first.
 		// The failure is the step's; the re-pause is said in the feed.
 		p.repause(ctx, w, un, false)
 		return err
@@ -925,7 +935,9 @@ func (p *Provisioner) endJob(ctx context.Context, end *workspace.JobEnd, err err
 	}
 }
 
-func (p *Provisioner) run(parent context.Context, id string, first workspace.Step, removeExisting bool) error {
+// run is one run through the steps from first. un, when not nil, is what a
+// rebuild unpaused before it: step 3 marks it stopped (unpaused.stopped).
+func (p *Provisioner) run(parent context.Context, id string, first workspace.Step, removeExisting bool, un *unpaused) error {
 	timeout := p.Timeout
 	if timeout <= 0 {
 		timeout = 30 * time.Minute
@@ -937,7 +949,7 @@ func (p *Provisioner) run(parent context.Context, id string, first workspace.Ste
 	// cancelled, the event saying so and the move to failed still have to
 	// be written, and a cancelled context would refuse both.
 	book := context.WithoutCancel(ctx)
-	r := &runState{p: p, removeExisting: removeExisting}
+	r := &runState{p: p, removeExisting: removeExisting, un: un}
 	steps := map[workspace.Step]workspace.StepFunc{
 		workspace.StepAllocate:         r.allocate,
 		workspace.StepClone:            p.Cloner.Step,

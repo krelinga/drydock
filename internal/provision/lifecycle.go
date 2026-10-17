@@ -489,6 +489,12 @@ const PausedNote = "The workspace's container is paused and Drydock could not un
 // pause again if the action ends without ending them.
 type unpaused struct {
 	ids []string
+	// stopped is set by a rebuild's step 3 once its docker stop of every
+	// container carrying the workspace's label has succeeded: what was
+	// unpaused is stopped, and nothing in the run starts it again (a
+	// rebuild's up passes --remove-existing-container and makes a new one),
+	// so there is nothing left to pause again and repause does not look.
+	stopped bool
 }
 
 // An action's unpause and re-pause write container.unpaused and
@@ -588,7 +594,11 @@ const RepauseTimeout = 20 * time.Second
 // is not (sys.Cleanup), since a re-pause is owed after a cancel; the bound is
 // on the injected clock.
 func (p *Provisioner) repause(parent context.Context, w workspace.Workspace, un *unpaused, reopen bool) string {
-	if un == nil || len(un.ids) == 0 {
+	// Skipped once step 3 has stopped them, which also keeps a job's two
+	// shutdown bounds apart: a run that reached up (whose cut-off end waits
+	// container.UpSettle) is past step 3, so it never also spends
+	// RepauseTimeout (internal/server's jobFits).
+	if un == nil || len(un.ids) == 0 || un.stopped {
 		return ""
 	}
 	ctx, cancel := sys.Cleanup(parent, p.clock(), RepauseTimeout)

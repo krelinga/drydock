@@ -74,6 +74,15 @@
 // with no policy, which passes everything they run. SweepPolicy removes a
 // policy a killed up left.
 //
+// Up runs in a process group of its own (subproc.Cmd.Group): stopped, the
+// CLI leaves its docker clients running — a build, a docker run, a
+// postCreateCommand's exec (measured; design §6) — so a cancel stops the
+// group. A docker run killed mid-create can still leave a container that
+// lists only after the group has emptied, so a cancelled Up then lists the
+// workspace's label until one lists or UpSettle passes, and returns its id
+// with the error, for the caller to record. It removes nothing: the
+// container is the workspace's.
+//
 // A repository's committed devcontainer-lock.json is **honoured**
 // (LockfileHonour: no lockfile flag) and one without gets --no-lockfile, so
 // none is created — never --frozen-lockfile, which refuses a lockfile a commit
@@ -199,6 +208,7 @@ import (
 	"github.com/krelinga/drydock/internal/classify"
 	"github.com/krelinga/drydock/internal/config"
 	"github.com/krelinga/drydock/internal/dockerguard"
+	"github.com/krelinga/drydock/internal/ephemeral"
 	"github.com/krelinga/drydock/internal/subproc"
 	"github.com/krelinga/drydock/internal/sys"
 )
@@ -237,6 +247,9 @@ type Manager struct {
 	// ReadTimeout bounds one ReadConfiguration; 0 is
 	// ReadConfigurationTimeout.
 	ReadTimeout time.Duration
+	// UpSettle bounds a cancelled Up's look for the container its killed
+	// docker run may still be creating; 0 is UpSettle.
+	UpSettle time.Duration
 	// Logf is the service log, told about a helper's removal that failed
 	// after its run; nil drops it (boot's sweep removes what was left).
 	Logf func(string, ...any)
@@ -604,8 +617,12 @@ func (m Manager) Up(ctx context.Context, s UpSpec) (classify.Container, []byte, 
 	// The tail, not the head: the lines that say why an up failed come last
 	// (tail.go).
 	stderr := newTail(UpStderrTail)
+	// Group: stopped, the CLI leaves the docker clients it started running —
+	// a build and its Feature installs, a docker run mid-create, a
+	// postCreateCommand's exec (measured; design §6) — so a cancel stops
+	// them all, and settleUp waits out what the daemon may still create.
 	cmd := subproc.Cmd{Name: "devcontainer", Args: withDockerPath(args, dp), Stdout: &stdout, Stderr: stderr,
-		Env: withEnv(os.Environ(), "TMPDIR", s.TempDir, "BUILDX_CONFIG", buildx)}
+		Env: withEnv(os.Environ(), "TMPDIR", s.TempDir, "BUILDX_CONFIG", buildx), Group: true}
 	res := m.Run.Run(ctx, cmd)
 	c, cerr := classify.ClassifyContainer(stdout.Bytes())
 	// A refusal is read first: the CLI reports it only as a failed docker
@@ -625,12 +642,76 @@ func (m Manager) Up(ctx context.Context, s UpSpec) (classify.Container, []byte, 
 		return classify.Container{ContainerID: c.ContainerID}, stderr.Bytes(), refusal
 	}
 	if res.Err != nil {
-		return classify.Container{}, stderr.Bytes(), fmt.Errorf("devcontainer up: %w", res.Err)
+		var left classify.Container
+		if ctx.Err() != nil {
+			// Drydock stopped it: the container a killed docker run was
+			// creating may still be landing. Its id is returned for the
+			// caller to record, never removed — it is the workspace's.
+			left.ContainerID = m.settleUp(ctx, s.WorkspaceID)
+		}
+		return left, stderr.Bytes(), fmt.Errorf("devcontainer up: %w", res.Err)
 	}
 	if cerr != nil {
 		return classify.Container{}, stderr.Bytes(), cerr
 	}
 	return c, stderr.Bytes(), nil
+}
+
+// UpSettle is how long a cancelled Up keeps looking for the container its
+// killed docker run may still be creating. The daemon finishes a create
+// whose client was killed: measured on Docker 29.8.2 and CLI 0.89.0, an up
+// whose process group was stopped 5–40 ms into its docker run left a
+// container (created, never started) that did not list when the group had
+// emptied and did half a second later — the window internal/ephemeral
+// measured at 29–95 ms, whose DefaultSettle this is. A delete waits for the
+// run it cancelled, so a container the run's end has waited for is one the
+// delete's listing finds; without the wait the create could land after that
+// listing, and boot would adopt a deleted workspace's container as an
+// orphan.
+const UpSettle = ephemeral.DefaultSettle
+
+// upPoll is how often settleUp lists the workspace's containers.
+const upPoll = 50 * time.Millisecond
+
+// settleUp is a cancelled up's end: it lists the workspace's containers
+// until one lists or UpSettle has passed — under sys.Cleanup on the
+// Manager's clock, since the context that ended is what stopped the up —
+// and returns the id when exactly one lists. A container that already
+// existed (a start reuses it) lists at once, and nothing else can be
+// landing then: up creates one only when none matches. Nothing is removed:
+// the container is the workspace's, not a helper's.
+func (m Manager) settleUp(ctx context.Context, workspaceID string) string {
+	settle := m.UpSettle
+	if settle <= 0 {
+		settle = UpSettle
+	}
+	clock := m.Clock
+	if clock == nil {
+		clock = sys.RealClock{}
+	}
+	cctx, cancel := sys.Cleanup(ctx, clock, settle)
+	defer cancel()
+	for {
+		ids, err := m.Find(cctx, workspaceID)
+		switch {
+		case err != nil:
+			if cctx.Err() == nil && m.Logf != nil {
+				m.Logf("drydock: workspace %s: listing its containers after a stopped up: %v", workspaceID, err)
+			}
+			return ""
+		case len(ids) == 1:
+			return ids[0]
+		case len(ids) > 1 || cctx.Err() != nil:
+			// Several are reconciliation's to pick from, not a guess here.
+			return ""
+		}
+		poll, stop := sys.NewTimer(clock, upPoll)
+		select {
+		case <-cctx.Done():
+		case <-poll:
+		}
+		stop()
+	}
 }
 
 // Of is the containers carrying one workspace's label, inspected: Find, then

@@ -256,7 +256,10 @@ func newEnv(t *testing.T, setup ...func(*githubtest.Fake)) *env {
 			Runner: subproc.Exec{}, BaseURL: f.URL},
 		Containers: container.Manager{LabelPrefix: "drydock.test.provision",
 			CleanupImage: "busybox:1.37.0@sha256:" + strings.Repeat("a", 64), ClaudeUID: 998, ClaudeGID: 997,
-			Guard: testGuard(t)},
+			Guard: testGuard(t),
+			// A cut-off up's settle, short: a test that has a create land
+			// sets its own (upsettle_test.go).
+			UpSettle: 100 * time.Millisecond},
 		Feature:           feature,
 		FeatureOptions:    map[string]any{"botName": "krelinga-drydock-dev[bot]", "botEmail": "1+x[bot]@users.noreply.github.com"},
 		ClaudeVolume:      claudeVolume,
