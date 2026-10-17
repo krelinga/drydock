@@ -35,7 +35,9 @@ func TestFixturesStartNoAutoMaintenance(t *testing.T) {
 	commit := func(env []string) string {
 		work := t.TempDir()
 		run(env, work, "init", "-q", "-b", "main")
-		os.WriteFile(filepath.Join(work, "README.md"), []byte("x\n"), 0o644)
+		if err := os.WriteFile(filepath.Join(work, "README.md"), []byte("x\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
 		run(env, work, "add", "-A")
 		// Foreground, so the control's maintenance has ended before the
 		// directory is removed.
@@ -57,7 +59,9 @@ func TestFixturesStartNoAutoMaintenance(t *testing.T) {
 	push := func(bare string) string {
 		work := t.TempDir()
 		run(plainEnv, work, "clone", "-q", bare, ".")
-		os.WriteFile(filepath.Join(work, "pushed.txt"), []byte("y\n"), 0o644)
+		if err := os.WriteFile(filepath.Join(work, "pushed.txt"), []byte("y\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
 		run(plainEnv, work, "add", "-A")
 		run(plainEnv, work, "-c", "maintenance.auto=false", "commit", "-q", "-m", "y")
 		return run(plainEnv, work, "push", "-q", "origin", "HEAD:refs/heads/drydock/x")
