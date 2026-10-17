@@ -35,6 +35,13 @@
 // answering would otherwise hold the workspace for the whole ProvisionTimeout.
 // Past it the step fails with ReadTimeoutSentence.
 //
+// Step 6's up, cut off (the run's timeout, shutdown, a delete), returns the
+// container its killed docker run may still have been creating, once it lands
+// (container.UpSettle), and the step records it on the row like a failed
+// postCreateCommand's; nothing removes it. A delete waits for the run it
+// cancelled, so its containers sub-step lists what landed and removes it,
+// rather than leaving boot to adopt a deleted workspace's container.
+//
 // Step 3 stops the workspace's containers, then computes the host-access
 // subset and, unless it is within the repository's current approved set
 // (container.Covered), returns workspace.NeedsApproval before any up — on

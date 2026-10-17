@@ -595,7 +595,11 @@ func apiSocketHandler(gate api.Gate, apiMux *http.ServeMux, ui http.Handler) htt
 //   - each workspace job in flight, whose step's subprocess is SIGTERMed as
 //     its context ends and wound down within subproc's 5 s WaitDelay, after
 //     which it writes the step's failure, its move to failed and its
-//     workspace.job end to the local database — about 5 s. A job that had
+//     workspace.job end to the local database — about 5 s; one cut off inside
+//     devcontainer up first looks for the container its killed docker run
+//     may still be creating, for up to container.UpSettle (3 s), whose last
+//     docker ps winds down too: 5 + 3 + 5 = 13 s at worst, which
+//     upSettleFits holds. A job that had
 //     unpaused a paused container also pauses it again, under provision's
 //     RepauseTimeout (20 s), whose own last docker command may need one more
 //     wind-down: 5 + 20 + 5 = 30 s at worst, which repauseFits below holds
@@ -641,6 +645,12 @@ const workShutdownWait = 35 * time.Second
 // convert to uint64. Lengthen RepauseTimeout or shorten this wait and the
 // build says so, rather than a comment no one re-reads.
 const repauseFits = uint64(workShutdownWait - provision.RepauseTimeout - 2*subproc.DefaultWaitDelay)
+
+// upSettleFits is the same for a run cut off inside devcontainer up: its
+// process group's wind-down, then container.UpSettle looking for the
+// container its killed docker run may still be creating, whose last docker
+// ps, cut off at that bound, winds down too.
+const upSettleFits = uint64(workShutdownWait - container.UpSettle - 2*subproc.DefaultWaitDelay)
 
 // secretValues are the values of the secrets a workspace's repository is
 // granted, for its session server's log to mask. Asked on every terminal
