@@ -114,6 +114,10 @@ func (ce *contractEnv) git(t *testing.T, workspaceOf, dir string, args ...string
 		"GIT_AUTHOR_NAME=krelinga-drydock-dev[bot]", "GIT_COMMITTER_NAME=krelinga-drydock-dev[bot]",
 		"GIT_AUTHOR_EMAIL=337849865+krelinga-drydock-dev[bot]@users.noreply.github.com",
 		"GIT_COMMITTER_EMAIL=337849865+krelinga-drydock-dev[bot]@users.noreply.github.com",
+		// A commit or fetch here would start a detached auto-maintenance
+		// that can still be repacking when t.TempDir removes the clone
+		// (githubtest's noAutoMaintenance says why).
+		"GIT_CONFIG_COUNT=1", "GIT_CONFIG_KEY_0=maintenance.auto", "GIT_CONFIG_VALUE_0=false",
 	}
 	var out bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, &out

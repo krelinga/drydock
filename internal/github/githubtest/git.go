@@ -2,11 +2,13 @@ package githubtest
 
 import (
 	"encoding/base64"
+	"fmt"
 	"net/http"
 	"net/http/cgi"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -65,9 +67,7 @@ func (f *Fake) makeRepo(t testing.TB, r Repo) {
 	git := func(dir string, args ...string) {
 		cmd := exec.Command("git", args...)
 		cmd.Dir = dir
-		cmd.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_SYSTEM=/dev/null",
-			"GIT_AUTHOR_NAME=fixture", "GIT_AUTHOR_EMAIL=fixture@example.com",
-			"GIT_COMMITTER_NAME=fixture", "GIT_COMMITTER_EMAIL=fixture@example.com")
+		cmd.Env = fixtureGitEnv()
 		if out, err := cmd.CombinedOutput(); err != nil {
 			t.Fatalf("git %v: %v: %s", args, err, out)
 		}
@@ -95,6 +95,37 @@ func (f *Fake) makeRepo(t testing.TB, r Repo) {
 	git(work, "clone", "-q", "--bare", work, bare)
 	// http-backend refuses pushes unless this is set.
 	git(bare, "config", "http.receivepack", "true")
+	// The remote is a fixture too: a push the code under test makes runs
+	// receive-pack under http-backend, with none of fixtureGitEnv, and
+	// would start the same detached maintenance in a directory the test's
+	// cleanup is about to remove.
+	for _, kv := range noAutoMaintenance {
+		git(bare, "config", kv[0], kv[1])
+	}
+}
+
+// noAutoMaintenance keeps git from starting maintenance behind a fixture's
+// back. A commit or a push starts `git maintenance run --auto --detach`, and
+// since git 2.54 its default (geometric) strategy repacks with -d as soon as
+// objects/17 holds two loose objects — a sample, so it fires on whichever
+// run's hashes land there. The detached repack raced the next step: `clone
+// --bare` of the work tree found a pack temp file or a loose object gone
+// mid-copy, and t.TempDir's cleanup found a directory refilled under it.
+// maintenance.auto stops the launch; gc.auto and receive.autoGC are the same
+// switch for older gits and for receive-pack.
+var noAutoMaintenance = [][2]string{{"maintenance.auto", "false"}, {"gc.auto", "0"}, {"receive.autoGC", "false"}}
+
+// fixtureGitEnv is the environment of every git command that builds a
+// fixture: no user or system config, a fixed identity, and noAutoMaintenance.
+func fixtureGitEnv() []string {
+	env := append(os.Environ(), "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_SYSTEM=/dev/null",
+		"GIT_AUTHOR_NAME=fixture", "GIT_AUTHOR_EMAIL=fixture@example.com",
+		"GIT_COMMITTER_NAME=fixture", "GIT_COMMITTER_EMAIL=fixture@example.com",
+		"GIT_CONFIG_COUNT="+strconv.Itoa(len(noAutoMaintenance)))
+	for i, kv := range noAutoMaintenance {
+		env = append(env, fmt.Sprintf("GIT_CONFIG_KEY_%d=%s", i, kv[0]), fmt.Sprintf("GIT_CONFIG_VALUE_%d=%s", i, kv[1]))
+	}
+	return env
 }
 
 // GitAuths returns every git request the fake has seen.
