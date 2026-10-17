@@ -7,6 +7,8 @@ import (
 	"os/exec"
 	"syscall"
 	"time"
+
+	"github.com/krelinga/drydock/internal/sys"
 )
 
 // DefaultWaitDelay is Exec's WaitDelay when it sets none: how long a
@@ -69,17 +71,45 @@ func (e Exec) Run(ctx context.Context, c Cmd) Result {
 	// The group is the program's pid; signalling -pid reaches every member
 	// still in it, the program's children included.
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM) }
+	// The SIGTERM starts the group's grace: WaitDelay, the same wind-down a
+	// plain Run gets (shutdown's budget counts it once), for the program and
+	// its children alike. Cancel runs before Wait returns, so grace is set
+	// by the time Run reads it.
+	var grace <-chan time.Time
+	stop := func() {}
+	cmd.Cancel = func() error {
+		grace, stop = sys.NewTimer(sys.RealClock{}, cmd.WaitDelay)
+		return syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM)
+	}
 	err = cmd.Run()
 	if ctx.Err() != nil && cmd.Process != nil {
-		// What ignored the SIGTERM, or was still winding down when the
-		// program exited. ESRCH — nothing left — is the usual answer. The
-		// group's id stays reserved while any member lives, so this can
-		// reach another group only if this one emptied and the pid was
-		// then reissued to a new group leader, between Wait and here.
-		syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+		reapGroup(cmd.Process.Pid, grace)
 	}
+	stop()
 	return result(err, ctx)
+}
+
+// reapGroup waits for a cancelled group to empty and SIGKILLs what is left
+// when grace fires — at once, when no grace was started (the program had
+// exited before its context ended, so nothing was sent a SIGTERM). The
+// SIGKILL is not sent the moment the program exits: a child handling its
+// SIGTERM — a docker client cleaning up — must get to finish.
+//
+// The group's id stays reserved while any member lives, so the signals reach
+// another group only if this one emptied and its pid was reissued to a new
+// group leader between two polls.
+func reapGroup(pgid int, grace <-chan time.Time) {
+	for grace != nil && syscall.Kill(-pgid, 0) == nil {
+		tick, stop := sys.NewTimer(sys.RealClock{}, 20*time.Millisecond)
+		select {
+		case <-grace:
+			grace = nil
+		case <-tick:
+		}
+		stop()
+	}
+	// ESRCH — nothing left — is the usual answer.
+	syscall.Kill(-pgid, syscall.SIGKILL)
 }
 
 // Start launches c and returns without waiting.

@@ -131,15 +131,17 @@ func TestCancelOfAGroupStopsItsChildren(t *testing.T) {
 }
 
 // The group's SIGTERM reaches the children, not only the program: a child
-// that handles TERM (as a docker client cleans up on it) gets to. The child
-// writes a mark from its TERM trap; under Group the mark appears, and the
+// that handles TERM (as a docker client cleans up on it) gets to, and to
+// finish: the group's SIGKILL waits out the grace rather than landing the
+// moment the program exits. The child's TERM trap takes 0.3 s, then writes a
+// mark; under Group the mark appears, and the
 // control — the same run without Group — leaves none, so the mark is not the
 // child ending on its own.
 func TestCancelOfAGroupTermsItsChildren(t *testing.T) {
 	for _, group := range []bool{false, true} {
 		dir := t.TempDir()
 		pidFile, mark, ready := filepath.Join(dir, "pid"), filepath.Join(dir, "termed"), filepath.Join(dir, "ready")
-		child := `trap 'echo yes > ` + mark + `; exit 0' TERM; echo > ` + ready + `; while :; do sleep 0.05; done`
+		child := `trap 'sleep 0.3; echo yes > ` + mark + `; exit 0' TERM; echo > ` + ready + `; while :; do sleep 0.05; done`
 		r := Exec{Resolver: fake(t, "parent", `sh -c "`+child+`" & echo $! > '`+pidFile+`'; wait`), WaitDelay: time.Second}
 		ctx, cancel := context.WithCancel(context.Background())
 		done := make(chan Result)
@@ -173,7 +175,7 @@ func TestCancelOfAGroupTermsItsChildren(t *testing.T) {
 			_, err = os.Stat(mark)
 		}
 		if group && err != nil {
-			t.Errorf("Group: the child was never sent SIGTERM: %v", err)
+			t.Errorf("Group: the child was never sent SIGTERM, or was killed before its trap finished: %v", err)
 		}
 		if !group && err == nil {
 			t.Error("control: without Group the child was sent SIGTERM, so the test shows nothing")
