@@ -58,7 +58,23 @@ func (e Exec) Run(ctx context.Context, c Cmd) Result {
 	if err != nil {
 		return Result{ExitCode: -1, Err: err}
 	}
-	return result(cmd.Run(), ctx)
+	if !c.Group {
+		return result(cmd.Run(), ctx)
+	}
+	// The group is the program's pid; signalling -pid reaches every member
+	// still in it, the program's children included.
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM) }
+	err = cmd.Run()
+	if ctx.Err() != nil && cmd.Process != nil {
+		// What ignored the SIGTERM, or was still winding down when the
+		// program exited. ESRCH — nothing left — is the usual answer. The
+		// group's id stays reserved while any member lives, so this can
+		// reach another group only if this one emptied and the pid was
+		// then reissued to a new group leader, between Wait and here.
+		syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+	}
+	return result(err, ctx)
 }
 
 // Start launches c and returns without waiting.

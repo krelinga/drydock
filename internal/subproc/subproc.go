@@ -15,7 +15,10 @@
 // # Rules and details
 //
 // Exec is the real runner: no shell anywhere, Env replaces rather than
-// inherits, a non-zero exit is data, and cancelling sends SIGTERM. StartPTY is
+// inherits, a non-zero exit is data, and cancelling sends SIGTERM — to the
+// program's whole process group, and SIGKILL to what remains once it has
+// exited, when the Cmd asks for Group (a program that leaves its children
+// running when stopped: read-configuration's docker clients). StartPTY is
 // the same rules on a terminal (internal/pty composed, not reimplemented): the
 // supervisor's and the login handshake's way to start a child that must see a
 // PTY.
@@ -48,6 +51,15 @@ type Cmd struct {
 	// Stdin, Stdout, Stderr are optional; nil means discard.
 	Stdin          io.Reader
 	Stdout, Stderr io.Writer
+	// Group starts the program in a process group of its own, and a
+	// cancelled Run signals the whole group rather than the program alone —
+	// SIGTERM when the context ends, SIGKILL to what is left once the
+	// program has been waited for. For a program whose children would
+	// otherwise outlive it: the devcontainer CLI does not stop the docker
+	// clients it started when it is told to stop (measured on 0.89.0, a
+	// `docker ps` the daemon never answered outlived a SIGTERMed
+	// read-configuration). Exec's Start ignores it.
+	Group bool
 }
 
 // Resolver turns a program name into a path. The production implementation is

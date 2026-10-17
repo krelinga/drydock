@@ -7,8 +7,10 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -84,6 +86,60 @@ func TestCancelSendsTerm(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("cancel did not stop the child")
 	}
+}
+
+// A cancelled Group run stops the program's children too: the devcontainer
+// CLI leaves the docker clients it started running when it is stopped. The
+// script starts a child that ignores SIGTERM, so it is the SIGKILL to the
+// group once the program has exited that ends it; the control is the same
+// run without Group, whose child survives.
+func TestCancelOfAGroupStopsItsChildren(t *testing.T) {
+	for _, group := range []bool{false, true} {
+		pidFile := filepath.Join(t.TempDir(), "pid")
+		r := Exec{Resolver: fake(t, "parent", `(trap '' TERM; exec sleep 300) & echo $! > '`+pidFile+`'; wait`), WaitDelay: time.Second}
+		ctx, cancel := context.WithCancel(context.Background())
+		done := make(chan Result)
+		go func() { done <- r.Run(ctx, Cmd{Name: "parent", Group: group}) }()
+		var pid int
+		for deadline := time.Now().Add(10 * time.Second); pid == 0; time.Sleep(10 * time.Millisecond) {
+			if time.Now().After(deadline) {
+				t.Fatal("the child never started")
+			}
+			b, _ := os.ReadFile(pidFile)
+			pid, _ = strconv.Atoi(strings.TrimSpace(string(b)))
+		}
+		t.Cleanup(func() { syscall.Kill(pid, syscall.SIGKILL) })
+		cancel()
+		select {
+		case <-done:
+		case <-time.After(10 * time.Second):
+			t.Fatal("cancel did not stop the program")
+		}
+		alive := false
+		for deadline := time.Now().Add(3 * time.Second); time.Now().Before(deadline); time.Sleep(20 * time.Millisecond) {
+			if alive = running(pid); !alive {
+				break
+			}
+		}
+		if group && alive {
+			t.Errorf("Group: the child %d outlived the cancelled run", pid)
+		}
+		if !group && !alive {
+			t.Errorf("control: without Group the child %d did not survive, so the test shows nothing", pid)
+		}
+	}
+}
+
+// running reports whether pid is a live process — not gone, and not a
+// zombie waiting for a reaper.
+func running(pid int) bool {
+	b, err := os.ReadFile(filepath.Join("/proc", strconv.Itoa(pid), "stat"))
+	if err != nil {
+		return false
+	}
+	s := string(b)
+	i := strings.LastIndexByte(s, ')')
+	return i >= 0 && i+2 < len(s) && s[i+2] != 'Z'
 }
 
 type syncBuffer struct {

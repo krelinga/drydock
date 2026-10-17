@@ -5,8 +5,13 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
+
+	"github.com/krelinga/drydock/internal/sys"
 )
 
 // TestParseConfigurationAgainstTheCorpus: the recorded read-configuration
@@ -145,4 +150,101 @@ func TestReadConfigurationRunsWithItsOwnTempDir(t *testing.T) {
 	if lines[0] == lines[2] {
 		t.Errorf("two reads shared TMPDIR %s", lines[0])
 	}
+}
+
+// TestReadConfigurationHasItsOwnBound: a read-configuration that never
+// answers — the CLI waiting on a docker client the daemon never answers, as a
+// wedged daemon was measured to leave it — ends at ReadConfigurationTimeout
+// on the Manager's clock, with a ReadTimeoutError, and the docker client it
+// started is stopped with it. Controls: until the clock reaches the bound
+// the read is still running, and a read that answers before it is a result.
+// The test bounds itself in real time, so a missing bound fails it by name
+// rather than hanging the package.
+func TestReadConfigurationHasItsOwnBound(t *testing.T) {
+	pidFile := filepath.Join(t.TempDir(), "child")
+	run, _ := fakes(t, map[string]string{
+		// The "docker client": a child the CLI started and does not stop.
+		"devcontainer": "echo 'a CLI log line' >&2; sleep 300 & echo $! > '" + pidFile + "'; wait",
+	})
+	clock := sys.NewFakeClock(time.Now())
+	m := Manager{Run: run, LabelPrefix: "drydock.test", Clock: clock}
+	done := make(chan error, 1)
+	go func() {
+		_, err := m.ReadConfiguration(context.Background(), "/srv/ws/repo", "")
+		done <- err
+	}()
+	var pid int
+	for deadline := time.Now().Add(10 * time.Second); pid == 0 || clock.WaitingFor(ReadConfigurationTimeout) == 0; time.Sleep(10 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatalf("the read never started, or set no bound on the clock (child %d)", pid)
+		}
+		b, _ := os.ReadFile(pidFile)
+		pid, _ = strconv.Atoi(strings.TrimSpace(string(b)))
+	}
+	t.Cleanup(func() { syscall.Kill(pid, syscall.SIGKILL) })
+	// Control: a moment short of the bound, the read is still running.
+	clock.Advance(ReadConfigurationTimeout - time.Second)
+	select {
+	case err := <-done:
+		t.Fatalf("control: the read ended before its bound: %v", err)
+	case <-time.After(200 * time.Millisecond):
+	}
+	clock.Advance(time.Second)
+	select {
+	case err := <-done:
+		var te *ReadTimeoutError
+		if !errors.As(err, &te) || te.Limit != ReadConfigurationTimeout || te.Stderr != "a CLI log line" {
+			t.Errorf("at the bound: %v, want a ReadTimeoutError of %s carrying the log", err, ReadConfigurationTimeout)
+		}
+	case <-time.After(15 * time.Second):
+		t.Fatal("the read did not end at its bound")
+	}
+	for deadline := time.Now().Add(5 * time.Second); procAlive(pid); time.Sleep(20 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Errorf("the CLI's child %d outlived the stopped read", pid)
+			break
+		}
+	}
+
+	// Control: a read that answers is a result, on the same clock, the
+	// clock never moved.
+	run, _ = fakes(t, map[string]string{
+		"devcontainer": "cat <<'EOF'\n" + fixture(t, "read-configuration-ok.json") + "\nEOF\n",
+	})
+	m.Run = run
+	if c, err := m.ReadConfiguration(context.Background(), "/srv/ws/repo", ""); err != nil || c.WorkspaceFolder != "/workspaces/repo" {
+		t.Errorf("control: a read that answers: %+v %v", c, err)
+	}
+	// And ReadTimeout overrides the default.
+	run, _ = fakes(t, map[string]string{"devcontainer": "exec sleep 300"})
+	m.Run, m.ReadTimeout = run, time.Minute
+	go func() {
+		_, err := m.ReadConfiguration(context.Background(), "/srv/ws/repo", "")
+		done <- err
+	}()
+	for deadline := time.Now().Add(10 * time.Second); clock.WaitingFor(time.Minute) == 0; time.Sleep(10 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatal("ReadTimeout set no bound of its own")
+		}
+	}
+	clock.Advance(time.Minute)
+	select {
+	case err := <-done:
+		var te *ReadTimeoutError
+		if !errors.As(err, &te) || te.Limit != time.Minute {
+			t.Errorf("ReadTimeout: %v", err)
+		}
+	case <-time.After(15 * time.Second):
+		t.Fatal("ReadTimeout did not bound the read")
+	}
+}
+
+// procAlive reports whether pid is a live process: not gone, not a zombie.
+func procAlive(pid int) bool {
+	b, err := os.ReadFile(filepath.Join("/proc", strconv.Itoa(pid), "stat"))
+	if err != nil {
+		return false
+	}
+	i := strings.LastIndexByte(string(b), ')')
+	return i >= 0 && i+2 < len(b) && b[i+2] != 'Z'
 }

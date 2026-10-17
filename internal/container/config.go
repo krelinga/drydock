@@ -8,8 +8,10 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/krelinga/drydock/internal/subproc"
+	"github.com/krelinga/drydock/internal/sys"
 )
 
 // Configuration is what Drydock reads from `devcontainer read-configuration`
@@ -63,6 +65,33 @@ func (e *ReadError) Error() string {
 	return fmt.Sprintf("devcontainer read-configuration exited %d: %s", e.ExitCode, e.Stderr)
 }
 
+// ReadConfigurationTimeout bounds one read-configuration, on the Manager's
+// clock (Manager.ReadTimeout overrides it). The call reads the configuration,
+// asks docker for a container by a label nothing carries and for the image,
+// and fetches the Features' and the image's metadata from their registries —
+// measured at about 0.6 s warm on CLI 0.89.0, and a few seconds cold, since
+// it pulls no image and builds nothing. Three minutes is two orders of
+// magnitude past that, the container tier's bound on pulling a whole base
+// image, and a tenth of the run's own ProvisionTimeout, which was until now
+// the only bound: a Docker daemon that stops answering (`docker ps` blocked,
+// measured to hang the CLI for as long as the daemon does) held the
+// workspace for half an hour.
+const ReadConfigurationTimeout = 3 * time.Minute
+
+// ReadTimeoutError is read-configuration still running when its bound
+// passed. The CLI and everything it started were stopped (subproc.Cmd's
+// Group); it creates no container, so there is nothing else to remove.
+type ReadTimeoutError struct {
+	Limit time.Duration
+	// Stderr is the CLI's log so far: the service log's, never the event
+	// log's (ReadError).
+	Stderr string
+}
+
+func (e *ReadTimeoutError) Error() string {
+	return fmt.Sprintf("devcontainer read-configuration did not finish within %s", e.Limit)
+}
+
 // readResult is the shape read-configuration prints on stdout (0.89.0): one
 // JSON object; logs go to stderr.
 type readResult struct {
@@ -89,6 +118,10 @@ type readResult struct {
 // read-configuration-merged-hostile.json writes a host canary from
 // initializeCommand and checks it is absent. It does fetch the Features'
 // metadata and the image's, from their registries, so it needs the network.
+//
+// It is bounded by ReadConfigurationTimeout (or ReadTimeout) on the Manager's
+// clock, whatever ctx allows: past it, the CLI and its children are stopped
+// and the error is a *ReadTimeoutError.
 func (m Manager) ReadConfiguration(ctx context.Context, folder, overrideConfig string) (Configuration, error) {
 	if !strings.HasPrefix(folder, "/") {
 		return Configuration{}, fmt.Errorf("container: folder %q must be absolute", folder)
@@ -118,10 +151,25 @@ func (m Manager) ReadConfiguration(ctx context.Context, folder, overrideConfig s
 		return Configuration{}, fmt.Errorf("container: read-configuration's temp dir: %w", err)
 	}
 	defer os.RemoveAll(tmp)
+	bound := m.ReadTimeout
+	if bound <= 0 {
+		bound = ReadConfigurationTimeout
+	}
+	clock := m.Clock
+	if clock == nil {
+		clock = sys.RealClock{}
+	}
+	rctx, cancel := sys.WithTimeout(ctx, clock, bound)
+	defer cancel()
 	var stdout, stderr bytes.Buffer
-	res := m.Run.Run(ctx, subproc.Cmd{Name: "devcontainer", Args: withDockerPath(args, dp),
+	// Group: the CLI, stopped, leaves the docker clients it started running
+	// (measured), and a hung daemon is the likeliest reason it is stopped.
+	res := m.Run.Run(rctx, subproc.Cmd{Name: "devcontainer", Args: withDockerPath(args, dp),
 		Stdout: limit(&stdout, 4<<20), Stderr: limit(&stderr, 64<<10),
-		Env: withEnv(os.Environ(), "TMPDIR", tmp)})
+		Env: withEnv(os.Environ(), "TMPDIR", tmp), Group: true})
+	if (res.Err != nil || res.ExitCode != 0) && sys.TimedOut(rctx) {
+		return Configuration{}, &ReadTimeoutError{Limit: bound, Stderr: strings.TrimSpace(stderr.String())}
+	}
 	if res.Err != nil {
 		return Configuration{}, fmt.Errorf("devcontainer read-configuration: %w", res.Err)
 	}
