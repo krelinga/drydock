@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.17.4](https://github.com/krelinga/drydock/compare/v0.17.3...v0.17.4) (2026-10-17)
+
+
+### Bug Fixes
+
+* give each devcontainer up its own buildx config, so no workspace builds another's Feature ([#183](https://github.com/krelinga/drydock/issues/183)) ([0b10dd7](https://github.com/krelinga/drydock/commit/0b10dd79ae230b01a01d8d34a675d36cc7083a52))
+
 ## [0.17.3](https://github.com/krelinga/drydock/compare/v0.17.2...v0.17.3) (2026-10-13)
 
 
