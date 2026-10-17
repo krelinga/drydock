@@ -52,6 +52,11 @@ func (e Exec) command(ctx context.Context, c Cmd) (*exec.Cmd, error) {
 	return cmd, nil
 }
 
+// errGroupRunOnly is Start or StartPTY given a Cmd with Group: the group is
+// signalled by Run alone, and dropping the flag would leave the children it
+// asked to be stopped running.
+var errGroupRunOnly = errors.New("subproc: Group is for Run only; Start and StartPTY would not signal the group")
+
 // Run executes to completion. A non-zero exit is data in ExitCode, never Err.
 func (e Exec) Run(ctx context.Context, c Cmd) Result {
 	cmd, err := e.command(ctx, c)
@@ -79,6 +84,9 @@ func (e Exec) Run(ctx context.Context, c Cmd) Result {
 
 // Start launches c and returns without waiting.
 func (e Exec) Start(ctx context.Context, c Cmd) (Process, error) {
+	if c.Group {
+		return nil, errGroupRunOnly
+	}
 	cmd, err := e.command(ctx, c)
 	if err != nil {
 		return nil, err

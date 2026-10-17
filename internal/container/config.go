@@ -167,7 +167,11 @@ func (m Manager) ReadConfiguration(ctx context.Context, folder, overrideConfig s
 	res := m.Run.Run(rctx, subproc.Cmd{Name: "devcontainer", Args: withDockerPath(args, dp),
 		Stdout: limit(&stdout, 4<<20), Stderr: limit(&stderr, 64<<10),
 		Env: withEnv(os.Environ(), "TMPDIR", tmp), Group: true})
-	if (res.Err != nil || res.ExitCode != 0) && sys.TimedOut(rctx) {
+	// Only this call's own bound is a ReadTimeoutError. rctx is a child of
+	// ctx, so a caller's deadline that fired first (the run's
+	// ProvisionTimeout, itself a sys.WithTimeout) makes sys.TimedOut(rctx)
+	// true as well; that one is the caller's to name.
+	if (res.Err != nil || res.ExitCode != 0) && sys.TimedOut(rctx) && ctx.Err() == nil {
 		return Configuration{}, &ReadTimeoutError{Limit: bound, Stderr: strings.TrimSpace(stderr.String())}
 	}
 	if res.Err != nil {

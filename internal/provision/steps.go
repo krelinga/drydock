@@ -82,7 +82,26 @@ func (r *runState) allocate(_ context.Context, w workspace.Workspace) error {
 func ReadTimeoutSentence(limit time.Duration) string {
 	return fmt.Sprintf("devcontainer did not finish reading the dev container configuration within %s, so Drydock stopped it. "+
 		"The read builds nothing; it waits only on Docker and on the registries its image and Features come from, so one of those is not answering. "+
-		"Starting the workspace again tries again.", limit)
+		"Starting the workspace again tries again.", prose(limit))
+}
+
+// prose is a duration as an operator reads it: "3 minutes", "90 seconds",
+// never Go's "3m0s".
+func prose(d time.Duration) string {
+	unit := func(n int64, one string) string {
+		if n == 1 {
+			return "1 " + one
+		}
+		return fmt.Sprintf("%d %ss", n, one)
+	}
+	switch {
+	case d >= time.Hour && d%time.Hour == 0:
+		return unit(int64(d/time.Hour), "hour")
+	case d >= time.Minute && d%time.Minute == 0:
+		return unit(int64(d/time.Minute), "minute")
+	default:
+		return unit(int64(d.Round(time.Second)/time.Second), "second")
+	}
 }
 
 // resolveConfig is §6 step 3. A repository with no devcontainer.json is not a

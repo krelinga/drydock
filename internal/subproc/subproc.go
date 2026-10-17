@@ -58,7 +58,8 @@ type Cmd struct {
 	// otherwise outlive it: the devcontainer CLI does not stop the docker
 	// clients it started when it is told to stop (measured on 0.89.0, a
 	// `docker ps` the daemon never answered outlived a SIGTERMed
-	// read-configuration). Exec's Start ignores it.
+	// read-configuration). Run only: Exec's Start and StartPTY refuse it,
+	// since the group is signalled by Run's own cancel and wait.
 	Group bool
 }
 

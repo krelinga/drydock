@@ -947,11 +947,24 @@ func TestAHungReadConfigurationFailsStepThree(t *testing.T) {
 	}
 	v := e.view(t, w.ID)
 	st := v.Steps[workspace.StepResolveConfig]
-	if v.State != workspace.Failed || st.Status != "failed" || !strings.HasSuffix(st.Detail, ": "+ReadTimeoutSentence(container.ReadConfigurationTimeout)) {
+	if v.State != workspace.Failed || st.Status != "failed" || !strings.HasSuffix(st.Detail, ": "+ReadTimeoutSentence(container.ReadConfigurationTimeout)) ||
+		!strings.Contains(st.Detail, "within 3 minutes,") {
 		t.Errorf("after the bound: %s %+v", v.State, st)
 	}
 	if n := len(e.cli.callsTo(t, "up")); n != 0 {
 		t.Errorf("up ran %d times after step 3 failed", n)
+	}
+}
+
+// TestProse: durations in a sentence are the operator's words, not Go's.
+func TestProse(t *testing.T) {
+	for d, want := range map[time.Duration]string{
+		3 * time.Minute: "3 minutes", time.Minute: "1 minute", 90 * time.Second: "90 seconds",
+		time.Second: "1 second", 2 * time.Hour: "2 hours", 1500 * time.Millisecond: "2 seconds",
+	} {
+		if got := prose(d); got != want {
+			t.Errorf("prose(%s) = %q, want %q", d, got, want)
+		}
 	}
 }
 

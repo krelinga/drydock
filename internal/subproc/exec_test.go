@@ -130,6 +130,80 @@ func TestCancelOfAGroupStopsItsChildren(t *testing.T) {
 	}
 }
 
+// The group's SIGTERM reaches the children, not only the program: a child
+// that handles TERM (as a docker client cleans up on it) gets to. The child
+// writes a mark from its TERM trap; under Group the mark appears, and the
+// control — the same run without Group — leaves none, so the mark is not the
+// child ending on its own.
+func TestCancelOfAGroupTermsItsChildren(t *testing.T) {
+	for _, group := range []bool{false, true} {
+		dir := t.TempDir()
+		pidFile, mark, ready := filepath.Join(dir, "pid"), filepath.Join(dir, "termed"), filepath.Join(dir, "ready")
+		child := `trap 'echo yes > ` + mark + `; exit 0' TERM; echo > ` + ready + `; while :; do sleep 0.05; done`
+		r := Exec{Resolver: fake(t, "parent", `sh -c "`+child+`" & echo $! > '`+pidFile+`'; wait`), WaitDelay: time.Second}
+		ctx, cancel := context.WithCancel(context.Background())
+		done := make(chan Result)
+		go func() { done <- r.Run(ctx, Cmd{Name: "parent", Group: group}) }()
+		var pid int
+		for deadline := time.Now().Add(10 * time.Second); pid == 0; time.Sleep(10 * time.Millisecond) {
+			if time.Now().After(deadline) {
+				t.Fatal("the child never set its trap")
+			}
+			if _, err := os.Stat(ready); err != nil {
+				continue
+			}
+			b, _ := os.ReadFile(pidFile)
+			pid, _ = strconv.Atoi(strings.TrimSpace(string(b)))
+		}
+		t.Cleanup(func() { syscall.Kill(pid, syscall.SIGKILL) })
+		cancel()
+		select {
+		case <-done:
+		case <-time.After(10 * time.Second):
+			t.Fatal("cancel did not stop the program")
+		}
+		// Run has returned, so a SIGTERM was sent before it did and the
+		// trap has had WaitDelay to run; a moment more for the write.
+		_, err := os.Stat(mark)
+		for deadline := time.Now().Add(2 * time.Second); group && err != nil && time.Now().Before(deadline); time.Sleep(20 * time.Millisecond) {
+			_, err = os.Stat(mark)
+		}
+		if !group {
+			time.Sleep(300 * time.Millisecond)
+			_, err = os.Stat(mark)
+		}
+		if group && err != nil {
+			t.Errorf("Group: the child was never sent SIGTERM: %v", err)
+		}
+		if !group && err == nil {
+			t.Error("control: without Group the child was sent SIGTERM, so the test shows nothing")
+		}
+	}
+}
+
+// Start and StartPTY refuse Group rather than drop it: only Run signals the
+// group. The control is the same Cmd without Group, which starts.
+func TestStartRefusesGroup(t *testing.T) {
+	r := Exec{Resolver: fake(t, "prog", "exit 0")}
+	if _, err := r.Start(context.Background(), Cmd{Name: "prog", Group: true}); err == nil {
+		t.Error("Start accepted Group")
+	}
+	if _, _, err := r.StartPTY(context.Background(), Cmd{Name: "prog", Group: true}, 80, 24); err == nil {
+		t.Error("StartPTY accepted Group")
+	}
+	p, err := r.Start(context.Background(), Cmd{Name: "prog"})
+	if err != nil {
+		t.Fatalf("control: Start without Group: %v", err)
+	}
+	p.Wait()
+	p, f, err := r.StartPTY(context.Background(), Cmd{Name: "prog"}, 80, 24)
+	if err != nil {
+		t.Fatalf("control: StartPTY without Group: %v", err)
+	}
+	p.Wait()
+	f.Close()
+}
+
 // running reports whether pid is a live process — not gone, and not a
 // zombie waiting for a reaper.
 func running(pid int) bool {

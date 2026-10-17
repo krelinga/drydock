@@ -239,6 +239,50 @@ func TestReadConfigurationHasItsOwnBound(t *testing.T) {
 	}
 }
 
+// TestACallersDeadlineIsNotTheReadsOwn: rctx is a child of the caller's
+// context, so when a caller's sys.WithTimeout fires first (the run's
+// ProvisionTimeout), sys.TimedOut sees it through rctx too. That is the
+// caller's deadline, and saying "did not finish within 3 minutes" would be
+// false: the error is not a ReadTimeoutError. The control, in the same
+// function, is a caller's deadline later than the read's own bound, where
+// the read's own bound fires and is one.
+func TestACallersDeadlineIsNotTheReadsOwn(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		parent time.Duration
+		own    bool
+	}{
+		{"caller first", time.Minute, false},
+		{"own first (control)", ReadConfigurationTimeout + time.Hour, true},
+	} {
+		run, _ := fakes(t, map[string]string{"devcontainer": "exec sleep 300"})
+		clock := sys.NewFakeClock(time.Now())
+		m := Manager{Run: run, LabelPrefix: "drydock.test", Clock: clock}
+		parent, cancel := sys.WithTimeout(context.Background(), clock, tc.parent)
+		done := make(chan error, 1)
+		go func() {
+			_, err := m.ReadConfiguration(parent, "/srv/ws/repo", "")
+			done <- err
+		}()
+		for deadline := time.Now().Add(10 * time.Second); clock.WaitingFor(ReadConfigurationTimeout) == 0 || clock.WaitingFor(tc.parent) == 0; time.Sleep(10 * time.Millisecond) {
+			if time.Now().After(deadline) {
+				t.Fatalf("%s: the read never set its bound", tc.name)
+			}
+		}
+		clock.Advance(min(tc.parent, ReadConfigurationTimeout))
+		select {
+		case err := <-done:
+			var te *ReadTimeoutError
+			if errors.As(err, &te) != tc.own || err == nil {
+				t.Errorf("%s: %v; a ReadTimeoutError: want %v", tc.name, err, tc.own)
+			}
+		case <-time.After(15 * time.Second):
+			t.Fatalf("%s: the read did not end", tc.name)
+		}
+		cancel()
+	}
+}
+
 // procAlive reports whether pid is a live process: not gone, not a zombie.
 func procAlive(pid int) bool {
 	b, err := os.ReadFile(filepath.Join("/proc", strconv.Itoa(pid), "stat"))
