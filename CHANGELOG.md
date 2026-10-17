@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.17.5](https://github.com/krelinga/drydock/compare/v0.17.4...v0.17.5) (2026-10-17)
+
+
+### Bug Fixes
+
+* give read-configuration its own time limit ([#185](https://github.com/krelinga/drydock/issues/185)) ([c4d8b61](https://github.com/krelinga/drydock/commit/c4d8b61b51657167f9d418e170784c04eb178fb1))
+
 ## [0.17.4](https://github.com/krelinga/drydock/compare/v0.17.3...v0.17.4) (2026-10-17)
 
 
