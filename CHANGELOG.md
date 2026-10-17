@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.17.6](https://github.com/krelinga/drydock/compare/v0.17.5...v0.17.6) (2026-10-17)
+
+
+### Bug Fixes
+
+* stop a cancelled devcontainer up's docker clients, and wait for the container it was creating ([#187](https://github.com/krelinga/drydock/issues/187)) ([24acacf](https://github.com/krelinga/drydock/commit/24acacff9855fc54abc9f2a910e3832e36f2cd09))
+
 ## [0.17.5](https://github.com/krelinga/drydock/compare/v0.17.4...v0.17.5) (2026-10-17)
 
 
