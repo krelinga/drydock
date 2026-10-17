@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 
 	"github.com/krelinga/drydock/internal/subproc"
@@ -107,9 +108,20 @@ func (m Manager) ReadConfiguration(ctx context.Context, folder, overrideConfig s
 	if err != nil {
 		return Configuration{}, err
 	}
+	// A TMPDIR of this call's own, removed after: the CLI downloads each
+	// Feature to $TMPDIR/…/container-features/<version>-<millisecond>/ociCache/blob.tar
+	// and extracts it there, so two reads started in the same millisecond —
+	// creates started together — wrote one file under each other
+	// (TAR_BAD_ARCHIVE, measured in issue #182's test).
+	tmp, err := os.MkdirTemp("", "drydock-read-configuration-")
+	if err != nil {
+		return Configuration{}, fmt.Errorf("container: read-configuration's temp dir: %w", err)
+	}
+	defer os.RemoveAll(tmp)
 	var stdout, stderr bytes.Buffer
 	res := m.Run.Run(ctx, subproc.Cmd{Name: "devcontainer", Args: withDockerPath(args, dp),
-		Stdout: limit(&stdout, 4<<20), Stderr: limit(&stderr, 64<<10)})
+		Stdout: limit(&stdout, 4<<20), Stderr: limit(&stderr, 64<<10),
+		Env: withEnv(os.Environ(), "TMPDIR", tmp)})
 	if res.Err != nil {
 		return Configuration{}, fmt.Errorf("devcontainer read-configuration: %w", res.Err)
 	}

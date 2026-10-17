@@ -53,6 +53,11 @@ What it covers:
   `up`; step 3 sees nothing, `up` is refused naming privileged and no container carries the label;
   approved, the same workspace comes up `Privileged=true`; and with the approval narrowed and the
   tag moved back, `docker start` of that privileged container is refused.
+- **A Feature build is its own** (`TestFeaturesAreThisBuildsOwn`, #182): six ups in turn,
+  alternating two marker versions whose files differ only in content, with the CLI's `Date.now`
+  pinned so every up stages its Features in a folder of one name — the key BuildKit's copy of the
+  build context is held under, with buildx's node id — and each installs the version it declared.
+  Without each up's own `BUILDX_CONFIG`, every run had one install another's.
 - **Lifecycle**: provision → stop → start → rebuild → delete.
 - **Reopen in Container** (`vscode_test.go`): Drydock's guarded `up` labels the container
   `devcontainer.local_folder`/`devcontainer.config_file`, and a plain `devcontainer up

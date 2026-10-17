@@ -3,6 +3,8 @@ package container
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -107,5 +109,40 @@ func TestUpAndExecPassTheOverrideConfig(t *testing.T) {
 		" --override-config /srv/ws/.drydock/devcontainer.json -- true "
 	if got != want {
 		t.Errorf("exec argv\n got %q\nwant %q", got, want)
+	}
+}
+
+// Each read-configuration runs with a TMPDIR of its own, replacing
+// Drydock's, and removed after: the CLI downloads each Feature's blob to a
+// folder under $TMPDIR named by the millisecond, and two reads started
+// together corrupted each other's (TAR_BAD_ARCHIVE). The control is the
+// inherited one, which no read sees, and two reads, which see two.
+func TestReadConfigurationRunsWithItsOwnTempDir(t *testing.T) {
+	inherited := t.TempDir()
+	t.Setenv("TMPDIR", inherited)
+	out := filepath.Join(t.TempDir(), "tmpdir")
+	run, _ := fakes(t, map[string]string{"devcontainer": `{ echo "$TMPDIR"; [ -d "$TMPDIR" ] && echo exists; } >> ` + out +
+		"\ncat <<'EOF'\n" + fixture(t, "read-configuration-ok.json") + "\nEOF\n"})
+	m := Manager{Run: run, LabelPrefix: "drydock.test"}
+	for range 2 {
+		if _, err := m.ReadConfiguration(context.Background(), "/srv/ws/repo", ""); err != nil {
+			t.Fatal(err)
+		}
+	}
+	b, _ := os.ReadFile(out)
+	lines := strings.Split(strings.TrimSpace(string(b)), "\n")
+	if len(lines) != 4 || lines[1] != "exists" || lines[3] != "exists" {
+		t.Fatalf("read-configuration saw:\n%s", b)
+	}
+	for _, dir := range []string{lines[0], lines[2]} {
+		if dir == inherited {
+			t.Errorf("read-configuration ran with Drydock's own TMPDIR %s", dir)
+		}
+		if _, err := os.Stat(dir); !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("%s outlived its read-configuration: %v", dir, err)
+		}
+	}
+	if lines[0] == lines[2] {
+		t.Errorf("two reads shared TMPDIR %s", lines[0])
 	}
 }
