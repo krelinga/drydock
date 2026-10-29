@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.18.0](https://github.com/krelinga/drydock/compare/v0.17.6...v0.18.0) (2026-10-29)
+
+
+### Features
+
+* name workspace containers after their repository ([#193](https://github.com/krelinga/drydock/issues/193)) ([955d82a](https://github.com/krelinga/drydock/commit/955d82a995b59bf2891b78f9cfb0c41db7df524c))
+
+
+### Bug Fixes
+
+* open the Open in VS Code link in a new window ([#192](https://github.com/krelinga/drydock/issues/192)) ([96bda23](https://github.com/krelinga/drydock/commit/96bda23e659a6f505ead71efe4667cf51c0897a2))
+
 ## [0.17.6](https://github.com/krelinga/drydock/compare/v0.17.5...v0.17.6) (2026-10-17)
 
 
