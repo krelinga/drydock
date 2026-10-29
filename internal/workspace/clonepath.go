@@ -105,9 +105,12 @@ func CheckClonePath(root, id, hostPath string) error {
 //
 // The derived path assumes no rename: the repository label is written at
 // each up from the name then, so a Compose workspace renamed and rebuilt
-// before the row was lost is adopted at a path that does not exist. That is
-// benign — a start clones afresh there, and a delete removes all of
-// <root>/<id> — and needs a lost database besides.
+// before the row was lost is adopted at a path that does not exist. Adopted
+// stopped or running, its next start fails at resolve config, the folder
+// missing; only a start from that failure clones, at the new path, beside
+// the old clone — which may hold unpushed work — and under another Compose
+// project name than the old container's. A delete removes all of
+// <root>/<id>, both clones with it. It needs a lost database besides.
 func OrphanClonePath(root, id, localFolder, fullName string) (string, error) {
 	if localFolder != "" {
 		if err := CheckClonePath(root, id, localFolder); err != nil {
