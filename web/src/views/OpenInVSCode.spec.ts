@@ -15,6 +15,8 @@ useMockApi()
 const GOOD =
   'vscode://vscode-remote/attached-container+7b22636f6e7461696e65724e616d65223a222f6d6f636b5f31227d' +
   '@ssh-remote+7b22686f73744e616d65223a22646576626f782e6c616e222c2275736572223a226f776e6572227d/workspaces/repo1'
+/** What the anchor carries: the server's URL plus VS Code's "open a new window" parameter. */
+const HREF = GOOD + '?windowId=_blank'
 
 type Wrapper = Awaited<ReturnType<typeof mountApp>>['wrapper']
 const card = (w: Wrapper) => w.find('[data-test="running-row"]')
@@ -28,19 +30,19 @@ const noControl = (w: ReturnType<Wrapper['find']>) => {
 }
 
 describe('Open in VS Code', () => {
-  it('is a plain link with the server’s URL, on the card and on the page', async () => {
+  it('is a plain link with the server’s URL, opening a new window, on the card and on the page', async () => {
     freshBackend({ signedIn: true, vscodeHost: 'owner@devbox.lan' })
     const home = await mountApp('/')
     const a = card(home.wrapper).find('[data-test="open-vscode"]')
     expect(a.element.tagName).toBe('A')
-    expect(a.attributes('href')).toBe(GOOD)
+    expect(a.attributes('href')).toBe(HREF)
     expect(a.attributes('disabled')).toBeUndefined()
     expect(a.text()).toBe('Open in VS Code')
 
     const detail = await mountApp(`/ws/${WS_RUNNING}`)
     const b = page(detail.wrapper).find('[data-test="open-vscode"]')
     expect(b.element.tagName).toBe('A')
-    expect(b.attributes('href')).toBe(GOOD)
+    expect(b.attributes('href')).toBe(HREF)
     expect(page(detail.wrapper).find('[data-test="vscode-off"]').exists()).toBe(false)
   })
 
@@ -75,7 +77,13 @@ describe('Open in VS Code', () => {
 
   it('never renders a URL from the wire that internal/vscode could not have built', async () => {
     const b = freshBackend({ signedIn: true, vscodeHost: 'owner@devbox.lan' })
-    for (const bad of ['javascript:alert(1)', 'https://evil.example/', GOOD + '"><img src=x>']) {
+    { // control: the server's own URL renders, opening a new window
+      const { wrapper } = await mountApp('/')
+      expect(card(wrapper).find('[data-test="open-vscode"]').attributes('href')).toBe(HREF)
+    }
+    // The wire's URL carries no query: the new-window parameter is the UI's,
+    // so one the server sent (even that one) is not internal/vscode's link.
+    for (const bad of ['javascript:alert(1)', 'https://evil.example/', GOOD + '"><img src=x>', HREF, GOOD + '?x=1']) {
       server.use(http.get('/api/workspaces', () => {
         const body = workspaceList(b)
         for (const v of body.workspaces) if (v.vscode) v.vscode = { configured: true, url: bad }
@@ -92,7 +100,7 @@ describe('Open in VS Code', () => {
   it('a link older than a move to running is hidden, and the move refetches a fresh one', async () => {
     const b = freshBackend({ signedIn: true, vscodeHost: 'owner@devbox.lan' })
     const { wrapper } = await mountApp(`/ws/${WS_RUNNING}`)
-    expect(page(wrapper).find('[data-test="open-vscode"]').attributes('href')).toBe(GOOD)
+    expect(page(wrapper).find('[data-test="open-vscode"]').attributes('href')).toBe(HREF)
     // The detail GET fails until `answer` is set: what is shown meanwhile
     // comes from what the entities hold, and a stale link is not among it.
     let reads = 0
@@ -118,6 +126,6 @@ describe('Open in VS Code', () => {
     answer = true
     emit(b, 'workspace.state', { workspace_id: WS_RUNNING, message: 'Running.', data: { state: 'running', from: 'running' } })
     await settle()
-    expect(page(wrapper).find('[data-test="open-vscode"]').attributes('href')).toBe(GOOD)
+    expect(page(wrapper).find('[data-test="open-vscode"]').attributes('href')).toBe(HREF)
   })
 })

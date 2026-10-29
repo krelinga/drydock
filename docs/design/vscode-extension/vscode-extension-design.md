@@ -328,7 +328,7 @@ await vscode.commands.executeCommand('vscode.openFolder', remoteUri, { forceNewW
 | Round trip | None. The same process opens the window. | Out to the OS protocol handler and back. It can land in a *different* VS Code (Insiders vs Stable, whichever registered `vscode:` last). |
 | Confirmation | None. The operator pressed Enter on a named workspace. | VS Code's *Allow opening this URI?* dialog. Right for a link from the web, but a second prompt here. |
 | Keyboard | Fully. | The dialog needs a click or a tab, and the OS hop can steal focus. |
-| New window or this one | `forceNewWindow` or `forceReuseWindow`, our choice. | VS Code's choice. |
+| New window or this one | `forceNewWindow` or `forceReuseWindow`, our choice. | The link's: `?windowId=_blank` asks for a new window (the web UI's href carries it), and without it VS Code reuses the window that had focus last. |
 
 The extension **does not build the authority itself**. It takes the server's `url` from the view, checks its shape with core's `vscodeURL` (the same regular expression the web UI checks it with, and the shape `internal/vscode.AttachURL` produces), and rewrites only the scheme and authority prefix: `vscode://vscode-remote/` becomes `vscode-remote://`. The hex JSON, the SSH authority's encoding (`ssh-remote+<host>` or the hex `{hostName,user,port}` form) and the path's percent-encoding stay in one place, `internal/vscode`, pinned against Dev Containers 0.470.0 by its tests.
 

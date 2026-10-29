@@ -780,6 +780,12 @@ function stub(id: string): Workspace {
  * — and an SSH host's is `{hostName, user?, port?}` held to config's
  * patterns. What the clients cannot check is which SSH host the server chose:
  * that is shown (`vscodeSSHHost`), not verified.
+ *
+ * No query and no fragment, not even `?windowId=_blank`: that is the web UI's
+ * own addition to its href (components/OpenInVSCode.vue), and the extension
+ * opens a new window itself. Shipped extensions refuse any query here, so the
+ * server never sends one (internal/vscode, "A new window, and why the link has no
+ * query").
  */
 const VSCODE_URL = /^vscode:\/\/vscode-remote\/attached-container\+([0-9a-f]+)@ssh-remote\+([A-Za-z0-9._-]+)(?:\/[A-Za-z0-9._~%-]*)+$/
 /** internal/vscode's containerName. */

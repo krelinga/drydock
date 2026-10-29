@@ -126,7 +126,9 @@ event id. Unknown is *"—"*, never 0; stale says so; memory only for `running`.
   the workspace page. Its state is the views' `vscode` field (`{configured, url}`, read from
   Docker by the server as it serves the view; no event carries it), reduced into
   `Workspace.vscode`/`vscodeAt`. The URL is kept only when it matches the shape internal/vscode
-  builds (`vscodeURL`: `vscode://vscode-remote/attached-container+<hex>@ssh-remote+<host>/<path>`),
+  builds (`vscodeURL`: `vscode://vscode-remote/attached-container+<hex>@ssh-remote+<host>/<path>`,
+  no query), and the anchor's `href` is it plus `?windowId=_blank`, which VS Code reads as *open a
+  new window* (the server never sends that: the extension reads the same `url` and refuses a query),
   and `vscodeLink` shows it only while running and only from a view no older than the latest
   state or container change — a rebuild renames the container. So both views refetch on a
   `workspace.state` to `running` (`becameRunning`). With no `--vscode-ssh-host`

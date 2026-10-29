@@ -1346,8 +1346,10 @@ turn it on instead.
   (`--vscode-ssh-host refused: …`) before anything changes. `--no-vscode-ssh-host` turns the link off
   again.
 - [ ] **Press Open in VS Code** on a running workspace. VS Code asks to confirm opening the link (an
-  external application opening a remote folder), then connects over Remote-SSH and opens the
-  repository inside the container. The link carries only the container's name, the SSH address
+  external application opening a remote folder), then opens a new window, connects over
+  Remote-SSH and opens the repository inside the container; the windows you already had open
+  stay as they were. If that workspace is already open in a VS Code window, VS Code switches to
+  that window instead of opening a second one. The link carries only the container's name, the SSH address
   and the folder: no token and no secret. A stopped workspace has no link — start it in Drydock
   first, so it has its broker.
 - [ ] **Never use VS Code's own *Rebuild Container*** on a Drydock workspace: it would replace
