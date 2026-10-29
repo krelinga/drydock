@@ -77,6 +77,10 @@ describe('Open in VS Code', () => {
 
   it('never renders a URL from the wire that internal/vscode could not have built', async () => {
     const b = freshBackend({ signedIn: true, vscodeHost: 'owner@devbox.lan' })
+    { // control: the server's own URL renders, opening a new window
+      const { wrapper } = await mountApp('/')
+      expect(card(wrapper).find('[data-test="open-vscode"]').attributes('href')).toBe(HREF)
+    }
     // The wire's URL carries no query: the new-window parameter is the UI's,
     // so one the server sent (even that one) is not internal/vscode's link.
     for (const bad of ['javascript:alert(1)', 'https://evil.example/', GOOD + '"><img src=x>', HREF, GOOD + '?x=1']) {

@@ -31,12 +31,16 @@
 // # A new window, and why the link has no query
 //
 // Opened as it is, the link replaces whichever VS Code window had focus last.
-// VS Code's handler opens a new one when the vscode:// URL carries
-// windowId=_blank (app.ts at microsoft/vscode d0434ad6ce: handleProtocolUrl
-// sets forceNewWindow from it, and the startup path opens an empty window for
-// such a link), and deletes the parameter first, so
-// getWindowOpenableFromProtocolUrl builds the same vscode-remote:// folder URI
-// with no query. The web UI appends ?windowId=_blank to its href
+// VS Code opens a new one when the vscode:// URL carries windowId=_blank
+// (src/vs/code/electron-main/app.ts at microsoft/vscode d0434ad6ce). With VS
+// Code running, handleProtocolUrl sets forceNewWindow from it and deletes it.
+// A link that launches VS Code goes through resolveInitialProtocolUrls
+// instead, whose openables open as windows of their own. On both paths
+// getWindowOpenableFromProtocolUrl also deletes it (microsoft/vscode#191902),
+// so the vscode-remote:// folder URI carries no query, and on both the
+// confirmation prompt is unchanged. A folder already open in a window is
+// focused there rather than opened twice (windowsMainService's
+// findWindowOnWorkspaceOrFolder). The web UI appends ?windowId=_blank to its href
 // (web/src/components/OpenInVSCode.vue); AttachURL does not, and the view's
 // url stays exactly this shape. That url is also the VS Code extension's, which
 // opens the folder in a new window itself (vscode.openFolder with
