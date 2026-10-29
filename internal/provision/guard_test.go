@@ -151,6 +151,12 @@ func TestGuardRefusalSentence(t *testing.T) {
 	if s := GuardRefusalSentence([]string{dockerguard.SettingNoPolicy}); !strings.Contains(s, "had no record") {
 		t.Errorf("%q", s)
 	}
+	// An open-ended runArgs is approved, so the sentence never says it was
+	// not, nor that starting again could help.
+	s = GuardRefusalSentence([]string{dockerguard.SettingRunArgsOpen, dockerguard.SettingPrivileged})
+	if !strings.Contains(s, "runArgs ends in an option with no value") || strings.Contains(s, "not approved") || strings.Contains(s, "starting again") {
+		t.Errorf("%q", s)
+	}
 }
 
 // approve records an approval for a repository, as POST …/config-approval

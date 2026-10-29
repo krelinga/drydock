@@ -64,8 +64,15 @@
 // workspace's container name, which titles VS Code's attached window — are
 // the one thing the guard adds to argv (WithAdded, before the check), to
 // every run and create: labels, not id-labels, and a name the CLI never sees,
-// so the CLI's container matching and ${devcontainerId} are untouched. An
-// approved runArgs is never matched against the guard's own additions. A
+// so the CLI's container matching and ${devcontainerId} are untouched.
+//
+// An approved runArgs must be self-contained (openEnded: its last argument is
+// not an option that may take a value and carries none, and it has no "--"),
+// or it is refused even approved (runArgs_open_ended): docker gives such an
+// option the next argument written after it, so a removed bare -l left the
+// CLI's own -l to take another and the rest was read one place out. And it is
+// removed only where it starts an option of the guard's own parse — never on
+// an option's value, never from the guard's additions at the front. A
 // start of a container whose local_folder
 // is not the clone, or whose config_file is neither path the CLI looks at in
 // it, is refused (startableLabel: the label was fixed at create, and the
@@ -121,6 +128,7 @@ import (
 	"regexp"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -200,6 +208,10 @@ const (
 	SettingAppPort     = "appPort"
 	SettingGPU         = "hostRequirements.gpu"
 	SettingRunArgs     = "runArgs"
+	// SettingRunArgsOpen is an approved runArgs that is not self-contained
+	// — it ends in an option with no value — refused even approved, since
+	// docker would give that option the next argument written after it.
+	SettingRunArgsOpen = "runArgs_open_ended"
 	SettingBuildOpts   = "build.options"
 	SettingBuildCtx    = "build.context"
 	SettingDockerfile  = "build.dockerfile"
@@ -429,44 +441,59 @@ func parseOptions(args []string, table map[string]flagSpec) (opts []parsed, posi
 // parseFrom is parseOptions, also returning what follows an unknown option.
 func parseFrom(args []string, table map[string]flagSpec) (opts []parsed, positional []string, unknown string, after []string) {
 	i := 0
-	for ; i < len(args); i++ {
-		x := args[i]
-		if x == "-" || !strings.HasPrefix(x, "-") {
+	for i < len(args) {
+		o, n, u := parseOne(args, i, table)
+		if u != "" {
+			return opts, nil, u, args[i+1:]
+		}
+		if n == 0 {
 			break
 		}
-		name, val, hasVal := x, "", false
-		switch {
-		case strings.HasPrefix(x, "--"):
-			if k, v, ok := strings.Cut(x, "="); ok {
-				name, val, hasVal = k, v, true
-			}
-		case len(x) > 2:
-			// -pVALUE or a cluster such as -it: neither is what the CLI
-			// writes, and reading either wrongly is reading the command
-			// wrongly.
-			return opts, nil, x, args[i+1:]
-		}
-		spec, ok := table[name]
-		if !ok {
-			return opts, nil, name, args[i+1:]
-		}
-		if spec.bool {
-			switch {
-			case !hasVal:
-				val = "true"
-			case val != "true" && val != "false":
-				return opts, nil, x, args[i+1:]
-			}
-		} else if !hasVal {
-			if i+1 >= len(args) {
-				return opts, nil, x, args[i+1:]
-			}
-			i++
-			val = args[i]
-		}
-		opts = append(opts, parsed{name: name, value: val, spec: spec})
+		opts = append(opts, o)
+		i += n
 	}
 	return opts, args[i:], "", nil
+}
+
+// parseOne reads the option at args[i]: it, and how many arguments it took
+// (0 at a positional); or the option it does not know, whose arity is
+// exactly what is not known.
+func parseOne(args []string, i int, table map[string]flagSpec) (o parsed, n int, unknown string) {
+	x := args[i]
+	if x == "-" || !strings.HasPrefix(x, "-") {
+		return parsed{}, 0, ""
+	}
+	name, val, hasVal := x, "", false
+	switch {
+	case strings.HasPrefix(x, "--"):
+		if k, v, ok := strings.Cut(x, "="); ok {
+			name, val, hasVal = k, v, true
+		}
+	case len(x) > 2:
+		// -pVALUE or a cluster such as -it: neither is what the CLI
+		// writes, and reading either wrongly is reading the command
+		// wrongly.
+		return parsed{}, 0, x
+	}
+	spec, ok := table[name]
+	if !ok {
+		return parsed{}, 0, name
+	}
+	n = 1
+	if spec.bool {
+		switch {
+		case !hasVal:
+			val = "true"
+		case val != "true" && val != "false":
+			return parsed{}, 0, x
+		}
+	} else if !hasVal {
+		if i+1 >= len(args) {
+			return parsed{}, 0, x
+		}
+		val, n = args[i+1], 2
+	}
+	return parsed{name: name, value: val, spec: spec}, n, ""
 }
 
 // run checks `docker run` and `docker create`.
@@ -478,39 +505,123 @@ func (c *checker) run(args []string) Decision {
 	// runArgs is approved as a whole: the CLI writes it into argv verbatim
 	// and in order (measured), so an approved value is removed as one
 	// contiguous run of arguments and what remains is read option by option.
+	// Two rules keep that removal from changing how the rest is read:
 	//
-	// Never from the guard's own additions, which lead argv (WithAdded): an
-	// approved runArgs that is a bare "--name" or "-l" would otherwise take
-	// the guard's flag and leave its value to be read as the image, ending
-	// the parse before anything after it is checked. They are read as
-	// options all the same, below, as docker will read them.
-	own := added(c.p)
-	head, rest := args[:0:0], args
-	if len(own) > 0 && len(args) >= len(own) && slices.Equal(args[:len(own)], own) {
-		head, rest = args[:len(own)], args[len(own):]
-	}
-	for _, ra := range c.p.stringLists("runArgs") {
-		rest = removeRun(rest, ra)
-	}
-	args = append(append([]string(nil), head...), rest...)
-	for len(args) > 0 {
-		opts, _, unknown, after := parseFrom(args, runFlags)
-		for _, o := range opts {
-			c.option(o)
+	// An approved runArgs must be self-contained (openEnded). One that ends
+	// in an option with no value — a bare "-l" — takes, in docker, the next
+	// argument the CLI writes as its value; removed, it leaves the option the
+	// CLI or the guard wrote to take another, and every argument after is
+	// read one place out — "-l --init --privileged" ran privileged, unread.
+	// It is refused even approved, failing closed: where it ends cannot be
+	// known, and it never did what its author meant.
+	//
+	// And it is removed only where it starts at an option boundary of the
+	// parse — never on the value of an option the CLI wrote, whatever that
+	// value says — and never from the guard's own additions, which lead argv
+	// (WithAdded) and are read as docker reads them.
+	approved := c.p.stringLists("runArgs")
+	for _, ra := range approved {
+		if why := openEnded(ra); why != "" {
+			c.refuse(SettingRunArgsOpen, "an approved runArgs "+why+
+				", which docker would give the next argument written after it: where it ends cannot be known")
 		}
+	}
+	if len(c.settings) > 0 {
+		return c.decision("run")
+	}
+	own := added(c.p)
+	from := 0
+	if len(own) > 0 && len(args) >= len(own) && slices.Equal(args[:len(own)], own) {
+		from = len(own)
+	}
+	used := make([]bool, len(approved))
+	i := 0
+	for i < len(args) {
+		if a := args[i]; a == "-" || !strings.HasPrefix(a, "-") {
+			break // the image
+		}
+		if i >= from {
+			if n := removeAt(args, i, approved, used); n > 0 {
+				i += n
+				continue
+			}
+		}
+		o, n, unknown := parseOne(args, i, runFlags)
 		if unknown == "" {
-			break
+			c.option(o)
+			i += n
+			continue
 		}
 		// Refused already. The rest is read on, from the next option, only
 		// so the refusal names everything it can: which arguments belonged
 		// to the unknown option cannot be known.
 		c.refuse(SettingRunArgs, "an option the guard does not know: "+unknown)
-		for len(after) > 0 && !strings.HasPrefix(after[0], "-") {
-			after = after[1:]
+		for i++; i < len(args) && !strings.HasPrefix(args[i], "-"); i++ {
 		}
-		args = after
 	}
 	return c.decision("run")
+}
+
+// removeAt is how many arguments an approved runArgs not yet used takes at
+// args[i], an option boundary: the first that is args[i:] verbatim, marked
+// used, or 0. Each approved runArgs is removed once, as the CLI writes it once.
+func removeAt(args []string, i int, approved [][]string, used []bool) int {
+	for k, ra := range approved {
+		if used[k] || len(ra) == 0 || i+len(ra) > len(args) || !slices.Equal(args[i:i+len(ra)], ra) {
+			continue
+		}
+		used[k] = true
+		return len(ra)
+	}
+	return 0
+}
+
+// runBools are docker run's boolean options (Docker 29, `docker run --help`),
+// long and short: the only options an approved runArgs may end in bare. Any
+// other — one the guard's own table gives a value, one it does not know —
+// may take a value, so a runArgs ending in it is open-ended (fail closed).
+var (
+	runBools = set("--detach", "--disable-content-trust", "--help", "--init", "--interactive",
+		"--no-healthcheck", "--oom-kill-disable", "--privileged", "--publish-all", "--quiet",
+		"--read-only", "--rm", "--sig-proxy", "--tty", "--use-api-socket")
+	runShortBools = set("d", "i", "P", "q", "t")
+)
+
+// openEnded says why an approved runArgs is not self-contained, or "": it
+// carries "--", after which docker reads no option, or its last argument is
+// an option that may take a value and carries none — `--label` rather than
+// `--label=x`, `-l` or a cluster ending in it (`-il`) rather than `-lx` or
+// `-l x`. pflag reads a short cluster flag by flag until one takes a value,
+// which is the rest of the argument, or the next argument when none is left.
+func openEnded(ra []string) string {
+	if len(ra) == 0 {
+		return ""
+	}
+	if slices.Contains(ra, "--") {
+		return `carries "--"`
+	}
+	last := ra[len(ra)-1]
+	switch {
+	case last == "-" || !strings.HasPrefix(last, "-"):
+		return ""
+	case strings.HasPrefix(last, "--"):
+		if strings.Contains(last, "=") || runBools[last] {
+			return ""
+		}
+	default:
+		for j, ch := range last[1:] {
+			if !runShortBools[string(ch)] {
+				if j < len(last)-2 {
+					return "" // the rest of the argument is its value
+				}
+				break
+			}
+			if j == len(last)-2 {
+				return "" // a cluster of booleans
+			}
+		}
+	}
+	return "ending in " + strconv.Quote(last) + " with no value"
 }
 
 // option checks one parsed run or exec option.

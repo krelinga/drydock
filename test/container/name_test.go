@@ -142,7 +142,9 @@ func TestWorkspaceContainersAreNamed(t *testing.T) {
 // which the CLI lists first, as the newer), the one it keeps still holds its
 // name. Here a Manager whose every name is the same (zeros), the control,
 // fails that rebuild on the name; the real one, drawing a new suffix per up,
-// rebuilds beside it.
+// rebuilds beside it. Beside it: the older container still stands after,
+// as it did before containers were named — the suffix stops the rebuild
+// failing, and removes nothing (design §6).
 func TestAFixedNameWouldConflict(t *testing.T) {
 	needDevcontainer(t)
 	pullImage(t, image)

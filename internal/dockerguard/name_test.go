@@ -117,34 +117,6 @@ func TestARepositorysOwnNameIsKept(t *testing.T) {
 	}
 }
 
-// An approved runArgs is never matched against the guard's own additions.
-// A bare "--name" (or "-l") approved as runArgs would otherwise be removed
-// from the guard's flag rather than the repository's, leaving the guard's
-// value to read as the image: the parse ends there, and what the CLI wrote
-// between the guard's additions and the repository's runArgs — the mounts,
-// where a moved Feature's bind of / would be — would pass unread. The
-// control is the same approval and argv without that mount, which passes.
-func TestApprovedRunArgsNeverTakeTheGuardsOwn(t *testing.T) {
-	root := t.TempDir()
-	for _, bare := range []string{"--name", "-l"} {
-		raw, _ := json.Marshal([]string{bare})
-		p := labelPolicy(root)
-		p.Name = fixtureName
-		p.Approved = []Setting{{"runArgs", raw}}
-		base := WithAdded(p, command(t, Recorded(t, "image", root), "run"))
-		// The repository's runArgs, as the CLI writes it: the bare flag, then
-		// the CLI's next argument, which docker takes as its value.
-		at := len(added(p)) + 1
-		ok := insert(base, at, bare, "theirs")
-		if d := Check(p, ok); d.Refused {
-			t.Errorf("control, %s: refused %+v", bare, d)
-		}
-		if d := Check(p, insert(ok, at, "--mount", "type=bind,source=/,target=/host")); !d.Refused || !reflect.DeepEqual(d.Settings, []string{SettingMounts}) {
-			t.Errorf("%s approved: a bind of / before it: %+v, want refused naming %s", bare, d, SettingMounts)
-		}
-	}
-}
-
 // A policy whose name Docker would not accept is no policy: the guard
 // refuses what it would have run under it. The control is a valid name.
 func TestAPolicyWithABadNameIsUnreadable(t *testing.T) {

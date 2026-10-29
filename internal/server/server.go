@@ -210,7 +210,7 @@ func New(ctx context.Context, cfg config.Config, env sys.Env) (*Server, error) {
 	self, _ := os.Executable()
 	containers := container.Manager{Run: subproc.Exec{}, LabelPrefix: cfg.LabelPrefix, CleanupImage: cfg.CleanupImage,
 		ClaudeUID: os.Getuid(), ClaudeGID: os.Getgid(), Guard: &dockerguard.Guard{Binary: self},
-		LocalAddrs: previewLocalAddrs, Clock: env.Clock,
+		LocalAddrs: previewLocalAddrs, Clock: env.Clock, Random: env.Random,
 		Logf: func(f string, a ...any) { fmt.Fprintf(os.Stderr, f+"\n", a...) }}
 	if browserTierBuild {
 		fmt.Fprintln(os.Stderr, "drydock: built for the browser tier (-tags browsertier): a preview container at one of this host's own addresses is dialled. Never a release.")
