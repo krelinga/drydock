@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
 	"time"
 
 	"github.com/krelinga/drydock/internal/events"
@@ -33,7 +32,8 @@ type Store struct {
 	DB     *sql.DB
 	Events *events.Log
 	Env    sys.Env
-	// Root is the workspace root: a workspace's clone is Root/<id>/repo.
+	// Root is the workspace root: a workspace's clone is Root/<id>/<name>,
+	// the repository's name without its owner (ClonePath).
 	Root string
 	// Cap is the concurrent-container cap (config.ContainerCap).
 	Cap int
@@ -67,6 +67,10 @@ var (
 	ErrInProgress = errors.New("workspace: this repository already has a workspace")
 	// ErrAtCap refuses a create past the concurrent-container cap (§6 step 1).
 	ErrAtCap = errors.New("workspace: the concurrent-container cap is reached")
+	// ErrBadCloneFolder refuses a create for a repository whose name cannot
+	// name its clone folder (CloneFolder): one with no owner, or a character
+	// outside GitHub's [A-Za-z0-9._-] — which GitHub itself never issues.
+	ErrBadCloneFolder = errors.New("workspace: the repository's name cannot name a clone folder")
 	// ErrNotFound is a workspace id with no row.
 	ErrNotFound = errors.New("workspace: no such workspace")
 )
@@ -83,10 +87,7 @@ func (s *Store) Create(ctx context.Context, repositoryID int64, branch string) (
 	if err != nil {
 		return Workspace{}, err
 	}
-	w := Workspace{
-		ID: id, RepositoryID: repositoryID, Branch: branch, State: Pending,
-		HostPath: filepath.Join(s.Root, id, "repo"), CreatedAt: now,
-	}
+	w := Workspace{ID: id, RepositoryID: repositoryID, Branch: branch, State: Pending, CreatedAt: now}
 
 	// One transaction for the two checks, the insert and its event, so two
 	// creates racing past the checks cannot both land: the store opens every
@@ -108,6 +109,19 @@ func (s *Store) Create(ctx context.Context, repositoryID int64, branch string) (
 		if s.Cap > 0 && total >= s.Cap {
 			return nil, ErrAtCap
 		}
+		// The clone is named after the repository as recorded now, and the
+		// path is kept on the row: a rename on GitHub after this never moves
+		// the folder, since everything after reads host_path.
+		var fullName string
+		if err := tx.QueryRowContext(ctx, `SELECT full_name FROM repository WHERE id = ?`,
+			repositoryID).Scan(&fullName); err != nil {
+			return nil, fmt.Errorf("workspace: the repository's name: %w", err)
+		}
+		hostPath, err := ClonePath(s.Root, id, fullName)
+		if err != nil {
+			return nil, fmt.Errorf("%w: %w", ErrBadCloneFolder, err)
+		}
+		w.HostPath = hostPath
 		if _, err := tx.ExecContext(ctx,
 			`INSERT INTO workspace (id, repository_id, host_path, branch, state, created_at)
 			 VALUES (?, ?, ?, ?, ?, ?)`,
@@ -438,13 +452,17 @@ func ts(t time.Time) string { return t.UTC().Format(time.RFC3339Nano) }
 // purpose: the container already exists, and refusing to record it would
 // not make it go away, only make it invisible. The repository row is a cache
 // (§4), so a stub is written if the repository is not known yet, for the
-// next catalog refresh to fill in.
+// next catalog refresh to fill in. w.HostPath is the clone, as
+// OrphanClonePath gives it.
 func (s *Store) Adopt(ctx context.Context, w Workspace, fullName string) error {
 	if w.State != Running && w.State != Stopped {
 		return fmt.Errorf("workspace: an orphan is adopted as running or stopped, not %s", w.State)
 	}
-	if w.HostPath == "" {
-		w.HostPath = filepath.Join(s.Root, w.ID, "repo")
+	// The clone's path is OrphanClonePath's, which reconciliation's plan
+	// decided by; it is checked again here, so nothing but a clone path
+	// under this root is ever recorded.
+	if err := CheckClonePath(s.Root, w.ID, w.HostPath); err != nil {
+		return fmt.Errorf("workspace: adopt %s: %w", w.ID, err)
 	}
 	now := s.Env.Clock.Now().UTC()
 	_, err := s.Events.Commit(ctx, func(tx *sql.Tx) ([]events.Event, error) {

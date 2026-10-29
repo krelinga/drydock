@@ -14,30 +14,51 @@ import (
 	"github.com/krelinga/drydock/internal/subproc"
 )
 
-// builtImageBase is the one shape of workspace folder basename Drydock gives
-// the CLI ("repo"), and the only one whose image names are computed here: the
-// CLI also lowercases and strips other characters, which this does not copy.
-var builtImageBase = regexp.MustCompile(`^[a-z0-9]+$`)
+// builtImageBase is the shape of workspace folder basename Drydock gives the
+// CLI — a repository's name, GitHub's charset (workspace.CloneFolder) — and
+// the only one whose image names are computed here.
+var builtImageBase = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
+
+// The CLI's image-name sanitiser (CLI 0.89.0's HN in
+// dist/spec-node/devContainersSpecCLI.js), applied to the whole
+// `vsc-<basename>-<hash>`: lowercase, drop anything outside [a-z0-9._-], then
+// collapse each run of separators Docker would refuse to its first character
+// (a match becomes its first group less that group's last character).
+var (
+	cliImageStrip = regexp.MustCompile(`[^a-z0-9._-]+`)
+	cliImageSeps  = regexp.MustCompile(`(\.[._-]|_[.-]|__[._-]|-+[._])[._-]*`)
+)
+
+// cliImageName is the CLI's HN: what it makes of an image name.
+func cliImageName(s string) string {
+	s = cliImageStrip.ReplaceAllString(strings.ToLower(s), "")
+	return cliImageSeps.ReplaceAllStringFunc(s, func(m string) string {
+		g := cliImageSeps.FindStringSubmatch(m)[1]
+		return g[:len(g)-1]
+	})
+}
 
 // BuiltImages are the names `devcontainer up` gives the images it builds for
 // a workspace folder, measured on CLI 0.89.0: `vsc-<basename>-<sha256 of the
-// folder's path>`, which a Dockerfile build is tagged, and that name with
-// `-features` (the image with Features installed, Drydock's own among them),
-// `-uid` (the remote user's uid updated) and `-features-uid`. The hash is of
-// --workspace-folder, not of the process's working directory, so each
-// workspace's names are its own: the folder is <root>/<id>/repo, and the id
-// is a ULID no other workspace has. Nothing labels these images, so the name
-// is the only handle, and it is exact — never a pattern, never a prune.
+// folder's path>`, lowercased and with runs of separators collapsed as the
+// CLI does (cliImageName), which a Dockerfile build is tagged, and that name
+// with `-features` (the image with Features installed, Drydock's own among
+// them), `-uid` (the remote user's uid updated) and `-features-uid`. The hash
+// is of --workspace-folder, not of the process's working directory, and of
+// the path as it is — case kept — so each workspace's names are its own: the
+// folder is <root>/<id>/<repository name>, and the id is a ULID no other
+// workspace has. Nothing labels these images, so the name is the only handle,
+// and it is exact — never a pattern, never a prune.
 func BuiltImages(folder string) ([]string, error) {
 	if !filepath.IsAbs(folder) || filepath.Clean(folder) != folder {
 		return nil, fmt.Errorf("container: %q is not a clean absolute workspace folder", folder)
 	}
 	base := filepath.Base(folder)
-	if !builtImageBase.MatchString(base) {
+	if !builtImageBase.MatchString(base) || base == "." || base == ".." {
 		return nil, fmt.Errorf("container: cannot compute the CLI's image names for a folder named %q", base)
 	}
 	sum := sha256.Sum256([]byte(folder))
-	name := "vsc-" + base + "-" + hex.EncodeToString(sum[:])
+	name := cliImageName("vsc-" + base + "-" + hex.EncodeToString(sum[:]))
 	return []string{name, name + "-features", name + "-uid", name + "-features-uid"}, nil
 }
 

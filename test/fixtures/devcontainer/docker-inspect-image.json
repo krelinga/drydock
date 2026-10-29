@@ -1,7 +1,7 @@
 [
     {
-        "Id": "3ed61b9aa9d2c28df224cfd61559c2120b62d26edae572ce5554d58803bc619e",
-        "Created": "2026-10-08T21:22:48.180281688Z",
+        "Id": "1fe5855c3563bef1b08ffb02e77a1353d57b84e089266cfb99b627209ba5b1bc",
+        "Created": "2026-10-29T20:24:29.197188702Z",
         "Path": "/bin/sh",
         "Args": [
             "-c",
@@ -15,25 +15,27 @@
             "Restarting": false,
             "OOMKilled": false,
             "Dead": false,
-            "Pid": 3430360,
+            "Pid": 501803,
             "ExitCode": 0,
             "Error": "",
-            "StartedAt": "2026-10-08T21:22:48.248212078Z",
+            "StartedAt": "2026-10-29T20:24:29.241934685Z",
             "FinishedAt": "0001-01-01T00:00:00Z"
         },
-        "Image": "sha256:470f56b75135af11059eb86932dd2d50ca488e63697081440d1b8d61cab76e76",
-        "ResolvConfPath": "/var/lib/docker/containers/3ed61b9aa9d2c28df224cfd61559c2120b62d26edae572ce5554d58803bc619e/resolv.conf",
-        "HostnamePath": "/var/lib/docker/containers/3ed61b9aa9d2c28df224cfd61559c2120b62d26edae572ce5554d58803bc619e/hostname",
-        "HostsPath": "/var/lib/docker/containers/3ed61b9aa9d2c28df224cfd61559c2120b62d26edae572ce5554d58803bc619e/hosts",
-        "LogPath": "/var/lib/docker/containers/3ed61b9aa9d2c28df224cfd61559c2120b62d26edae572ce5554d58803bc619e/3ed61b9aa9d2c28df224cfd61559c2120b62d26edae572ce5554d58803bc619e-json.log",
-        "Name": "/upbeat_wing",
+        "Image": "sha256:f33d87fe9677e9bac0e3b6cad10a640c0403004d11af0915f44adc251ba792bd",
+        "ResolvConfPath": "/var/lib/docker/containers/1fe5855c3563bef1b08ffb02e77a1353d57b84e089266cfb99b627209ba5b1bc/resolv.conf",
+        "HostnamePath": "/var/lib/docker/containers/1fe5855c3563bef1b08ffb02e77a1353d57b84e089266cfb99b627209ba5b1bc/hostname",
+        "HostsPath": "/var/lib/docker/containers/1fe5855c3563bef1b08ffb02e77a1353d57b84e089266cfb99b627209ba5b1bc/hosts",
+        "LogPath": "/var/lib/docker/containers/1fe5855c3563bef1b08ffb02e77a1353d57b84e089266cfb99b627209ba5b1bc/1fe5855c3563bef1b08ffb02e77a1353d57b84e089266cfb99b627209ba5b1bc-json.log",
+        "Name": "/brave_borg",
         "RestartCount": 0,
         "Driver": "overlayfs",
         "Platform": "linux",
         "MountLabel": "",
         "ProcessLabel": "",
         "AppArmorProfile": "docker-default",
-        "ExecIDs": null,
+        "ExecIDs": [
+            "6b9160c2077b7ea52b304694424e2527dd967389f5f7105730e080ca35b952b8"
+        ],
         "HostConfig": {
             "Binds": null,
             "ContainerIDFile": "",
@@ -108,8 +110,8 @@
             "Mounts": [
                 {
                     "Type": "bind",
-                    "Source": "/srv/drydock/ws/FIXTURE/repo",
-                    "Target": "/workspaces/repo"
+                    "Source": "/srv/drydock/ws/FIXTURE/fixture",
+                    "Target": "/workspaces/fixture"
                 },
                 {
                     "Type": "bind",
@@ -162,8 +164,8 @@
             },
             {
                 "Type": "bind",
-                "Source": "/srv/drydock/ws/FIXTURE/repo",
-                "Destination": "/workspaces/repo",
+                "Source": "/srv/drydock/ws/FIXTURE/fixture",
+                "Destination": "/workspaces/fixture",
                 "Mode": "",
                 "RW": true,
                 "Propagation": "rprivate"
@@ -180,7 +182,7 @@
             }
         ],
         "Config": {
-            "Hostname": "3ed61b9aa9d2",
+            "Hostname": "1fe5855c3563",
             "Domainname": "",
             "User": "root",
             "AttachStdin": false,
@@ -198,7 +200,7 @@
                 "echo Container started\ntrap \"exit 0\" 15\n\nexec \"$@\"\nwhile sleep 1 & wait $!; do :; done",
                 "-"
             ],
-            "Image": "vsc-repo-b7a747e1460a2eea873a6a32975c849b1759e380117f4ee7039aab851042431c-uid",
+            "Image": "vsc-fixture-0341dfa25e84d13b6939498ee4f819d0a5385ee2d80529a1fa999d944bd5d7ab-uid",
             "Volumes": null,
             "WorkingDir": "",
             "Entrypoint": [
@@ -206,21 +208,21 @@
             ],
             "Labels": {
                 "dev.containers.id": "base-debian",
-                "dev.containers.release": "v0.4.34",
+                "dev.containers.release": "v0.4.37",
                 "dev.containers.source": "https://github.com/devcontainers/images",
-                "dev.containers.timestamp": "Thu, 08 Oct 2026 15:40:21 GMT",
+                "dev.containers.timestamp": "Wed, 28 Oct 2026 18:32:17 GMT",
                 "dev.containers.variant": "trixie",
                 "devcontainer.metadata": "[{\"id\":\"ghcr.io/devcontainers/features/common-utils:2\"},{\"id\":\"ghcr.io/devcontainers/features/git:1\",\"customizations\":{\"vscode\":{\"settings\":{\"github.copilot.chat.codeGeneration.instructions\":[{\"text\":\"This dev container includes an up-to-date version of Git, built from source as needed, pre-installed and available on the `PATH`.\"}]}}}},{\"remoteUser\":\"vscode\"}]",
                 "drydock.branch": "main",
                 "drydock.repo": "krelinga/fixture",
                 "drydock.repository-id": "101",
                 "drydock.workspace": "01JFIXTVRE0000000000000000",
-                "version": "2.2.2"
+                "version": "2.2.5"
             }
         },
         "NetworkSettings": {
-            "SandboxID": "56bbeb5f957850269b7471acc099d32b26b19b767ddc194bca4cb742f4b94a0d",
-            "SandboxKey": "/var/run/docker/netns/56bbeb5f9578",
+            "SandboxID": "79dbd56f3df3f8b3660ee99d887c66c4680295dd66d976b39f65256b2b05091b",
+            "SandboxKey": "/var/run/docker/netns/79dbd56f3df3",
             "Ports": {},
             "Networks": {
                 "bridge": {
@@ -229,11 +231,11 @@
                     "Aliases": null,
                     "DriverOpts": null,
                     "GwPriority": 0,
-                    "NetworkID": "f647da6f3a3f6c14d5d342460df65fba600de24ec1718b5c97656f7afaf8f77c",
-                    "EndpointID": "de792f5cb5ff7eb86e9d49ae4ec74faa7d391c12b077da89dbff94c074c3f21b",
+                    "NetworkID": "7c7b9169c6107f8dc6a03b1b85cb2c83b6f99ddefc54e70ab9f7385ff49b68ae",
+                    "EndpointID": "576ba52b83eb6fc315e3398295d54be4cfd4014650bc33c636a8021b044f0630",
                     "Gateway": "172.18.0.1",
                     "IPAddress": "172.18.0.2",
-                    "MacAddress": "2a:64:38:ac:37:bb",
+                    "MacAddress": "1e:34:2d:bf:64:59",
                     "IPPrefixLen": 16,
                     "IPv6Gateway": "",
                     "GlobalIPv6Address": "",
@@ -244,8 +246,8 @@
         },
         "ImageManifestDescriptor": {
             "mediaType": "application/vnd.oci.image.manifest.v1+json",
-            "digest": "sha256:ce9ee604d52a7635d1c24f18f14538fd4f46b2d61c15cefc2f490d4854a12627",
-            "size": 2193,
+            "digest": "sha256:c2cffd7196a6534d85af71661a4b7027ca7a77e0f12fb0b198c76f8f5448dee3",
+            "size": 2190,
             "platform": {
                 "architecture": "amd64",
                 "os": "linux"

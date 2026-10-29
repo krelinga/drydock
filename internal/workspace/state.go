@@ -27,6 +27,20 @@
 // commit as repo.removed (events.KindRepoRemoved, {repository_ids}),
 // after workspace.gone: a repo.* event is what makes an open catalog refetch.
 //
+// The clone is <Root>/<id>/<name>, the repository's name without its owner
+// in its own case (ClonePath, the one function every component derives it
+// with), so the devcontainer CLI's image (vsc-<name>-…) and workspace folder
+// (/workspaces/<name>) name the repository. Create records it on the row as
+// host_path from the name as recorded then, so a rename on GitHub never moves
+// it, and everything after reads the row; an orphan's comes from
+// OrphanClonePath (its local_folder label, or the labelled name), which
+// reconciliation plans and adopts by. Leading characters that are not a
+// letter or digit are dropped, and "repo" is the folder when nothing is
+// left, so every folder gives a project name Docker Compose accepts; a
+// folder is in GitHub's charset and starts with a letter or digit, so it is
+// never ".", ".." or OwnDir (.drydock), and CheckClonePath holds a stored
+// path to the same shape.
+//
 // Annotate sets state_detail without a move (a stuck delete, a failed stop)
 // and ClearDetail removes it as the retry starts, each a workspace.state event
 // with from equal to state.

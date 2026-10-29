@@ -154,7 +154,7 @@ func TestViteHMRThroughThePreviewProxy(t *testing.T) {
 		t.Fatalf("create: %d %s", status, body)
 	}
 	ws := created.ID
-	// The images `up` built for this workspace's folder (vsc-repo-…-features
+	// The images `up` built for this workspace's folder (vsc-viteapp-…-features
 	// and -features-uid) are named by its folder, not labelled, so prefix's
 	// cleanup never finds them: remove the container first, then them.
 	t.Cleanup(func() {
@@ -162,7 +162,7 @@ func TestViteHMRThroughThePreviewProxy(t *testing.T) {
 		if ids, _ := manager(p).Find(ctx, ws); len(ids) > 0 {
 			exec.Command("docker", append([]string{"rm", "-f", "--"}, ids...)...).Run()
 		}
-		if _, err := manager(p).RemoveBuiltImages(ctx, filepath.Join(cfg.WorkspaceRoot, ws, "repo")); err != nil {
+		if _, err := manager(p).RemoveBuiltImages(ctx, filepath.Join(cfg.WorkspaceRoot, ws, "viteapp")); err != nil {
 			t.Logf("removing the images up built: %v", err)
 		}
 	})
@@ -194,7 +194,7 @@ func TestViteHMRThroughThePreviewProxy(t *testing.T) {
 	}
 
 	// Vite, from npm, as root; then served as the remote user from the clone.
-	folder := docker(t, "inspect", "--format", `{{range .Mounts}}{{if eq .Source "`+filepath.Join(cfg.WorkspaceRoot, ws, "repo")+`"}}{{.Destination}}{{end}}{{end}}`, id)
+	folder := docker(t, "inspect", "--format", `{{range .Mounts}}{{if eq .Source "`+filepath.Join(cfg.WorkspaceRoot, ws, "viteapp")+`"}}{{.Destination}}{{end}}{{end}}`, id)
 	if folder == "" {
 		t.Fatal("no mount of the clone in the container")
 	}
@@ -317,7 +317,7 @@ func TestViteHMRThroughThePreviewProxy(t *testing.T) {
 	}
 	// Edit the module on the host; the container sees it through the bind
 	// mount, and Vite pushes the update down the proxied socket.
-	if err := os.WriteFile(filepath.Join(cfg.WorkspaceRoot, ws, "repo", "main.js"),
+	if err := os.WriteFile(filepath.Join(cfg.WorkspaceRoot, ws, "viteapp", "main.js"),
 		[]byte(strings.Replace(viteMain, "version one", "version two", 1)), 0o644); err != nil {
 		t.Fatal(err)
 	}

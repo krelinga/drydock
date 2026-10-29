@@ -1,7 +1,7 @@
 [
     {
-        "Id": "ab2c38e59b1aefe693e10772633613ea15d15a02edcdf47679e2a28434ecf82c",
-        "Created": "2026-10-08T21:23:09.944724016Z",
+        "Id": "c8d4c71af752114db6c7c53bb383c9a23a61b8cb394387d977e4d456449dabcb",
+        "Created": "2026-10-29T20:24:50.418546979Z",
         "Path": "/bin/sh",
         "Args": [
             "-c",
@@ -15,18 +15,18 @@
             "Restarting": false,
             "OOMKilled": false,
             "Dead": false,
-            "Pid": 3435468,
+            "Pid": 508212,
             "ExitCode": 0,
             "Error": "",
-            "StartedAt": "2026-10-08T21:23:10.056748157Z",
+            "StartedAt": "2026-10-29T20:24:50.446892645Z",
             "FinishedAt": "0001-01-01T00:00:00Z"
         },
-        "Image": "sha256:8ec965181daa072361fcd9201bbd67f93e4dadb0bc85da8d35de3592e0dcf6c7",
-        "ResolvConfPath": "/var/lib/docker/containers/ab2c38e59b1aefe693e10772633613ea15d15a02edcdf47679e2a28434ecf82c/resolv.conf",
-        "HostnamePath": "/var/lib/docker/containers/ab2c38e59b1aefe693e10772633613ea15d15a02edcdf47679e2a28434ecf82c/hostname",
-        "HostsPath": "/var/lib/docker/containers/ab2c38e59b1aefe693e10772633613ea15d15a02edcdf47679e2a28434ecf82c/hosts",
-        "LogPath": "/var/lib/docker/containers/ab2c38e59b1aefe693e10772633613ea15d15a02edcdf47679e2a28434ecf82c/ab2c38e59b1aefe693e10772633613ea15d15a02edcdf47679e2a28434ecf82c-json.log",
-        "Name": "/mystifying_wescoff",
+        "Image": "sha256:abc09e53e0821f571d5336e5b9b6aa88ae2f88f96e4156d9530d38f78f62f0f0",
+        "ResolvConfPath": "/var/lib/docker/containers/c8d4c71af752114db6c7c53bb383c9a23a61b8cb394387d977e4d456449dabcb/resolv.conf",
+        "HostnamePath": "/var/lib/docker/containers/c8d4c71af752114db6c7c53bb383c9a23a61b8cb394387d977e4d456449dabcb/hostname",
+        "HostsPath": "/var/lib/docker/containers/c8d4c71af752114db6c7c53bb383c9a23a61b8cb394387d977e4d456449dabcb/hosts",
+        "LogPath": "/var/lib/docker/containers/c8d4c71af752114db6c7c53bb383c9a23a61b8cb394387d977e4d456449dabcb/c8d4c71af752114db6c7c53bb383c9a23a61b8cb394387d977e4d456449dabcb-json.log",
+        "Name": "/cranky_nash",
         "RestartCount": 0,
         "Driver": "overlayfs",
         "Platform": "linux",
@@ -130,7 +130,7 @@
             "Mounts": [
                 {
                     "Type": "bind",
-                    "Source": "/srv/drydock/ws/FIXTURE/repo",
+                    "Source": "/srv/drydock/ws/FIXTURE/fixture",
                     "Target": "/workspaces/hostile",
                     "Consistency": "cached"
                 },
@@ -228,7 +228,7 @@
             },
             {
                 "Type": "bind",
-                "Source": "/srv/drydock/ws/FIXTURE/repo",
+                "Source": "/srv/drydock/ws/FIXTURE/fixture",
                 "Destination": "/workspaces/hostile",
                 "Mode": "",
                 "RW": true,
@@ -246,7 +246,7 @@
             }
         ],
         "Config": {
-            "Hostname": "4ae164c8e22a",
+            "Hostname": "aec899c697f6",
             "Domainname": "",
             "User": "root",
             "AttachStdin": false,
@@ -268,7 +268,7 @@
                 "echo Container started\ntrap \"exit 0\" 15\n\nexec \"$@\"\nwhile sleep 1 & wait $!; do :; done",
                 "-"
             ],
-            "Image": "vsc-repo-b328190faa9f0cb3281f8443dc300a98bea55dd27ccd00ffbb432d799a1f4846-uid",
+            "Image": "vsc-fixture-34766785643ca97023e66dbf4b2b1664bdd73016f5968f37cf1d2b2011201ccb-uid",
             "Volumes": null,
             "WorkingDir": "",
             "Entrypoint": [
@@ -276,20 +276,20 @@
             ],
             "Labels": {
                 "dev.containers.id": "base-debian",
-                "dev.containers.release": "v0.4.34",
+                "dev.containers.release": "v0.4.37",
                 "dev.containers.source": "https://github.com/devcontainers/images",
-                "dev.containers.timestamp": "Thu, 08 Oct 2026 15:40:21 GMT",
+                "dev.containers.timestamp": "Wed, 28 Oct 2026 18:32:17 GMT",
                 "dev.containers.variant": "trixie",
                 "devcontainer.metadata": "[{\"id\":\"ghcr.io/devcontainers/features/common-utils:2\"},{\"id\":\"ghcr.io/devcontainers/features/git:1\",\"customizations\":{\"vscode\":{\"settings\":{\"github.copilot.chat.codeGeneration.instructions\":[{\"text\":\"This dev container includes an up-to-date version of Git, built from source as needed, pre-installed and available on the `PATH`.\"}]}}}},{\"remoteUser\":\"vscode\"},{\"mounts\":[\"source=/etc/hostname,target=/host-hostname,type=bind\",{\"source\":\"/etc/hosts\",\"target\":\"/host-hosts\",\"type\":\"bind\"},\"source=named-${devcontainerId},target=/named,type=volume\",\"type=tmpfs,target=/scratch\"],\"init\":true,\"privileged\":true,\"capAdd\":[\"SYS_ADMIN\",\"SYS_PTRACE\"],\"securityOpt\":[\"apparmor=unconfined\",\"seccomp=unconfined\"],\"hostRequirements\":{\"gpu\":\"optional\"}}]",
                 "drydock.branch": "main",
                 "drydock.repo": "krelinga/fixture",
                 "drydock.repository-id": "101",
                 "drydock.workspace": "01JFIXTVRE0000000000000000",
-                "version": "2.2.2"
+                "version": "2.2.5"
             }
         },
         "NetworkSettings": {
-            "SandboxID": "6d31992cf46b6f84a9a05192c7cf366f320cc7eebb191905ae97028c677e3d88",
+            "SandboxID": "329929be176e5dbc5a60a53784558f4c1432bf6895aebbf4c9da75b65ce85885",
             "SandboxKey": "/var/run/docker/netns/default",
             "Ports": {},
             "Networks": {
@@ -300,7 +300,7 @@
                     "DriverOpts": null,
                     "GwPriority": 0,
                     "NetworkID": "c3f9948dcb2dad1b818a7d4b47ce5dd34d0ff2cad418e285b7255a85819887a4",
-                    "EndpointID": "03612218deccc575f64ccd3ef31f04745bb746029be10988cfe83eb88a89d25c",
+                    "EndpointID": "55540191129cea813db72c83853a4933b4b84785a2876ff2285ffca14f8dd427",
                     "Gateway": "",
                     "IPAddress": "",
                     "MacAddress": "",
@@ -314,8 +314,8 @@
         },
         "ImageManifestDescriptor": {
             "mediaType": "application/vnd.oci.image.manifest.v1+json",
-            "digest": "sha256:ce9ee604d52a7635d1c24f18f14538fd4f46b2d61c15cefc2f490d4854a12627",
-            "size": 2193,
+            "digest": "sha256:c2cffd7196a6534d85af71661a4b7027ca7a77e0f12fb0b198c76f8f5448dee3",
+            "size": 2190,
             "platform": {
                 "architecture": "amd64",
                 "os": "linux"

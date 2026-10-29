@@ -37,7 +37,7 @@ func TestCleanupArgsMountOnlyTheWorkspace(t *testing.T) {
 		{"the parent", wsID, "/srv/drydock/ws", testCleanupImage},
 		{"the filesystem root", wsID, "/", testCleanupImage},
 		{"another workspace", wsID, "/srv/drydock/ws/01JABCDEFGHJKMNPQRSTVWXYZ1", testCleanupImage},
-		{"the clone, not the directory", wsID, dir + "/repo", testCleanupImage},
+		{"the clone, not the directory", wsID, dir + "/alpha", testCleanupImage},
 		{"an unclean path", wsID, "/srv/drydock/ws/../ws/" + wsID, testCleanupImage},
 		{"a relative path", wsID, "ws/" + wsID, testCleanupImage},
 		{"mount options smuggled in", wsID, "/srv/x,source=/," + wsID, testCleanupImage},

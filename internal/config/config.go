@@ -62,7 +62,8 @@ type Config struct {
 	// other member.
 	SocketGroup string
 
-	// WorkspaceRoot is where clones live: /srv/drydock/ws/<id>/repo.
+	// WorkspaceRoot is where clones live: /srv/drydock/ws/<id>/<name>, the
+	// repository's name without its owner (workspace.ClonePath).
 	WorkspaceRoot string
 	// BrokerDir holds one token-broker socket per workspace (§6 step 5),
 	// each bind-mounted into its own container. Drydock makes it 0700:

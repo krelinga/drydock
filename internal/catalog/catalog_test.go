@@ -197,7 +197,7 @@ func TestRemovedRepositories(t *testing.T) {
 	e := newEnv(t)
 	e.refresh(t)
 	if _, err := e.cat.DB.ExecContext(ctx, `INSERT INTO workspace (id, repository_id, host_path, branch, state)
-		VALUES ('01JAAAAAAAAAAAAAAAAAAAAAAA', 1, '/srv/drydock/ws/x/repo', 'main', 'running')`); err != nil {
+		VALUES ('01JAAAAAAAAAAAAAAAAAAAAAAA', 1, '/srv/drydock/ws/01JAAAAAAAAAAAAAAAAAAAAAAA/plain', 'main', 'running')`); err != nil {
 		t.Fatal(err)
 	}
 	e.fake.Mu.Lock()
@@ -284,7 +284,7 @@ func TestReleasedRepositoryGrantsDoNotRevive(t *testing.T) {
 	e.refresh(t)
 	for _, q := range []string{
 		`INSERT INTO workspace (id, repository_id, host_path, branch, state)
-			VALUES ('01JAAAAAAAAAAAAAAAAAAAAAAA', 1, '/srv/drydock/ws/x/repo', 'main', 'running')`,
+			VALUES ('01JAAAAAAAAAAAAAAAAAAAAAAA', 1, '/srv/drydock/ws/01JAAAAAAAAAAAAAAAAAAAAAAA/plain', 'main', 'running')`,
 		`INSERT INTO secret (id, name, ciphertext, nonce, reach) VALUES ('s1', 'TEST_KEY', x'00', x'00', 'a test key')`,
 		`INSERT INTO secret_grant (secret_id, repository_id) VALUES ('s1', 1), ('s1', 3)`,
 		`INSERT INTO secret_access (secret_id, workspace_id, at) VALUES ('s1', '01JAAAAAAAAAAAAAAAAAAAAAAA', 'then')`,

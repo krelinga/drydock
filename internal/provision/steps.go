@@ -65,7 +65,7 @@ func (r *runState) dir(w workspace.Workspace) string {
 // Drydock does not understand is at that path.
 func (r *runState) allocate(_ context.Context, w workspace.Workspace) error {
 	dir := r.dir(w)
-	if w.HostPath != filepath.Join(dir, "repo") {
+	if workspace.CheckClonePath(r.p.Workspaces.Root, w.ID, w.HostPath) != nil {
 		return workspace.Public("The workspace's clone path is not under the workspace root.",
 			fmt.Errorf("host_path %q, root %q", w.HostPath, r.p.Workspaces.Root))
 	}
@@ -158,7 +158,7 @@ func (r *runState) resolveConfig(ctx context.Context, w workspace.Workspace) err
 	}
 	r.override = ""
 	if !has {
-		r.override = filepath.Join(r.dir(w), ".drydock", "devcontainer.json")
+		r.override = filepath.Join(r.dir(w), workspace.OwnDir, "devcontainer.json")
 		if err := os.MkdirAll(filepath.Dir(r.override), 0o700); err != nil {
 			return workspace.Public("Drydock could not write its minimal dev container configuration.", err)
 		}
@@ -629,7 +629,7 @@ func (p *Provisioner) SessionSpec(ctx context.Context, id string) (container.Ses
 	}
 	override := ""
 	if !has {
-		override = filepath.Join(r.dir(w), ".drydock", "devcontainer.json")
+		override = filepath.Join(r.dir(w), workspace.OwnDir, "devcontainer.json")
 	}
 	env := r.remoteEnv(w, fullName)
 	env["CLAUDE_REMOTE_CONTROL_SESSION_NAME_PREFIX"] = fullName[strings.LastIndex(fullName, "/")+1:]

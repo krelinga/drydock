@@ -34,7 +34,7 @@ for a in "$@"; do
   prev=$a
 done
 lie=$(cat '` + dir + `/lie' 2>/dev/null)
-if ! "$dp" run --sig-proxy=false -a STDOUT -a STDERR --mount "type=bind,source=$folder,target=/workspaces/repo" $mounts $labels $lie --entrypoint /bin/sh vsc-repo-x-uid -c 'echo Container started' -; then
+if ! "$dp" run --sig-proxy=false -a STDOUT -a STDERR --mount "type=bind,source=$folder,target=/workspaces/$(basename "$folder")" $mounts $labels $lie --entrypoint /bin/sh vsc-$(basename "$folder")-x-uid -c 'echo Container started' -; then
   echo '{"outcome":"error","message":"Command failed: docker run …","description":"An error occurred setting up the container."}'
   exit 1
 fi
@@ -77,7 +77,7 @@ func TestTheGuardRefusesWhatTheCheckDidNotSee(t *testing.T) {
 	// The guard named it after its repository and workspace, and labelled
 	// it as the dev container VS Code's Reopen in Container of the clone
 	// looks for.
-	repo := filepath.Join(e.root, v.ID, "repo")
+	repo := filepath.Join(e.root, v.ID, "alpha")
 	named := regexp.MustCompile(`^run --name drydock\.test\.provision-alpha-` + strings.ToLower(v.ID[len(v.ID)-6:]) + `-[0-9a-z]{4} `)
 	if got := created()[0]; !named.MatchString(got) || !strings.Contains(got, " -l devcontainer.config_file="+filepath.Join(repo, ".devcontainer", "devcontainer.json")+
 		" -l devcontainer.local_folder="+repo+" ") {
@@ -188,7 +188,7 @@ func contains(list []string, s string) bool {
 func TestBootSweepsLeftoverGuardPolicies(t *testing.T) {
 	e := newEnv(t)
 	put := func(id string) string {
-		dir := container.GuardDir(filepath.Join(e.p.Workspaces.Root, id, "repo"))
+		dir := container.GuardDir(filepath.Join(e.p.Workspaces.Root, id, "alpha"))
 		if err := os.MkdirAll(dir, 0o700); err != nil {
 			t.Fatal(err)
 		}

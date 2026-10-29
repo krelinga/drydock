@@ -204,7 +204,7 @@ func TestWorkspaceLifecycleThroughTheServer(t *testing.T) {
 	if got := call("POST", "/api/workspaces/"+id.ID+"/stop"); got.status != 409 || !strings.Contains(got.body, `"in_progress"`) {
 		t.Errorf("stop of a stopped workspace: %+v", got)
 	}
-	if _, err := os.Stat(filepath.Join(r.cfg.WorkspaceRoot, id.ID, "repo", ".git")); err != nil {
+	if _, err := os.Stat(filepath.Join(r.cfg.WorkspaceRoot, id.ID, "alpha", ".git")); err != nil {
 		t.Errorf("the clone did not survive the stop: %v", err)
 	}
 
@@ -277,18 +277,18 @@ func TestDeleteResumesAtBoot(t *testing.T) {
 		`INSERT INTO repository (id, installation_id, full_name, default_branch) VALUES (1, 77, 'krelinga/alpha', 'main')`,
 		`INSERT INTO repository (id, installation_id, full_name, default_branch) VALUES (2, 77, 'krelinga/beta', 'main')`,
 		`INSERT INTO workspace (id, repository_id, host_path, branch, state) VALUES ('` + deleting + `', 1, '` +
-			filepath.Join(cfg.Root, deleting, "repo") + `', 'main', 'deleting')`,
+			filepath.Join(cfg.Root, deleting, "alpha") + `', 'main', 'deleting')`,
 		`UPDATE workspace SET state_detail = 'The delete stopped part-way: docker could not remove the workspace''s containers. Delete again to retry.' WHERE id = '` + deleting + `'`,
 		`INSERT INTO workspace (id, repository_id, host_path, branch, state) VALUES ('` + stopped + `', 2, '` +
-			filepath.Join(cfg.Root, stopped, "repo") + `', 'main', 'stopped')`,
+			filepath.Join(cfg.Root, stopped, "beta") + `', 'main', 'stopped')`,
 	} {
 		if _, err := srv.DB.ExecContext(ctx, q); err != nil {
 			t.Fatal(err)
 		}
 	}
-	for _, id := range []string{deleting, stopped} {
-		os.MkdirAll(filepath.Join(cfg.Root, id, "repo"), 0o700)
-		os.WriteFile(filepath.Join(cfg.Root, id, "repo", "unpushed.txt"), []byte("work"), 0o600)
+	for id, name := range map[string]string{deleting: "alpha", stopped: "beta"} {
+		os.MkdirAll(filepath.Join(cfg.Root, id, name), 0o700)
+		os.WriteFile(filepath.Join(cfg.Root, id, name, "unpushed.txt"), []byte("work"), 0o600)
 	}
 	// A socket file an earlier process left behind.
 	os.MkdirAll(filepath.Dir(srv.Broker.SocketPath(deleting)), 0o700)
@@ -332,7 +332,7 @@ func TestDeleteResumesAtBoot(t *testing.T) {
 	if w, err := srv.Workspaces.Get(ctx, stopped); err != nil || w.State != workspace.Stopped {
 		t.Errorf("the stopped workspace: %+v %v", w, err)
 	}
-	if b, err := os.ReadFile(filepath.Join(cfg.Root, stopped, "repo", "unpushed.txt")); err != nil || string(b) != "work" {
+	if b, err := os.ReadFile(filepath.Join(cfg.Root, stopped, "beta", "unpushed.txt")); err != nil || string(b) != "work" {
 		t.Errorf("the stopped workspace's clone: %v", err)
 	}
 	if _, err := os.Stat(srv.Broker.SocketPath(stopped)); !errors.Is(err, os.ErrNotExist) {

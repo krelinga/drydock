@@ -121,9 +121,9 @@ func fixture(t *testing.T, name string) string {
 func newFakeCLI(t *testing.T, origin string) *fakeCLI {
 	return &fakeCLI{
 		dir: t.TempDir(),
-		// The recording's folder was rewritten to /srv/drydock/ws/FIXTURE/repo;
+		// The recording's folder was rewritten to /srv/drydock/ws/FIXTURE/alpha;
 		// the real CLI names the folder it was given ($3), so the fake does.
-		readConfig: "sed \"s#/srv/drydock/ws/FIXTURE/repo#$3#g\" <<'EOF'\n" + fixture(t, "read-configuration-merged-ok.json") + "\nEOF\n",
+		readConfig: "sed \"s#/srv/drydock/ws/FIXTURE/alpha#$3#g\" <<'EOF'\n" + fixture(t, "read-configuration-merged-ok.json") + "\nEOF\n",
 		up:         "cat <<'EOF'\n" + fixture(t, "up-ok.json") + "\nEOF\necho 'a log line' >&2\n",
 		// The probe answers; git prints the origin the clone left.
 		exec: `case " $* " in
@@ -357,7 +357,7 @@ func TestRepositoryWithAConfigReachesRunning(t *testing.T) {
 	if d := v.Steps[workspace.StepUp].Detail; d != "" {
 		t.Errorf("up has a detail %q on success", d)
 	}
-	if _, err := os.Stat(filepath.Join(e.root, v.ID, "repo", ".git")); err != nil {
+	if _, err := os.Stat(filepath.Join(e.root, v.ID, "alpha", ".git")); err != nil {
 		t.Errorf("no clone: %v", err)
 	}
 	if len(e.broker.opened) != 1 || e.broker.opened[0] != v.ID {
@@ -369,7 +369,7 @@ func TestRepositoryWithAConfigReachesRunning(t *testing.T) {
 		t.Fatalf("up calls: %v", ups)
 	}
 	up := ups[0]
-	if got := flag(up, "--workspace-folder"); len(got) != 1 || got[0] != filepath.Join(e.root, v.ID, "repo") {
+	if got := flag(up, "--workspace-folder"); len(got) != 1 || got[0] != filepath.Join(e.root, v.ID, "alpha") {
 		t.Errorf("--workspace-folder %v", got)
 	}
 	if got := flag(up, "--mount"); len(got) != 2 || got[0] != "type=bind,source=/run/drydock/sock/"+v.ID+",target="+container.BrokerMountPoint ||
@@ -404,7 +404,7 @@ func TestRepositoryWithAConfigReachesRunning(t *testing.T) {
 		t.Fatalf("exec calls: %v", execs)
 	}
 	probe, git, claude := strings.Join(execs[0], " "), strings.Join(execs[1], " "), strings.Join(execs[2], " ")
-	if !strings.HasSuffix(probe, "-- drydock-probe") || !strings.HasSuffix(git, "-- git -C /workspaces/repo remote -v") ||
+	if !strings.HasSuffix(probe, "-- drydock-probe") || !strings.HasSuffix(git, "-- git -C /workspaces/alpha remote -v") ||
 		!strings.HasSuffix(claude, "-- claude --version") {
 		t.Errorf("the probe ran\n %s\n %s\n %s", probe, git, claude)
 	}
@@ -429,7 +429,7 @@ func TestRepositoryWithoutAConfigGetsTheMinimalOne(t *testing.T) {
 	e := newEnv(t)
 	e.cli.readConfig = "cat <<'EOF'\n" + fixture(t, "read-configuration-merged-override.json") + "\nEOF\n"
 	e.cli.exec = strings.ReplaceAll(e.cli.exec, "/krelinga/alpha.git", "/krelinga/plain.git")
-	e.cli.exec = strings.ReplaceAll(e.cli.exec, "/workspaces/repo", "/workspaces/plain2")
+	e.cli.exec = strings.ReplaceAll(e.cli.exec, "/workspaces/alpha", "/workspaces/plain2")
 	// up runs its docker run through the guard, as the real CLI does.
 	e.cli.up = lyingUp(e.cli.dir)
 	e.wire(t)
@@ -461,7 +461,7 @@ func TestRepositoryWithoutAConfigGetsTheMinimalOne(t *testing.T) {
 		}
 	}
 	// The repository is untouched: nothing was written into the clone.
-	repo := filepath.Join(e.root, v.ID, "repo")
+	repo := filepath.Join(e.root, v.ID, "plain")
 	// Its container is labelled, by the guard, as the CLI labels one it makes
 	// for an --override-config with no id-labels: the default path
 	// (container.ConfigFiles), what VS Code finds once a configuration is
@@ -601,12 +601,12 @@ func TestEachRealStepNamesItsFailure(t *testing.T) {
 		{name: "resolve_config config outside the clone", repo: alpha, step: workspace.StepResolveConfig,
 			detail: "is a symbolic link or not inside the clone",
 			break_: func(e *env) {
-				e.cli.readConfig = "sed \"s#/srv/drydock/ws/FIXTURE/repo/.devcontainer/devcontainer.json#/etc/hostname#g\" <<'EOF'\n" + fixtureBytes("read-configuration-merged-ok.json") + "\nEOF\n"
+				e.cli.readConfig = "sed \"s#/srv/drydock/ws/FIXTURE/alpha/.devcontainer/devcontainer.json#/etc/hostname#g\" <<'EOF'\n" + fixtureBytes("read-configuration-merged-ok.json") + "\nEOF\n"
 			}},
 		{name: "resolve_config read without the merged configuration", repo: alpha, step: workspace.StepResolveConfig,
 			detail: "could not check what the dev container configuration asks of the host",
 			break_: func(e *env) {
-				e.cli.readConfig = "sed \"s#/srv/drydock/ws/FIXTURE/repo#$3#g\" <<'EOF'\n" + fixtureBytes("read-configuration-ok.json") + "\nEOF\n"
+				e.cli.readConfig = "sed \"s#/srv/drydock/ws/FIXTURE/alpha#$3#g\" <<'EOF'\n" + fixtureBytes("read-configuration-ok.json") + "\nEOF\n"
 			}},
 		{name: "resolve_config container not stopped", repo: alpha, step: workspace.StepResolveConfig,
 			detail: "could not stop the workspace's container before reading its configuration",
@@ -1096,7 +1096,7 @@ func TestNoTokenSurvivesAProvision(t *testing.T) {
 			}
 		}
 	}
-	if cfg := gitOut(t, filepath.Join(e.root, v.ID, "repo"), "config", "--local", "--list"); strings.Contains(cfg, "helper") ||
+	if cfg := gitOut(t, filepath.Join(e.root, v.ID, "alpha"), "config", "--local", "--list"); strings.Contains(cfg, "helper") ||
 		!strings.Contains(cfg, "remote.origin.url="+e.fake.URL+"/krelinga/alpha.git") {
 		t.Errorf(".git/config:\n%s", cfg)
 	}
@@ -1108,7 +1108,7 @@ func TestNoTokenSurvivesAProvision(t *testing.T) {
 // cannot write them fails nothing: the workspace still reaches running.
 func TestStep3DeclaresTheConfigurationsPorts(t *testing.T) {
 	e := newEnv(t)
-	e.cli.readConfig = "sed -e \"s#/srv/drydock/ws/FIXTURE/repo#$3#g\" -e 's#\"image\":#\"forwardPorts\":[5173,\"localhost:3000\"],\"image\":#g' <<'EOF'\n" +
+	e.cli.readConfig = "sed -e \"s#/srv/drydock/ws/FIXTURE/alpha#$3#g\" -e 's#\"image\":#\"forwardPorts\":[5173,\"localhost:3000\"],\"image\":#g' <<'EOF'\n" +
 		fixture(t, "read-configuration-merged-ok.json") + "\nEOF\n"
 	e.wire(t)
 	var got [][]container.DeclaredPort

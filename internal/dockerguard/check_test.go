@@ -70,11 +70,11 @@ func Recorded(t *testing.T, name, root string) [][]string {
 // FixturePolicy is the policy Drydock would write for a recorded up moved
 // to root, approving approved.
 func FixturePolicy(root string, approved []Setting) *Policy {
-	os.MkdirAll(filepath.Join(root, "repo", ".devcontainer"), 0o700)
+	os.MkdirAll(filepath.Join(root, "fixture", ".devcontainer"), 0o700)
 	os.MkdirAll(filepath.Join(root, ".drydock", "tmp"), 0o700)
 	return &Policy{
-		Version: PolicyVersion, Clone: filepath.Join(root, "repo"), TempDir: filepath.Join(root, ".drydock", "tmp"),
-		ConfigDir: filepath.Join(root, "repo", ".devcontainer"), LabelPrefix: "drydock", IDLabels: FixtureLabels,
+		Version: PolicyVersion, Clone: filepath.Join(root, "fixture"), TempDir: filepath.Join(root, ".drydock", "tmp"),
+		ConfigDir: filepath.Join(root, "fixture", ".devcontainer"), LabelPrefix: "drydock", IDLabels: FixtureLabels,
 		OwnMounts: []string{"type=bind,source=" + filepath.Join(root, "sock") + ",target=/run/drydock",
 			"type=volume,source=drydock-record-claude,target=/home/vscode/.claude"},
 		Approved: approved,
@@ -175,7 +175,7 @@ func TestInjectedHostAccessIsRefused(t *testing.T) {
 	root := t.TempDir()
 	cmds := Recorded(t, "image", root)
 	run := command(t, cmds, "run")
-	clone := filepath.Join(root, "repo")
+	clone := filepath.Join(root, "fixture")
 	for _, c := range []struct {
 		name     string
 		extra    []string
@@ -265,7 +265,7 @@ func TestInjectedHostAccessIsRefused(t *testing.T) {
 func TestInjectedBuildOptionsAreRefused(t *testing.T) {
 	root := t.TempDir()
 	build := command(t, Recorded(t, "dockerfile", root), "buildx", "build")
-	clone := filepath.Join(root, "repo")
+	clone := filepath.Join(root, "fixture")
 	os.MkdirAll(filepath.Join(root, "elsewhere"), 0o700)
 	os.Symlink(filepath.Join(root, "elsewhere"), filepath.Join(clone, "link"))
 	for _, c := range []struct {
@@ -469,7 +469,7 @@ func TestMountTypeCase(t *testing.T) {
 	if d := Check(FixturePolicy(root, nil), insert(run, 1, "--mount", "Type=BIND,Source=/,Target=/h")); !d.Refused {
 		t.Errorf("a BIND of /: %+v", d)
 	}
-	if d := Check(FixturePolicy(root, nil), insert(run, 1, "--mount", "type=BIND,source="+filepath.Join(root, "repo")+",target=/w")); d.Refused {
+	if d := Check(FixturePolicy(root, nil), insert(run, 1, "--mount", "type=BIND,source="+filepath.Join(root, "fixture")+",target=/w")); d.Refused {
 		t.Errorf("the clone as BIND: %+v", d)
 	}
 }
@@ -480,7 +480,7 @@ func TestMountTypeCase(t *testing.T) {
 func TestApprovedBindInTheCloneStaysPut(t *testing.T) {
 	root := t.TempDir()
 	run := command(t, Recorded(t, "image", root), "run")
-	clone := filepath.Join(root, "repo")
+	clone := filepath.Join(root, "fixture")
 	data := filepath.Join(clone, "data")
 	approved := []Setting{{"mounts", json.RawMessage(`["type=bind,source=${localWorkspaceFolder}/data,target=/data"]`)}}
 	args := insert(run, 1, "--mount", "type=bind,source="+data+",target=/data")

@@ -82,7 +82,7 @@ func (s stubEditors) Fill(_ context.Context, vs []workspace.View) {
 // carry the field it fills, in the shape the client reads; the control is
 // TestWorkspaceViewsHaveTheContractShape, with none, where it is null.
 func TestViewsCarryTheVSCodeLink(t *testing.T) {
-	const u = "vscode://vscode-remote/attached-container+7b7d@ssh-remote+devbox/workspaces/repo"
+	const u = "vscode://vscode-remote/attached-container+7b7d@ssh-remote+devbox/workspaces/alpha"
 	views := []workspace.View{{ID: "W2", State: workspace.Running}, {ID: "W1", State: workspace.Stopped}}
 	mux := Build(MuxAPI, stubGate{session: true, origin: true, host: true},
 		WorkspaceRoutes{Provisioner: &stubProvisioner{}, Workspaces: stubReader{views: views},

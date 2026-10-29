@@ -269,7 +269,7 @@ describe('clone, follow, connect', () => {
       const link = vscodeLink(f.entities.workspaces[id]!)
       expect(link).not.toBeNull()
       expect(remoteURI(link)).toBe(link!.replace('vscode://vscode-remote/', 'vscode-remote://'))
-      expect(remoteURI(link)).toMatch(/^vscode-remote:\/\/attached-container\+[0-9a-f]+@ssh-remote\+devbox\/workspaces\/repo$/)
+      expect(remoteURI(link)).toMatch(/^vscode-remote:\/\/attached-container\+[0-9a-f]+@ssh-remote\+devbox\/workspaces\/plain$/)
 
       // Real payloads, recorded for the unit tier (§12.4).
       const kinds = new Set(f.kinds())

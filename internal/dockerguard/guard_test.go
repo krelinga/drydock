@@ -129,7 +129,7 @@ func TestPassedCommandsAreDockersOwn(t *testing.T) {
 func TestNoPolicyRefusesAndRunsNothing(t *testing.T) {
 	dp, dir := guardDir(t)
 	root := filepath.Dir(filepath.Dir(dir))
-	run := []string{"run", "--sig-proxy=false", "--mount", "type=bind,source=" + filepath.Join(root, "repo") + ",target=/workspaces/repo", "img"}
+	run := []string{"run", "--sig-proxy=false", "--mount", "type=bind,source=" + filepath.Join(root, "fixture") + ",target=/workspaces/fixture", "img"}
 	for name, setup := range map[string]func(){
 		"none":        func() { os.Remove(filepath.Join(dir, PolicyName)) },
 		"unparseable": func() { os.WriteFile(filepath.Join(dir, PolicyName), []byte(`{"version":`), 0o600) },

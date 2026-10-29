@@ -411,9 +411,9 @@ record_readconfig() {
 		say "  $name: exit $rc, $(wc -c < "$dir/$name") bytes"
 	}
 
-	rcrec read-configuration-ok.json repo \
+	rcrec read-configuration-ok.json alpha \
 		'{"image":"mcr.microsoft.com/devcontainers/base:debian","runArgs":["--network=host"]}' \
-		"a Configuration with workspaceFolder /workspaces/repo"
+		"a Configuration with workspaceFolder /workspaces/alpha"
 	rcrec read-configuration-noconfig.stdout plain '' \
 		"empty -- exit 1 with no message: absence is decided by looking for the file"
 	rcrec read-configuration-unparseable.json bad '{"image": ' \
@@ -430,7 +430,7 @@ record_readconfig() {
 	# with an id-label nothing carries, so the CLI computes it afresh rather
 	# than reading an existing container's labels.
 	local merged=(--include-merged-configuration --id-label drydock.record.read-configuration=none)
-	rcrec read-configuration-merged-ok.json repo \
+	rcrec read-configuration-merged-ok.json alpha \
 		'{"image":"mcr.microsoft.com/devcontainers/base:debian","features":{"ghcr.io/devcontainers/features/go:1":{}},"mounts":["source=gocache-${devcontainerId},target=/go-cache,type=volume"],"containerEnv":{"GOFLAGS":"-mod=mod"},"postCreateCommand":"go version"}' \
 		"a Configuration that passes the check -- the go Feature's SYS_PTRACE and seccomp=unconfined are the debugger pair, and the volume names \${devcontainerId}" \
 		"${merged[@]}"
@@ -829,8 +829,9 @@ record_lockfile() {
 # What the docker guard sees (design §6, "The docker guard"): every docker
 # command devcontainer CLI 0.89.0 runs, argv exactly, one JSON array per line,
 # through a --docker-path that logs and then runs the real docker. Each case
-# is laid out as Drydock lays out a workspace — the clone at <ws>/repo, the
-# CLI's TMPDIR at <ws>/.drydock/tmp, the broker directory at <ws>/sock — and
+# is laid out as Drydock lays out a workspace — the clone at <ws>/fixture,
+# named after its repository (krelinga/fixture) as workspace.ClonePath names
+# it, the CLI's TMPDIR at <ws>/.drydock/tmp, the broker directory at <ws>/sock — and
 # is given Drydock's own flags (the four id-labels, the broker and credential
 # mounts, the remote env), so the recorded argv is the argv the guard is
 # handed in production. <ws> is rewritten to /srv/drydock/ws/FIXTURE.
@@ -860,7 +861,7 @@ record_dockerargv() {
 		shift
 		: > "$w/argv"
 		DOCKER_ARGV_LOG="$w/argv" TMPDIR="$w/.drydock/tmp" timeout 900 devcontainer up --docker-path "$base/docker" \
-			--workspace-folder "$w/repo" --no-lockfile \
+			--workspace-folder "$w/fixture" --no-lockfile \
 			--id-label drydock.workspace=$ws --id-label drydock.repository-id=101 \
 			--id-label drydock.repo=krelinga/fixture --id-label drydock.branch=main \
 			--mount "type=bind,source=$w/sock,target=/run/drydock" \
@@ -889,21 +890,21 @@ record_dockerargv() {
 		shift 3
 		[ -n "${DOCKERARGV_ONLY:-}" ] && [[ " $DOCKERARGV_ONLY " != *" $name "* ]] && return 0
 		local w="$base/$name" out="$dir/docker-argv-$name.jsonl"
-		mkdir -p "$w/repo/.devcontainer" "$w/.drydock/tmp" "$w/sock"
-		printf '%s\n' "${cfg//@WS@/$w}" > "$w/repo/.devcontainer/devcontainer.json"
-		[ -n "${SETUP:-}" ] && "$SETUP" "$w/repo/.devcontainer"
-		devcontainer read-configuration --workspace-folder "$w/repo" --include-merged-configuration \
+		mkdir -p "$w/fixture/.devcontainer" "$w/.drydock/tmp" "$w/sock"
+		printf '%s\n' "${cfg//@WS@/$w}" > "$w/fixture/.devcontainer/devcontainer.json"
+		[ -n "${SETUP:-}" ] && "$SETUP" "$w/fixture/.devcontainer"
+		devcontainer read-configuration --workspace-folder "$w/fixture" --include-merged-configuration \
 			--id-label drydock.read-configuration=none 2>/dev/null |
 			sed "s#$w#/srv/drydock/ws/FIXTURE#g" > "$dir/docker-argv-$name.read-configuration.json"
 		up "$name" "$@"
 		local rc=$?
 		sed "s#$w#/srv/drydock/ws/FIXTURE#g" "$w/argv" > "$out"
-		dameta "$out" "devcontainer up --docker-path <logger> --workspace-folder <ws>/repo --no-lockfile <Drydock's id-labels, mounts and remote env> $*   (TMPDIR=<ws>/.drydock/tmp; exit $rc, outcome $(jq -r .outcome "$w/up.json" 2>/dev/null)); beside it docker-argv-$name.read-configuration.json, the folder's merged read-configuration" \
+		dameta "$out" "devcontainer up --docker-path <logger> --workspace-folder <ws>/fixture --no-lockfile <Drydock's id-labels, mounts and remote env> $*   (TMPDIR=<ws>/.drydock/tmp; exit $rc, outcome $(jq -r .outcome "$w/up.json" 2>/dev/null)); beside it docker-argv-$name.read-configuration.json, the folder's merged read-configuration" \
 			"$cfg" "$yield"
 		cat > "$dir/docker-argv-$name.read-configuration.json.meta" <<-META
 			devcontainer_version: $dcv
 			recorded_at:          $(date -u +%Y-%m-%dT%H:%M:%SZ)
-			command:              devcontainer read-configuration --workspace-folder <ws>/repo --include-merged-configuration --id-label drydock.read-configuration=none   (stdout only)
+			command:              devcontainer read-configuration --workspace-folder <ws>/fixture --include-merged-configuration --id-label drydock.read-configuration=none   (stdout only)
 			config:               $cfg
 			provenance:           recorded beside docker-argv-$name.jsonl, from the same folder; <ws> rewritten to /srv/drydock/ws/FIXTURE
 			must_yield:           the host-access subset whose approval lets every command of docker-argv-$name.jsonl pass the docker guard (internal/container TestRecordedUpsPassWithTheirApproval)
@@ -938,8 +939,8 @@ record_dockerargv() {
 			docker rm -f $id >/dev/null
 			for x in $v; do [ "$x" = "$vol" ] || docker volume rm "$x" >/dev/null 2>&1; done
 		fi
-		h=$(printf '%s' "$base/$name/repo" | sha256sum | cut -c1-64)
-		for s in "" -uid -features -features-uid; do docker image rm "vsc-repo-$h$s" >/dev/null 2>&1; done
+		h=$(printf '%s' "$base/$name/fixture" | sha256sum | cut -c1-64)
+		for s in "" -uid -features -features-uid; do docker image rm "vsc-fixture-$h$s" >/dev/null 2>&1; done
 	}
 	local img='"image":"mcr.microsoft.com/devcontainers/base:debian"'
 
@@ -956,10 +957,10 @@ record_dockerargv() {
 	dameta "$dir/docker-argv-image-rebuild.jsonl" "devcontainer up as for docker-argv-image.jsonl, --remove-existing-container" "{$img}" \
 		"rm -f of the old container, then a run like the first: every command passed"
 	: > "$w/argv"
-	DOCKER_ARGV_LOG="$w/argv" devcontainer exec --docker-path "$base/docker" --workspace-folder "$w/repo" \
+	DOCKER_ARGV_LOG="$w/argv" devcontainer exec --docker-path "$base/docker" --workspace-folder "$w/fixture" \
 		--id-label drydock.workspace=$ws --remote-env DRYDOCK_WORKSPACE=$ws -- true >/dev/null 2>&1
 	sed "s#$w#/srv/drydock/ws/FIXTURE#g" "$w/argv" > "$dir/docker-argv-exec.jsonl"
-	dameta "$dir/docker-argv-exec.jsonl" "devcontainer exec --docker-path <logger> --workspace-folder <ws>/repo --id-label drydock.workspace=<id> --remote-env … -- true, against docker-argv-image.jsonl's container" \
+	dameta "$dir/docker-argv-exec.jsonl" "devcontainer exec --docker-path <logger> --workspace-folder <ws>/fixture --id-label drydock.workspace=<id> --remote-env … -- true, against docker-argv-image.jsonl's container" \
 		"{$img}" "every command passed, with or without a policy: exec creates nothing"
 	say "  docker-argv-image-start.jsonl, -rebuild.jsonl and docker-argv-exec.jsonl"
 	clean image
@@ -1009,11 +1010,11 @@ record_dockerargv() {
 		"passed once build.cacheFrom's local cache and build.options are approved; refused naming each without; the registry cache and build.args pass alone"
 	clean build
 
-	SETUP=compose_files dacase compose '{"dockerComposeFile":"compose.yml","service":"app","workspaceFolder":"/workspaces/repo"}' \
+	SETUP=compose_files dacase compose '{"dockerComposeFile":"compose.yml","service":"app","workspaceFolder":"/workspaces/fixture"}' \
 		"compose version and config pass; compose build and up are refused naming dockerComposeFile unless the Compose setup is approved"
 	# down --volumes: the CLI gives the credential mount to compose as a
-	# volume of the project (repo_devcontainer_<name>), which only it removes.
-	docker compose --project-name repo_devcontainer down --volumes >/dev/null 2>&1
+	# volume of the project (fixture_devcontainer_<name>), which only it removes.
+	docker compose --project-name fixture_devcontainer down --volumes >/dev/null 2>&1
 	clean compose
 	docker volume rm "$vol" >/dev/null 2>&1
 	rm -rf "$base"

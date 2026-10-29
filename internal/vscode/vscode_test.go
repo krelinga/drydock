@@ -39,12 +39,12 @@ func TestAttachURLIsTheExtensionsOwn(t *testing.T) {
 		sshJSON            string // the decoded hex SSH host, "" for a bare one
 		path               string
 	}{
-		{"devbox", "/modest_herschel", "/workspaces/repo",
-			"vscode://vscode-remote/attached-container+7b22636f6e7461696e65724e616d65223a222f6d6f646573745f686572736368656c227d@ssh-remote+devbox/workspaces/repo",
-			"", "/workspaces/repo"},
-		{"owner@devbox.lan", "/nifty_johnson", "/workspaces/repo",
-			"vscode://vscode-remote/attached-container+7b22636f6e7461696e65724e616d65223a222f6e696674795f6a6f686e736f6e227d@ssh-remote+7b22686f73744e616d65223a22646576626f782e6c616e222c2275736572223a226f776e6572227d/workspaces/repo",
-			`{"hostName":"devbox.lan","user":"owner"}`, "/workspaces/repo"},
+		{"devbox", "/modest_herschel", "/workspaces/drydock",
+			"vscode://vscode-remote/attached-container+7b22636f6e7461696e65724e616d65223a222f6d6f646573745f686572736368656c227d@ssh-remote+devbox/workspaces/drydock",
+			"", "/workspaces/drydock"},
+		{"owner@devbox.lan", "/nifty_johnson", "/workspaces/drydock",
+			"vscode://vscode-remote/attached-container+7b22636f6e7461696e65724e616d65223a222f6e696674795f6a6f686e736f6e227d@ssh-remote+7b22686f73744e616d65223a22646576626f782e6c616e222c2275736572223a226f776e6572227d/workspaces/drydock",
+			`{"hostName":"devbox.lan","user":"owner"}`, "/workspaces/drydock"},
 		{"owner@DevBox:2222", "/x", "/work space/a#b",
 			"vscode://vscode-remote/attached-container+7b22636f6e7461696e65724e616d65223a222f78227d@ssh-remote+7b22686f73744e616d65223a22446576426f78222c2275736572223a226f776e6572222c22706f7274223a323232327d/work%20space/a%23b",
 			`{"hostName":"DevBox","user":"owner","port":2222}`, "/work space/a#b"},
@@ -92,11 +92,11 @@ func TestAttachURLIsTheExtensionsOwn(t *testing.T) {
 func TestAttachURLRefusesWhatCouldInject(t *testing.T) {
 	h := host(t, "devbox")
 	for _, name := range []string{"x", "/", "/-x", `/a"b`, "/a@ssh-remote+evil", "/a b", ""} {
-		if _, err := AttachURL(h, name, "/workspaces/repo"); err == nil {
+		if _, err := AttachURL(h, name, "/workspaces/alpha"); err == nil {
 			t.Errorf("name %q accepted", name)
 		}
 	}
-	for _, folder := range []string{"workspaces/repo", "/a/../b", "/a/", ""} {
+	for _, folder := range []string{"workspaces/alpha", "/a/../b", "/a/", ""} {
 		if _, err := AttachURL(h, "/x", folder); err == nil {
 			t.Errorf("folder %q accepted", folder)
 		}
@@ -150,7 +150,7 @@ func (f *fakeContainers) Of(ctx context.Context, id string) ([]container.Found, 
 func TestEveryLinkHasTheShapeTheUIAccepts(t *testing.T) {
 	ui := regexp.MustCompile(`^vscode://vscode-remote/attached-container\+[0-9a-f]+@ssh-remote\+[A-Za-z0-9._-]+(?:/[A-Za-z0-9._~%-]*)+$`)
 	for _, h := range []string{"devbox", "owner@DevBox:2222"} {
-		for _, folder := range []string{"/workspaces/repo", "/w/a@b:c+d=e!$&'()*,;", "/ü/x y", "/"} {
+		for _, folder := range []string{"/workspaces/alpha", "/w/a@b:c+d=e!$&'()*,;", "/ü/x y", "/"} {
 			u, err := AttachURL(host(t, h), "/x", folder)
 			if err != nil || !ui.MatchString(u) {
 				t.Errorf("%s %q: %s %v", h, folder, u, err)
@@ -200,9 +200,9 @@ func TestFillIsBoundedAndTheDetailReadsOneWorkspace(t *testing.T) {
 
 	// The page: one view, read with Of for that id.
 	fc = &fakeContainers{found: []container.Found{{WorkspaceID: a, Running: true, Name: "/a",
-		Mounts: []container.Mount{{Type: "bind", Source: "/srv/drydock/ws/" + a + "/repo", Destination: "/workspaces/repo"}}}}}
+		Mounts: []container.Mount{{Type: "bind", Source: "/srv/drydock/ws/" + a + "/alpha", Destination: "/workspaces/alpha"}}}}}
 	l.Containers = fc
-	one := []workspace.View{{ID: a, State: workspace.Running}}
+	one := []workspace.View{{ID: a, State: workspace.Running, HostPath: "/srv/drydock/ws/" + a + "/alpha"}}
 	l.Fill(context.Background(), one)
 	if one[0].VSCode.URL == nil || len(fc.of) != 1 || fc.of[0] != a || fc.calls != 1 {
 		t.Errorf("the page's read: %+v, Of %v", one[0].VSCode, fc.of)
@@ -211,30 +211,39 @@ func TestFillIsBoundedAndTheDetailReadsOneWorkspace(t *testing.T) {
 
 // Fill: unconfigured says so on every view and asks Docker nothing; once
 // configured, a running workspace with one running container that has its
-// clone mounted gets the link, read from Docker on this call — and a stopped
-// workspace, a stopped container, two containers, no clone mount, or a Docker
-// that cannot be read gets none, never an error.
+// clone mounted — the mount of the row's host_path, the folder named after
+// its repository in the repository's case — gets the link, read from Docker
+// on this call; and a stopped workspace, a stopped container, two
+// containers, no clone mount, a mount of another folder than the row's, a
+// row whose host_path is not a clone under the root, or a Docker that cannot
+// be read gets none, never an error.
 func TestFill(t *testing.T) {
 	const a, b, c, d, e = "01JAAAAAAAAAAAAAAAAAAAAAAA", "01JBBBBBBBBBBBBBBBBBBBBBBB", "01JCCCCCCCCCCCCCCCCCCCCCCC",
 		"01JDDDDDDDDDDDDDDDDDDDDDDD", "01JEEEEEEEEEEEEEEEEEEEEEEE"
+	const f, g = "01JFFFFFFFFFFFFFFFFFFFFFFF", "01JGGGGGGGGGGGGGGGGGGGGGGG"
 	root := "/srv/drydock/ws"
-	clone := func(id string) []container.Mount {
+	hostPath := func(id string) string { return filepath.Join(root, id, "Alpha.Repo") }
+	clone := func(source string) []container.Mount {
 		return []container.Mount{{Type: "volume", Source: "", Destination: "/home/vscode/.claude"},
-			{Type: "bind", Source: filepath.Join(root, id, "repo"), Destination: "/workspaces/repo"}}
+			{Type: "bind", Source: source, Destination: "/workspaces/" + filepath.Base(source)}}
 	}
 	fc := &fakeContainers{found: []container.Found{
-		{WorkspaceID: a, Running: true, Name: "/alpha_box", Mounts: clone(a)},
-		{WorkspaceID: b, Running: false, Name: "/beta_box", Mounts: clone(b)},
-		{WorkspaceID: c, Running: true, Name: "/c1", Mounts: clone(c)},
-		{WorkspaceID: c, Running: true, Name: "/c2", Mounts: clone(c)},
+		{WorkspaceID: a, Running: true, Name: "/alpha_box", Mounts: clone(hostPath(a))},
+		{WorkspaceID: b, Running: false, Name: "/beta_box", Mounts: clone(hostPath(b))},
+		{WorkspaceID: c, Running: true, Name: "/c1", Mounts: clone(hostPath(c))},
+		{WorkspaceID: c, Running: true, Name: "/c2", Mounts: clone(hostPath(c))},
 		{WorkspaceID: d, Running: true, Name: "/d", Mounts: []container.Mount{{Type: "bind", Source: "/elsewhere", Destination: "/w"}}},
+		// The repository's name now, not the folder the row recorded.
+		{WorkspaceID: f, Running: true, Name: "/f", Mounts: clone(filepath.Join(root, f, "renamed"))},
+		{WorkspaceID: g, Running: true, Name: "/g", Mounts: clone("/elsewhere/" + g + "/Alpha.Repo")},
 	}}
 	views := func() []workspace.View {
 		var vs []workspace.View
-		for _, id := range []string{a, b, c, d} {
-			vs = append(vs, workspace.View{ID: id, State: workspace.Running})
+		for _, id := range []string{a, b, c, d, f} {
+			vs = append(vs, workspace.View{ID: id, State: workspace.Running, HostPath: hostPath(id)})
 		}
-		return append(vs, workspace.View{ID: e, State: workspace.Stopped})
+		vs = append(vs, workspace.View{ID: g, State: workspace.Running, HostPath: "/elsewhere/" + g + "/Alpha.Repo"})
+		return append(vs, workspace.View{ID: e, State: workspace.Stopped, HostPath: hostPath(e)})
 	}
 
 	vs := views()
@@ -251,7 +260,7 @@ func TestFill(t *testing.T) {
 	h := host(t, "owner@devbox")
 	vs = views()
 	Linker{Host: &h, Containers: fc, Root: root}.Fill(context.Background(), vs)
-	want, _ := AttachURL(h, "/alpha_box", "/workspaces/repo")
+	want, _ := AttachURL(h, "/alpha_box", "/workspaces/Alpha.Repo")
 	if vs[0].VSCode == nil || !vs[0].VSCode.Configured || vs[0].VSCode.URL == nil || *vs[0].VSCode.URL != want {
 		t.Errorf("the running workspace: %+v", vs[0].VSCode)
 	}

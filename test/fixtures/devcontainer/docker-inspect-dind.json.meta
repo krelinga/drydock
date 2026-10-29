@@ -1,6 +1,6 @@
 devcontainer_version: 0.89.0
 docker_version:       29.8.2-1 (the devcontainer's inner DinD daemon)
-recorded_at:          2026-10-08T21:23:05Z
+recorded_at:          2026-10-29T20:24:36Z
 command:              docker inspect --type container -- <the container docker-argv-dind.jsonl's up made>
 config:               {"image":"mcr.microsoft.com/devcontainers/base:debian","features":{"ghcr.io/devcontainers/features/docker-in-docker:2":{"moby":false}}}
 provenance:           recorded; <ws> rewritten to /srv/drydock/ws/FIXTURE

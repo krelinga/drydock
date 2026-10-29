@@ -14,12 +14,14 @@ import (
 	"os/exec"
 	"os/user"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/krelinga/drydock/internal/classify"
 	"github.com/krelinga/drydock/internal/config"
+	"github.com/krelinga/drydock/internal/container"
 	"github.com/krelinga/drydock/internal/github/githubtest"
 	"github.com/krelinga/drydock/internal/provision"
 	"github.com/krelinga/drydock/internal/secrets"
@@ -77,7 +79,9 @@ func TestCreateWorkspaceThroughTheServer(t *testing.T) {
 		{ID: 102, FullName: "krelinga/plain", DefaultBranch: "main", PushedAt: time.Now(),
 			Files: []string{"README.md"}},
 		locked(103, "krelinga/pinned", reg.lockfile("1.0.0")),
-		locked(104, "krelinga/unpinned", ""),
+		// A name in GitHub's whole charset, capitals included: the clone
+		// keeps its case, and the CLI lowercases only the image's name.
+		locked(104, "krelinga/Un.Pinned_Repo", ""),
 		// Stale: written before the configuration declared the marker.
 		locked(105, "krelinga/stale", "{\n  \"features\": {}\n}\n"),
 		// docker-in-docker: its Feature sets privileged, which is host root
@@ -164,6 +168,8 @@ func TestCreateWorkspaceThroughTheServer(t *testing.T) {
 	}
 
 	ids := map[string]string{}
+	// Each repository's clone folder: its name without the owner.
+	folders := map[string]string{"101": "alpha", "102": "plain", "103": "pinned", "104": "Un.Pinned_Repo", "105": "stale", "106": "dind"}
 	for _, repo := range []string{"101", "102", "103", "104", "105", "106"} {
 		status, body := c.post("/api/workspaces", `{"repository_id":`+repo+`}`)
 		var created struct{ ID string }
@@ -270,6 +276,27 @@ func TestCreateWorkspaceThroughTheServer(t *testing.T) {
 	if t.Failed() {
 		return
 	}
+	// Each clone is named after its repository, in the repository's case
+	// (design §6 step 2): the folder the container is labelled with and
+	// mounts, the workspace folder the CLI made of it, /workspaces/<name>,
+	// and the image the CLI built, vsc-<name lowercased>-<hash>, one of the
+	// names container.BuiltImages computes for the folder — so the VS Code
+	// window's title starts with the repository.
+	for repo, name := range folders {
+		clone := filepath.Join(cfg.WorkspaceRoot, ids[repo], name)
+		cid := *views[repo].ContainerID
+		if got := docker(t, "inspect", "-f", `{{index .Config.Labels "devcontainer.local_folder"}}`, cid); got != clone {
+			t.Errorf("repository %s: local_folder %q; want %q", repo, got, clone)
+		}
+		if got := docker(t, "inspect", "-f", `{{range .Mounts}}{{if eq .Source "`+clone+`"}}{{.Destination}}{{end}}{{end}}`, cid); got != "/workspaces/"+name {
+			t.Errorf("repository %s: the clone is mounted at %q; want /workspaces/%s", repo, got, name)
+		}
+		built, err := container.BuiltImages(clone)
+		image := docker(t, "inspect", "-f", "{{.Config.Image}}", cid)
+		if err != nil || !strings.HasPrefix(image, "vsc-"+strings.ToLower(name)+"-") || !slices.Contains(built, image) {
+			t.Errorf("repository %s: image %q; want one of %q (%v)", repo, image, built, err)
+		}
+	}
 	if d := views["102"].Steps["resolve_config"].Detail; !strings.Contains(d, "minimal configuration") {
 		t.Errorf("the plain repository's resolve_config says %q", d)
 	}
@@ -307,7 +334,7 @@ func TestCreateWorkspaceThroughTheServer(t *testing.T) {
 	// Usable: devcontainer exec into each, as the remote user, in the clone.
 	execIn := func(repo, script string) (string, error) {
 		id := ids[repo]
-		args := []string{"exec", "--workspace-folder", filepath.Join(cfg.WorkspaceRoot, id, "repo"),
+		args := []string{"exec", "--workspace-folder", filepath.Join(cfg.WorkspaceRoot, id, folders[repo]),
 			"--id-label", p + ".workspace=" + id}
 		if repo == "102" {
 			args = append(args, "--override-config", filepath.Join(cfg.WorkspaceRoot, id, ".drydock", "devcontainer.json"))
@@ -331,13 +358,17 @@ func TestCreateWorkspaceThroughTheServer(t *testing.T) {
 	// is the claude found, a login shell included; CLAUDE_CONFIG_DIR is the
 	// one mount at the Feature's path; and postCreate wrote the two keys
 	// whose absence hangs a headless remote-control, for the workspace
-	// folder (step 7's, /workspaces/repo, which every one of these has).
-	wantClaude := classify.ClaudeCodeVersion + " (Claude Code)\n" + classify.ClaudeCodeVersion + " (Claude Code)\n" +
-		"1\n/home/vscode/.claude\n1\n[true,true]\n"
+	// folder — step 7's, /workspaces/<repository name> in the name's own
+	// case, which every one of these has, and where exec (and so the
+	// session server) runs.
 	for repo := range views {
+		folder := "/workspaces/" + folders[repo]
+		wantClaude := classify.ClaudeCodeVersion + " (Claude Code)\n" + classify.ClaudeCodeVersion + " (Claude Code)\n" +
+			"1\n/home/vscode/.claude\n1\n[true,true]\n" + folder + "\n"
 		out, err := execIn(repo, `claude --version; bash -lc 'claude --version'; echo "$DISABLE_AUTOUPDATER"; echo "$CLAUDE_CONFIG_DIR"
 awk '$5 == "/home/vscode/.claude"' /proc/self/mountinfo | wc -l
-jq -c '[.remoteDialogSeen, .projects["/workspaces/repo"].hasTrustDialogAccepted]' "$CLAUDE_CONFIG_DIR/.claude.json"`)
+jq -c --arg ws "`+folder+`" '[.remoteDialogSeen, .projects[$ws].hasTrustDialogAccepted]' "$CLAUDE_CONFIG_DIR/.claude.json"
+pwd`)
 		if err != nil || out != wantClaude {
 			t.Errorf("repository %s: Claude Code in the container: exec %v:\n%s\nwant:\n%s", repo, err, out, wantClaude)
 		}
@@ -396,7 +427,7 @@ jq -c '[.remoteDialogSeen, .projects["/workspaces/repo"].hasTrustDialogAccepted]
 	// control: the same comparison does see a rewrite, which `up` left and
 	// the up step names.
 	for repo, id := range ids {
-		clone := filepath.Join(cfg.WorkspaceRoot, id, "repo")
+		clone := filepath.Join(cfg.WorkspaceRoot, id, folders[repo])
 		want := ""
 		if repo == "105" {
 			want = " M .devcontainer/devcontainer-lock.json\n"
@@ -409,7 +440,7 @@ jq -c '[.remoteDialogSeen, .projects["/workspaces/repo"].hasTrustDialogAccepted]
 			t.Errorf("repository %s: the up step says %q", repo, d)
 		}
 	}
-	if b, err := os.ReadFile(filepath.Join(cfg.WorkspaceRoot, ids["105"], "repo", ".devcontainer", "devcontainer-lock.json")); err != nil || !strings.Contains(string(b), reg.Ref) {
+	if b, err := os.ReadFile(filepath.Join(cfg.WorkspaceRoot, ids["105"], "stale", ".devcontainer", "devcontainer-lock.json")); err != nil || !strings.Contains(string(b), reg.Ref) {
 		t.Errorf("the stale lockfile was rewritten to %q (%v); want an entry for %s", b, err, reg.Ref)
 	}
 

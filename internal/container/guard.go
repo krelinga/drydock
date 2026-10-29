@@ -9,6 +9,7 @@ import (
 
 	"github.com/krelinga/drydock/internal/dockerguard"
 	"github.com/krelinga/drydock/internal/subproc"
+	"github.com/krelinga/drydock/internal/workspace"
 )
 
 // The docker guard (design §6, "The docker guard"; internal/dockerguard).
@@ -23,24 +24,32 @@ import (
 // and `build` to, in the form docker reads it. A refusal never runs docker.
 
 // GuardDir is a workspace's guard directory, from its clone: the clone is
-// <root>/<id>/repo and the guard <root>/<id>/.drydock/guard, beside it and
-// never inside it, so no container sees it.
+// <root>/<id>/<name> (workspace.ClonePath) and the guard
+// <root>/<id>/.drydock/guard, beside it and never inside it, so no container
+// sees it.
 func GuardDir(folder string) string {
-	return filepath.Join(filepath.Dir(folder), ".drydock", "guard")
+	return guardDirIn(filepath.Dir(folder))
+}
+
+// guardDirIn is the guard directory in the workspace directory <root>/<id>.
+func guardDirIn(workspaceDir string) string {
+	return filepath.Join(workspaceDir, workspace.OwnDir, "guard")
 }
 
 // TempDirFor is the TMPDIR an up of the clone at folder runs with, the
 // workspace's own: <root>/<id>/.drydock/tmp. Up runs with no other, since the
 // policy lets a build read from it.
 func TempDirFor(folder string) string {
-	return filepath.Join(filepath.Dir(folder), ".drydock", "tmp")
+	return filepath.Join(filepath.Dir(folder), workspace.OwnDir, "tmp")
 }
 
 // SweepPolicy removes a guard policy and refusal an up left behind — a
 // Drydock killed during one — so the guard directory holds a policy only
-// while an up runs. Boot calls it for each workspace with no job in flight.
-func SweepPolicy(folder string) error {
-	dir := GuardDir(folder)
+// while an up runs. Boot calls it for each workspace directory, <root>/<id>,
+// with no job in flight: from the directory, not the clone, since a sweep
+// reads no row to name the clone by.
+func SweepPolicy(workspaceDir string) error {
+	dir := guardDirIn(workspaceDir)
 	return errors.Join(dockerguard.RemovePolicy(dir), dockerguard.ClearRefusal(dir))
 }
 

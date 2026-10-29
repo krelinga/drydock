@@ -64,8 +64,8 @@ func TestReopenInContainerFindsDrydocksContainer(t *testing.T) {
 	})
 	cfg := `{"image":"` + image + `"}`
 	workspace := func(id string, withConfig bool) container.UpSpec {
-		folder := filepath.Join(root, id, "repo")
-		s := container.UpSpec{WorkspaceID: id, RepositoryID: 101, FullName: "krelinga/alpha", Branch: "main",
+		folder := filepath.Join(root, id, "Alpha.Repo") // a repository name with its case
+		s := container.UpSpec{WorkspaceID: id, RepositoryID: 101, FullName: "krelinga/Alpha.Repo", Branch: "main",
 			Folder: folder, TempDir: container.TempDirFor(folder), ConfigFile: container.ConfigFiles(folder)[0]}
 		os.MkdirAll(s.TempDir, 0o700)
 		if withConfig {
@@ -148,7 +148,7 @@ func TestReopenInContainerFindsDrydocksContainer(t *testing.T) {
 		}
 	}
 	want, err := vscode.AttachURL(h, name, folder)
-	if err != nil || folder != "/workspaces/repo" {
+	if err != nil || folder != "/workspaces/Alpha.Repo" {
 		t.Fatalf("name %q folder %q: %v", name, folder, err)
 	}
 	m2 := regexp.MustCompile(`attached-container\+([0-9a-f]+)@`).FindStringSubmatch(want)

@@ -9,7 +9,7 @@ import (
 )
 
 func labelPolicy(root string) *Policy {
-	clone := filepath.Join(root, "repo")
+	clone := filepath.Join(root, "fixture")
 	p := FixturePolicy(root, nil)
 	p.Labels = map[string]string{
 		"devcontainer.local_folder": clone,
@@ -69,8 +69,8 @@ func TestTheGuardsLabelsCannotBeOverridden(t *testing.T) {
 	}
 	for name, extra := range map[string][]string{
 		"another local_folder":       {"-l", "devcontainer.local_folder=/home/owner/project"},
-		"another config_file":        {"--label", "devcontainer.config_file=" + filepath.Join(root, "repo", ".devcontainer.json")},
-		"another local_folder, =":    {"--label=devcontainer.local_folder=/srv/drydock/ws/OTHER/repo"},
+		"another config_file":        {"--label", "devcontainer.config_file=" + filepath.Join(root, "fixture", ".devcontainer.json")},
+		"another local_folder, =":    {"--label=devcontainer.local_folder=/srv/drydock/ws/OTHER/fixture"},
 		"an empty local_folder":      {"-l", "devcontainer.local_folder="},
 		"local_folder with no value": {"-l", "devcontainer.local_folder"},
 	} {

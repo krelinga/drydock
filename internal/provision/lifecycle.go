@@ -430,7 +430,7 @@ func (p *Provisioner) SweepGuardPolicies(ctx context.Context) error {
 		if !e.IsDir() || p.active[e.Name()] != nil {
 			continue
 		}
-		errs = append(errs, container.SweepPolicy(filepath.Join(p.Workspaces.Root, e.Name(), "repo")))
+		errs = append(errs, container.SweepPolicy(filepath.Join(p.Workspaces.Root, e.Name())))
 	}
 	return errors.Join(errs...)
 }
@@ -835,7 +835,8 @@ var hostRemoveAll = os.RemoveAll
 //
 //   - an id that is not a ULID, so it cannot be "", "..", or a path;
 //   - a root that is not absolute and clean, or is "/";
-//   - a row whose host_path is not <root>/<id>/repo — a root changed since
+//   - a row whose host_path is not <root>/<id>/<a clone folder name>
+//     (workspace.CheckClonePath) — a root changed since
 //     the workspace was created means the clone is somewhere else, and
 //     removing <new root>/<id> would remove the wrong thing or nothing;
 //   - a <root>/<id> that is not a real directory, is a symlink, or does not
@@ -848,7 +849,7 @@ func verifyWorkspaceDir(root string, w workspace.Workspace) (string, error) {
 		return "", fmt.Errorf("%w: the workspace root %q is not a clean absolute path", ErrUnsafePath, root)
 	}
 	dir := filepath.Join(root, w.ID)
-	if w.HostPath != filepath.Join(dir, "repo") {
+	if workspace.CheckClonePath(root, w.ID, w.HostPath) != nil {
 		return "", fmt.Errorf("%w: the clone is recorded at %q, not under %q", ErrUnsafePath, w.HostPath, dir)
 	}
 	fi, err := os.Lstat(dir)

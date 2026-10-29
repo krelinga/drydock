@@ -519,7 +519,8 @@ func (p *Provisioner) Unowned(id string, act func() error) (bool, error) {
 // row in pending, and start the run in the background. The returned
 // workspace is the row as created; everything after arrives as events.
 // Errors: ErrNotConfigured, ErrUnknownRepository, ErrBadBranch, and the
-// store's workspace.ErrInProgress and workspace.ErrAtCap.
+// store's workspace.ErrInProgress, workspace.ErrAtCap and
+// workspace.ErrBadCloneFolder.
 func (p *Provisioner) Create(ctx context.Context, repositoryID int64, branch string) (workspace.Workspace, error) {
 	if p.Cloner == nil || p.Broker == nil {
 		return workspace.Workspace{}, ErrNotConfigured

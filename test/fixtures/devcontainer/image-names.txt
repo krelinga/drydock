@@ -1,3 +1,7 @@
 cli 0.89.0
-folder /tmp/drydock-measure/ws/01JABCDEFGHJKMNPQRSTVWXYZ0/repo
-image vsc-repo-1f50303b6e8439ac18eed67f04af6e93c5b7e7b2bec05f97a3aec3472f6be9ac-features
+image /tmp/drydock-measure/ws/01JABCDEFGHJKMNPQRSTVWXYZ0/alpha vsc-alpha-4b9f10f3dfcca426fd8d25c8fb867d15909529a0cc234973f803f6d01efefc64-features
+workspace-folder /tmp/drydock-measure/ws/01JABCDEFGHJKMNPQRSTVWXYZ0/alpha /workspaces/alpha
+image /tmp/drydock-measure/ws/01JABCDEFGHJKMNPQRSTVWXYZ0/Drydock.Testbed_A vsc-drydock.testbed_a-e7dc62b8488a213fe519add9f72f2461f980ccf3cae7f6db3cc93939427cb7df-features
+workspace-folder /tmp/drydock-measure/ws/01JABCDEFGHJKMNPQRSTVWXYZ0/Drydock.Testbed_A /workspaces/Drydock.Testbed_A
+image /tmp/drydock-measure/ws/01JABCDEFGHJKMNPQRSTVWXYZ0/a-_b..c vsc-a-b.c-dbbc2e03d59ee513ad6b0f592f5f8fbbd96020d6de1249fada40118c0cc793a3-features
+workspace-folder /tmp/drydock-measure/ws/01JABCDEFGHJKMNPQRSTVWXYZ0/a-_b..c /workspaces/a-_b..c

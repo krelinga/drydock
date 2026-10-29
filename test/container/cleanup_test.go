@@ -173,7 +173,7 @@ func TestDeleteRemovesRootOwnedFiles(t *testing.T) {
 		time.Sleep(time.Second)
 	}
 	cid := *v.ContainerID
-	clone := filepath.Join(cfg.WorkspaceRoot, id, "repo")
+	clone := filepath.Join(cfg.WorkspaceRoot, id, "alpha")
 	folder := docker(t, "inspect", "--format",
 		`{{range .Mounts}}{{if eq .Source "`+clone+`"}}{{.Destination}}{{end}}{{end}}`, cid)
 	if folder == "" {

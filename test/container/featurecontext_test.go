@@ -62,7 +62,7 @@ func TestFeaturesAreThisBuildsOwn(t *testing.T) {
 	var staged []string
 	for i, version := range versions {
 		ws, _ := workspace.NewID(time.Now(), rand.Reader)
-		folder := filepath.Join(root, ws, "repo")
+		folder := filepath.Join(root, ws, "marker")
 		devc := filepath.Join(folder, ".devcontainer")
 		if err := os.MkdirAll(devc, 0o755); err != nil {
 			t.Fatal(err)

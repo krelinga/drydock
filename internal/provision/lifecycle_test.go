@@ -160,7 +160,8 @@ for a in "$@"; do
 done
 # The images the real CLI builds, named as it names them (container.BuiltImages).
 im='` + dir + `/images'; touch "$im"
-for n in "vsc-repo-$(printf '%s' "$folder" | sha256sum | cut -c1-64)-features" "vsc-repo-$(printf '%s' "$folder" | sha256sum | cut -c1-64)-features-uid"; do
+b=$(basename "$folder" | tr A-Z a-z); h=$(printf '%s' "$folder" | sha256sum | cut -c1-64)
+for n in "vsc-$b-$h-features" "vsc-$b-$h-features-uid"; do
   grep -Fxq -- "$n" "$im" || echo "$n" >> "$im"
 done
 st='` + dir + `/containers'; touch "$st"
@@ -171,7 +172,7 @@ if [ -n "$id" ]; then
 else
   id=$(od -An -N32 -tx1 /dev/urandom | tr -d ' \n'); echo "$id $ws running" >> "$st"
 fi
-printf '{"outcome":"success","containerId":"%s","remoteUser":"vscode","remoteWorkspaceFolder":"/workspaces/repo"}\n' "$id"`
+printf '{"outcome":"success","containerId":"%s","remoteUser":"vscode","remoteWorkspaceFolder":"/workspaces/%s"}\n' "$id" "$(basename "$folder")"`
 }
 
 // lifecycleEnv is newEnv with a docker world: up registers containers.
@@ -286,7 +287,7 @@ func TestStopStopsTheContainerAndClosesTheSocket(t *testing.T) {
 	if len(before) != 1 {
 		t.Fatalf("setup: containers %v", before)
 	}
-	marker := filepath.Join(e.root, v.ID, "repo", "unpushed.txt")
+	marker := filepath.Join(e.root, v.ID, "alpha", "unpushed.txt")
 	os.WriteFile(marker, []byte("work"), 0o600)
 
 	if err := e.p.Stop(ctx, v.ID); err != nil {
@@ -517,7 +518,7 @@ func TestRebuildReplacesTheContainer(t *testing.T) {
 	probe := e.cli.exec
 	v := e.running(t, alpha)
 	old := *v.ContainerID
-	marker := filepath.Join(e.root, v.ID, "repo", "unpushed.txt")
+	marker := filepath.Join(e.root, v.ID, "alpha", "unpushed.txt")
 	os.WriteFile(marker, []byte("work"), 0o600)
 
 	if err := e.p.Rebuild(ctx, v.ID); err != nil {
@@ -629,13 +630,13 @@ func TestDeleteRemovesEverything(t *testing.T) {
 	f.Close()
 	outside := t.TempDir()
 	os.WriteFile(filepath.Join(outside, "precious"), []byte("keep"), 0o600)
-	os.Symlink(outside, filepath.Join(e.root, v.ID, "repo", "link-out"))
-	os.Symlink(filepath.Join(outside, "precious"), filepath.Join(e.root, v.ID, "repo", "file-link"))
-	mine, err := container.BuiltImages(filepath.Join(e.root, v.ID, "repo"))
+	os.Symlink(outside, filepath.Join(e.root, v.ID, "alpha", "link-out"))
+	os.Symlink(filepath.Join(outside, "precious"), filepath.Join(e.root, v.ID, "alpha", "file-link"))
+	mine, err := container.BuiltImages(filepath.Join(e.root, v.ID, "alpha"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	other, _ := container.BuiltImages(filepath.Join(e.root, "01JABCDEFGHJKMNPQRSTVWXYZ0", "repo"))
+	other, _ := container.BuiltImages(filepath.Join(e.root, "01JABCDEFGHJKMNPQRSTVWXYZ0", "alpha"))
 	foreign := []string{other[1], mine[1] + "-x"}
 	f, _ = os.OpenFile(filepath.Join(e.cli.dir, "images"), os.O_APPEND|os.O_WRONLY, 0)
 	f.WriteString(strings.Join(foreign, "\n") + "\n")
@@ -804,16 +805,16 @@ func TestRemoveWorkspaceDirRefusesAnythingElse(t *testing.T) {
 		}
 	}
 	ws := func(root, id string) workspace.Workspace {
-		return workspace.Workspace{ID: id, HostPath: filepath.Join(root, id, "repo")}
+		return workspace.Workspace{ID: id, HostPath: filepath.Join(root, id, "alpha")}
 	}
 
 	t.Run("control", func(t *testing.T) {
 		root, outside := mk(t)
 		dir := filepath.Join(root, id)
-		os.MkdirAll(filepath.Join(dir, "repo", "ro", "deep"), 0o700)
-		os.WriteFile(filepath.Join(dir, "repo", "ro", "deep", "f"), nil, 0o400)
-		os.Chmod(filepath.Join(dir, "repo", "ro"), 0o500)
-		os.Symlink(outside, filepath.Join(dir, "repo", "out"))
+		os.MkdirAll(filepath.Join(dir, "alpha", "ro", "deep"), 0o700)
+		os.WriteFile(filepath.Join(dir, "alpha", "ro", "deep", "f"), nil, 0o400)
+		os.Chmod(filepath.Join(dir, "alpha", "ro"), 0o500)
+		os.Symlink(outside, filepath.Join(dir, "alpha", "out"))
 		if err := rwd(t, root, ws(root, id)); err != nil {
 			t.Fatal(err)
 		}
@@ -848,7 +849,16 @@ func TestRemoveWorkspaceDirRefusesAnythingElse(t *testing.T) {
 		{"an id that is not a ULID", "", func(root string) workspace.Workspace { return ws(root, "..") }},
 		{"an empty id", "", func(root string) workspace.Workspace { return ws(root, "") }},
 		{"the row's clone is elsewhere", "", func(root string) workspace.Workspace {
-			return workspace.Workspace{ID: id, HostPath: "/srv/drydock/ws/" + id + "/repo"}
+			return workspace.Workspace{ID: id, HostPath: "/srv/drydock/ws/" + id + "/alpha"}
+		}},
+		{"the row's clone is Drydock's own directory", "", func(root string) workspace.Workspace {
+			return workspace.Workspace{ID: id, HostPath: filepath.Join(root, id, ".drydock")}
+		}},
+		{"the row's clone is the workspace directory", "", func(root string) workspace.Workspace {
+			return workspace.Workspace{ID: id, HostPath: filepath.Join(root, id, ".")}
+		}},
+		{"the row's clone is deeper", "", func(root string) workspace.Workspace {
+			return workspace.Workspace{ID: id, HostPath: filepath.Join(root, id, "alpha", "x")}
 		}},
 		{"a relative root", "ws", func(root string) workspace.Workspace { return ws("ws", id) }},
 		{"an unclean root", "/tmp/../tmp/ws", func(root string) workspace.Workspace { return ws(root, id) }},
@@ -856,7 +866,7 @@ func TestRemoveWorkspaceDirRefusesAnythingElse(t *testing.T) {
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			root, outside := mk(t)
-			os.MkdirAll(filepath.Join(root, id, "repo"), 0o700)
+			os.MkdirAll(filepath.Join(root, id, "alpha"), 0o700)
 			if c.root != "" {
 				root = c.root
 			}
@@ -894,7 +904,7 @@ func TestDeleteRefusalStaysResumable(t *testing.T) {
 	if a := e.actions(t, v.ID); a[len(a)-1] != "delete:files:failed" {
 		t.Errorf("actions %v", a)
 	}
-	if _, err := os.Stat(filepath.Join(moved, "repo", ".git")); err != nil {
+	if _, err := os.Stat(filepath.Join(moved, "alpha", ".git")); err != nil {
 		t.Errorf("the symlink's target was touched: %v", err)
 	}
 
@@ -1045,7 +1055,7 @@ func TestDeleteNamesAStuckSubStep(t *testing.T) {
 			if len(e.broker.closes()) != 0 {
 				t.Error("the socket was closed past a stuck containers step")
 			}
-			if _, err := os.Stat(filepath.Join(e.root, v.ID, "repo", ".git")); err != nil {
+			if _, err := os.Stat(filepath.Join(e.root, v.ID, "alpha", ".git")); err != nil {
 				t.Errorf("the clone went past a stuck containers step: %v", err)
 			}
 			// Asking again while docker still refuses: the stuck note goes
@@ -1128,12 +1138,12 @@ func TestRemoveWorkspaceDirFallsBackToTheHelper(t *testing.T) {
 	mk := func(t *testing.T, stuck bool) (string, string, workspace.Workspace) {
 		base := t.TempDir()
 		root := filepath.Join(base, "ws")
-		os.MkdirAll(filepath.Join(root, id, "repo", "build", "out"), 0o700)
+		os.MkdirAll(filepath.Join(root, id, "alpha", "build", "out"), 0o700)
 		os.WriteFile(filepath.Join(base, "precious"), []byte("keep"), 0o600)
 		if stuck {
-			os.WriteFile(filepath.Join(root, id, "repo", "build", "out", "root-owned"), nil, 0o600)
+			os.WriteFile(filepath.Join(root, id, "alpha", "build", "out", "root-owned"), nil, 0o600)
 		}
-		return base, root, workspace.Workspace{ID: id, HostPath: filepath.Join(root, id, "repo")}
+		return base, root, workspace.Workspace{ID: id, HostPath: filepath.Join(root, id, "alpha")}
 	}
 	var given []string
 	helper := func(_ context.Context, ws, dir string) error {
@@ -1257,8 +1267,8 @@ func TestDeleteFallsBackToTheHelperContainer(t *testing.T) {
 	}
 
 	v := e.running(t, alpha)
-	os.MkdirAll(filepath.Join(e.root, v.ID, "repo", "build"), 0o700)
-	os.WriteFile(filepath.Join(e.root, v.ID, "repo", "build", "root-owned"), nil, 0o600)
+	os.MkdirAll(filepath.Join(e.root, v.ID, "alpha", "build"), 0o700)
+	os.WriteFile(filepath.Join(e.root, v.ID, "alpha", "build", "root-owned"), nil, 0o600)
 	if err := e.p.Delete(ctx, v.ID, "krelinga/alpha"); err != nil {
 		t.Fatal(err)
 	}
@@ -1284,7 +1294,7 @@ func TestDeleteFallsBackToTheHelperContainer(t *testing.T) {
 	// The helper fails: stuck in deleting, naming files, with the directory
 	// still there to retry on.
 	f := e.running(t, alpha)
-	os.WriteFile(filepath.Join(e.root, f.ID, "repo", "root-owned"), nil, 0o600)
+	os.WriteFile(filepath.Join(e.root, f.ID, "alpha", "root-owned"), nil, 0o600)
 	os.WriteFile(filepath.Join(e.cli.dir, "docker-fail-run"), nil, 0o600)
 	if err := e.p.Delete(ctx, f.ID, "krelinga/alpha"); err != nil {
 		t.Fatal(err)

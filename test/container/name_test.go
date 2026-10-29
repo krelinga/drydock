@@ -30,7 +30,7 @@ func (zeros) Read(p []byte) (int, error) { clear(p); return len(p), nil }
 // cfg, under root.
 func nameWorkspace(t *testing.T, root, id, cfg string) container.UpSpec {
 	t.Helper()
-	folder := filepath.Join(root, id, "repo")
+	folder := filepath.Join(root, id, "alpha")
 	s := container.UpSpec{WorkspaceID: id, RepositoryID: 101, FullName: "krelinga/alpha", Branch: "main",
 		Folder: folder, TempDir: container.TempDirFor(folder), ConfigFile: container.ConfigFiles(folder)[0], Rebuild: true}
 	s.ConfigDir = filepath.Dir(s.ConfigFile)
@@ -91,7 +91,7 @@ func TestWorkspaceContainersAreNamed(t *testing.T) {
 		t.Fatalf("the container is named %q", n1)
 	}
 	h, _ := config.ParseSSHHost("owner@devbox")
-	if _, err := vscode.AttachURL(h, "/"+n1, "/workspaces/repo"); err != nil {
+	if _, err := vscode.AttachURL(h, "/"+n1, "/workspaces/alpha"); err != nil {
 		t.Errorf("the link refuses the name %q: %v", n1, err)
 	}
 

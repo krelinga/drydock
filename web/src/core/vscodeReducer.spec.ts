@@ -14,7 +14,7 @@ import {
 // Remote-SSH's authority for owner@devbox.lan, {"hostName","user"} in hex.
 const GOOD =
   'vscode://vscode-remote/attached-container+7b22636f6e7461696e65724e616d65223a222f6d6f636b5f31227d' +
-  '@ssh-remote+7b22686f73744e616d65223a22646576626f782e6c616e222c2275736572223a226f776e6572227d/workspaces/repo1'
+  '@ssh-remote+7b22686f73744e616d65223a22646576626f782e6c616e222c2275736572223a226f776e6572227d/workspaces/drydock'
 
 const list = (at: number, over: Partial<WorkspaceView>): Entities =>
   reduce(emptyEntities(), { type: 'workspaces', at, view: listBody(wsView(over)) })
@@ -70,7 +70,7 @@ describe('the VS Code link', () => {
 
   it('decodes the container payload and takes only exactly {"containerName":"/<name>"}', () => {
     const hex = (t: string) => [...t].map((c) => c.charCodeAt(0).toString(16).padStart(2, '0')).join('')
-    const link = (payload: string) => `vscode://vscode-remote/attached-container+${payload}@ssh-remote+devbox/workspaces/repo`
+    const link = (payload: string) => `vscode://vscode-remote/attached-container+${payload}@ssh-remote+devbox/workspaces/drydock`
     for (const bad of [
       // The extension's own settings.host would open a connection of its choosing.
       '{"containerName":"/x","settings":{"host":"ssh://evil.example"}}',
@@ -95,7 +95,7 @@ describe('the VS Code link', () => {
   it('takes an SSH authority only as internal/vscode writes it, and says which host it is', () => {
     const hex = (t: string) => [...t].map((c) => c.charCodeAt(0).toString(16).padStart(2, '0')).join('')
     const container = hex('{"containerName":"/x"}')
-    const link = (ssh: string) => `vscode://vscode-remote/attached-container+${container}@ssh-remote+${ssh}/workspaces/repo`
+    const link = (ssh: string) => `vscode://vscode-remote/attached-container+${container}@ssh-remote+${ssh}/workspaces/drydock`
     expect(vscodeSSHHost(GOOD)).toBe('owner@devbox.lan')
     expect(vscodeSSHHost(link('devbox'))).toBe('devbox')
     expect(vscodeSSHHost(link(hex('{"hostName":"DevBox","user":"owner","port":2222}')))).toBe('owner@DevBox:2222')
