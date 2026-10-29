@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.19.0](https://github.com/krelinga/drydock/compare/v0.18.0...v0.19.0) (2026-10-29)
+
+
+### Features
+
+* name each workspace's clone folder after its repository ([#195](https://github.com/krelinga/drydock/issues/195)) ([19cb214](https://github.com/krelinga/drydock/commit/19cb21461dfd03c3fe05721c176ece49dc518d5c))
+
 ## [0.18.0](https://github.com/krelinga/drydock/compare/v0.17.6...v0.18.0) (2026-10-29)
 
 
