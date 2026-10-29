@@ -33,7 +33,10 @@ func TestUpGivesTheGuardTheSpecLabels(t *testing.T) {
 	if ids := flagValues(got, "--id-label"); len(ids) != 4 {
 		t.Errorf("id-labels %v", ids)
 	}
-	p := m.guardPolicy(s)
+	p, err := m.guardPolicy(s)
+	if err != nil {
+		t.Fatal(err)
+	}
 	want := map[string]string{LabelLocalFolder: s.Folder,
 		LabelConfigFile: filepath.Join(s.Folder, ".devcontainer", "devcontainer.json")}
 	if !reflect.DeepEqual(p.Labels, want) {
@@ -41,7 +44,10 @@ func TestUpGivesTheGuardTheSpecLabels(t *testing.T) {
 	}
 	plain := s
 	plain.ConfigFile = ""
-	pp := m.guardPolicy(plain)
+	pp, err := m.guardPolicy(plain)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if pp.Labels != nil {
 		t.Errorf("control: policy labels %v", pp.Labels)
 	}
@@ -52,10 +58,11 @@ func TestUpGivesTheGuardTheSpecLabels(t *testing.T) {
 
 // Through the real guard (this test binary, TestMain), the docker run the
 // CLI writes reaches docker with the spec's two labels added right after
-// `run` and nothing else changed. The control is the same up with no
-// ConfigFile, whose docker run is the CLI's unaltered.
+// `run`, behind the container's name, and nothing else changed. The control
+// is the same up with no ConfigFile, whose docker run is the CLI's, named.
 func TestTheGuardLabelsTheContainer(t *testing.T) {
 	m, dir := upThroughGuard(t, "")
+	m.Random = zeros{}
 	s := upSpec(t)
 	if _, _, err := m.Up(context.Background(), s); err != nil {
 		t.Fatal(err)
@@ -67,9 +74,10 @@ func TestTheGuardLabelsTheContainer(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := argv(t, dir, "docker")
-	want := append([]string{"run", "-l", LabelConfigFile + "=" + filepath.Join(s.Folder, ".devcontainer.json"),
-		"-l", LabelLocalFolder + "=" + s.Folder}, plain[1:]...)
-	if plain[0] != "run" || strings.Join(got, "\n") != strings.Join(want, "\n") {
+	name := "drydock.test-foo-vwxyz0-0000"
+	want := append([]string{"run", "--name", name, "-l", LabelConfigFile + "=" + filepath.Join(s.Folder, ".devcontainer.json"),
+		"-l", LabelLocalFolder + "=" + s.Folder}, plain[3:]...)
+	if len(plain) < 3 || plain[0] != "run" || plain[1] != "--name" || plain[2] != name || strings.Join(got, "\n") != strings.Join(want, "\n") {
 		t.Errorf("docker ran with\n %q\nwant\n %q", got, want)
 	}
 }

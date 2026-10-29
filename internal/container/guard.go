@@ -1,6 +1,7 @@
 package container
 
 import (
+	"crypto/rand"
 	"errors"
 	"fmt"
 	"path/filepath"
@@ -97,9 +98,19 @@ func withDockerPath(args, dp []string) []string {
 	return append(append([]string(nil), args...), dp...)
 }
 
-// guardPolicy is what one up may ask docker for.
-func (m Manager) guardPolicy(s UpSpec) dockerguard.Policy {
+// guardPolicy is what one up may ask docker for, naming the container it
+// creates afresh (ContainerName).
+func (m Manager) guardPolicy(s UpSpec) (dockerguard.Policy, error) {
+	r := m.Random
+	if r == nil {
+		r = rand.Reader
+	}
+	name, err := ContainerName(m.LabelPrefix, s.FullName, s.WorkspaceID, r)
+	if err != nil {
+		return dockerguard.Policy{}, err
+	}
 	p := dockerguard.Policy{
+		Name:  name,
 		Clone: s.Folder, TempDir: s.TempDir, ConfigDir: s.ConfigDir,
 		LabelPrefix: m.LabelPrefix, IDLabels: map[string]string{},
 		ProbeImage: m.CleanupImage,
@@ -113,5 +124,5 @@ func (m Manager) guardPolicy(s UpSpec) dockerguard.Policy {
 	for _, a := range s.Approved {
 		p.Approved = append(p.Approved, dockerguard.Setting{Field: a.Field, Value: a.Value})
 	}
-	return p
+	return p, nil
 }

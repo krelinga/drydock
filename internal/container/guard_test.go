@@ -77,7 +77,10 @@ func recordedPolicy(root string, approved []HostSetting) *dockerguard.Policy {
 		ConfigDir: filepath.Join(root, "repo", ".devcontainer"), BrokerDir: filepath.Join(root, "sock"),
 		ClaudeVolume: "drydock-record-claude", Approved: approved}
 	os.MkdirAll(s.TempDir, 0o700)
-	p := m.guardPolicy(s)
+	p, err := m.guardPolicy(s)
+	if err != nil {
+		panic(err)
+	}
 	p.Version = dockerguard.PolicyVersion
 	return &p
 }

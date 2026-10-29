@@ -34,8 +34,9 @@
 // (IsGuard); it reads policy.json from the directory of the path it was run as
 // — absolute, or it runs nothing — and either refuses (one
 // `drydock-docker-guard: refused: …` stderr line, refused.json beside it, exit
-// 77, docker never run) or execves real-docker with argv untouched but for WithLabels, so stdin,
-// stdout, stderr, signals and the exit status are docker's own.
+// 77, docker never run) or execves real-docker with argv untouched but for
+// WithAdded, so stdin, stdout, stderr, signals and the exit status are
+// docker's own.
 //
 // **Fail closed:** with no readable policy every command that creates a
 // container or builds an image is refused (no_policy). run/create options are
@@ -54,13 +55,18 @@
 // to /). --privileged, --cap-add (but SYS_PTRACE), --security-opt (but
 // seccomp=unconfined), -p (as the CLI renders appPort), --gpus need their
 // field approved; -e/--build-arg without a value, a label under the prefix
-// that is not an id-label, and one of the policy's Labels with another value
-// are refused. Those Labels — the dev container spec's
+// that is not an id-label, one of the policy's Labels with another value, and
+// a --name other than the policy's Name are refused (an approved runArgs
+// --name is removed first, and docker keeps the last --name, so the
+// repository's own name wins). Those Labels — the dev container spec's
 // devcontainer.local_folder and devcontainer.config_file, which VS Code's
-// Reopen in Container finds a folder's container by — are the one thing the
-// guard adds to argv (WithLabels, before the check), to every run and create:
-// labels, not id-labels, so the CLI's container matching and
-// ${devcontainerId} are untouched. A start of a container whose local_folder
+// Reopen in Container finds a folder's container by — and the Name — the
+// workspace's container name, which titles VS Code's attached window — are
+// the one thing the guard adds to argv (WithAdded, before the check), to
+// every run and create: labels, not id-labels, and a name the CLI never sees,
+// so the CLI's container matching and ${devcontainerId} are untouched. An
+// approved runArgs is never matched against the guard's own additions. A
+// start of a container whose local_folder
 // is not the clone, or whose config_file is neither path the CLI looks at in
 // it, is refused (startableLabel: the label was fixed at create, and the
 // repository may have moved its configuration since); one without them,
@@ -113,6 +119,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 )
@@ -148,13 +155,22 @@ type Policy struct {
 	LabelPrefix string            `json:"label_prefix"`
 	IDLabels    map[string]string `json:"id_labels"`
 	// Labels are labels the guard itself adds to every container this up
-	// creates (WithLabels) and that are not id-labels: the dev container
+	// creates (WithAdded) and that are not id-labels: the dev container
 	// spec's devcontainer.local_folder and devcontainer.config_file, which
 	// VS Code finds a folder's container by. Not id-labels, so the CLI's
 	// container matching and ${devcontainerId} are what they were. A run
 	// carrying one with another value, or a start of a container that does,
 	// is refused.
 	Labels map[string]string `json:"labels,omitempty"`
+	// Name is the --name the guard gives every container this up creates
+	// (WithAdded): <prefix>-<repo>-<workspace>-<suffix>, new for each up,
+	// so the name a rebuild gives can never be the one a container still
+	// standing holds. Cosmetic — it titles VS Code's attached window — and
+	// nothing finds a container by it; the CLI never sees it, so its
+	// container matching and ${devcontainerId} are what they were. A run
+	// carrying another --name that is not the approved runArgs' is refused.
+	// Empty adds none.
+	Name string `json:"name,omitempty"`
 	// OwnMounts are the --mount values Drydock passes to up: the broker
 	// directory and the credential volume.
 	OwnMounts []string `json:"own_mounts"`
@@ -333,6 +349,7 @@ const (
 	kFree       flagKind = iota // in the container, or the CLI's own plumbing
 	kEnv                        // -e/--build-arg: must carry its value, or docker copies the guard's environment
 	kLabel                      // a container label
+	kName                       // --name: the guard's own, or approved runArgs
 	kMount                      // --mount
 	kPublish                    // -p
 	kPrivileged                 // --privileged
@@ -362,6 +379,7 @@ var runFlags = map[string]flagSpec{
 	"-a": {}, "--attach": {}, "-u": {}, "--user": {}, "-w": {}, "--workdir": {}, "--entrypoint": {},
 	"-e": {kind: kEnv}, "--env": {kind: kEnv},
 	"-l": {kind: kLabel}, "--label": {kind: kLabel},
+	"--name":         {kind: kName},
 	"--mount":        {kind: kMount},
 	"-p":             {kind: kPublish},
 	"--publish":      {kind: kPublish},
@@ -460,9 +478,21 @@ func (c *checker) run(args []string) Decision {
 	// runArgs is approved as a whole: the CLI writes it into argv verbatim
 	// and in order (measured), so an approved value is removed as one
 	// contiguous run of arguments and what remains is read option by option.
-	for _, ra := range c.p.stringLists("runArgs") {
-		args = removeRun(args, ra)
+	//
+	// Never from the guard's own additions, which lead argv (WithAdded): an
+	// approved runArgs that is a bare "--name" or "-l" would otherwise take
+	// the guard's flag and leave its value to be read as the image, ending
+	// the parse before anything after it is checked. They are read as
+	// options all the same, below, as docker will read them.
+	own := added(c.p)
+	head, rest := args[:0:0], args
+	if len(own) > 0 && len(args) >= len(own) && slices.Equal(args[:len(own)], own) {
+		head, rest = args[:len(own)], args[len(own):]
 	}
+	for _, ra := range c.p.stringLists("runArgs") {
+		rest = removeRun(rest, ra)
+	}
+	args = append(append([]string(nil), head...), rest...)
 	for len(args) > 0 {
 		opts, _, unknown, after := parseFrom(args, runFlags)
 		for _, o := range opts {
@@ -504,6 +534,13 @@ func (c *checker) option(o parsed) {
 			// what VS Code would find another folder's container by, and
 			// docker keeps the last -l.
 			c.refuse(SettingRunArgs, "a label the guard sets, with a value other than Drydock's: "+k)
+		}
+	case kName:
+		// Only the guard's own name: any other reaches argv through runArgs,
+		// approved as a whole and removed before this parse. Under a policy
+		// with no Name, every --name left is that.
+		if c.p.Name == "" || o.value != c.p.Name {
+			c.refuse(SettingRunArgs, "a container name other than Drydock's: "+o.value)
 		}
 	case kMount:
 		if !c.mountAllowed(o.value) {

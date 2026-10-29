@@ -23,8 +23,15 @@
 // plain labels, never id-labels: the docker guard adds them to the docker run
 // it lets up make (the policy's Labels), so the CLI's container matching and
 // ${devcontainerId} — a hash of the id-labels — are what they were. A
-// container gets them when it is created. Nothing here finds a container by
-// them: List, Find, Stop and Remove go by the prefix's workspace label. Found
+// container gets them when it is created. The guard also names it
+// (ContainerName, the policy's Name): <prefix>-<repo>-<last six of the
+// id>-<suffix>, the suffix new for each up so a rebuild never meets a name
+// a container still standing holds — Docker's own two random words were all
+// VS Code's attached window showed. A repository's approved runArgs --name
+// comes later in argv and wins. A Compose configuration's containers are
+// Compose's, and get neither the labels nor the name. Nothing here finds a
+// container by them: List, Find, Stop and Remove go by the prefix's
+// workspace label. Found
 // carries each container's Name and Mounts, which internal/vscode builds the
 // Open in VS Code link from (Of reads one workspace's).
 //
@@ -65,7 +72,8 @@
 // runs; the pair goes among the CLI's options, before exec's --. Up refuses to
 // run with no guard (ErrNoGuard) or a TMPDIR other than TempDirFor(folder)
 // (<id>/.drydock/tmp), writes the guard's policy.json — the four id-labels, the spec's two
-// labels the guard adds to the container (specLabels),
+// labels and the name the guard adds to the container (specLabels,
+// ContainerName),
 // Drydock's two --mount values (ownMounts, the same strings Args passes), the
 // clone, the TMPDIR, UpSpec.ConfigDir and UpSpec.Approved — removes it after,
 // and reads the guard's refused.json before the CLI's result: a refusal is
@@ -253,6 +261,9 @@ type Manager struct {
 	// Logf is the service log, told about a helper's removal that failed
 	// after its run; nil drops it (boot's sweep removes what was left).
 	Logf func(string, ...any)
+	// Random draws each up's container-name suffix (ContainerName); nil is
+	// crypto/rand.
+	Random sys.Random
 }
 
 // Label keys, under the prefix. Workspace is the id-label `up` matches on;
@@ -497,6 +508,63 @@ func specLabels(s UpSpec) map[string]string {
 	return map[string]string{LabelLocalFolder: s.Folder, LabelConfigFile: s.ConfigFile}
 }
 
+// NameRepoMax bounds the repository's part of a container name, so a long
+// repository name leaves the workspace and the suffix in VS Code's title.
+const NameRepoMax = 40
+
+// nameAlphabet is Crockford's base 32, lowercased: the ULID's own alphabet.
+const nameAlphabet = "0123456789abcdefghjkmnpqrstvwxyz"
+
+// ContainerName is the name the docker guard gives the container one up of
+// s creates (dockerguard.Policy.Name): <prefix>-<repo>-<workspace>-<suffix>,
+// as drydock-alpha-k3f9qz-7x2m. The Dev Containers extension titles an
+// attached window "Container <image> (<name>)", and Docker's own name for a
+// container the CLI made is two random words, so the name is what tells
+// workspaces apart there.
+//
+//   - prefix is the label prefix: "drydock" on a real host, and a test
+//     Drydock's own on the same daemon, so whose a container is reads off
+//     docker ps. Not needed for uniqueness, which the rest gives.
+//   - repo is the repository's name without its owner, as GitHub spells it
+//     (already Docker's characters: fullNamePattern), cut to NameRepoMax.
+//   - workspace is the ULID's last six characters, lowercased: what the UI
+//     shows a workspace as (`workspace …<last six>`), and random bits.
+//   - suffix is four characters drawn from r for each up, so no two ups'
+//     containers share a name. A rebuild, or a start from failed, creates
+//     a container while an older one of the workspace can still stand: the
+//     CLI's --remove-existing-container removes only the first container its
+//     label lookup lists, and a cut-off up's create can land after that
+//     lookup (UpSettle). With one fixed name per workspace, docker run would
+//     then fail on the name, and the workspace with it — measured in
+//     test/container, TestAFixedNameWouldConflict.
+//
+// Nothing in Drydock finds a container by it: reconciliation, Find, Stop and
+// Remove go by the workspace label, and the VS Code link reads the name from
+// Docker each view (internal/vscode). The CLI never sees it, so neither
+// its container matching nor ${devcontainerId} moves.
+func ContainerName(prefix, fullName, workspaceID string, r io.Reader) (string, error) {
+	_, repo, _ := strings.Cut(fullName, "/")
+	if repo == "" || len(workspaceID) < 6 {
+		return "", fmt.Errorf("container: no name for %q, %q", fullName, workspaceID)
+	}
+	if len(repo) > NameRepoMax {
+		repo = repo[:NameRepoMax]
+	}
+	var b [4]byte
+	if _, err := io.ReadFull(r, b[:]); err != nil {
+		return "", fmt.Errorf("container: a name suffix: %w", err)
+	}
+	suffix := make([]byte, len(b))
+	for i, c := range b {
+		suffix[i] = nameAlphabet[int(c)%len(nameAlphabet)]
+	}
+	name := prefix + "-" + repo + "-" + strings.ToLower(workspaceID[len(workspaceID)-6:]) + "-" + string(suffix)
+	if !dockerguard.ValidName(name) {
+		return "", fmt.Errorf("container: %q is not a Docker container name", name)
+	}
+	return name, nil
+}
+
 // ownMounts are the --mount values Drydock gives up: the broker directory
 // and the shared credential volume. Args validates both.
 func (m Manager) ownMounts(s UpSpec) []string {
@@ -602,7 +670,11 @@ func (m Manager) Up(ctx context.Context, s UpSpec) (classify.Container, []byte, 
 	if err := dockerguard.ClearRefusal(dir); err != nil {
 		return classify.Container{}, nil, fmt.Errorf("container: docker guard: %w", err)
 	}
-	if err := dockerguard.WritePolicy(dir, m.guardPolicy(s)); err != nil {
+	policy, err := m.guardPolicy(s)
+	if err != nil {
+		return classify.Container{}, nil, err
+	}
+	if err := dockerguard.WritePolicy(dir, policy); err != nil {
 		return classify.Container{}, nil, fmt.Errorf("container: docker guard: %w", err)
 	}
 	defer dockerguard.RemovePolicy(dir)

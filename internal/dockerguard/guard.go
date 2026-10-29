@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -184,6 +185,9 @@ func ReadPolicy(dir string) (*Policy, error) {
 	if p.Version != PolicyVersion || p.Clone == "" || p.TempDir == "" {
 		return nil, fmt.Errorf("dockerguard: %s is not a version %d policy", path, PolicyVersion)
 	}
+	if p.Name != "" && !ValidName(p.Name) {
+		return nil, fmt.Errorf("dockerguard: %s names a container %q, which is not a Docker name", path, p.Name)
+	}
 	return &p, nil
 }
 
@@ -236,13 +240,16 @@ func recordRefusal(dir string, d Decision) error {
 	return writeFile(dir, RefusalName, b)
 }
 
-// WithLabels is args with the policy's Labels added, as -l key=value in key
-// order, right after `run` or `create` (or `container run`/`create`) — among
-// the options, before the image. Any other command, or no policy, is args
-// as given. They are labels and not id-labels: the CLI never sees them, so
+// WithAdded is args with the guard's own additions — the policy's Name, as
+// --name, then its Labels, as -l key=value in key order — put right after
+// `run` or `create` (or `container run`/`create`): among the options, before
+// the image, and before anything the CLI wrote, so a --name of the
+// repository's own runArgs comes later and is the one docker keeps. Any
+// other command, or no policy, is args as given. The CLI never sees them, so
 // they change neither which container up matches nor ${devcontainerId}.
-func WithLabels(p *Policy, args []string) []string {
-	if p == nil || len(p.Labels) == 0 || len(args) == 0 {
+func WithAdded(p *Policy, args []string) []string {
+	own := added(p)
+	if len(own) == 0 || len(args) == 0 {
 		return args
 	}
 	at := 0
@@ -254,17 +261,36 @@ func WithLabels(p *Policy, args []string) []string {
 	default:
 		return args
 	}
+	out := append(append([]string(nil), args[:at]...), own...)
+	return append(out, args[at:]...)
+}
+
+// added is what WithAdded puts after run or create under p.
+func added(p *Policy) []string {
+	if p == nil {
+		return nil
+	}
+	var out []string
+	if p.Name != "" {
+		out = append(out, "--name", p.Name)
+	}
 	keys := make([]string, 0, len(p.Labels))
 	for k := range p.Labels {
 		keys = append(keys, k)
 	}
 	sort.Strings(keys)
-	out := append([]string(nil), args[:at]...)
 	for _, k := range keys {
 		out = append(out, "-l", k+"="+p.Labels[k])
 	}
-	return append(out, args[at:]...)
+	return out
 }
+
+// namePattern is Docker's own for a container name (daemon/names:
+// RestrictedNameChars).
+var namePattern = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_.-]+$`)
+
+// ValidName reports whether name is one Docker accepts for a container.
+func ValidName(name string) bool { return namePattern.MatchString(name) }
 
 func union(a, b []string) []string {
 	m := map[string]bool{}
@@ -285,8 +311,9 @@ func union(a, b []string) []string {
 // exit status is ExitRefused. Any other command replaces this process with
 // the real docker (execve), so its argv, stdin, stdout, stderr, signals and
 // exit status are docker's own, exactly. Main returns only when it does not
-// exec. The one change it makes to argv is WithLabels: the policy's Labels
-// added to a run or create, which is then checked as docker will run it.
+// exec. The one change it makes to argv is WithAdded: the policy's Name and
+// Labels added to a run or create, which is then checked as docker will run
+// it.
 func Main(argv0 string, args []string, stderr io.Writer) int {
 	if !filepath.IsAbs(argv0) {
 		// Without its own path the guard can find neither its policy nor
@@ -301,9 +328,9 @@ func Main(argv0 string, args []string, stderr io.Writer) int {
 		p = nil
 	}
 	real := filepath.Join(dir, RealName)
-	// The policy's labels are added to a run or create before it is
-	// checked, so what is checked is what docker runs.
-	args = WithLabels(p, args)
+	// The policy's name and labels are added to a run or create before it
+	// is checked, so what is checked is what docker runs.
+	args = WithAdded(p, args)
 	d := Check(p, args)
 	if !d.Refused && len(d.Start) > 0 {
 		// The containers a start names are held to the policy as they were
