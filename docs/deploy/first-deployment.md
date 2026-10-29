@@ -723,7 +723,7 @@ sudo -u drydock drydock passwd --db /var/lib/drydock/drydock.db
 | `/run/drydock/{http,preview}.sock` | drydock:drydock `0660` | The two Unix sockets. The directory is `0750`. |
 | `/run/drydock/sock/` | drydock `0700` | One directory per workspace, `<id>/` (`0755`), holding its token-broker socket `broker.sock` while the workspace runs. The directory, not the socket, is mounted into the container, so it is kept across restarts (`RuntimeDirectoryPreserve=yes`) and removed by a delete. |
 | `/run/caddy/admin.sock` | caddy `0600` | Caddy's admin API, moved off `localhost:2019`. |
-| `/srv/drydock/ws/` | drydock `0700` | Clones, at `/srv/drydock/ws/<id>/repo`. Mounted `nosuid,nodev` by your `/etc/fstab` line ([3.5](#35-the-workspace-root-nosuid-and-nodev)), not by the installer. |
+| `/srv/drydock/ws/` | drydock `0700` | Clones, at `/srv/drydock/ws/<id>/<repo>`, each named after its repository without the owner. Mounted `nosuid,nodev` by your `/etc/fstab` line ([3.5](#35-the-workspace-root-nosuid-and-nodev)), not by the installer. |
 | `drydock.service`, `caddy.service` | enabled | Both start at boot. |
 | Docker volume `drydock-claude-config` | (Docker's) | Created by Drydock, not the installer, at the first workspace or Claude sign-in. Once someone signs in ([§8.6](#86-a-claude-session-phase-5)), it holds a live Claude login. |
 
@@ -978,16 +978,18 @@ should stay quiet.
 ### 8.2 GitHub access inside the container (Phase 3)
 
 Set the workspace id from the URL, and find its container. `vscode` is the remote user of B's
-minimal config. For A, use its `remoteUser`. The clone is mounted at `/workspaces/repo` unless the
+minimal config. For A, use its `remoteUser`. The clone is mounted at `/workspaces/<repo>` — the
+repository's name without its owner, in its own case, as its folder on the server is named — unless the
 repository's config sets its own `workspaceFolder`.
 
 ```sh
 WS=<workspace-id>
+REPO=<repository name, without the owner>
 CID=$(sudo docker ps -q --filter "label=drydock.workspace=$WS")
-sudo docker exec -u vscode -w /workspaces/repo "$CID" git remote -v      # plain https://github.com/<owner>/<repo>.git, no token
-sudo docker exec -u vscode -w /workspaces/repo "$CID" git fetch          # works: the broker minted a token
-sudo docker exec -u vscode -w /workspaces/repo "$CID" gh repo view --json nameWithOwner --jq .nameWithOwner   # prints <owner>/<repo>: this workspace's repository, and nothing else
-sudo docker exec -u vscode -w /workspaces/repo "$CID" gh repo view <owner>/<A>   # another PRIVATE repo, even one the App is installed on: not found
+sudo docker exec -u vscode -w "/workspaces/$REPO" "$CID" git remote -v      # plain https://github.com/<owner>/<repo>.git, no token
+sudo docker exec -u vscode -w "/workspaces/$REPO" "$CID" git fetch          # works: the broker minted a token
+sudo docker exec -u vscode -w "/workspaces/$REPO" "$CID" gh repo view --json nameWithOwner --jq .nameWithOwner   # prints <owner>/<repo>: this workspace's repository, and nothing else
+sudo docker exec -u vscode -w "/workspaces/$REPO" "$CID" gh repo view <owner>/<A>   # another PRIVATE repo, even one the App is installed on: not found
 ```
 
 Use a *private* repository for that last check. An installation token can still read public
@@ -1001,9 +1003,9 @@ permissions, or its installation has not accepted a change. See [§11](#11-troub
 Optional. This pushes a branch to GitHub, then deletes it:
 
 ```sh
-sudo docker exec -u vscode -w /workspaces/repo "$CID" git push origin HEAD:refs/heads/drydock/smoke-test   # allowed
-sudo docker exec -u vscode -w /workspaces/repo "$CID" git push origin HEAD:refs/heads/smoke-test           # refused: "pushes go under refs/heads/drydock/"
-sudo docker exec -u vscode -w /workspaces/repo "$CID" git push origin --delete drydock/smoke-test
+sudo docker exec -u vscode -w "/workspaces/$REPO" "$CID" git push origin HEAD:refs/heads/drydock/smoke-test   # allowed
+sudo docker exec -u vscode -w "/workspaces/$REPO" "$CID" git push origin HEAD:refs/heads/smoke-test           # refused: "pushes go under refs/heads/drydock/"
+sudo docker exec -u vscode -w "/workspaces/$REPO" "$CID" git push origin --delete drydock/smoke-test
 ```
 
 *Why the prefix:* agent branches live under `drydock/`, which the Feature enforces with a
@@ -1357,7 +1359,7 @@ turn it on instead.
   Drydock's **Rebuild**.
 
 Drydock's containers also carry the two labels the Dev Containers extension finds a folder's
-container by, `devcontainer.local_folder` (the clone, `/srv/drydock/ws/<id>/repo`) and
+container by, `devcontainer.local_folder` (the clone, `/srv/drydock/ws/<id>/<repo>`) and
 `devcontainer.config_file`, so *Reopen in Container* on the clone in a Remote-SSH window attaches
 to Drydock's container instead of building a second one. A container gets them when Drydock next
 creates it — a **Rebuild**, or a **Start** of a failed workspace — so one made by an earlier release
@@ -1517,7 +1519,7 @@ sudo userdel drydock; getent group drydock && sudo groupdel drydock
 Then revoke the App key on GitHub (*Private keys → Delete*). Docker, Node, the devcontainer CLI
 and Caddy stay installed, because you installed them. So do the images the workspaces were built
 from and the pinned `busybox` and `node` images Drydock pulled. Deleting a workspace in the UI
-removes the `vsc-repo-…` images the devcontainer CLI built for it; a workspace you never deleted
+removes the `vsc-<repo>-…` images the devcontainer CLI built for it; a workspace you never deleted
 leaves its own behind, and base images (`mcr.microsoft.com/devcontainers/base`, whatever your
 repositories' configurations name) are never removed. `sudo docker image ls`, and remove what you
 do not want.
@@ -1576,13 +1578,13 @@ do not want.
 | Workspace fails at *starting the container* after a while | Image pull or build failure, a failing `postCreateCommand`, or no network to `ghcr.io` / `mcr.microsoft.com` | The step's detail, then `journalctl -u drydock \| grep "workspace <id>"`. Try `sudo docker pull mcr.microsoft.com/devcontainers/base:debian`. |
 | Workspace fails at *verifying* | The broker round-trip failed inside the container | Check that `/run/drydock/sock/<id>/broker.sock` exists. The journal's `workspace <id>` lines. |
 | Workspace fails at *cloning* | GitHub refused the clone token: the App lacks `contents`, or the repository was removed from the installation | Check the App permissions ([1.4](#14-the-github-apps-private-key)) |
-| A workspace says *Needs approval* (step *resolving config*: *This configuration asks for host access that has not been approved for this repository: …* or *…differs from what was approved…*) | Not a failure. The `devcontainer.json` asks for something that reaches outside the container: `initializeCommand` (runs on the server as `drydock`), `runArgs`, `privileged`, a bind mount, `appPort`, `workspaceMount`, Docker Compose, `build.options`, a build context outside the repository, `capAdd`/`securityOpt` other than `SYS_PTRACE`/`seccomp=unconfined`, or a field Drydock does not know — and it goes beyond what was approved for this repository — a new setting, a changed value, or a list that gained an element (fewer settings than approved never ask). *from a Feature or the image* means a Feature the config declares asks for it: docker-in-docker sets `privileged`. The list and the reasons are in [§6 of the design](../design/overall/drydock-design.md#what-a-configuration-may-ask-of-the-host) | **On a create, or a repository you know needs it** (docker-in-docker): read the list and **Approve and continue** ([8.1](#81-clone-and-watch)). **On a start or rebuild of a workspace that worked before, with a setting you did not add:** something in the container changed the file — perhaps the agent "fixing" its dev container. Do not approve it unread. Look: `sudo cat /srv/drydock/ws/<id>/repo/.devcontainer/devcontainer.json`. Press **Cancel**, then restore the file by editing it as `drydock` (`sudo -u drydock nano …`) — do **not** run `git checkout` in the clone on the server, since its `.git/config` was writable by the container too — and **Start**. Or delete the workspace. Nothing in the config ran: the container was stopped before the check. |
+| A workspace says *Needs approval* (step *resolving config*: *This configuration asks for host access that has not been approved for this repository: …* or *…differs from what was approved…*) | Not a failure. The `devcontainer.json` asks for something that reaches outside the container: `initializeCommand` (runs on the server as `drydock`), `runArgs`, `privileged`, a bind mount, `appPort`, `workspaceMount`, Docker Compose, `build.options`, a build context outside the repository, `capAdd`/`securityOpt` other than `SYS_PTRACE`/`seccomp=unconfined`, or a field Drydock does not know — and it goes beyond what was approved for this repository — a new setting, a changed value, or a list that gained an element (fewer settings than approved never ask). *from a Feature or the image* means a Feature the config declares asks for it: docker-in-docker sets `privileged`. The list and the reasons are in [§6 of the design](../design/overall/drydock-design.md#what-a-configuration-may-ask-of-the-host) | **On a create, or a repository you know needs it** (docker-in-docker): read the list and **Approve and continue** ([8.1](#81-clone-and-watch)). **On a start or rebuild of a workspace that worked before, with a setting you did not add:** something in the container changed the file — perhaps the agent "fixing" its dev container. Do not approve it unread. Look: `sudo cat /srv/drydock/ws/<id>/<repo>/.devcontainer/devcontainer.json` (`<repo>` is the repository's name without its owner). Press **Cancel**, then restore the file by editing it as `drydock` (`sudo -u drydock nano …`) — do **not** run `git checkout` in the clone on the server, since its `.git/config` was writable by the container too — and **Start**. Or delete the workspace. Nothing in the config ran: the container was stopped before the check. |
 | Approving says *The configuration changed after this was shown, so nothing was approved* | The file (or a Feature it names) changed between the page loading and the press | Read the new list the page now shows, then approve that or cancel. |
 | A workspace fails at step *starting the container* with *devcontainer up asked Docker for host access the operator has not approved for this repository: … Drydock refused it, and no container was created.* | Drydock's docker guard checks every docker command `devcontainer up` runs against the repository's approval, and this one asked for more than step *resolving config* had seen — most likely a Feature or image referenced by a tag (`:1`, `:latest`) whose publisher changed it between the check and the build. Nothing was created. The journal (`journalctl -u drydock`) has the guard's line, `drydock-docker-guard: refused: <setting>: <option>`, naming the docker option ([§6 of the design](../design/overall/drydock-design.md#the-docker-guard)) | **Start** again: step *resolving config* reads the configuration afresh, sees the new setting, and asks for it as *Needs approval* — read it before approving, since you did not add it. To stop a tag moving under you, commit a `devcontainer-lock.json` (it pins Features by digest) or name the image by digest. If it repeats with nothing to approve, the guard does not know a docker option this CLI version writes; the journal line names it. |
 | A workspace fails at step *starting the container* with *Drydock's docker guard had no record of what this run may ask Docker for* | The guard's policy file in `/srv/drydock/ws/<id>/.drydock/guard/` could not be read during the build — removed or damaged while it ran | **Start** again; Drydock writes it afresh for every build. If it repeats, the journal line `drydock-docker-guard: …` says why. |
 | A workspace fails at step *starting the container* with *… has not approved for this repository: privileged …* (or another setting) right after a **Start** of a workspace that ran before | Its container was created with host access the repository's approval no longer covers — approved once and since narrowed, or created by a Drydock before v0.6.0, whose `up` could be given a moved tag's settings. The docker guard reads a stopped container's settings before starting it and refused this one | **Start** again: a start from *failed* recreates the container, under the current approval. If the access is wanted, the configuration step asks for it. After upgrading from an earlier release, a **Rebuild** of each workspace that runs with approved host access does the same at once. A **named volume** such a workspace was given with driver options (`volume-opt o=bind,…`) outlives both the container and a narrowed approval, and is reused by the same name: remove it (`docker volume ls`, then `docker volume rm`) after narrowing an approval that allowed one. A container using an approved `seccomp=<profile file>` is refused on every start, since docker stores the profile's content: each start recreates it. |
 | A workspace fails at step *starting the container* with *… has not approved for this repository: runArgs …* on a **Start** after you changed Docker's default log driver or `log-opts` (`/etc/docker/daemon.json`), and the journal's `devcontainer up` lines say `drydock-docker-guard: refused: runArgs: a container created with LogConfig …, not the daemon's default` | The container was created under the old default. A start passes a container's log configuration only when it is a file driver with no options or exactly what the daemon now gives a new container; any other could only have come from `runArgs` (`--log-driver`, `--log-opt`). Before v0.6.1 every other Start failed this way on a host whose daemon sets any log driver or option, since the guard did not accept the daemon's own default | **Start** again: a start from *failed* recreates the container under the current default, and the clone is kept. Changing the default needs `sudo systemctl restart docker`, which stops every running workspace unless `live-restore` is set (Docker restarts none of them), so start each again afterwards. |
-| A workspace fails at step *resolving config* with *devcontainer.json names a Dockerfile, build context or bind mount inside the clone that is a symbolic link leading outside it* | The path is a link out of the repository — perhaps made by something in the container. An approval is of the path, and the link could be pointed anywhere, so Drydock never runs it | Look: `sudo -u drydock ls -l /srv/drydock/ws/<id>/repo/<path>`. Replace the link with what it should hold (or name the outside path directly in `devcontainer.json`, which can then be approved), and **Start**. |
+| A workspace fails at step *resolving config* with *devcontainer.json names a Dockerfile, build context or bind mount inside the clone that is a symbolic link leading outside it* | The path is a link out of the repository — perhaps made by something in the container. An approval is of the path, and the link could be pointed anywhere, so Drydock never runs it | Look: `sudo -u drydock ls -l /srv/drydock/ws/<id>/<repo>/<path>` (`<repo>` is the repository's name without its owner). Replace the link with what it should hold (or name the outside path directly in `devcontainer.json`, which can then be approved), and **Start**. |
 | Create refused with `at_capacity` | 10 workspaces already hold a container | Stop or delete one |
 | `git push` in a container: `GitHub access unavailable …` | The workspace is not *Running* in Drydock (its socket is closed), or GitHub refused | Start it in the UI. A container started by hand with `docker start` gets no GitHub access, by design. |
 | Pushing a workflow file is rejected | The App lacks `workflows: write` | Add the permission on the App, then accept the new permissions on the installation |

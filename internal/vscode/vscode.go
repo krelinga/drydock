@@ -65,10 +65,12 @@
 // view is served (Linker.Fill), never stored — a rebuild renames the
 // container — within a bound on the injected clock (DefaultTimeout), so a
 // wedged daemon costs the link and never the page; one workspace's page
-// reads that workspace's containers alone (Containers.Of). The folder is the destination of the clone's bind mount, which is
-// the workspace folder the CLI reports for every configuration that does not
-// set workspaceFolder (measured: /workspaces/<basename>); one that sets it
-// inside its mount opens at the mount. Only a running container gets a link:
+// reads that workspace's containers alone (Containers.Of). The folder is the
+// destination of the clone's bind mount — the mount whose source is the row's
+// host_path, <root>/<id>/<repository name> — which is the workspace folder the
+// CLI reports for every configuration that does not set workspaceFolder
+// (measured: /workspaces/<basename>, the repository's name in its own case);
+// one that sets it inside its mount opens at the mount. Only a running container gets a link:
 // attaching to a stopped one would start it outside Drydock, with no broker.
 package vscode
 
@@ -79,7 +81,6 @@ import (
 	"errors"
 	"fmt"
 	"path"
-	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
@@ -175,7 +176,8 @@ type Linker struct {
 	// is not configured.
 	Host       *config.SSHHost
 	Containers Containers
-	// Root is the workspace root: a workspace's clone is <Root>/<id>/repo.
+	// Root is the workspace root: a view whose host_path is not a clone path
+	// under it (workspace.CheckClonePath) gets no link.
 	Root string
 	// Clock and Timeout bound each Fill's read of Docker (sys.WithTimeout,
 	// on the injected clock); a nil Clock is the real one, a zero Timeout
@@ -228,15 +230,19 @@ func (l Linker) Fill(ctx context.Context, vs []workspace.View) {
 		if vs[i].State != workspace.Running {
 			continue
 		}
-		if u, ok := l.link(vs[i].ID, found); ok {
+		if u, ok := l.link(vs[i].ID, vs[i].HostPath, found); ok {
 			vs[i].VSCode.URL = &u
 		}
 	}
 }
 
 // link is the URL for workspace id among found: exactly one running
-// container carrying its label, with the clone bind-mounted.
-func (l Linker) link(id string, found []container.Found) (string, bool) {
+// container carrying its label, with the clone — the row's host_path —
+// bind-mounted.
+func (l Linker) link(id, clone string, found []container.Found) (string, bool) {
+	if workspace.CheckClonePath(l.Root, id, clone) != nil {
+		return "", false
+	}
 	var c *container.Found
 	for i := range found {
 		if found[i].WorkspaceID != id || !found[i].Running {
@@ -250,7 +256,6 @@ func (l Linker) link(id string, found []container.Found) (string, bool) {
 	if c == nil {
 		return "", false
 	}
-	clone := filepath.Join(l.Root, id, "repo")
 	for _, m := range c.Mounts {
 		if m.Type == "bind" && m.Source == clone {
 			u, err := AttachURL(*l.Host, c.Name, m.Destination)

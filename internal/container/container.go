@@ -31,9 +31,10 @@
 // comes later in argv and wins. A Compose configuration's containers are
 // Compose's, and get neither the labels nor the name. Nothing here finds a
 // container by them: List, Find, Stop and Remove go by the prefix's
-// workspace label. Found
-// carries each container's Name and Mounts, which internal/vscode builds the
-// Open in VS Code link from (Of reads one workspace's).
+// workspace label. Found carries each container's Name and Mounts, which
+// internal/vscode builds the Open in VS Code link from (Of reads one
+// workspace's), and its LocalFolder, the local_folder label reconciliation
+// adopts an orphan's clone path from.
 //
 // read-configuration is parsed too (one JSON object; an unparseable
 // devcontainer.json exits 0, so "names no image" is checked here), run with
@@ -324,7 +325,8 @@ type UpSpec struct {
 	RepositoryID int64
 	FullName     string // owner/repo
 	Branch       string
-	// Folder is the clone on the host: /srv/drydock/ws/<id>/repo.
+	// Folder is the clone on the host: /srv/drydock/ws/<id>/<name>, the
+	// repository's name without its owner (workspace.ClonePath).
 	Folder string
 	// Rebuild passes --remove-existing-container. Without it, `up` with an
 	// existing id-label reattaches and reports success even when the config
@@ -821,6 +823,11 @@ type Found struct {
 	// VS Code's attached-container authority names (internal/vscode). A
 	// rebuild changes it, so it is read when it is needed, never kept.
 	Name string
+	// LocalFolder is the container's devcontainer.local_folder label: the
+	// clone's host path, which the guard labels every container of an up
+	// with (none for a Compose configuration's). Reconciliation adopts an
+	// orphan's clone path from it, held to workspace.CheckClonePath.
+	LocalFolder string
 	// Mounts are the container's mounts.
 	Mounts []Mount
 }
@@ -916,7 +923,7 @@ func (m Manager) parseInspect(b []byte) ([]Found, error) {
 			ContainerID: c.ID, WorkspaceID: ws, RepositoryID: repoID,
 			Repo: c.Config.Labels[m.key(LabelRepo)], Branch: c.Config.Labels[m.key(LabelBranch)],
 			Running: c.State.Running, Status: c.State.Status, LegacyBrokerMount: legacy,
-			Name: c.Name, Mounts: c.Mounts,
+			Name: c.Name, Mounts: c.Mounts, LocalFolder: c.Config.Labels[LabelLocalFolder],
 		})
 	}
 	return found, nil

@@ -19,9 +19,9 @@ import (
 // where the clone appears inside the container.
 type Configuration struct {
 	// WorkspaceFolder is the clone's path inside the container — measured
-	// on CLI 0.89.0 as /workspaces/<basename of the host folder>, so
-	// /workspaces/repo for every workspace unless the repository's own
-	// config sets workspaceFolder. The probe (§6 step 7) runs git there.
+	// on CLI 0.89.0 as /workspaces/<basename of the host folder>, case kept,
+	// so /workspaces/<repository name> unless the repository's own config
+	// sets workspaceFolder. The probe (§6 step 7) runs git there.
 	WorkspaceFolder string
 	// ConfigFile is the file the CLI says it read. With --override-config
 	// it still names the repository's default path, measured, so it says

@@ -153,8 +153,9 @@ notification's key is checked in [`vscode-keymap.md`](vscode-keymap.md), not her
 **Expect:**
 
 - A **new** window opens, with no *Allow opening this URI?* prompt.
-- Its remote indicator (bottom left) names a container on the SSH host.
-- The Explorer's folder is the clone: in its terminal, `pwd` prints `/workspaces/repo` (or the path
+- Its remote indicator (bottom left) names a container on the SSH host, and the window's title starts
+  *Container vsc-drydock-testbed-a-…*: the image the CLI built, named after the clone's folder.
+- The Explorer's folder is the clone: in its terminal, `pwd` prints `/workspaces/drydock-testbed-a` (or the path
   the repository's `workspaceFolder` sets), and `git remote -v` names `krelinga/drydock-testbed-a`.
 - Back in the window you connected **from**, *Drydock: Show Log* has
   `connecting to workspace <id> over SSH to <host>`, with the same host as 1.3.
@@ -260,10 +261,10 @@ included.
 **Do:**
 
 1. *Remote-SSH: Connect to Host…* to the server, with the same `--vscode-ssh-host` value.
-2. *File → Open Folder…* the testbed workspace's clone, `/srv/drydock/ws/<id>/repo` (the `<id>` is
+2. *File → Open Folder…* the testbed workspace's clone, `/srv/drydock/ws/<id>/drydock-testbed-a` (the `<id>` is
    the ULID in the web UI's URL, `/ws/<id>`).
 3. Before going on, in that window's terminal:
-   `docker ps --filter label=devcontainer.local_folder=/srv/drydock/ws/<id>/repo --format '{{.ID}} {{.Names}}'`.
+   `docker ps --filter label=devcontainer.local_folder=/srv/drydock/ws/<id>/drydock-testbed-a --format '{{.ID}} {{.Names}}'`.
 4. Run *Dev Containers: Reopen in Container*.
 5. In the new window, run *Drydock: Refresh Repositories*, then *Drydock: Show Log*.
 
@@ -276,7 +277,7 @@ included.
 
 **If not:**
 
-- If the SSH user cannot read `/srv/drydock/ws/<id>/repo`, the step is *not run*. That is the
+- If the SSH user cannot read `/srv/drydock/ws/<id>/drydock-testbed-a`, the step is *not run*. That is the
   server's file modes, not the extension. Record it so.
 - A build, or a second container, means Drydock's `devcontainer.local_folder`/`config_file` labels no
   longer match what Dev Containers looks for (overall §6, *The container is labelled as a dev

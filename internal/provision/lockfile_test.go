@@ -117,7 +117,7 @@ func TestTheLockfileIsHonouredAndARewriteIsReported(t *testing.T) {
 			if up.Status != "done" || (c.upNote == "") != (up.Detail == "") || !strings.Contains(up.Detail, c.upNote) {
 				t.Errorf("up is %s, saying %q; want done, saying %q", up.Status, up.Detail, c.upNote)
 			}
-			repo := filepath.Join(e.root, v.ID, "repo")
+			repo := filepath.Join(e.root, v.ID, "alpha")
 			if out := gitOut(t, repo, "status", "--porcelain", "--ignored"); out != c.status {
 				t.Errorf("the clone's status is %q; want %q", out, c.status)
 			}
@@ -229,7 +229,7 @@ func TestTheMinimalConfigNeverHonoursALockfile(t *testing.T) {
 	})
 	e.cli.readConfig = "cat <<'EOF'\n" + fixture(t, "read-configuration-merged-override.json") + "\nEOF\n"
 	e.cli.exec = strings.ReplaceAll(e.cli.exec, "/krelinga/alpha.git", "/krelinga/plain.git")
-	e.cli.exec = strings.ReplaceAll(e.cli.exec, "/workspaces/repo", "/workspaces/plain2")
+	e.cli.exec = strings.ReplaceAll(e.cli.exec, "/workspaces/alpha", "/workspaces/plain2")
 	e.wire(t)
 	v := e.create(t, plain, "")
 	if v.State != workspace.Running {

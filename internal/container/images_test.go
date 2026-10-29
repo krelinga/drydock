@@ -9,14 +9,17 @@ import (
 )
 
 // TestBuiltImagesAreTheCLIsNames: the names are the ones the CLI gave the
-// images it built for a workspace folder: vsc-repo-<sha256 of the folder's
-// path>-features, from any working directory. The pair is a recording
+// images it built for a workspace folder: vsc-<basename>-<sha256 of the
+// folder's path>-features, lowercased and with runs of separators collapsed,
+// from any working directory. The pairs are a recording
 // (test/fixtures/devcontainer/image-names.txt, re-measured by the script
-// beside it), so a change to the computation, or a CLI that moved its naming,
-// is caught; and anything but a clean absolute folder named as Drydock names
-// it is refused rather than guessed at.
+// beside it) of folders named as Drydock names them — a plain repository
+// name, one with capitals, and one whose separators the CLI collapses — so a
+// change to the computation, or a CLI that moved its naming, is caught; and
+// anything but a clean absolute folder with a repository's name is refused
+// rather than guessed at.
 func TestBuiltImagesAreTheCLIsNames(t *testing.T) {
-	names, err := BuiltImages("/srv/drydock/ws/" + wsID + "/repo")
+	names, err := BuiltImages("/srv/drydock/ws/" + wsID + "/alpha")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -27,24 +30,63 @@ func TestBuiltImagesAreTheCLIsNames(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	var cli string
 	rec := map[string]string{}
 	for _, l := range strings.Split(strings.TrimSpace(string(b)), "\n") {
-		k, v, _ := strings.Cut(l, " ")
-		rec[k] = v
+		f := strings.Fields(l)
+		switch {
+		case len(f) == 2 && f[0] == "cli":
+			cli = f[1]
+		case len(f) == 3 && f[0] == "image":
+			rec[f[1]] = f[2]
+		}
 	}
-	if rec["folder"] == "" || !strings.HasPrefix(rec["image"], "vsc-") {
+	if len(rec) != 3 {
 		t.Fatalf("the recording is not one: %q", b)
 	}
-	if m, err := BuiltImages(rec["folder"]); err != nil || m[1] != rec["image"] {
-		t.Errorf("BuiltImages(%q) = %q, %v; CLI %s built %s", rec["folder"], m, err, rec["cli"], rec["image"])
+	cased := false
+	for folder, image := range rec {
+		cased = cased || filepath.Base(folder) != strings.ToLower(filepath.Base(folder))
+		if m, err := BuiltImages(folder); err != nil || m[1] != image {
+			t.Errorf("BuiltImages(%q) = %q, %v; CLI %s built %s", folder, m, err, cli, image)
+		}
 	}
-	if len(names) != 4 || !strings.HasPrefix(names[0], "vsc-repo-") || len(names[0]) != len("vsc-repo-")+64 ||
+	if !cased {
+		t.Error("the recording measures no folder with capitals")
+	}
+	if len(names) != 4 || !strings.HasPrefix(names[0], "vsc-alpha-") || len(names[0]) != len("vsc-alpha-")+64 ||
 		names[1] != names[0]+"-features" || names[2] != names[0]+"-uid" || names[3] != names[0]+"-features-uid" {
 		t.Errorf("names %q", names)
 	}
-	for _, bad := range []string{"", "repo", "srv/ws/x/repo", "/srv/ws/x/repo/", "/srv/ws/x/../repo", "/srv/ws/x/Repo", "/srv/ws/x/my repo"} {
+	// The case is the image name's alone: the hash is of the path as it is.
+	upper, err := BuiltImages("/srv/drydock/ws/" + wsID + "/Alpha")
+	if err != nil || !strings.HasPrefix(upper[0], "vsc-alpha-") || upper[0] == names[0] {
+		t.Errorf("BuiltImages(…/Alpha) = %q, %v; want vsc-alpha- and another hash than %s", upper, err, names[0])
+	}
+	for _, bad := range []string{"", "alpha", "srv/ws/x/alpha", "/srv/ws/x/alpha/", "/srv/ws/x/../alpha", "/srv/ws/x/my repo", "/srv/ws/x/a+b", "/srv/ws/x/ü"} {
 		if _, err := BuiltImages(bad); err == nil {
 			t.Errorf("BuiltImages(%q) computed names", bad)
+		}
+	}
+}
+
+// TestCLIImageNameIsTheCLIs: cliImageName is the CLI's HN, for the separator
+// runs a repository name can hold. The wants are HN's own output, run under
+// node from CLI 0.89.0's dist/spec-node/devContainersSpecCLI.js on
+// "vsc-<name>-abc123"; the first rows change nothing, which is the positive
+// control for the rows that collapse.
+func TestCLIImageNameIsTheCLIs(t *testing.T) {
+	for name, want := range map[string]string{
+		"alpha": "vsc-alpha-abc123", "x__y": "vsc-x__y-abc123", "a--b": "vsc-a--b-abc123",
+		"My.Repo_x": "vsc-my.repo_x-abc123", "Drydock-Testbed-A": "vsc-drydock-testbed-a-abc123",
+		"a..b": "vsc-a.b-abc123", "a._-b": "vsc-a.b-abc123", "x___y": "vsc-x__y-abc123",
+		"-_a": "vsc--a-abc123", "___": "vsc-abc123", ".github": "vsc-github-abc123",
+		"a-": "vsc-a--abc123", "a.": "vsc-a.abc123", "a_": "vsc-a_abc123", "__a": "vsc-a-abc123",
+		"-.x": "vsc--x-abc123", "A.-_B": "vsc-a.b-abc123", "a_.b": "vsc-a_b-abc123",
+		"a__.b": "vsc-a__b-abc123", "a-_b": "vsc-a-b-abc123",
+	} {
+		if got := cliImageName("vsc-" + name + "-abc123"); got != want {
+			t.Errorf("cliImageName(vsc-%s-abc123) = %q, want %q", name, got, want)
 		}
 	}
 }
@@ -55,11 +97,11 @@ func TestBuiltImagesAreTheCLIsNames(t *testing.T) {
 // is an error.
 func TestRemoveBuiltImagesExactArgv(t *testing.T) {
 	ctx := context.Background()
-	folder := "/srv/drydock/ws/" + wsID + "/repo"
+	folder := "/srv/drydock/ws/" + wsID + "/alpha"
 	names, _ := BuiltImages(folder)
 	// Beside the two to remove: another tag, a look-alike name (a prefix match
 	// would take it) and another workspace's.
-	listed := names[1] + ":latest\n" + names[3] + ":latest\n" + names[1] + ":other\n" + names[1] + "-x:latest\n" + "vsc-repo-other-features:latest\n"
+	listed := names[1] + ":latest\n" + names[3] + ":latest\n" + names[1] + ":other\n" + names[1] + "-x:latest\n" + "vsc-alpha-other-features:latest\n"
 	run, dir := fakes(t, map[string]string{"docker": `[ "$2" = ls ] && printf '%s' '` + listed + `'
 exit 0
 `})

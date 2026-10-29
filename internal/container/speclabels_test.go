@@ -105,7 +105,7 @@ func TestArgsRefuseAConfigFileTheCLIWouldNotCompute(t *testing.T) {
 		}
 	}
 	for _, bad := range []string{
-		"/srv/drydock/ws/OTHER/repo/.devcontainer/devcontainer.json",
+		"/srv/drydock/ws/OTHER/alpha/.devcontainer/devcontainer.json",
 		".devcontainer/devcontainer.json",
 		s.Folder + "/.devcontainer/python/devcontainer.json",
 		s.Folder + "/../.drydock/devcontainer.json",

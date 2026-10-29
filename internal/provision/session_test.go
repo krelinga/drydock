@@ -55,7 +55,7 @@ func TestSessionSpec(t *testing.T) {
 	if s.OverrideConfig != "" {
 		t.Errorf("a repository with its own config got override %q", s.OverrideConfig)
 	}
-	if s.Folder != filepath.Join(e.root, v.ID, "repo") || s.WorkspaceID != v.ID {
+	if s.Folder != filepath.Join(e.root, v.ID, "alpha") || s.WorkspaceID != v.ID {
 		t.Errorf("spec %+v", s)
 	}
 	want := map[string]string{"DRYDOCK_WORKSPACE": v.ID, "DRYDOCK_REPO": "krelinga/alpha",

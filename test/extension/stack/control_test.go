@@ -163,7 +163,7 @@ func TestStackControl(t *testing.T) {
 		}
 		return v.State == "running" && v.VSCode != nil && v.VSCode.URL != nil
 	})
-	link := regexp.MustCompile(`^vscode://vscode-remote/attached-container\+[0-9a-f]+@ssh-remote\+devbox/workspaces/repo$`)
+	link := regexp.MustCompile(`^vscode://vscode-remote/attached-container\+[0-9a-f]+@ssh-remote\+devbox/workspaces/plain$`)
 	if !link.MatchString(*v.VSCode.URL) {
 		t.Errorf("link %q", *v.VSCode.URL)
 	}
@@ -194,7 +194,7 @@ func TestStackControl(t *testing.T) {
 }
 
 func dindFolderIn(t *testing.T, root, id string) string {
-	return filepath.Join(root, "ws", id, "repo")
+	return filepath.Join(root, "ws", id, "dind")
 }
 
 // countArgv counts the fake's invocations whose first argument is verb and

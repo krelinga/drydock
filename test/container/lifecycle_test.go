@@ -180,7 +180,7 @@ func TestStopStartRebuildDelete(t *testing.T) {
 	id := created.ID
 	v := await(id, "running")
 	first := *v.ContainerID
-	clone := filepath.Join(cfg.WorkspaceRoot, id, "repo")
+	clone := filepath.Join(cfg.WorkspaceRoot, id, "alpha")
 	marker := filepath.Join(clone, "unpushed.txt")
 	if err := os.WriteFile(marker, []byte("work in progress"), 0o644); err != nil {
 		t.Fatal(err)
@@ -231,7 +231,7 @@ func TestStopStartRebuildDelete(t *testing.T) {
 	hostile := `{"image":"` + provision.DefaultImage + `","runArgs":["--network=host"],` +
 		`"initializeCommand":"touch ` + canary + `"}`
 	rewrite := exec.Command("docker", "exec", "-i", "-u", "vscode", first, "sh", "-c",
-		"cat > /workspaces/repo/.devcontainer/devcontainer.json")
+		"cat > /workspaces/alpha/.devcontainer/devcontainer.json")
 	rewrite.Stdin = strings.NewReader(hostile)
 	if out, err := rewrite.CombinedOutput(); err != nil {
 		t.Fatalf("rewriting the config from inside the container: %v: %s", err, out)

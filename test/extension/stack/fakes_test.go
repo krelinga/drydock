@@ -299,7 +299,7 @@ func fakeDevcontainer(state string, args []string) int {
 
 func readConfiguration(state, folder string) int {
 	fixtures := filepath.Join(repoRoot(), "test", "fixtures", "devcontainer")
-	name, placeholder := "read-configuration-merged-ok.json", "/srv/drydock/ws/FIXTURE/repo"
+	name, placeholder := "read-configuration-merged-ok.json", "/srv/drydock/ws/FIXTURE/alpha"
 	dind := false
 	if _, err := os.Stat(filepath.Join(folder, dindMarker)); err == nil {
 		name, placeholder, dind = "read-configuration-merged-dind.json", "/srv/drydock/ws/FIXTURE/dind", true

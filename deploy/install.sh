@@ -50,7 +50,7 @@ APP_KEY=$CONF_DIR/github-app.pem
 # no secret is stored. A file, never an environment variable.
 SECRETS_KEY=$CONF_DIR/secrets.key
 API_SOCKET=/run/drydock/http.sock
-# Where clones live (/srv/drydock/ws/<id>/repo): Drydock's alone, mode 0700,
+# Where clones live (/srv/drydock/ws/<id>/<repo name>): Drydock's alone, mode 0700,
 # because Caddy is in group drydock and has no business reading a clone.
 WS_ROOT=/srv/drydock/ws
 # The service's PATH, written into the unit, and the PATH every check below

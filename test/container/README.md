@@ -26,7 +26,11 @@ What it covers:
   Feature, the clones untouched and no token anywhere in the tree or the database; a secret
   granted to one reaches its `CLAUDE_ENV_FILE` prelude and not the other's. The configured one's
   `forwardPorts`, read by the real CLI, become the port registry's declared rows — labelled, off —
-  and the minimal configuration declares none.
+  and the minimal configuration declares none. Each clone is named after its repository, one with
+  capitals and a dot among them: the container's `devcontainer.local_folder` and clone mount, the
+  workspace folder `/workspaces/<name>` in the name's case (where exec runs, and the trust record
+  the Feature writes), and the image `vsc-<name lowercased>-<hash>` that `container.BuiltImages`
+  computes.
 - **Claude** (Phase 5): five workspaces share one credential volume and each runs the pinned
   `claude`; the volume owner helper; fakeclaude's login in a real container, where the PTY
   semantics Spike 01 relied on are measured through `docker run -t`.
@@ -63,8 +67,9 @@ What it covers:
   `devcontainer.local_folder`/`devcontainer.config_file`, and a plain `devcontainer up
   --workspace-folder <clone>` with no id-labels — what VS Code computes — reports that container
   and makes no other, for a repository with a configuration and one running Drydock's minimal one
-  once a configuration is added; the Open in VS Code link names Docker's real name and
-  `/workspaces/repo`; a start of a stopped container, labelled or from before the labels,
+  once a configuration is added, the clone named after a repository with capitals and a dot;
+  the Open in VS Code link names Docker's real name and
+  `/workspaces/<name>` in the name's case; a start of a stopped container, labelled or from before the labels,
   reattaches; and a pre-label container rebuilt gets the labels with the same `${devcontainerId}`
   volume. The control: a container made the old way, which the same command does not find.
 

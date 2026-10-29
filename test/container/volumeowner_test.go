@@ -180,8 +180,8 @@ func TestTheFirstWorkspaceDoesNotDecideTheVolumesOwner(t *testing.T) {
 			"--entrypoint", "sh", config.DefaultCleanupImage, "-c", "stat -c '%u %a' /v; ls -A /v | grep -x .drydock-volume; true")
 	}
 	want := strconv.Itoa(os.Getuid()) + " 700\n.drydock-volume"
-	execIn := func(id, script string) (string, error) {
-		out, err := exec.Command("devcontainer", "exec", "--workspace-folder", filepath.Join(cfg.WorkspaceRoot, id, "repo"),
+	execIn := func(id, folder, script string) (string, error) {
+		out, err := exec.Command("devcontainer", "exec", "--workspace-folder", filepath.Join(cfg.WorkspaceRoot, id, folder),
 			"--id-label", p+".workspace="+id, "--", "sh", "-c", script).Output()
 		return string(out), err
 	}
@@ -193,7 +193,7 @@ func TestTheFirstWorkspaceDoesNotDecideTheVolumesOwner(t *testing.T) {
 	if got := owner(); got != want {
 		t.Errorf("after the dev workspace the volume is %q; want %q", got, want)
 	}
-	if out, err := execIn(devID, `id -un; id -u; stat -c %u "$CLAUDE_CONFIG_DIR"`); err != nil ||
+	if out, err := execIn(devID, "dev", `id -un; id -u; stat -c %u "$CLAUDE_CONFIG_DIR"`); err != nil ||
 		out != "dev\n"+strconv.Itoa(os.Getuid())+"\n"+strconv.Itoa(os.Getuid())+"\n" {
 		t.Errorf("in the dev workspace: %v\n%s", err, out)
 	}

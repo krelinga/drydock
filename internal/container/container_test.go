@@ -52,17 +52,17 @@ func fixture(t *testing.T, name string) string {
 
 func spec() UpSpec {
 	return UpSpec{WorkspaceID: wsID, RepositoryID: 42, FullName: "krelinga/foo", Branch: "main",
-		Folder: "/srv/drydock/ws/" + wsID + "/repo"}
+		Folder: "/srv/drydock/ws/" + wsID + "/alpha"}
 }
 
 // upSpec is spec() laid out on disk as a workspace is — the clone at
-// <root>/<id>/repo, the CLI's TMPDIR at <root>/<id>/.drydock/tmp — for a
+// <root>/<id>/alpha, the CLI's TMPDIR at <root>/<id>/.drydock/tmp — for a
 // test that runs Up, which prepares the guard beside the clone.
 func upSpec(t *testing.T) UpSpec {
 	t.Helper()
 	root := filepath.Join(t.TempDir(), wsID)
 	s := spec()
-	s.Folder = filepath.Join(root, "repo")
+	s.Folder = filepath.Join(root, "alpha")
 	s.TempDir = filepath.Join(root, ".drydock", "tmp")
 	for _, d := range []string{s.Folder, s.TempDir} {
 		if err := os.MkdirAll(d, 0o700); err != nil {
@@ -160,7 +160,7 @@ func TestArgsRefuseMalformedWorkspaceData(t *testing.T) {
 		"id not a ULID":    func(s *UpSpec) { s.WorkspaceID = "../../etc" },
 		"name with a flag": func(s *UpSpec) { s.FullName = "--mount=type=bind,source=/,target=/host" },
 		"name with spaces": func(s *UpSpec) { s.FullName = "a b/c" },
-		"relative folder":  func(s *UpSpec) { s.Folder = "repo" },
+		"relative folder":  func(s *UpSpec) { s.Folder = "alpha" },
 		"no repository":    func(s *UpSpec) { s.RepositoryID = 0 },
 		"no branch":        func(s *UpSpec) { s.Branch = "" },
 	} {
@@ -179,7 +179,8 @@ func TestListFindsByLabelAndReadsInspect(t *testing.T) {
 	inspect := `[
 	 {"Id":"aaa","State":{"Status":"running","Running":true},
 	  "Config":{"Labels":{"drydock.test.workspace":"` + wsID + `","drydock.test.repository-id":"42",
-	   "drydock.test.repo":"krelinga/foo","drydock.test.branch":"main"}}},
+	   "drydock.test.repo":"krelinga/foo","drydock.test.branch":"main",
+	   "devcontainer.local_folder":"/srv/drydock/ws/` + wsID + `/foo"}}},
 	 {"Id":"bbb","State":{"Status":"exited","Running":false},
 	  "Config":{"Labels":{"drydock.test.workspace":"01JZZZZZZZZZZZZZZZZZZZZZZZ"}}}]`
 	run, dir := fakes(t, map[string]string{
@@ -193,7 +194,8 @@ EOF
 		t.Fatal(err)
 	}
 	if len(found) != 2 || !found[0].Running || found[0].RepositoryID != 42 || found[0].Branch != "main" ||
-		found[1].Running || found[1].Status != "exited" || found[1].RepositoryID != 0 {
+		found[0].LocalFolder != "/srv/drydock/ws/"+wsID+"/foo" ||
+		found[1].Running || found[1].Status != "exited" || found[1].RepositoryID != 0 || found[1].LocalFolder != "" {
 		t.Errorf("found %+v", found)
 	}
 	calls := strings.Join(argv(t, dir, "docker"), " ")

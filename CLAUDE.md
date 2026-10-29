@@ -230,8 +230,9 @@ holds a GitHub credential).
   containers again by `--id-label drydock.workspace=<id>`. Never scrape `docker ps`; parse the
   single JSON object `devcontainer up` prints on stdout. There is **no `--json` flag** — passing one
   fails — and the result names no step, so per-step events come from Drydock's own tracking.
-- **Workspace manager** owns the host bind-mounted clone at `/srv/drydock/ws/<id>/repo` (a real git
-  repo, so `remote-control --spawn worktree` works). Clones survive container rebuild and delete.
+- **Workspace manager** owns the host bind-mounted clone at `/srv/drydock/ws/<id>/<name>`, named after
+  the repository without its owner and recorded on the row at create (a real git repo, so
+  `remote-control --spawn worktree` works). Clones survive container rebuild and delete.
 - **Session supervisor** runs one `claude remote-control` process per workspace serving *many*
   sessions, with restart backoff and a log ring buffer.
 - **Token broker** holds the GitHub App private key and listens on one Unix socket per workspace,

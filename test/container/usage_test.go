@@ -44,10 +44,10 @@ func TestUsageAgainstRealDocker(t *testing.T) {
 	}
 
 	root := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(root, ws, "repo"), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(root, ws, "alpha"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(root, ws, "repo", "file"), make([]byte, 1<<20), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(root, ws, "alpha", "file"), make([]byte, 1<<20), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	rows := &usageRows{{ID: ws, State: workspace.Running}, {ID: other, State: workspace.Stopped}}

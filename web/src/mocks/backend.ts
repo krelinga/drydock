@@ -735,7 +735,7 @@ export function workspaceView(b: MockBackend, w: MockWorkspace): WorkspaceView {
     last_action: w.last_action ? { ...w.last_action } : null,
     approval: w.approval ? structuredClone(w.approval) : null,
     ...(w.resources !== undefined ? { resources: structuredClone(w.resources) } : {}),
-    ...(b.vscodeHost !== undefined ? { vscode: vscodeView(b.vscodeHost, w) } : {}),
+    ...(b.vscodeHost !== undefined ? { vscode: vscodeView(b.vscodeHost, w, b.repos.find((r) => r.id === w.repository_id)?.full_name ?? '') } : {}),
     ...(b.supervisor ? {
       supervisor: w.supervisor ? { ...w.supervisor } : null,
       session: w.session ? { ...w.session } : null,
@@ -761,11 +761,13 @@ export function vscodeURLFor(host: string, container: string, folder: string): s
   return `vscode://vscode-remote/attached-container+${hex(JSON.stringify({ containerName: container }))}@ssh-remote+${ssh}${folder}`
 }
 
-function vscodeView(host: string | null, w: MockWorkspace): { configured: boolean; url: string | null } {
+function vscodeView(host: string | null, w: MockWorkspace, fullName: string): { configured: boolean; url: string | null } {
   if (host === null) return { configured: false, url: null }
   if (w.state !== 'running') return { configured: true, url: null }
   const repo = String(w.repository_id)
-  return { configured: true, url: vscodeURLFor(host, `/mock_${repo}`, `/workspaces/repo${repo}`) }
+  // The clone is named after the repository (design §6 step 2), so the
+  // workspace folder is /workspaces/<name>.
+  return { configured: true, url: vscodeURLFor(host, `/mock_${repo}`, `/workspaces/${fullName.split('/')[1] ?? ''}`) }
 }
 
 /** The cap and the occupied count, as internal/workspace CapacityOf counts the list's rows. */

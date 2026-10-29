@@ -27,6 +27,16 @@
 // commit as repo.removed (events.KindRepoRemoved, {repository_ids}),
 // after workspace.gone: a repo.* event is what makes an open catalog refetch.
 //
+// The clone is <Root>/<id>/<name>, the repository's name without its owner
+// in its own case (ClonePath, the one function every component derives it
+// with), so the devcontainer CLI's image (vsc-<name>-…) and workspace folder
+// (/workspaces/<name>) name the repository. Create records it on the row as
+// host_path from the name as recorded then, so a rename on GitHub never moves
+// it, and everything after reads the row; Adopt takes it from the container's
+// local_folder label, or derives it from the labelled name. The name is held
+// to GitHub's charset, never "." or "..", and never OwnDir (.drydock), and
+// CheckClonePath holds a stored path to the same shape.
+//
 // Annotate sets state_detail without a move (a stuck delete, a failed stop)
 // and ClearDetail removes it as the retry starts, each a workspace.state event
 // with from equal to state.

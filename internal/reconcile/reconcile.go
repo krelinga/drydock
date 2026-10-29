@@ -51,6 +51,13 @@
 // the rows; a run in which some actions failed is a *Partial, and the boot
 // warning then says how many workspaces could not be reconciled rather than
 // that nothing changed.
+//
+// An orphan's row takes its clone path from the container: its
+// devcontainer.local_folder label, which the guard set to the row's
+// host_path, or — a Compose container has none — the path named after the
+// repository its label names (workspace.ClonePath). Plan leaves an orphan
+// whose repository name cannot name a clone folder (workspace.CloneFolder),
+// and Adopt refuses a label that is not a clone path under this root.
 package reconcile
 
 import (
@@ -83,7 +90,9 @@ const (
 	// rebuild one.
 	AdoptOrphan Kind = "adopt_orphan"
 	// LeaveOrphan: a container with no row and labels too incomplete to
-	// rebuild one from. Logged and left alone — never removed.
+	// rebuild one from — a repository name that cannot name a clone folder
+	// (workspace.CloneFolder) among them. Logged and left alone — never
+	// removed.
 	LeaveOrphan Kind = "leave_orphan"
 	// ResumeDelete: the row is deleting. Finish it (§6: this is why
 	// deleting is persisted).
@@ -156,7 +165,7 @@ func Plan(rows []workspace.Workspace, found []container.Found) []Action {
 			out = append(out, Action{Kind: ExtraContainer, WorkspaceID: wsID, ContainerID: extras[i].ContainerID, Found: &extras[i]})
 		}
 		a := Action{WorkspaceID: wsID, ContainerID: primary.ContainerID, Found: primary, Kind: AdoptOrphan}
-		if !ulid.MatchString(wsID) || primary.RepositoryID <= 0 || primary.Branch == "" || primary.Repo == "" {
+		if _, err := workspace.CloneFolder(primary.Repo); err != nil || !ulid.MatchString(wsID) || primary.RepositoryID <= 0 || primary.Branch == "" {
 			a.Kind = LeaveOrphan
 		}
 		out = append(out, a)
@@ -387,7 +396,7 @@ func (r *Reconciler) apply(ctx context.Context, a Action) error {
 		}
 		return ws.Adopt(ctx, workspace.Workspace{
 			ID: a.WorkspaceID, RepositoryID: a.Found.RepositoryID, Branch: a.Found.Branch,
-			State: state, ContainerID: a.ContainerID,
+			State: state, ContainerID: a.ContainerID, HostPath: a.Found.LocalFolder,
 			StateDetail: "Found with no record; adopted from its labels.",
 		}, a.Found.Repo)
 

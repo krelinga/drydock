@@ -14,7 +14,7 @@ useMockApi()
 
 const GOOD =
   'vscode://vscode-remote/attached-container+7b22636f6e7461696e65724e616d65223a222f6d6f636b5f31227d' +
-  '@ssh-remote+7b22686f73744e616d65223a22646576626f782e6c616e222c2275736572223a226f776e6572227d/workspaces/repo1'
+  '@ssh-remote+7b22686f73744e616d65223a22646576626f782e6c616e222c2275736572223a226f776e6572227d/workspaces/drydock'
 /** What the anchor carries: the server's URL plus VS Code's "open a new window" parameter. */
 const HREF = GOOD + '?windowId=_blank'
 

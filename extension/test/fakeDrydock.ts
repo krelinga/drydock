@@ -20,7 +20,7 @@ import {
 } from './fakes'
 
 /** The link internal/vscode builds for WS (its golden form). */
-export const LINK = 'vscode://vscode-remote/attached-container+7b22636f6e7461696e65724e616d65223a222f6d6f646573745f686572736368656c227d@ssh-remote+devbox/workspaces/repo'
+export const LINK = 'vscode://vscode-remote/attached-container+7b22636f6e7461696e65724e616d65223a222f6d6f646573745f686572736368656c227d@ssh-remote+devbox/workspaces/drydock'
 export const NEW_WS = '01JA0000000000000000000099'
 
 const at = (n: number) => new Date(Date.UTC(2026, 9, 4, 12, 0, n)).toISOString()

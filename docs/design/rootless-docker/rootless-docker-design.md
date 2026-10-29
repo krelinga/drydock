@@ -337,7 +337,7 @@ changes it. Where an option is not mentioned it is unaffected.
 
 ### 3.1 The clone and file ownership
 
-**Today.** Drydock clones as `drydock` into `/srv/drydock/ws/<id>/repo` (§6 step 2,
+**Today.** Drydock clones as `drydock` into `/srv/drydock/ws/<id>/<name>` (§6 step 2,
 `internal/clone`). The CLI's `updateRemoteUserUID` rebuilds the image with the remote user at
 `NEW_UID=getuid()`, Drydock's uid (read from CLI 0.89.0's `updateUID.Dockerfile` build args). So the
 agent writes the clone as host `drydock`. Root-owned leftovers from `sudo` or a build go through the

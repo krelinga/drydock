@@ -1,5 +1,6 @@
 // Package clone is design §6 step 2: the host-side clone of a workspace's
-// repository into /srv/drydock/ws/<id>/repo, before `devcontainer up`.
+// repository into /srv/drydock/ws/<id>/<name> (workspace.ClonePath), before
+// `devcontainer up`.
 //
 // The whole package is about one property: the installation token that
 // authorizes the clone must leave no trace. Not in any process's argv, not in

@@ -27,13 +27,13 @@ func TestHostDiskSize(t *testing.T) {
 	root := t.TempDir()
 	ws := filepath.Join(root, "ws")
 	outside := filepath.Join(root, "outside")
-	mkfile(t, filepath.Join(ws, "repo", "a"), 1<<20)
-	mkfile(t, filepath.Join(ws, "repo", "private", "b"), 1<<20)
+	mkfile(t, filepath.Join(ws, "alpha", "a"), 1<<20)
+	mkfile(t, filepath.Join(ws, "alpha", "private", "b"), 1<<20)
 	mkfile(t, filepath.Join(outside, "big"), 8<<20)
-	if err := os.Link(filepath.Join(ws, "repo", "a"), filepath.Join(ws, "repo", "a-link")); err != nil {
+	if err := os.Link(filepath.Join(ws, "alpha", "a"), filepath.Join(ws, "alpha", "a-link")); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Symlink(outside, filepath.Join(ws, "repo", "to-outside")); err != nil {
+	if err := os.Symlink(outside, filepath.Join(ws, "alpha", "to-outside")); err != nil {
 		t.Fatal(err)
 	}
 
@@ -50,14 +50,14 @@ func TestHostDiskSize(t *testing.T) {
 	if _, _, err := d.Size(ctx, filepath.Join(root, "missing")); !os.IsNotExist(err) {
 		t.Errorf("a missing directory: %v", err)
 	}
-	if _, _, err := d.Size(ctx, filepath.Join(ws, "repo", "to-outside")); err == nil {
+	if _, _, err := d.Size(ctx, filepath.Join(ws, "alpha", "to-outside")); err == nil {
 		t.Error("a root that is a symlink was walked")
 	}
 
 	if os.Geteuid() == 0 {
 		t.Skip("root reads a 0000 directory; the partial case needs an ordinary user")
 	}
-	private := filepath.Join(ws, "repo", "private")
+	private := filepath.Join(ws, "alpha", "private")
 	if err := os.Chmod(private, 0); err != nil {
 		t.Fatal(err)
 	}

@@ -35,6 +35,12 @@ func ctr(ws, id string, running bool) container.Found {
 		Branch: "dev", Running: running, Status: status}
 }
 
+func orphanOf(ws, id, repo string) container.Found {
+	c := ctr(ws, id, true)
+	c.Repo = repo
+	return c
+}
+
 func kinds(plan []Action) string {
 	var s []string
 	for _, a := range plan {
@@ -91,6 +97,12 @@ func TestPlan(t *testing.T) {
 		{"an orphan whose id this instance could not have issued is left",
 			nil, []container.Found{ctr("not-a-ulid-but-ends-in-Z", "c1", true)},
 			"leave_orphan:Z:c1"},
+		{"an orphan labelled with a repository that cannot name its clone is left",
+			nil, []container.Found{orphanOf(wsA, "c1", "krelinga/.."), orphanOf(wsB, "c2", "krelinga/.drydock")},
+			"leave_orphan:A:c1 leave_orphan:B:c2"},
+		{"control: the same orphan with a name that can is adopted",
+			nil, []container.Found{orphanOf(wsA, "c1", "krelinga/Alpha.git-x")},
+			"adopt_orphan:A:c1"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := kinds(Plan(tc.rows, tc.found)); got != tc.want {
@@ -166,13 +178,18 @@ func TestRunAppliesThePlan(t *testing.T) {
 	const orphan = "01JZZZZZZZZZZZZZZZZZZZZZZZ"
 	const stoppedOrphan = "01JYYYYYYYYYYYYYYYYYYYYYYY"
 
+	// Its local_folder label is the clone's path, which a repository renamed
+	// since it was created no longer derives.
+	labelledOrphan := ctr(stoppedOrphan, "c-orphan-exited", false)
+	labelledOrphan.LocalFolder = "/srv/drydock/ws/" + stoppedOrphan + "/before-rename"
+
 	var adopted []string
 	r := &Reconciler{Workspaces: e.ws, Events: e.log,
 		Containers: fakeLister{found: []container.Found{
 			ctr(running.ID, "c-live", true),
 			ctr(died.ID, "c-dead", false),
 			ctr(orphan, "c-orphan", true),
-			ctr(stoppedOrphan, "c-orphan-exited", false),
+			labelledOrphan,
 		}},
 		OnAdopt: func(_ context.Context, w workspace.Workspace) error { adopted = append(adopted, w.ID); return nil },
 	}
@@ -199,10 +216,15 @@ func TestRunAppliesThePlan(t *testing.T) {
 		t.Errorf("supervisors restarted for %v; want only %s", adopted, running.ID)
 	}
 
-	// The orphan's row is rebuilt from its labels, repository and all.
+	// The orphan's row is rebuilt from its labels, repository and all: the
+	// clone named after the labelled repository, or the clone the container
+	// was labelled with when it has one.
 	o, _ := e.ws.Get(ctx, orphan)
-	if o.RepositoryID != 9 || o.Branch != "dev" || o.HostPath != "/srv/drydock/ws/"+orphan+"/repo" {
+	if o.RepositoryID != 9 || o.Branch != "dev" || o.HostPath != "/srv/drydock/ws/"+orphan+"/orphan" {
 		t.Errorf("orphan row %+v", o)
+	}
+	if o, _ := e.ws.Get(ctx, stoppedOrphan); o.HostPath != labelledOrphan.LocalFolder {
+		t.Errorf("labelled orphan's clone %q; want its local_folder %q", o.HostPath, labelledOrphan.LocalFolder)
 	}
 
 	// Every change wrote an event, and the interrupted one says why.

@@ -65,7 +65,7 @@ func (r *runState) dir(w workspace.Workspace) string {
 // Drydock does not understand is at that path.
 func (r *runState) allocate(_ context.Context, w workspace.Workspace) error {
 	dir := r.dir(w)
-	if w.HostPath != filepath.Join(dir, "repo") {
+	if workspace.CheckClonePath(r.p.Workspaces.Root, w.ID, w.HostPath) != nil {
 		return workspace.Public("The workspace's clone path is not under the workspace root.",
 			fmt.Errorf("host_path %q, root %q", w.HostPath, r.p.Workspaces.Root))
 	}

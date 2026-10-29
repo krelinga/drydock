@@ -73,8 +73,8 @@ func recordedUp(t *testing.T, name, root string) ([][]string, Configuration) {
 func recordedPolicy(root string, approved []HostSetting) *dockerguard.Policy {
 	m := Manager{LabelPrefix: "drydock"}
 	s := UpSpec{WorkspaceID: "01JFIXTVRE0000000000000000", RepositoryID: 101, FullName: "krelinga/fixture", Branch: "main",
-		Folder: filepath.Join(root, "repo"), TempDir: filepath.Join(root, ".drydock", "tmp"),
-		ConfigDir: filepath.Join(root, "repo", ".devcontainer"), BrokerDir: filepath.Join(root, "sock"),
+		Folder: filepath.Join(root, "fixture"), TempDir: filepath.Join(root, ".drydock", "tmp"),
+		ConfigDir: filepath.Join(root, "fixture", ".devcontainer"), BrokerDir: filepath.Join(root, "sock"),
 		ClaudeVolume: "drydock-record-claude", Approved: approved}
 	os.MkdirAll(s.TempDir, 0o700)
 	p, err := m.guardPolicy(s)
@@ -120,7 +120,7 @@ func TestRecordedUpsPassWithTheirApproval(t *testing.T) {
 	} {
 		root := t.TempDir()
 		cmds, c := recordedUp(t, name, root)
-		ha, err := HostAccessOf(c, filepath.Join(root, "repo"), false)
+		ha, err := HostAccessOf(c, filepath.Join(root, "fixture"), false)
 		if err != nil {
 			t.Fatalf("%s: %v", name, err)
 		}
@@ -147,7 +147,7 @@ func TestRecordedStartsPassWithTheirApproval(t *testing.T) {
 	} {
 		root := t.TempDir()
 		_, c := recordedUp(t, name, root)
-		ha, err := HostAccessOf(c, filepath.Join(root, "repo"), false)
+		ha, err := HostAccessOf(c, filepath.Join(root, "fixture"), false)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -176,7 +176,7 @@ func TestRecordedStartsPassWithTheirApproval(t *testing.T) {
 func TestEachApprovedSettingIsNeeded(t *testing.T) {
 	root := t.TempDir()
 	cmds, c := recordedUp(t, "hostile", root)
-	ha, err := HostAccessOf(c, filepath.Join(root, "repo"), false)
+	ha, err := HostAccessOf(c, filepath.Join(root, "fixture"), false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -222,7 +222,7 @@ for a; do
   prev=$a
 done
 cp "$(dirname "$dp")/policy.json" "$(dirname "$0")/policy-seen.json"
-"$dp" run --sig-proxy=false -a STDOUT -a STDERR --mount "type=bind,source=$folder,target=/workspaces/repo" $mounts $labels ` + extra + ` --entrypoint /bin/sh img -c x - || { echo '{"outcome":"error","message":"Command failed: docker run","description":"An error occurred setting up the container."}'; exit 1; }
+"$dp" run --sig-proxy=false -a STDOUT -a STDERR --mount "type=bind,source=$folder,target=/workspaces/$(basename "$folder")" $mounts $labels ` + extra + ` --entrypoint /bin/sh img -c x - || { echo '{"outcome":"error","message":"Command failed: docker run","description":"An error occurred setting up the container."}'; exit 1; }
 cat <<'EOF'
 ` + fixture(t, "up-ok.json") + `
 EOF
@@ -371,7 +371,7 @@ func TestDockerPathSeesThroughAWrappedRunner(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	folder := filepath.Join(t.TempDir(), wsID, "repo")
+	folder := filepath.Join(t.TempDir(), wsID, "alpha")
 	if err := os.MkdirAll(GuardDir(folder), 0o700); err != nil {
 		t.Fatal(err)
 	}

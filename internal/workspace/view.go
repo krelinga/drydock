@@ -24,7 +24,10 @@ type View struct {
 	RepositoryID int64  `json:"repository_id"`
 	FullName     string `json:"full_name"`
 	Branch       string `json:"branch"`
-	State        State  `json:"state"`
+	// HostPath is the row's host_path, the clone on the host. It is never
+	// sent: internal/vscode finds the clone's mount by it.
+	HostPath string `json:"-"`
+	State    State  `json:"state"`
 	// StateDetail and ContainerID are null, not "", when unset: an empty
 	// string would be a value the UI could mistake for one.
 	StateDetail *string              `json:"state_detail"`
@@ -131,7 +134,7 @@ type StepOutcome struct {
 	At     time.Time `json:"at"`
 }
 
-const viewColumns = `w.id, w.repository_id, coalesce(r.full_name, ''), w.branch, w.state,
+const viewColumns = `w.id, w.repository_id, coalesce(r.full_name, ''), w.branch, w.host_path, w.state,
 	w.state_detail, w.container_id, coalesce(w.created_at, ''), w.environment_id, w.pending_approval`
 
 // Views reads every workspace with a row, deleting ones included, newest
@@ -165,7 +168,7 @@ func (s *Store) views(ctx context.Context, q string, args ...any) ([]View, error
 		var v View
 		var detail, container, env, pending sql.NullString
 		var created string
-		if err := rows.Scan(&v.ID, &v.RepositoryID, &v.FullName, &v.Branch, &v.State,
+		if err := rows.Scan(&v.ID, &v.RepositoryID, &v.FullName, &v.Branch, &v.HostPath, &v.State,
 			&detail, &container, &created, &env, &pending); err != nil {
 			rows.Close()
 			return nil, err

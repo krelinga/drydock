@@ -20,8 +20,8 @@ import (
 // parser that trusted the exit code would hand `up` a config with no image.
 func TestParseConfigurationAgainstTheCorpus(t *testing.T) {
 	c, err := ParseConfiguration([]byte(fixture(t, "read-configuration-ok.json")))
-	if err != nil || c.WorkspaceFolder != "/workspaces/repo" ||
-		c.ConfigFile != "/srv/drydock/ws/FIXTURE/repo/.devcontainer/devcontainer.json" {
+	if err != nil || c.WorkspaceFolder != "/workspaces/alpha" ||
+		c.ConfigFile != "/srv/drydock/ws/FIXTURE/alpha/.devcontainer/devcontainer.json" {
 		t.Errorf("ok: %+v %v", c, err)
 	}
 	c, err = ParseConfiguration([]byte(fixture(t, "read-configuration-override.json")))
@@ -66,27 +66,27 @@ func TestReadConfigurationArgvAndExitCodes(t *testing.T) {
 		"devcontainer": "cat <<'EOF'\n" + fixture(t, "read-configuration-ok.json") + "\nEOF\n",
 	})
 	m := Manager{Run: run, LabelPrefix: "drydock.test"}
-	if _, err := m.ReadConfiguration(context.Background(), "/srv/ws/repo", ""); err != nil {
+	if _, err := m.ReadConfiguration(context.Background(), "/srv/ws/alpha", ""); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := m.ReadConfiguration(context.Background(), "/srv/ws/repo", "/srv/ws/.drydock/devcontainer.json"); err != nil {
+	if _, err := m.ReadConfiguration(context.Background(), "/srv/ws/alpha", "/srv/ws/.drydock/devcontainer.json"); err != nil {
 		t.Fatal(err)
 	}
 	got := strings.Join(argv(t, dir, "devcontainer"), " ")
 	merged := "--include-merged-configuration --id-label drydock.test.read-configuration=none "
-	want := "read-configuration --workspace-folder /srv/ws/repo " + merged + "-- " +
-		"read-configuration --workspace-folder /srv/ws/repo " + merged + "--override-config /srv/ws/.drydock/devcontainer.json "
+	want := "read-configuration --workspace-folder /srv/ws/alpha " + merged + "-- " +
+		"read-configuration --workspace-folder /srv/ws/alpha " + merged + "--override-config /srv/ws/.drydock/devcontainer.json "
 	if got != want {
 		t.Errorf("argv\n got %q\nwant %q", got, want)
 	}
-	if _, err := m.ReadConfiguration(context.Background(), "/srv/ws/repo", "relative.json"); err == nil {
+	if _, err := m.ReadConfiguration(context.Background(), "/srv/ws/alpha", "relative.json"); err == nil {
 		t.Error("a relative override was accepted")
 	}
 
 	run, _ = fakes(t, map[string]string{"devcontainer": "echo banner >&2; exit 1"})
 	m.Run = run
 	var re *ReadError
-	if _, err := m.ReadConfiguration(context.Background(), "/srv/ws/repo", ""); !errors.As(err, &re) || re.ExitCode != 1 || re.Stderr != "banner" {
+	if _, err := m.ReadConfiguration(context.Background(), "/srv/ws/alpha", ""); !errors.As(err, &re) || re.ExitCode != 1 || re.Stderr != "banner" {
 		t.Errorf("exit 1: %v", err)
 	}
 }
@@ -105,12 +105,12 @@ func TestUpAndExecPassTheOverrideConfig(t *testing.T) {
 
 	run, dir := fakes(t, map[string]string{"devcontainer": "exit 0"})
 	m := Manager{Run: run, LabelPrefix: "drydock.test"}
-	if _, err := m.ExecIn(context.Background(), ExecSpec{WorkspaceID: wsID, Folder: "/srv/ws/repo",
+	if _, err := m.ExecIn(context.Background(), ExecSpec{WorkspaceID: wsID, Folder: "/srv/ws/alpha",
 		OverrideConfig: "/srv/ws/.drydock/devcontainer.json", Argv: []string{"true"}}); err != nil {
 		t.Fatal(err)
 	}
 	got := strings.Join(argv(t, dir, "devcontainer"), " ")
-	want := "exec --workspace-folder /srv/ws/repo --id-label drydock.test.workspace=" + wsID +
+	want := "exec --workspace-folder /srv/ws/alpha --id-label drydock.test.workspace=" + wsID +
 		" --override-config /srv/ws/.drydock/devcontainer.json -- true "
 	if got != want {
 		t.Errorf("exec argv\n got %q\nwant %q", got, want)
@@ -130,7 +130,7 @@ func TestReadConfigurationRunsWithItsOwnTempDir(t *testing.T) {
 		"\ncat <<'EOF'\n" + fixture(t, "read-configuration-ok.json") + "\nEOF\n"})
 	m := Manager{Run: run, LabelPrefix: "drydock.test"}
 	for range 2 {
-		if _, err := m.ReadConfiguration(context.Background(), "/srv/ws/repo", ""); err != nil {
+		if _, err := m.ReadConfiguration(context.Background(), "/srv/ws/alpha", ""); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -170,7 +170,7 @@ func TestReadConfigurationHasItsOwnBound(t *testing.T) {
 	m := Manager{Run: run, LabelPrefix: "drydock.test", Clock: clock}
 	done := make(chan error, 1)
 	go func() {
-		_, err := m.ReadConfiguration(context.Background(), "/srv/ws/repo", "")
+		_, err := m.ReadConfiguration(context.Background(), "/srv/ws/alpha", "")
 		done <- err
 	}()
 	var pid int
@@ -212,14 +212,14 @@ func TestReadConfigurationHasItsOwnBound(t *testing.T) {
 		"devcontainer": "cat <<'EOF'\n" + fixture(t, "read-configuration-ok.json") + "\nEOF\n",
 	})
 	m.Run = run
-	if c, err := m.ReadConfiguration(context.Background(), "/srv/ws/repo", ""); err != nil || c.WorkspaceFolder != "/workspaces/repo" {
+	if c, err := m.ReadConfiguration(context.Background(), "/srv/ws/alpha", ""); err != nil || c.WorkspaceFolder != "/workspaces/alpha" {
 		t.Errorf("control: a read that answers: %+v %v", c, err)
 	}
 	// And ReadTimeout overrides the default.
 	run, _ = fakes(t, map[string]string{"devcontainer": "exec sleep 300"})
 	m.Run, m.ReadTimeout = run, time.Minute
 	go func() {
-		_, err := m.ReadConfiguration(context.Background(), "/srv/ws/repo", "")
+		_, err := m.ReadConfiguration(context.Background(), "/srv/ws/alpha", "")
 		done <- err
 	}()
 	for deadline := time.Now().Add(10 * time.Second); clock.WaitingFor(time.Minute) == 0; time.Sleep(10 * time.Millisecond) {
@@ -261,7 +261,7 @@ func TestACallersDeadlineIsNotTheReadsOwn(t *testing.T) {
 		parent, cancel := sys.WithTimeout(context.Background(), clock, tc.parent)
 		done := make(chan error, 1)
 		go func() {
-			_, err := m.ReadConfiguration(parent, "/srv/ws/repo", "")
+			_, err := m.ReadConfiguration(parent, "/srv/ws/alpha", "")
 			done <- err
 		}()
 		for deadline := time.Now().Add(10 * time.Second); clock.WaitingFor(ReadConfigurationTimeout) == 0 || clock.WaitingFor(tc.parent) == 0; time.Sleep(10 * time.Millisecond) {

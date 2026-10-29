@@ -18,13 +18,13 @@ import (
 // parameters — never interpolated into the script.
 func TestSessionArgs(t *testing.T) {
 	m := Manager{LabelPrefix: "dd"}
-	args, err := m.SessionArgs(SessionSpec{WorkspaceID: "01JAAAAAAAAAAAAAAAAAAAAAAA", Folder: "/srv/ws/x/repo",
+	args, err := m.SessionArgs(SessionSpec{WorkspaceID: "01JAAAAAAAAAAAAAAAAAAAAAAA", Folder: "/srv/ws/x/alpha",
 		OverrideConfig: "/srv/ws/x/.drydock/devcontainer.json", Capacity: 4,
 		RemoteEnv: map[string]string{"CLAUDE_REMOTE_CONTROL_SESSION_NAME_PREFIX": "repo; rm -rf /"}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"exec", "--workspace-folder", "/srv/ws/x/repo", "--id-label", "dd.workspace=01JAAAAAAAAAAAAAAAAAAAAAAA",
+	want := []string{"exec", "--workspace-folder", "/srv/ws/x/alpha", "--id-label", "dd.workspace=01JAAAAAAAAAAAAAAAAAAAAAAA",
 		"--override-config", "/srv/ws/x/.drydock/devcontainer.json",
 		"--remote-env", "CLAUDE_REMOTE_CONTROL_SESSION_NAME_PREFIX=repo; rm -rf /",
 		"--", "sh", "-c", RemoteControlLaunch, "sh", RemoteControlPidFile, "4"}

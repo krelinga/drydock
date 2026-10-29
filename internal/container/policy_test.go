@@ -38,7 +38,7 @@ func TestHostAccessAgainstTheCorpus(t *testing.T) {
 		return c
 	}
 	for _, name := range []string{"read-configuration-merged-ok.json", "read-configuration-merged-override.json"} {
-		h, err := HostAccessOf(read(name), "/srv/drydock/ws/FIXTURE/repo", false)
+		h, err := HostAccessOf(read(name), "/srv/drydock/ws/FIXTURE/alpha", false)
 		if err != nil || !h.Empty() || h.Hash != "" {
 			t.Errorf("%s: %v %v %q", name, fields(h), err, h.Hash)
 		}
@@ -99,7 +99,7 @@ func TestEachHostAccessFieldIsInTheSubset(t *testing.T) {
 		"capAdd":["SYS_PTRACE"],"securityOpt":["seccomp=unconfined"],"runArgs":[],"initializeCommand":"",
 		"mounts":["source=cache-${devcontainerId},target=/cache,type=volume",{"type":"volume","source":"x-${devcontainerId}","target":"/x"},
 			"type=volume,target=/anon","type=tmpfs,target=/tmp/t,tmpfs-size=1m"],
-		"hostRequirements":{"cpus":2,"memory":"4gb","gpu":false},"workspaceFolder":"/workspaces/repo",
+		"hostRequirements":{"cpus":2,"memory":"4gb","gpu":false},"workspaceFolder":"/workspaces/alpha",
 		"shutdownAction":"none","waitFor":"postCreateCommand","$schema":"x"}`
 	if h, err := HostAccessOf(cfg(t, ok), "", false); err != nil || !h.Empty() {
 		t.Fatalf("the typical config has host access: %v %v", fields(h), err)
@@ -201,8 +201,8 @@ func TestHostAccessHash(t *testing.T) {
 		}
 		return h.Hash
 	}
-	a := hash(`{`+base+`,"runArgs":["--network=host"],"mounts":["source=/srv/drydock/ws/A/repo/cache,target=/c,type=bind"]}`, "/srv/drydock/ws/A/repo")
-	b := hash(`{"mounts":["source=/srv/drydock/ws/B/repo/cache,target=/c,type=bind"],"runArgs":["--network=host"],`+base+`}`, "/srv/drydock/ws/B/repo")
+	a := hash(`{`+base+`,"runArgs":["--network=host"],"mounts":["source=/srv/drydock/ws/A/alpha/cache,target=/c,type=bind"]}`, "/srv/drydock/ws/A/alpha")
+	b := hash(`{"mounts":["source=/srv/drydock/ws/B/alpha/cache,target=/c,type=bind"],"runArgs":["--network=host"],`+base+`}`, "/srv/drydock/ws/B/alpha")
 	if a == "" || a != b {
 		t.Errorf("one configuration in two workspaces: %q and %q", a, b)
 	}
@@ -212,7 +212,7 @@ func TestHostAccessHash(t *testing.T) {
 		`{` + base + `,"runArgs":["--network=host"],"mounts":["source=${localWorkspaceFolder}/cache,target=/d,type=bind"]}`,
 		`{` + base + `,"runArgs":["--network=host"],"mounts":["source=${localWorkspaceFolder}/cache,target=/c,type=bind"],"privileged":true}`,
 	} {
-		if h := hash(other, "/srv/drydock/ws/A/repo"); h == a {
+		if h := hash(other, "/srv/drydock/ws/A/alpha"); h == a {
 			t.Errorf("%s hashes like the original", other)
 		}
 	}

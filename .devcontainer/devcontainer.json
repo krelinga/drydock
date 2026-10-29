@@ -13,7 +13,7 @@
     "ghcr.io/devcontainers/features/node:2": { "version": "lts" },
 
     // Docker-IN-docker, deliberately, not docker-outside-of-docker: Drydock hands
-    // the daemon host paths to bind-mount (/srv/drydock/ws/<id>/repo, the broker
+    // the daemon host paths to bind-mount (/srv/drydock/ws/<id>/<repo name>, the broker
     // sockets). With DooD the daemon is the host's, so those paths resolve
     // differently inside and outside this container and every mount breaks -- the
     // exact problem §1 cites for not containerizing Drydock. With DinD the daemon
