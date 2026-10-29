@@ -28,6 +28,23 @@
 // is how the extension writes one with a user, a port or capitals (its kk
 // function), since user@host cannot sit in a URI authority after another @.
 //
+// # A new window, and why the link has no query
+//
+// Opened as it is, the link replaces whichever VS Code window had focus last.
+// VS Code's handler opens a new one when the vscode:// URL carries
+// windowId=_blank (app.ts at microsoft/vscode d0434ad6ce: handleProtocolUrl
+// sets forceNewWindow from it, and the startup path opens an empty window for
+// such a link), and deletes the parameter first, so
+// getWindowOpenableFromProtocolUrl builds the same vscode-remote:// folder URI
+// with no query. The web UI appends ?windowId=_blank to its href
+// (web/src/components/OpenInVSCode.vue); AttachURL does not, and the view's
+// url stays exactly this shape. That url is also the VS Code extension's, which
+// opens the folder in a new window itself (vscode.openFolder with
+// forceNewWindow) and, like every release of it already shipped, refuses a URL
+// with any query (core's vscodeURL) — so a server that sent one would break
+// Connect for every extension installed before it, while the UI, which ships
+// in this binary, can add the parameter with no version skew at all.
+//
 // # What it carries
 //
 // The container's name, the SSH host, and the folder: no token, no secret,

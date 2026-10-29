@@ -54,6 +54,11 @@ describe('the VS Code link', () => {
       'vscode://vscode-remote/attached-container+7b22@ssh-remote+devbox',
       'vscode://vscode-remote/attached-container+7b22@ssh-remote+dev box/w',
       'vscode://other-extension/attached-container+7b22@ssh-remote+devbox/w',
+      // internal/vscode's link has no query or fragment: the UI adds
+      // ?windowId=_blank to its href itself (OpenInVSCode.vue).
+      GOOD + '?windowId=_blank',
+      GOOD + '?x=1',
+      GOOD + '#f',
       42,
     ]) {
       expect(vscodeURL(bad), String(bad)).toBeNull()
