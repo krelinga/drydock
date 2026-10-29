@@ -9,6 +9,7 @@ import (
 
 	"github.com/krelinga/drydock/internal/dockerguard"
 	"github.com/krelinga/drydock/internal/subproc"
+	"github.com/krelinga/drydock/internal/workspace"
 )
 
 // The docker guard (design §6, "The docker guard"; internal/dockerguard).
@@ -32,14 +33,14 @@ func GuardDir(folder string) string {
 
 // guardDirIn is the guard directory in the workspace directory <root>/<id>.
 func guardDirIn(workspaceDir string) string {
-	return filepath.Join(workspaceDir, ".drydock", "guard")
+	return filepath.Join(workspaceDir, workspace.OwnDir, "guard")
 }
 
 // TempDirFor is the TMPDIR an up of the clone at folder runs with, the
 // workspace's own: <root>/<id>/.drydock/tmp. Up runs with no other, since the
 // policy lets a build read from it.
 func TempDirFor(folder string) string {
-	return filepath.Join(filepath.Dir(folder), ".drydock", "tmp")
+	return filepath.Join(filepath.Dir(folder), workspace.OwnDir, "tmp")
 }
 
 // SweepPolicy removes a guard policy and refusal an up left behind — a

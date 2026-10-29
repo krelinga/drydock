@@ -334,7 +334,7 @@ func (wr WorkspaceRoutes) writeProvisionError(w http.ResponseWriter, err error) 
 	case errors.Is(err, workspace.ErrBadCloneFolder):
 		WriteError(w, http.StatusBadRequest, CodeBadRequest,
 			"Drydock cannot name a clone folder after this repository.",
-			"The clone is named after the repository, and this name is one Drydock keeps for itself.")
+			"The clone is named after the repository, and this name is not an owner/name in GitHub's characters (letters, digits, '.', '_' and '-').")
 	case errors.Is(err, workspace.ErrNoApproval):
 		WriteError(w, http.StatusConflict, CodeApprovalNotPending,
 			"This workspace is not waiting for a host-access approval.", "")

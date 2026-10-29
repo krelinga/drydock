@@ -158,7 +158,7 @@ func (r *runState) resolveConfig(ctx context.Context, w workspace.Workspace) err
 	}
 	r.override = ""
 	if !has {
-		r.override = filepath.Join(r.dir(w), ".drydock", "devcontainer.json")
+		r.override = filepath.Join(r.dir(w), workspace.OwnDir, "devcontainer.json")
 		if err := os.MkdirAll(filepath.Dir(r.override), 0o700); err != nil {
 			return workspace.Public("Drydock could not write its minimal dev container configuration.", err)
 		}
@@ -629,7 +629,7 @@ func (p *Provisioner) SessionSpec(ctx context.Context, id string) (container.Ses
 	}
 	override := ""
 	if !has {
-		override = filepath.Join(r.dir(w), ".drydock", "devcontainer.json")
+		override = filepath.Join(r.dir(w), workspace.OwnDir, "devcontainer.json")
 	}
 	env := r.remoteEnv(w, fullName)
 	env["CLAUDE_REMOTE_CONTROL_SESSION_NAME_PREFIX"] = fullName[strings.LastIndex(fullName, "/")+1:]

@@ -68,8 +68,8 @@ var (
 	// ErrAtCap refuses a create past the concurrent-container cap (§6 step 1).
 	ErrAtCap = errors.New("workspace: the concurrent-container cap is reached")
 	// ErrBadCloneFolder refuses a create for a repository whose name cannot
-	// name its clone folder (CloneFolder): outside GitHub's charset, "." or
-	// "..", or Drydock's own directory beside the clone.
+	// name its clone folder (CloneFolder): one with no owner, or a character
+	// outside GitHub's [A-Za-z0-9._-] — which GitHub itself never issues.
 	ErrBadCloneFolder = errors.New("workspace: the repository's name cannot name a clone folder")
 	// ErrNotFound is a workspace id with no row.
 	ErrNotFound = errors.New("workspace: no such workspace")
@@ -452,22 +452,15 @@ func ts(t time.Time) string { return t.UTC().Format(time.RFC3339Nano) }
 // purpose: the container already exists, and refusing to record it would
 // not make it go away, only make it invisible. The repository row is a cache
 // (§4), so a stub is written if the repository is not known yet, for the
-// next catalog refresh to fill in.
+// next catalog refresh to fill in. w.HostPath is the clone, as
+// OrphanClonePath gives it.
 func (s *Store) Adopt(ctx context.Context, w Workspace, fullName string) error {
 	if w.State != Running && w.State != Stopped {
 		return fmt.Errorf("workspace: an orphan is adopted as running or stopped, not %s", w.State)
 	}
-	// The clone's path is the container's: w.HostPath is its local_folder
-	// label, which the guard set to the row's host_path, so a repository
-	// renamed since keeps its folder. A container with none (Compose's)
-	// has it derived from the name it was labelled with.
-	if w.HostPath == "" {
-		p, err := ClonePath(s.Root, w.ID, fullName)
-		if err != nil {
-			return fmt.Errorf("workspace: adopt %s: %w", w.ID, err)
-		}
-		w.HostPath = p
-	}
+	// The clone's path is OrphanClonePath's, which reconciliation's plan
+	// decided by; it is checked again here, so nothing but a clone path
+	// under this root is ever recorded.
 	if err := CheckClonePath(s.Root, w.ID, w.HostPath); err != nil {
 		return fmt.Errorf("workspace: adopt %s: %w", w.ID, err)
 	}

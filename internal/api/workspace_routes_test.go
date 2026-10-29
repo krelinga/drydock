@@ -144,7 +144,7 @@ func TestCreateMapsEachRefusalToItsCode(t *testing.T) {
 		{workspace.ErrAtCap, 409, CodeAtCapacity},
 		{provision.ErrNotConfigured, 503, CodeAppNotConfigured},
 		{provision.ErrBadBranch, 400, CodeBadRequest},
-		{fmt.Errorf("%w: %w", workspace.ErrBadCloneFolder, errors.New(`workspace: ".drydock" cannot name a clone folder`)), 400, CodeBadRequest},
+		{fmt.Errorf("%w: %w", workspace.ErrBadCloneFolder, errors.New(`workspace: "o/a b" is not an owner/name repository name`)), 400, CodeBadRequest},
 		{errors.New("disk on fire"), 500, CodeInternal},
 	} {
 		p.err = c.err

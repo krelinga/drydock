@@ -35,9 +35,9 @@ func ctr(ws, id string, running bool) container.Found {
 		Branch: "dev", Running: running, Status: status}
 }
 
-func orphanOf(ws, id, repo string) container.Found {
+func orphanOf(ws, id, repo, localFolder string) container.Found {
 	c := ctr(ws, id, true)
-	c.Repo = repo
+	c.Repo, c.LocalFolder = repo, localFolder
 	return c
 }
 
@@ -98,14 +98,23 @@ func TestPlan(t *testing.T) {
 			nil, []container.Found{ctr("not-a-ulid-but-ends-in-Z", "c1", true)},
 			"leave_orphan:Z:c1"},
 		{"an orphan labelled with a repository that cannot name its clone is left",
-			nil, []container.Found{orphanOf(wsA, "c1", "krelinga/.."), orphanOf(wsB, "c2", "krelinga/.drydock")},
+			nil, []container.Found{orphanOf(wsA, "c1", "krelinga/a b", ""), orphanOf(wsB, "c2", "alpha", "")},
 			"leave_orphan:A:c1 leave_orphan:B:c2"},
-		{"control: the same orphan with a name that can is adopted",
-			nil, []container.Found{orphanOf(wsA, "c1", "krelinga/Alpha.git-x")},
-			"adopt_orphan:A:c1"},
+		// One rule with Adopt's: a local_folder Adopt would refuse leaves the
+		// orphan, whatever its repository label says.
+		{"an orphan whose local_folder is not a clone path under the root is left",
+			nil, []container.Found{
+				orphanOf(wsA, "c1", "krelinga/alpha", "/elsewhere/"+wsA+"/alpha"),
+				orphanOf(wsB, "c2", "krelinga/alpha", "/srv/drydock/ws/"+wsB+"/.drydock")},
+			"leave_orphan:A:c1 leave_orphan:B:c2"},
+		{"control: the same orphans with names and folders that can are adopted",
+			nil, []container.Found{
+				orphanOf(wsA, "c1", "krelinga/.Alpha.git-x", ""),
+				orphanOf(wsB, "c2", "krelinga/alpha", "/srv/drydock/ws/"+wsB+"/before-rename")},
+			"adopt_orphan:A:c1 adopt_orphan:B:c2"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := kinds(Plan(tc.rows, tc.found)); got != tc.want {
+			if got := kinds(Plan("/srv/drydock/ws", tc.rows, tc.found)); got != tc.want {
 				t.Errorf("\n got %q\nwant %q", got, tc.want)
 			}
 		})

@@ -52,12 +52,12 @@
 // warning then says how many workspaces could not be reconciled rather than
 // that nothing changed.
 //
-// An orphan's row takes its clone path from the container: its
-// devcontainer.local_folder label, which the guard set to the row's
-// host_path, or — a Compose container has none — the path named after the
-// repository its label names (workspace.ClonePath). Plan leaves an orphan
-// whose repository name cannot name a clone folder (workspace.CloneFolder),
-// and Adopt refuses a label that is not a clone path under this root.
+// An orphan's row takes its clone path from the container, by one rule,
+// workspace.OrphanClonePath: its devcontainer.local_folder label, which the
+// guard set to the row's host_path, or — a Compose container has none — the
+// path named after the repository its label names. Plan decides by it, given
+// the workspace root, and leaves an orphan it gives no path for; the action
+// carries the path to Adopt, so a plan never adopts what Adopt refuses.
 package reconcile
 
 import (
@@ -90,9 +90,8 @@ const (
 	// rebuild one.
 	AdoptOrphan Kind = "adopt_orphan"
 	// LeaveOrphan: a container with no row and labels too incomplete to
-	// rebuild one from — a repository name that cannot name a clone folder
-	// (workspace.CloneFolder) among them. Logged and left alone — never
-	// removed.
+	// rebuild one from — a clone path workspace.OrphanClonePath refuses
+	// among them. Logged and left alone — never removed.
 	LeaveOrphan Kind = "leave_orphan"
 	// ResumeDelete: the row is deleting. Finish it (§6: this is why
 	// deleting is persisted).
@@ -113,14 +112,17 @@ type Action struct {
 	ContainerID string
 	From        workspace.State // the row's state, when there is a row
 	Found       *container.Found
+	// HostPath is an AdoptOrphan's clone (workspace.OrphanClonePath).
+	HostPath string
 }
 
 var ulid = regexp.MustCompile(`^[0-9A-HJKMNP-TV-Z]{26}$`)
 
 // Plan decides, for every row and every found container, what to do. The
 // result is ordered by workspace id, then container id, so a log of it reads
-// the same on every run.
-func Plan(rows []workspace.Workspace, found []container.Found) []Action {
+// the same on every run. root is the workspace root, which an orphan's clone
+// path is held to.
+func Plan(root string, rows []workspace.Workspace, found []container.Found) []Action {
 	byWS := map[string][]container.Found{}
 	for _, f := range found {
 		byWS[f.WorkspaceID] = append(byWS[f.WorkspaceID], f)
@@ -165,8 +167,11 @@ func Plan(rows []workspace.Workspace, found []container.Found) []Action {
 			out = append(out, Action{Kind: ExtraContainer, WorkspaceID: wsID, ContainerID: extras[i].ContainerID, Found: &extras[i]})
 		}
 		a := Action{WorkspaceID: wsID, ContainerID: primary.ContainerID, Found: primary, Kind: AdoptOrphan}
-		if _, err := workspace.CloneFolder(primary.Repo); err != nil || !ulid.MatchString(wsID) || primary.RepositoryID <= 0 || primary.Branch == "" {
+		hostPath, err := workspace.OrphanClonePath(root, wsID, primary.LocalFolder, primary.Repo)
+		if err != nil || !ulid.MatchString(wsID) || primary.RepositoryID <= 0 || primary.Branch == "" || primary.Repo == "" {
 			a.Kind = LeaveOrphan
+		} else {
+			a.HostPath = hostPath
 		}
 		out = append(out, a)
 	}
@@ -269,7 +274,7 @@ func (r *Reconciler) Run(ctx context.Context) ([]Action, error) {
 	if err != nil {
 		return nil, fmt.Errorf("cannot read the workspaces: %w: %w", ErrNothingChanged, err)
 	}
-	plan := Plan(rows, found)
+	plan := Plan(r.Workspaces.Root, rows, found)
 	var p Partial
 	// Steps first, then the plan: a step the last process died inside is
 	// closed before the plan moves its workspace, so a timeline reads as a
@@ -396,7 +401,7 @@ func (r *Reconciler) apply(ctx context.Context, a Action) error {
 		}
 		return ws.Adopt(ctx, workspace.Workspace{
 			ID: a.WorkspaceID, RepositoryID: a.Found.RepositoryID, Branch: a.Found.Branch,
-			State: state, ContainerID: a.ContainerID, HostPath: a.Found.LocalFolder,
+			State: state, ContainerID: a.ContainerID, HostPath: a.HostPath,
 			StateDetail: "Found with no record; adopted from its labels.",
 		}, a.Found.Repo)
 
