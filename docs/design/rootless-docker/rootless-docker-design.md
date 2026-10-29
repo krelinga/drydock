@@ -48,7 +48,7 @@ The analysis below is kept as it stood when the decision was made.
   hole for the repositories that need docker-in-docker. It keeps every path, uid, address and
   `/proc` read Drydock relies on today, because the daemon stays rootful and Sysbox ID-maps the
   bind mounts. The cost is real but bounded:
-  - The guard learns a *substitutive* argv rewrite. Today its only edit is additive (`WithLabels`),
+  - The guard learns a *substitutive* argv rewrite. Today its only edit is additive (`WithAdded`),
     so this changes its character (§3.6).
   - The approval records the runtime as part of `privileged`'s value (§3.7).
   - The operator installs a third-party runtime, which costs one daemon restart and a `daemon.json`
@@ -464,10 +464,11 @@ fields (`internal/dockerguard/start.go`). That table accepts `Runtime` of `""` o
   approval wording, which keys off the field name (`HostAccessApproval.vue`), must change with the
   deployment.
 - **Sysbox (privileged-only): the guard becomes a transformer, not only a filter.** Today it
-  makes one argv edit, and that edit is *additive*. `WithLabels` (`internal/dockerguard/guard.go`)
-  inserts the policy's `devcontainer.local_folder` and `devcontainer.config_file` labels right after
-  `run`/`create`. `Main` then runs `Check` on the result and `execve`s the real docker with it
-  (`check.go`'s package comment: *"argv untouched but for WithLabels"*). Design §6 says the same in
+  makes one argv edit, and that edit is *additive*. `WithAdded` (`internal/dockerguard/guard.go`)
+  inserts the policy's container `--name` and its `devcontainer.local_folder` and
+  `devcontainer.config_file` labels right after `run`/`create`. `Main` then runs `Check` on the
+  result and `execve`s the real docker with it (`check.go`'s package comment: *"argv untouched but
+  for WithAdded"*). Design §6 says the same in
   *Opening a workspace in VS Code*: *"the one change it makes to an argv"*. Swapping `--privileged`
   for `--runtime=sysbox-runc` is a different kind of edit: it **removes** an option the CLI wrote
   and **substitutes** another. That makes the guard decide what the container is, not only whether
@@ -484,7 +485,7 @@ fields (`internal/dockerguard/start.go`). That table accepts `Runtime` of `""` o
     be `runArgs`), and with the swap it must never be both approved and substituted.
   - **Check the rewritten argv as a second pass** against a policy in which `privileged` is not
     approved but the Sysbox runtime is. The command docker will run is held to the rules, not only
-    the command the CLI wrote, as `WithLabels` is today.
+    the command the CLI wrote, as `WithAdded` is today.
   - **`exec --privileged`** (`check.go`'s `exec` rule) into a Sysbox container is either refused or
     passed without the flag. Which one Sysbox needs is unmeasured (P8).
   - **`start`** accepts `Runtime: sysbox-runc` exactly when the policy's `privileged` is the Sysbox

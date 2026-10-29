@@ -18,15 +18,15 @@ func labelPolicy(root string) *Policy {
 	return p
 }
 
-// WithLabels adds the policy's labels to a run or create — after the
+// WithAdded adds the policy's labels to a run or create — after the
 // command, among the options, in key order — and to nothing else; with no
 // labels, or no policy, argv is as given. The recorded run, labelled, passes
 // the check, so the guard's own addition is never what it refuses.
-func TestWithLabelsAddsThePolicysLabelsToARun(t *testing.T) {
+func TestWithAddedAddsThePolicysLabelsToARun(t *testing.T) {
 	root := t.TempDir()
 	p := labelPolicy(root)
 	run := command(t, Recorded(t, "image", root), "run")
-	got := WithLabels(p, run)
+	got := WithAdded(p, run)
 	want := append([]string{"run",
 		"-l", "devcontainer.config_file=" + p.Labels["devcontainer.config_file"],
 		"-l", "devcontainer.local_folder=" + p.Labels["devcontainer.local_folder"]}, run[1:]...)
@@ -37,20 +37,20 @@ func TestWithLabelsAddsThePolicysLabelsToARun(t *testing.T) {
 		t.Errorf("the labelled recorded run refused: %+v", d)
 	}
 	for _, args := range [][]string{{"create", "img"}, {"container", "run", "img"}, {"container", "create", "img"}} {
-		out := WithLabels(p, args)
+		out := WithAdded(p, args)
 		if len(out) != len(args)+4 || !strings.HasPrefix(strings.Join(out, " "), strings.Join(args[:len(args)-1], " ")+" -l devcontainer.config_file=") {
 			t.Errorf("%v: %q", args, out)
 		}
 	}
 	for _, args := range [][]string{{"start", "x"}, {"exec", "x", "sh"}, {"build", "."}, {"inspect", "x"}, {"container"}, {}} {
-		if out := WithLabels(p, args); !reflect.DeepEqual(out, args) {
+		if out := WithAdded(p, args); !reflect.DeepEqual(out, args) {
 			t.Errorf("%v changed: %q", args, out)
 		}
 	}
-	if out := WithLabels(FixturePolicy(root, nil), run); !reflect.DeepEqual(out, run) {
+	if out := WithAdded(FixturePolicy(root, nil), run); !reflect.DeepEqual(out, run) {
 		t.Errorf("no labels: %q", out)
 	}
-	if out := WithLabels(nil, run); !reflect.DeepEqual(out, run) {
+	if out := WithAdded(nil, run); !reflect.DeepEqual(out, run) {
 		t.Errorf("no policy: %q", out)
 	}
 }
@@ -63,7 +63,7 @@ func TestWithLabelsAddsThePolicysLabelsToARun(t *testing.T) {
 func TestTheGuardsLabelsCannotBeOverridden(t *testing.T) {
 	root := t.TempDir()
 	p := labelPolicy(root)
-	run := WithLabels(p, command(t, Recorded(t, "image", root), "run"))
+	run := WithAdded(p, command(t, Recorded(t, "image", root), "run"))
 	if d := Check(p, run); d.Refused {
 		t.Fatalf("control: %+v", d)
 	}

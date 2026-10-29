@@ -477,6 +477,10 @@ func GuardRefusalSentence(settings []string) string {
 		switch s {
 		case dockerguard.SettingNoPolicy:
 			return "Drydock's docker guard had no record of what this run may ask Docker for, so it created no container. Start it again; if it repeats, the service log says why."
+		case dockerguard.SettingRunArgsOpen:
+			// Not a moved tag and not unapproved: the approved runArgs
+			// itself, every time, until the repository changes it.
+			return "This repository's runArgs ends in an option with no value, so Docker would read the next argument written after it as that value, and Drydock's docker guard cannot tell where the approved arguments end. It refuses them even though they are approved, and created no container. Give the last option its value in runArgs (\"--network\", \"host\" or \"--network=host\", not a bare \"--network\")."
 		case dockerguard.SettingCommand:
 			names = append(names, "a docker command Drydock does not recognise")
 		case dockerguard.SettingExecOption:

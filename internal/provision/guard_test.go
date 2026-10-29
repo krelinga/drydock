@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -73,10 +74,12 @@ func TestTheGuardRefusesWhatTheCheckDidNotSee(t *testing.T) {
 	if got := created(); len(got) != 1 || strings.Contains(got[0], "--privileged") {
 		t.Fatalf("the honest up's docker runs: %q", got)
 	}
-	// The guard labelled it as the dev container VS Code's Reopen in
-	// Container of the clone looks for.
+	// The guard named it after its repository and workspace, and labelled
+	// it as the dev container VS Code's Reopen in Container of the clone
+	// looks for.
 	repo := filepath.Join(e.root, v.ID, "repo")
-	if got := created()[0]; !strings.HasPrefix(got, "run -l devcontainer.config_file="+filepath.Join(repo, ".devcontainer", "devcontainer.json")+
+	named := regexp.MustCompile(`^run --name drydock\.test\.provision-alpha-` + strings.ToLower(v.ID[len(v.ID)-6:]) + `-[0-9a-z]{4} `)
+	if got := created()[0]; !named.MatchString(got) || !strings.Contains(got, " -l devcontainer.config_file="+filepath.Join(repo, ".devcontainer", "devcontainer.json")+
 		" -l devcontainer.local_folder="+repo+" ") {
 		t.Errorf("the honest up's docker run: %s", got)
 	}
@@ -146,6 +149,12 @@ func TestGuardRefusalSentence(t *testing.T) {
 		t.Errorf("%q", s)
 	}
 	if s := GuardRefusalSentence([]string{dockerguard.SettingNoPolicy}); !strings.Contains(s, "had no record") {
+		t.Errorf("%q", s)
+	}
+	// An open-ended runArgs is approved, so the sentence never says it was
+	// not, nor that starting again could help.
+	s = GuardRefusalSentence([]string{dockerguard.SettingRunArgsOpen, dockerguard.SettingPrivileged})
+	if !strings.Contains(s, "runArgs ends in an option with no value") || strings.Contains(s, "not approved") || strings.Contains(s, "starting again") {
 		t.Errorf("%q", s)
 	}
 }
