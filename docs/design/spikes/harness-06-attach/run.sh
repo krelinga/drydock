@@ -17,6 +17,8 @@
 #   tmux-rc             path 4: `claude --remote-control` in tmux instead of
 #                       the server: ids, turns, a client attach/resize,
 #                       SIGTERM and SIGKILL with restart
+#   tmux-rc-app         path 4's human half: a turn sent from the app, seen in
+#                       the terminal (WAIT_APP=<s>, default 300)
 #   tmux-rc-gates       path 4: the config gates, one removed at a time
 #   bg                  path 3/4: `claude --bg --remote-control` and `claude attach`
 #
@@ -66,6 +68,9 @@ cli)
   start_server "$RUN/cli-srv.log" || exit 1
   B=$(sessids "$RUN/cli-srv.log" | awk '{print $1}'); U=$(uuid_of "$B")
   say "  server session: $B  local id: $U"
+  CP=$(live_rows | jq -r --arg b "$B" 'select(.bridgeSessionId == $b and .entrypoint == "sdk-cli") | .pid' | head -1)
+  say "  that session's process (pid $CP) is started with:"
+  tr '\0' '\n' < "/proc/$CP/cmdline" | grep -aE '^--(print|sdk-url|session-id|resume|input-format)' | sed 's/^/    /'
   for probe in "--cloud $B" "attach ${B/session_/cse_}" "attach $U" "--session-id $U" "agents"; do
     # shellcheck disable=SC2086
     pane probe "$WS" "$RUN/cli-probe.log" "$CLAUDE" $probe
@@ -126,6 +131,15 @@ server-resume)
     say "    the server session's debug since (did its process notice?):"
     dbg_since "$SDBG" "$T0" 'inbound|Inbound|Received|user message|reload|changed'
     say "    (nothing above = the server's session never saw the terminal's turn)"
+    say "  /remote-control in that terminal: does it take the server's session over?"
+    T1=$(now); typeline c1 '/remote-control ' 15
+    say "    terminal now: $(screen c1 | grep -aoE '(remote-control is active|Remote Control (failed|not started)|already)[^│]{0,100}' | tail -1)"
+    say "    its session: $(rcline "$RUN/sr-c1.log") (the server's is $B)"
+    for i in $(seq 1 90); do grep -aq 'code=4090' "$SDBG" 2>/dev/null && break; sleep 1; done
+    say "    the server's session process after ~$((15 + i)) s:"
+    dbg_since "$SDBG" "$T1" '4090|superseded|state=failed'
+    say "    server pane: $(screen srv | grep -aoE 'Capacity: [0-9]+/[0-9]+' | tail -1); session process alive: $(kill -0 "$(live_rows | jq -r --arg b "$B" 'select(.entrypoint == "sdk-cli" and .bridgeSessionId == $b) | .pid' | head -1)" 2>/dev/null && echo yes || echo no)"
+    say "  registry:"; registry | sed 's/^/    /'
   fi
   term c1
 
@@ -151,6 +165,7 @@ server-resume)
   start_server "$RUN/sr-srv2.log" && say "  server back: env=$(envid "$RUN/sr-srv2.log") sessions=$(sessids "$RUN/sr-srv2.log") $(cap "$RUN/sr-srv2.log")"
   sleep 5; mark r3 "$RUN/sr-r3.log"
   dbg_since "$RUN/sr-r3.debug" "$T2" '4090|superseded|state='
+  say "  processes holding $U:"; holders "$U" | sed 's/^/    /'
   ;;
 # ---------------------------------------------------------------------------
 interactive-resume)
@@ -242,12 +257,14 @@ tmux-rc)
   pane rc "$WS" "$RUN/t4-rc2.log" "$CLAUDE" --remote-control ddspike06rc --continue --debug-file "$RUN/t4-rc2.debug"
   waitscreen 30 rc 'remote-control is active|Error|already' ; sleep 2
   mark rc "$RUN/t4-rc2.log"
+  grep -aE 'Reattaching to persisted|Created session' "$RUN/t4-rc2.debug" | cut -c26-170 | sed 's/^/    > /'
   say "  after SIGTERM restart: session=$(rcline "$RUN/t4-rc2.log") (was $B); local id $(uuid_of "$(rcline "$RUN/t4-rc2.log")") (was $U)"
   say "--- SIGKILL, then the same restart at once"
   kill -KILL "$(panepid rc)"; sleep 1
   pane rc "$WS" "$RUN/t4-rc3.log" "$CLAUDE" --remote-control ddspike06rc --continue --debug-file "$RUN/t4-rc3.debug"
   waitscreen 30 rc 'remote-control is active|Error|already' ; sleep 2
   mark rc "$RUN/t4-rc3.log"
+  grep -aE 'Reattaching to persisted|Created session' "$RUN/t4-rc3.debug" | cut -c26-170 | sed 's/^/    > /'
   say "  after SIGKILL restart: session=$(rcline "$RUN/t4-rc3.log") (was $B)"
   typeline rc 'What did you reply last time? Answer with that word only.' 15
   say "  conversation carried over? answer: $(screen rc | grep -aE '^● ' | tail -1)"
@@ -258,6 +275,20 @@ tmux-rc)
   say "--- and claude remote-control (the server) in the same folder, beside it"
   pane srv "$WS" "$RUN/t4-srv.log" "$CLAUDE" "${RC_ARGS[@]}"; sleep 15
   clean "$RUN/t4-srv.log" | grep -aoE 'Environment ID: env_[A-Za-z0-9]+|Capacity: [0-9]+/[0-9]+|Error:[^·]{0,120}' | sort -u | sed 's/^/    | /'
+  ;;
+# ---------------------------------------------------------------------------
+tmux-rc-app)
+  say "=== path 4, the human half: does a turn sent from the app show in the terminal?"
+  pane rc "$WS" "$RUN/t4a-rc.log" "$CLAUDE" --remote-control ddspike06app --debug-file "$RUN/t4a-rc.debug"
+  waitscreen 30 rc 'remote-control is active' || { say "never became active"; exit 1; }
+  B=$(rcline "$RUN/t4a-rc.log"); U=$(uuid_of "$B"); F="$(projdir "$WS")/$U.jsonl"
+  say "  HUMAN STEP: open https://claude.ai/code/$B (session ddspike06app) and send:"
+  say "    Reply with exactly APP1 and nothing else."
+  say "  waiting up to ${WAIT_APP:-300}s for it"
+  for _ in $(seq 1 "${WAIT_APP:-300}"); do screen rc | grep -q 'APP1' && break; sleep 1; done
+  sleep 10
+  say "  the terminal now shows:"; screen rc | grep -aE '^(❯|●) ' | tail -4 | sed 's/^/    | /'
+  say "  transcript:"; TREE "$F" | sed 's/^/    /'
   ;;
 # ---------------------------------------------------------------------------
 tmux-rc-gates)

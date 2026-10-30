@@ -1219,7 +1219,7 @@ One published Feature, `drydock` (`ghcr.io/krelinga/drydock/drydock`, source in 
 >
 > Two consequences worth holding onto. Trust is keyed on the **absolute path**, and every workspace mounts its clone at the same in-container path, so on the shared volume **one `/workspace` trust record satisfies every container** — an unlooked-for benefit of §7.1. And answering the consent prompt also writes `remoteControlMachineId`, so every container on the shared volume presents the **same machine id**; nothing observed breaks, but it is worth knowing before debugging why fifteen workspaces look like one device.
 >
-> Still open: `--spawn worktree` puts on-demand sessions at *other* paths, and whether a worktree path needs its own trust record is untested. It would fail only for the second and later sessions — the hardest case to notice. Check it in Phase 5.
+> Still open: `--spawn worktree` puts on-demand sessions at *other* paths, and whether a worktree path needs its own trust record is untested. It would fail only for the second and later sessions — the hardest case to notice. Check it in Phase 5. [Spike 06](../spikes/06-terminal-attach.md) measured the nearest case: an interactive session in a sibling git worktree of a trusted clone, with no trust record of its own, started with no prompt (trust resolves through the repository root), so the server's worktree sessions most likely inherit `/workspace`'s record — still unmeasured for the server itself.
 
 > [!WARNING]
 > **Pin the version**

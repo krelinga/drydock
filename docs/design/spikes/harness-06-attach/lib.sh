@@ -93,17 +93,18 @@ term() {
 }
 
 # Reap everything: SIGTERM each pane's process (the server last, so a session
-# it serves is not orphaned first), then the tmux server, then any background
-# daemon the copied config started.
+# it serves is not orphaned first), then this harness's tmux server, then any
+# background session (`bg` mode) still running on this config; Claude Code's
+# daemon exits by itself 5 s after its last session ends.
 reap() {
-  local s
+  local s id
   for s in $(t list-sessions -F '#{session_name}' 2>/dev/null | grep -v '^srv$'); do term "$s"; done
   term srv
   t kill-server 2>/dev/null
-  if [ -f "$CFG/daemon.lock" ] || [ -f "$CFG/daemon.status.json" ]; then
-    local dp; dp=$(jq -r '.pid // empty' "$CFG/daemon.status.json" 2>/dev/null)
-    [ -n "$dp" ] && kill -TERM "$dp" 2>/dev/null
-  fi
+  for id in $( (cd "$WS" && cenv "$CLAUDE" agents --json) 2>/dev/null \
+               | jq -r '.[] | select(.kind == "background") | .id' 2>/dev/null); do
+    (cd "$WS" && cenv "$CLAUDE" stop "$id") >/dev/null 2>&1
+  done
   return 0
 }
 
