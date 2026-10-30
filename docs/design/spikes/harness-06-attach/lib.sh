@@ -34,15 +34,18 @@ t() { tmux -L "$TMUX_L" "$@"; }
 # so refuse to run unless expiresAt is TOKEN_MARGIN_MIN (default 60) minutes
 # past now -- far more than any mode takes.
 token_guard() { # token_guard <credentials.json>
-  # Fails closed: digits-only checks before any arithmetic (a bash arithmetic
-  # error aborts that line and carries on), and an explicit `|| exit` on each step.
+  # Fails closed: plain-decimal checks (digits only, no leading zero, at most 15)
+  # before any arithmetic, which forces base 10 (10#) inside a command
+  # substitution whose empty result is itself refused: an arithmetic error
+  # aborts its line and carries on past any `|| exit`.
   local f="$1" margin="${TOKEN_MARGIN_MIN:-60}" exp left now
-  case "$margin" in ''|*[!0-9]*) say "REFUSING: TOKEN_MARGIN_MIN='$margin' is not a whole number of minutes"; exit 3 ;; esac
-  [ "$margin" -ge 30 ] || { say "REFUSING: TOKEN_MARGIN_MIN=$margin is below the floor of 30"; exit 3; }
+  case "$margin" in ''|*[!0-9]*|0?*|????????????????*) say "REFUSING: TOKEN_MARGIN_MIN='$margin' is not a whole number of minutes (no leading zero, at most 15 digits)"; exit 3 ;; esac
+  [ "$((10#$margin))" -ge 30 ] || { say "REFUSING: TOKEN_MARGIN_MIN=$margin is below the floor of 30"; exit 3; }
   exp=$(jq -r '.claudeAiOauth.expiresAt' "$f" 2>/dev/null) || { say "REFUSING: cannot read expiresAt from $f"; exit 3; }
-  case "$exp" in ''|*[!0-9]*) say "REFUSING: $f's expiresAt ('$exp') is not a whole number of milliseconds"; exit 3 ;; esac
+  case "$exp" in ''|*[!0-9]*|0?*|????????????????*) say "REFUSING: $f's expiresAt ('$exp') is not a whole number of milliseconds (no leading zero, at most 15 digits)"; exit 3 ;; esac
   now=$(date +%s) || exit 3
-  left=$(( (exp / 1000 - now) / 60 )) || exit 3
+  left=$(echo $(( (10#$exp / 1000 - 10#$now) / 60 )) 2>/dev/null)  # a failed expansion leaves $left empty; the case below refuses on it
+  case "$left" in ""|*[!0-9-]*|-) say "REFUSING: arithmetic on the expiry failed"; exit 3 ;; esac
   if [ "$left" -lt "$margin" ]; then
     say "REFUSING: $f's access token expires in ${left} min (< ${margin})."
     say "  A scratch copy could refresh it and rotate the owner's real login dead."

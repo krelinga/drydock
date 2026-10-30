@@ -52,18 +52,22 @@ now() { date -u +%Y-%m-%dT%H:%M:%S; }
 # token (revoked server-side, say) would send Claude Code to refresh it at
 # once, the residual Spike 06 has too.
 token_guard() { # token_guard <credentials.json> [minutes the mode runs]
-  # Fails closed: every value is checked to be digits before any arithmetic
-  # (a bash arithmetic error aborts that line and carries on), and every
-  # step refuses with an explicit `|| exit`.
+  # Fails closed: every value is checked to be plain decimal digits (no
+  # leading zero, which bash reads as octal; at most 15, so nothing overflows)
+  # before any arithmetic, which forces base 10 (10#) and runs in a command
+  # substitution whose empty result is itself refused, since an arithmetic
+  # error aborts its line and carries on past any `|| exit`.
   local f="$1" need="${2:-0}" margin="${TOKEN_MARGIN_MIN:-60}" exp left want now
-  case "$need" in ''|*[!0-9]*) say "REFUSING: the mode's minutes ('$need') are not a whole number"; exit 3 ;; esac
-  case "$margin" in ''|*[!0-9]*) say "REFUSING: TOKEN_MARGIN_MIN='$margin' is not a whole number of minutes"; exit 3 ;; esac
-  [ "$margin" -ge 30 ] || { say "REFUSING: TOKEN_MARGIN_MIN=$margin is below the floor of 30"; exit 3; }
+  case "$need" in ''|*[!0-9]*|0?*|????????????????*) say "REFUSING: the mode's minutes ('$need') are not a whole number"; exit 3 ;; esac
+  case "$margin" in ''|*[!0-9]*|0?*|????????????????*) say "REFUSING: TOKEN_MARGIN_MIN='$margin' is not a whole number of minutes (no leading zero, at most 15 digits)"; exit 3 ;; esac
+  [ "$((10#$margin))" -ge 30 ] || { say "REFUSING: TOKEN_MARGIN_MIN=$margin is below the floor of 30"; exit 3; }
   exp=$(jq -r '.claudeAiOauth.expiresAt' "$f" 2>/dev/null) || { say "REFUSING: cannot read expiresAt from $f"; exit 3; }
-  case "$exp" in ''|*[!0-9]*) say "REFUSING: $f's expiresAt ('$exp') is not a whole number of milliseconds"; exit 3 ;; esac
+  case "$exp" in ''|*[!0-9]*|0?*|????????????????*) say "REFUSING: $f's expiresAt ('$exp') is not a whole number of milliseconds (no leading zero, at most 15 digits)"; exit 3 ;; esac
   now=$(date +%s) || exit 3
-  left=$(( (exp / 1000 - now) / 60 )) || exit 3
-  want=$(( margin + need )) || exit 3
+  left=$(echo $(( (10#$exp / 1000 - 10#$now) / 60 )) 2>/dev/null)  # a failed expansion leaves $left empty; the case below refuses on it
+  case "$left" in ""|*[!0-9-]*|-) say "REFUSING: arithmetic on the expiry failed"; exit 3 ;; esac
+  want=$(echo $(( 10#$margin + 10#$need )) 2>/dev/null)
+  case "$want" in ""|*[!0-9-]*|-) say "REFUSING: arithmetic on the expiry failed"; exit 3 ;; esac
   if [ "$left" -lt "$want" ]; then
     say "REFUSING: $f's access token expires in ${left} min (< ${margin} margin + ${need} the mode runs)."
     say "  A scratch copy could refresh it and rotate the owner's real login dead."

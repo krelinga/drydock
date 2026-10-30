@@ -30,12 +30,13 @@ done
 # The token guard (Spike 06's): the scratch config gets a copy of the source's
 # live refresh token, which a refresh would rotate dead for the source.
 margin="${TOKEN_MARGIN_MIN:-60}"
-case "$margin" in ''|*[!0-9]*) echo "REFUSING: TOKEN_MARGIN_MIN='$margin' is not a whole number of minutes" >&2; exit 3 ;; esac
-[ "$margin" -ge 30 ] || { echo "REFUSING: TOKEN_MARGIN_MIN=$margin is below the floor of 30" >&2; exit 3; }
+case "$margin" in ''|*[!0-9]*|0?*|????????????????*) echo "REFUSING: TOKEN_MARGIN_MIN='$margin' is not a whole number of minutes (no leading zero, at most 15 digits)" >&2; exit 3 ;; esac
+[ "$((10#$margin))" -ge 30 ] || { echo "REFUSING: TOKEN_MARGIN_MIN=$margin is below the floor of 30" >&2; exit 3; }
 exp=$(jq -r '.claudeAiOauth.expiresAt' "$SRC/.credentials.json" 2>/dev/null) || { echo "REFUSING: cannot read expiresAt from $SRC/.credentials.json" >&2; exit 3; }
-case "$exp" in ''|*[!0-9]*) echo "REFUSING: expiresAt ('$exp') is not a whole number of milliseconds" >&2; exit 3 ;; esac
+case "$exp" in ''|*[!0-9]*|0?*|????????????????*) echo "REFUSING: expiresAt ('$exp') is not a whole number of milliseconds (no leading zero, at most 15 digits)" >&2; exit 3 ;; esac
 now=$(date +%s) || exit 3
-left=$(( (exp / 1000 - now) / 60 )) || exit 3
+left=$(echo $(( (10#$exp / 1000 - 10#$now) / 60 )) 2>/dev/null)  # a failed expansion leaves $left empty; the case below refuses on it
+case "$left" in ""|*[!0-9-]*|-) echo "REFUSING: arithmetic on the expiry failed" >&2; exit 3 ;; esac
 if [ "$left" -lt "$margin" ]; then
   echo "REFUSING: $SRC's access token expires in $left min (< $margin);" >&2
   echo "  let the real config refresh first (use claude normally), then re-run." >&2
