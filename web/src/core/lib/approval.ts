@@ -22,8 +22,9 @@ export const APPROVAL_TITLE = { lead: 'Needs approval:', rest: 'this configurati
 
 /** What approving means, said for every request. */
 export const APPROVAL_INTRO =
-  "Approving lets this repository's dev container reach this server, as the drydock user or as root. " +
-  'Anything running in the container — an agent included — can then use it, without changing the configuration again.'
+  "Approving lets this repository's dev container reach this server, as the drydock user or as root (or, with --network host, services on the server's loopback). " +
+  'Anything running in the container — an agent included — can then use it, without changing the configuration again. ' +
+  'Workspaces share one Claude Code configuration, so while this one runs, the agent in every other running workspace can very likely reach the server too.'
 
 /** `privileged`, new or changed: the container runs as root on the host. */
 export const PRIVILEGED_SENTENCE =
@@ -34,7 +35,7 @@ export const INITIALIZE_COMMAND_SENTENCE =
   "initializeCommand runs on this server, not in the container, as the drydock user — which can read Drydock's keys and is root through Docker."
 
 /** The request's last word, after any root sentence. */
-export const APPROVAL_CLOSING = 'Approve only what you trust for this repository. It is recorded, and asked again if it changes.'
+export const APPROVAL_CLOSING = 'Approve only what you would trust in every running workspace. It is recorded for this repository, and asked again if it changes.'
 
 const SOURCE: Record<string, string> = {
   repository: "the repository's devcontainer.json",
