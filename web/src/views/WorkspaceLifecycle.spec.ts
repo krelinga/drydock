@@ -308,6 +308,33 @@ describe('Delete and its confirm (§6.5)', () => {
     expect(wrapper.find('[data-test="ws-deleted"]').exists()).toBe(true)
   })
 
+  it('Enter in the name field is the button’s click: one delete on a match, none otherwise, none while in flight', async () => {
+    const b = freshBackend({ signedIn: true, scriptMode: 'manual' })
+    const { wrapper, pinia } = await mountApp(`/ws/${WS_RUNNING}`)
+    await open(wrapper)
+    const input = wrapper.find('[data-test="delete-input"]')
+    const del = () => sent(b, 'DELETE', `/api/workspaces/${WS_RUNNING}`)
+    // Not the name: nothing is sent and nothing is said.
+    await input.setValue('krelinga/drydoc')
+    await input.trigger('keydown', { key: 'Enter' })
+    await settle()
+    expect(del().length).toBe(0)
+    expect(wrapper.find('[data-test="confirm-delete"] [data-test="action-error"]').exists()).toBe(false)
+    // Control: the exact name, Enter twice, then a click: one request.
+    await input.setValue('krelinga/drydock')
+    await input.trigger('keydown', { key: 'Enter' })
+    await input.trigger('keydown', { key: 'Enter' })
+    await confirmBtn(wrapper).trigger('click')
+    await settle()
+    expect(del().length).toBe(1)
+    expect(new URL(del()[0]!.url).search).toBe('?confirm=krelinga%2Fdrydock')
+    expect(deleteKey(WS_RUNNING) in useStreamStore(pinia).inFlight).toBe(true)
+    // Still in flight (the 202 is not the outcome): Enter sends nothing more.
+    await input.trigger('keydown', { key: 'Enter' })
+    await settle()
+    expect(del().length).toBe(1)
+  })
+
   it('a confirm the server refuses says why, and deletes nothing', async () => {
     const b = freshBackend({ signedIn: true, scriptMode: 'manual' })
     const { wrapper, pinia } = await mountApp(`/ws/${WS_RUNNING}`)

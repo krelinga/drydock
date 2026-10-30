@@ -49,6 +49,12 @@ async function click(): Promise<void> {
     refusal.value = { text: describeError(e), note }
   }
 }
+
+// The one door: a click and a keyboard shortcut (the delete sheet's Enter)
+// both come through `click`, so its in-flight and blocked guards, the key and
+// the refusal handling are the same for both, and a second trigger while the
+// first is in flight sends nothing.
+defineExpose({ trigger: click })
 </script>
 
 <template>
