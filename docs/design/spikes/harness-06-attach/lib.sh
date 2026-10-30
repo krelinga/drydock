@@ -25,34 +25,40 @@ mkdir -p "$RUN" "$SHOME"
 say() { printf '%s\n' "$*"; }
 t() { tmux -L "$TMUX_L" "$@"; }
 
+# is_uint <s>: s is a plain decimal number. ASCII digits only, as an explicit
+# list (under a UTF-8 locale the range [0-9] also matches some non-ASCII
+# digits, which arithmetic then rejects); no leading zero (bash arithmetic
+# reads 010 as octal, `[` as decimal); at most 15 digits, so no sum or
+# difference below can overflow. A bare 0 passes.
+is_uint() { case $1 in ''|0?*|*[!0123456789]*) return 1 ;; esac; [ "${#1}" -le 15 ]; }
+
 # The token guard. $CFG/.credentials.json is a copy of the owner's live
 # refresh token, and the copy refreshes on its own: the refresh lock is per
 # CLAUDE_CONFIG_DIR, so nothing coordinates it with the real config. A refresh
 # rotates the token (Spike 00), and the real config's next refresh then finds
 # its token dead and blanks the login. Claude Code refreshes only near the
 # access token's expiresAt (the --bg daemon schedules it a few minutes before),
-# so refuse to run unless expiresAt is TOKEN_MARGIN_MIN (default 60) minutes
-# past now -- far more than any mode takes.
+# so refuse to run unless expiresAt is TOKEN_MARGIN_MIN (default 60, at least
+# 30) minutes past now -- far more than any mode takes.
 token_guard() { # token_guard <credentials.json>
-  # Fails closed: plain-decimal checks (digits only, no leading zero, at most 15)
-  # before any arithmetic, which forces base 10 (10#) inside a command
-  # substitution whose empty result is itself refused: an arithmetic error
-  # aborts its line and carries on past any `|| exit`.
+  # Fails closed. Every value passes is_uint before any arithmetic, so the
+  # arithmetic cannot fail: an arithmetic error inside a function aborts the
+  # whole call, refusal and all, and the caller runs on. And every check is
+  # `[ ok ] || refuse`, so a `[` that errors refuses too.
   local f="$1" margin="${TOKEN_MARGIN_MIN:-60}" exp left now
-  case "$margin" in ''|*[!0-9]*|0?*|????????????????*) say "REFUSING: TOKEN_MARGIN_MIN='$margin' is not a whole number of minutes (no leading zero, at most 15 digits)"; exit 3 ;; esac
-  [ "$((10#$margin))" -ge 30 ] || { say "REFUSING: TOKEN_MARGIN_MIN=$margin is below the floor of 30"; exit 3; }
+  is_uint "$margin" || { say "REFUSING: TOKEN_MARGIN_MIN='$margin' is not a whole number of minutes (no leading zero, at most 15 digits)"; exit 3; }
+  [ "$margin" -ge 30 ] || { say "REFUSING: TOKEN_MARGIN_MIN=$margin is below the floor of 30"; exit 3; }
   exp=$(jq -r '.claudeAiOauth.expiresAt' "$f" 2>/dev/null) || { say "REFUSING: cannot read expiresAt from $f"; exit 3; }
-  case "$exp" in ''|*[!0-9]*|0?*|????????????????*) say "REFUSING: $f's expiresAt ('$exp') is not a whole number of milliseconds (no leading zero, at most 15 digits)"; exit 3 ;; esac
-  now=$(date +%s) || exit 3
-  left=$(echo $(( (10#$exp / 1000 - 10#$now) / 60 )) 2>/dev/null)  # a failed expansion leaves $left empty; the case below refuses on it
-  case "$left" in ""|*[!0-9-]*|-) say "REFUSING: arithmetic on the expiry failed"; exit 3 ;; esac
-  if [ "$left" -lt "$margin" ]; then
+  is_uint "$exp" || { say "REFUSING: $f's expiresAt ('$exp') is not a whole number of milliseconds (no leading zero, at most 15 digits)"; exit 3; }
+  now=$(date +%s) && is_uint "$now" || { say "REFUSING: the clock ('$now') is not a whole number of seconds (no leading zero, at most 15 digits)"; exit 3; }
+  left=$(( (exp / 1000 - now) / 60 ))
+  [ "$left" -ge "$margin" ] || {
     say "REFUSING: $f's access token expires in ${left} min (< ${margin})."
     say "  A scratch copy could refresh it and rotate the owner's real login dead."
     say "  Wait for the real config to refresh (run any claude command normally), then"
     say "  re-run ./setup.sh to take a fresh copy."
     exit 3
-  fi
+  }
 }
 
 # One-shot commands (help text, --version): no TTY, stdin closed, bounded.

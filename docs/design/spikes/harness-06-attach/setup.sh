@@ -15,19 +15,22 @@ SRC="${2:-$HOME/.claude}"
 # The scratch config gets a copy of the source's live refresh token, which can
 # refresh on its own and rotate the source's login dead (see README, traps).
 # Refuse a copy whose access token is near the point Claude Code refreshes it.
+# Fails closed: every value passes is_uint (lib.sh has the same, and why)
+# before any arithmetic, and every check is `[ ok ] || refuse`, since set -e
+# catches neither an arithmetic error nor a `[` that errors inside an `if`.
+is_uint() { case $1 in ''|0?*|*[!0123456789]*) return 1 ;; esac; [ "${#1}" -le 15 ]; }
 margin="${TOKEN_MARGIN_MIN:-60}"
-case "$margin" in ''|*[!0-9]*|0?*|????????????????*) echo "REFUSING: TOKEN_MARGIN_MIN='$margin' is not a whole number of minutes (no leading zero, at most 15 digits)" >&2; exit 3 ;; esac
-[ "$((10#$margin))" -ge 30 ] || { echo "REFUSING: TOKEN_MARGIN_MIN=$margin is below the floor of 30" >&2; exit 3; }
+is_uint "$margin" || { echo "REFUSING: TOKEN_MARGIN_MIN='$margin' is not a whole number of minutes (no leading zero, at most 15 digits)" >&2; exit 3; }
+[ "$margin" -ge 30 ] || { echo "REFUSING: TOKEN_MARGIN_MIN=$margin is below the floor of 30" >&2; exit 3; }
 exp=$(jq -r '.claudeAiOauth.expiresAt' "$SRC/.credentials.json" 2>/dev/null) || { echo "REFUSING: cannot read expiresAt from $SRC/.credentials.json" >&2; exit 3; }
-case "$exp" in ''|*[!0-9]*|0?*|????????????????*) echo "REFUSING: expiresAt ('$exp') is not a whole number of milliseconds (no leading zero, at most 15 digits)" >&2; exit 3 ;; esac
-now=$(date +%s) || exit 3
-left=$(echo $(( (10#$exp / 1000 - 10#$now) / 60 )) 2>/dev/null)  # a failed expansion leaves $left empty; the case below refuses on it
-case "$left" in ""|*[!0-9-]*|-) echo "REFUSING: arithmetic on the expiry failed" >&2; exit 3 ;; esac
-if [ "$left" -lt "$margin" ]; then
+is_uint "$exp" || { echo "REFUSING: expiresAt ('$exp') is not a whole number of milliseconds (no leading zero, at most 15 digits)" >&2; exit 3; }
+now=$(date +%s) && is_uint "$now" || { echo "REFUSING: the clock ('$now') is not a whole number of seconds (no leading zero, at most 15 digits)" >&2; exit 3; }
+left=$(( (exp / 1000 - now) / 60 ))
+[ "$left" -ge "$margin" ] || {
   echo "REFUSING: $SRC's access token expires in $left min (< $margin);" >&2
   echo "  let the real config refresh first (use claude normally), then re-run." >&2
   exit 3
-fi
+}
 mkdir -p "$S/ws"
 S="$(cd "$S" && pwd)"
 if [ ! -d "$S/ws/.git" ]; then

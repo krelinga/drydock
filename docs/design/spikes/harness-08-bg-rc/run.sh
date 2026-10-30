@@ -43,9 +43,11 @@ RUN="$S/run/$MODE"
 . "$HERE/lib.sh"   # refuses a CFG or S that is the real config or $HOME
 rm -rf "$RUN"; mkdir -p "$RUN"
 # The minutes each mode may run with a daemon live, for the token guard: app
-# pauses three times WAIT_APP, the rest finish in a few minutes.
+# pauses three times WAIT_APP, the rest finish in a few minutes. WAIT_APP
+# passes lib.sh's is_uint before the arithmetic, so 0600 is not read as octal
+# and nothing wraps.
 W_APP="${WAIT_APP:-300}"
-case "$W_APP" in ''|*[!0-9]*) say "WAIT_APP must be a whole number of seconds"; exit 2 ;; esac
+is_uint "$W_APP" || { say "REFUSING: WAIT_APP='$W_APP' is not a whole number of seconds (no leading zero, at most 15 digits)"; exit 2; }
 case "$MODE" in app) MODE_MIN=$(( (3 * W_APP + 59) / 60 + 10 )) ;; *) MODE_MIN=10 ;; esac
 token_guard "$CFG/.credentials.json" "$MODE_MIN"
 trap reap EXIT
