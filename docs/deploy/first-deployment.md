@@ -967,7 +967,9 @@ should stay quiet.
   value, and whether the repository or a Feature set it. **Approve and continue** records the
   approval for that repository and carries on with the build; **Cancel** leaves it stopped. Approve
   only what you would let that repository do to this server — `privileged` is root on the host, and
-  anything running in the container can then use it. The approval is kept per repository: the same settings, or fewer of them, never ask again;
+  anything running in the container can then use it. Because workspaces share Claude Code's config
+  volume, an approval also very likely exposes the host to the agent in every other running workspace
+  while it runs ([design §6, *What approval means*](../design/overall/drydock-design.md#what-a-configuration-may-ask-of-the-host)). The approval is kept per repository: the same settings, or fewer of them, never ask again;
   anything new, or a changed value, does, showing what changed.
 - [ ] **On the server**, the container is there, found by label:
   ```sh

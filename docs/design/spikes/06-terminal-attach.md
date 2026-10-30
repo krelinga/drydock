@@ -66,7 +66,7 @@ what §8 chose the server for.
 | 2 | `/remote-control` in that terminal (unattended) | a **new** app session (`session_…TZUk…`), not the server's; server stays `Capacity: 1/4`, its process alive, no `4090` in 105 s | `server-resume` |
 | 2 | Same (H1, owner, 2026-10-30) | a **new, separate** app session (`session_01W4JFWQ…`), visible in the app and carrying `TERM1`, listed under the app's **"Remote Control"** section, not within the server's `ddspike06` environment; server stays `Capacity: 1/4`, its session process still running | `WAIT_APP=300 server-resume` |
 | 2 | `--teleport <server session>` (unattended, no app turns) | `This terminal now has its own copy of the session …`; `Fetched 0 events` | `server-resume` |
-| 2 | Same, with app turns (H1, owner, 2026-10-30) | `Fetched 14 events over 1 page(s)`, `Filtered 14 entries to 14 messages`, then the same "own copy … will not appear in the Claude app" line | `WAIT_APP=300 server-resume` |
+| 2 | Same, with app turns (H1, owner, 2026-10-30) | `Fetched 14 events over 1 page(s)`, `Filtered 14 entries to 14 messages`, and the same "own copy … will not appear in the Claude app" line | `WAIT_APP=300 server-resume` |
 | 2 | Same after `SIGTERM` of the server, and a server restart | resume works; restart reattaches the same environment and session; two processes then hold one local id | `server-resume` |
 | 3 | How the server's session process loads its history | `--resume=https://api.anthropic.com/v1/code/sessions/cse_…`: from the API, not the local `.jsonl` | `cli` |
 | 4 | Two terminals on one interactive Remote Control conversation | second gets `Remote Control not started here · … already has Remote Control for this conversation`; one file, **two branches**, no invalid lines (turns ~15 s apart; no concurrent append tried); the first terminal blind to the second's turn | `interactive-resume` |
@@ -344,7 +344,7 @@ silent degrade for gates; and the operator who attaches shares one input line wi
   picker. It would go through the Feature's existing locked merge of `.claude.json` (Claude Code's
   own `.claude.json.lock`, temp + `rename`, `oauthAccount` kept), and it is a Feature change, so a
   version bump. Not `theme`: that would choose the operator's theme for them.
-- **Path 3 (`--bg`): a measurement first** — two workspace containers on one volume, each with a
+- **Path 3 (`--bg`): a measurement first** ([Spike 08](08-bg-rc.md)) — two workspace containers on one volume, each with a
   background session: what `claude agents` lists in each, whether `attach` crosses containers, and
   how the daemon's refresh takes the lock.
 - **Path 4, if it were chosen** — supervisor, classifiers and corpus all change:
