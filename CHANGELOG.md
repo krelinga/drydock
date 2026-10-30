@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.19.1](https://github.com/krelinga/drydock/compare/v0.19.0...v0.19.1) (2026-10-30)
+
+
+### Bug Fixes
+
+* match Open in VS Code to Open in Claude, and confirm a delete with Enter ([#197](https://github.com/krelinga/drydock/issues/197)) ([858bf2e](https://github.com/krelinga/drydock/commit/858bf2ee233dd6c1bf73240fba1da4bb0836c513))
+
 ## [0.19.0](https://github.com/krelinga/drydock/compare/v0.18.0...v0.19.0) (2026-10-29)
 
 
