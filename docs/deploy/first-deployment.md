@@ -33,13 +33,14 @@ for the rest.
 
 ## 0. Known issues — read these first
 
-Gaps found while writing this runbook. None of them blocks a first deployment if you know about
+Surprises and installer gaps. None of them blocks a first deployment if you know about
 them. Each one is also mentioned at the step where it bites.
 
-1. **The release PR's checks wait for approval.** The `main` ruleset requires five status checks
-   (`go`, `web`, `installer`, `conventional`, `contract`). The release-please PR is opened by
-   `GITHUB_TOKEN`, so GitHub creates its workflow runs but holds them as `action_required` until a
-   repository writer approves them (the PR's *Checks* tab, or
+1. **The release PR's checks wait for approval.** The `main` ruleset requires status checks
+   (currently `go`, `web`, `installer`, `conventional`, `contract`, `browser` and `feature`). The
+   release-please PR is opened by `GITHUB_TOKEN`, so GitHub creates its workflow runs but holds
+   them as `action_required` until a repository writer approves them (the approve button on the
+   PR's merge box, or on each run's page in Actions, or
    `gh api -X POST repos/krelinga/drydock/actions/runs/<id>/approve`). Once they are green the PR
    merges normally; no bypass is needed. See [step 2](#2-cut-a-release).
 2. **An automatic rollback cannot undo a database migration.** If an upgrade's new binary migrates
@@ -250,11 +251,18 @@ Run these from any machine with `gh` signed in as a repository admin:
   gh run list --repo krelinga/drydock --branch main --workflow ci.yml --limit 1
   ```
 - [ ] **Approve its workflow runs, then merge it** ([Known issue 1](#0-known-issues--read-these-first)).
-  The runs wait as `action_required`; approve each (*Checks* tab, or
+  Three runs wait as `action_required` (`ci`, `pr-title`, `github-live`). Find them:
+  ```sh
+  gh run list --repo krelinga/drydock --branch release-please--branches--main--components--drydock --status action_required --json databaseId,workflowName,headSha
+  ```
+  Approve each (the button on the PR's merge box or the run's page in Actions, or
   `gh api -X POST repos/krelinga/drydock/actions/runs/<run-id>/approve`), wait for green, then:
   ```sh
   gh pr merge <number> --repo krelinga/drydock --squash
   ```
+  Approve the runs for the PR's current head: when another `feat:` or `fix:` lands, release-please
+  pushes the release branch again, the new head's runs are held again, and they need approving
+  again. Never reach for `--admin`.
 - [ ] **Watch the release workflow to the end.** It has five jobs: `release-please` tags `vX.Y.Z`
   and creates the Release **as a draft**, `test` runs the whole Go suite in exactly CI's `go`
   environment (both use `.github/actions/go-suite`), `assets` uploads the files to the draft,

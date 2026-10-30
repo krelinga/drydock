@@ -149,8 +149,11 @@ and only then `publish` makes it public and *Latest*, returning it to a draft if
   forward with a `fix:` when the code is wrong. A resumed tag older than the extension's packaging
   is uploaded and verified without `drydock-vscode.vsix` (both jobs say so in their log).
 - The release PR's workflow runs are created but held in `action_required` (opened by `GITHUB_TOKEN`).
-  Approve them (`gh api -X POST repos/krelinga/drydock/actions/runs/<id>/approve`, or the PR's Checks
-  tab; the owner has authorized agents to) and, once green, it merges normally with no bypass.
+  Approve them (`gh api -X POST repos/krelinga/drydock/actions/runs/<id>/approve`, or the approve button on
+  the PR's merge box or the run's page in Actions; the owner has authorized agents to). There are three
+  (`ci`, `pr-title`, `github-live`); list them with `gh run list --branch
+  release-please--branches--main--components--drydock --status action_required`. A later push to the
+  release branch holds the new head's runs again. Once green, it merges normally with no bypass.
   Agents never merge with `--admin`.
 - The repo setting *Allow GitHub Actions to create and approve pull requests* must be on.
 
