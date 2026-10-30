@@ -143,7 +143,7 @@ const live = computed(() => tokens.list.filter((t) => t.revokedAt === null && !e
         <p class="msg warn" data-test="token-approve-warning">
           <span class="glyph" aria-hidden="true">!</span>
           <span>
-            Approving lets a repository's dev container reach this server, as the drydock user or as root, and exposes it to every running workspace.
+            Approving lets a repository's dev container reach this server, as the drydock user or as root — and, while it runs, very likely the agent in every other running workspace too.
             A token with this scope can do that without this page.
           </span>
         </p>

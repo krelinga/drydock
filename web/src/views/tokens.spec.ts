@@ -48,6 +48,7 @@ describe('Settings → API tokens', () => {
     expect((section(wrapper).find('[data-test="token-label"]').element as HTMLInputElement).value).toBe('VS Code on iPhone')
     // The card's sentence about what approving means sits beside it.
     expect(section(wrapper).find('[data-test="token-approve-warning"]').text()).toContain('as the drydock user or as root')
+    expect(section(wrapper).find('[data-test="token-approve-warning"]').text()).toContain('very likely the agent in every other running workspace')
   })
 
   it('creates a token, shows it once, and the row comes from the event — not the 201', async () => {

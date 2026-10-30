@@ -532,7 +532,7 @@ No new credential: the operator's token needs `lifecycle` (the login and ports a
 *Review host access…* opens a **read-only virtual document** (`drydock-approval:/<workspace id>`, a `TextDocumentContentProvider`, never a webview, §8 rule 5) beside the editor. It has exactly the web card's content:
 
 - the title, *Needs approval: this configuration asks for host access*, with the repository and branch;
-- **the warning**: what approving lets the container do, as the drydock user or as root, and that anything in the container, an agent included, can then use it without changing the configuration again;
+- **the warning**: what approving lets the container do, as the drydock user or as root, with `--network host` reaching services on the server's loopback, that anything in the container, an agent included, can then use it without changing the configuration again, and that, while it runs, the agent in every other running workspace can very likely reach the server too (the closing line: approve only what you would trust in every running workspace);
 - **`privileged` is root on the host: Drydock's keys and every other workspace are in reach**, when `privileged` is new or changed;
 - **`initializeCommand` runs on this server, not in the container, as the drydock user, which can read Drydock's keys and is root through Docker**, when it is new or changed (the sentence PR #141 added to the web card);
 - *New*, *Changed since the last approval* (was / now) and *No longer asked for*, each setting with its source (*the repository's devcontainer.json* or *a Feature or the image*) and its value as JSON text, never the whole configuration.

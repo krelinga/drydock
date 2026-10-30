@@ -22,7 +22,7 @@ export const APPROVAL_TITLE = { lead: 'Needs approval:', rest: 'this configurati
 
 /** What approving means, said for every request. */
 export const APPROVAL_INTRO =
-  "Approving lets this repository's dev container reach this server, as the drydock user or as root (or, with --network host, services on the server's loopback). " +
+  "Approving lets this repository's dev container reach this server, as the drydock user or as root. With --network host, it also reaches services on the server's loopback. " +
   'Anything running in the container — an agent included — can then use it, without changing the configuration again. ' +
   'Workspaces share one Claude Code configuration, so while this one runs, the agent in every other running workspace can very likely reach the server too.'
 
