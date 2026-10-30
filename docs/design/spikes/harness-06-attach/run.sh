@@ -27,6 +27,11 @@
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MODE="${1:?usage: S=<scratch> ./run.sh <mode>}"
+# Validate the mode before it names a directory to delete.
+case "$MODE" in
+  cli|server-resume|interactive-resume|alongside|tmux-rc|tmux-rc-app|tmux-rc-gates|bg) ;;
+  *) printf 'unknown mode: %s\n' "$MODE"; exit 2 ;;
+esac
 # Each mode logs to a fresh $S/run/<mode>/, so a debug file (which claude
 # appends to) never carries an earlier run's lines.
 : "${S:?set S to the scratch dir setup.sh built}"
@@ -43,13 +48,27 @@ turns() { # turns <transcript>: user/assistant record count
   jq -s 'map(select(.type == "user" or .type == "assistant")) | length' "$1" 2>/dev/null || echo "?"
 }
 dbg_since() { # dbg_since <debug-file> <iso-time> <ERE>
-  [ -f "$1" ] || return 0
+  [ -f "$1" ] || { say "    !! no debug file $1: the lines below prove nothing"; return 0; }
   awk -v t="$2" '$1 >= t' "$1" | grep -aE "$3" | cut -c1-200 | sed 's/^/    > /' | tail -8
+}
+# dbg_gained <debug-file> <iso-time>: the positive control for "the server's
+# session process logged nothing about it". The file must exist and still be
+# written to (its heartbeats prove the process is logging); print how many
+# lines it gained since <iso-time>, and every one that is not a heartbeat.
+dbg_gained() {
+  [ -f "$1" ] || { say "    !! no debug file $1: cannot say what the process saw"; return 0; }
+  local n o
+  n=$(awk -v t="$2" '$1 >= t' "$1" | wc -l)
+  o=$(awk -v t="$2" '$1 >= t' "$1" | grep -avE 'Heartbeat sent|switching poll interval' | cut -c1-160)
+  say "    debug file gained $n lines since $2, $(printf '%s' "$o" | grep -c .) other than heartbeats:"
+  [ -n "$o" ] && printf '%s\n' "$o" | tail -10 | sed 's/^/    > /'
+  return 0
 }
 now() { date -u +%Y-%m-%dT%H:%M:%S; }
 trap reap EXIT
 
-say "claude under test: $("$CLAUDE" --version 2>&1 | head -1)"
+token_guard "$CFG/.credentials.json"
+say "claude under test: $(cenv "$CLAUDE" --version 2>&1 | head -1)"
 say "ws=$WS cfg=$CFG run=$RUN"
 reap
 
@@ -64,6 +83,8 @@ cli)
   say "--- binary strings: slash commands near remote control / attach"
   bin="$(readlink -f "$CLAUDE")"
   strings -n 6 "$bin" | grep -aoE '"/(remote-control|rc|teleport|attach|resume|bridge|share|remote-env)[^"]{0,24}"' | sort | uniq -c | sed 's/^/    /'
+  say "--- binary strings: how the --rc and --remote-control options are registered"
+  strings -n 6 "$bin" | grep -aoE '\("--(rc|remote-control) \[name\]","[^"]{0,80}"\)[^,]{0,40}(\.hideHelp\(\))?' | sort -u | sed 's/^/    /'
   say "--- live probes against a running server"
   start_server "$RUN/cli-srv.log" || exit 1
   B=$(sessids "$RUN/cli-srv.log" | awk '{print $1}'); U=$(uuid_of "$B")
@@ -90,7 +111,10 @@ server-resume)
   B=$(sessids "$RUN/sr-srv.log" | awk '{print $1}'); E=$(envid "$RUN/sr-srv.log")
   U=$(uuid_of "$B") || { say "no registry row names $B"; exit 1; }
   F="$(projdir "$WS")/$U.jsonl"
+  # The server writes each session's debug log beside its own --debug-file,
+  # named for the session; checked here, not assumed.
   SDBG="$RUN/sr-srv.log-${B/session_/cse_}.debug"
+  [ -f "$SDBG" ] || { say "no session debug log at $SDBG"; exit 1; }
   say "  server: env=$E session=$B local id=$U  $(cap "$RUN/sr-srv.log")"
   if [ -n "${WAIT_APP:-}" ]; then
     say "  HUMAN STEP: open https://claude.ai/code?environment=$E , open the session"
@@ -106,10 +130,10 @@ server-resume)
   mark r1 "$RUN/sr-r1.log"
   say "  processes holding $U:"; holders "$U" | sed 's/^/    /'
   if [ "$(turns "$F")" -ge 2 ] && panepid r1 >/dev/null && kill -0 "$(panepid r1)" 2>/dev/null; then
-    typeline r1 'Reply with exactly TERM1 and nothing else.' 15
+    T0=$(now); typeline r1 'Reply with exactly TERM1 and nothing else.' 15
     say "  after a turn typed in the resumed terminal:"; TREE "$F" | sed 's/^/    /'
-    say "  server session's own debug since the resume (inbound? superseded?):"
-    dbg_since "$SDBG" "$T0" 'superseded|4090|state=|inbound|Received|user message'
+    say "  the server session's own debug log since the resume:"
+    dbg_gained "$SDBG" "$T0"
     say "--- (b) /remote-control in the resumed terminal: does it take the session from the server?"
     T1=$(now); typeline r1 '/remote-control ' 15
     mark r1 "$RUN/sr-r1.log"
@@ -128,16 +152,15 @@ server-resume)
     T0=$(now); typeline c1 'Reply with exactly TERM1 and nothing else.' 15
     say "    terminal's answer: $(screen c1 | grep -aE '^● ' | tail -1)"
     say "    the shared transcript $F, read as a tree:"; TREE "$F" | sed 's/^/      /'
-    say "    the server session's debug since (did its process notice?):"
-    dbg_since "$SDBG" "$T0" 'inbound|Inbound|Received|user message|reload|changed'
-    say "    (nothing above = the server's session never saw the terminal's turn)"
+    say "    the server session's own debug log since (did its process notice?):"
+    dbg_gained "$SDBG" "$T0"
     say "  /remote-control in that terminal: does it take the server's session over?"
     T1=$(now); typeline c1 '/remote-control ' 15
     say "    terminal now: $(screen c1 | grep -aoE '(remote-control is active|Remote Control (failed|not started)|already)[^│]{0,100}' | tail -1)"
     say "    its session: $(rcline "$RUN/sr-c1.log") (the server's is $B)"
-    for i in $(seq 1 90); do grep -aq 'code=4090' "$SDBG" 2>/dev/null && break; sleep 1; done
-    say "    the server's session process after ~$((15 + i)) s:"
-    dbg_since "$SDBG" "$T1" '4090|superseded|state=failed'
+    seen=no; for i in $(seq 1 90); do grep -aq 'code=4090' "$SDBG" && { seen=yes; break; }; sleep 1; done
+    say "    the server's session process, ~$((15 + i)) s later: code 4090 seen: $seen"
+    dbg_gained "$SDBG" "$T1"
     say "    server pane: $(screen srv | grep -aoE 'Capacity: [0-9]+/[0-9]+' | tail -1); session process alive: $(kill -0 "$(live_rows | jq -r --arg b "$B" 'select(.entrypoint == "sdk-cli" and .bridgeSessionId == $b) | .pid' | head -1)" 2>/dev/null && echo yes || echo no)"
     say "  registry:"; registry | sed 's/^/    /'
   fi
@@ -188,8 +211,8 @@ interactive-resume)
   mark r2 "$RUN/ir-r2.log" | grep -aE 'active|standing'
   # The displaced side learns of it on its next poll, which took about a
   # minute in this spike's first attempt; wait up to 120 s.
-  for i in $(seq 1 120); do grep -aq 'code=4090' "$RUN/ir-ia.debug" && break; sleep 1; done
-  say "  ia told it was displaced after ~$((15 + i)) s:"
+  seen=no; for i in $(seq 1 120); do grep -aq 'code=4090' "$RUN/ir-ia.debug" && { seen=yes; break; }; sleep 1; done
+  say "  ia, ~$((15 + i)) s after the /remote-control: code 4090 seen: $seen"
   mark ia "$RUN/ir-ia.log" | grep -aE 'standing|4090'
   dbg_since "$RUN/ir-ia.debug" "$T1" '4090|superseded'
   say "  same bridge id in r2? $(rcline "$RUN/ir-r2.log")"
@@ -247,8 +270,10 @@ tmux-rc)
   sleep 6
   say "  rc window while attached: $(t display -p -t rc '#{window_width}x#{window_height} clients=#{session_attached}')"
   tmux -L dd-spike-06-client kill-server 2>/dev/null; sleep 4
+  say "  after the client went: $(t display -p -t rc '#{window_width}x#{window_height} clients=#{session_attached} dead=#{pane_dead}')"
+  # The harness restores the size itself (tmux keeps the last client's size).
   t resize-window -t rc -x 200 -y 50 2>/dev/null; sleep 3
-  say "  after: $(t display -p -t rc '#{window_width}x#{window_height} clients=#{session_attached} dead=#{pane_dead}')"
+  say "  after the harness's resize-window: $(t display -p -t rc '#{window_width}x#{window_height} dead=#{pane_dead}')"
   dbg_since "$RUN/t4-rc.debug" "$T2" 'handleStateChange|4090|disconnect|reconnect'
   say "  (no state-change line above = the bridge did not notice)"
   say "--- SIGTERM, then claude --remote-control --continue"
@@ -311,6 +336,8 @@ tmux-rc-gates)
     say "  bridge lines in its debug log:"
     grep -aE '\[bridge(:[a-z]+)?\]|\[remote-bridge\]' "$RUN/t4-gate-$g.debug" 2>/dev/null \
       | grep -avE 'Queued|Drained' | cut -c26-200 | head -6 | sed 's/^/    > /'
+    say "  eligibility lines in its debug log (stderr lands there as [WARN]):"
+    grep -aE 'determine your organization|flag ignored' "$RUN/t4-gate-$g.debug" 2>/dev/null | cut -c26-260 | head -2 | sed 's/^/    > /'
     say "  .claude.json afterwards: $(jq -c '{remoteDialogSeen, oauthAccount: (.oauthAccount != null), hasCompletedOnboarding}' "$G/.claude.json")"
     say "  alive after 25 s: $(kill -0 "$(panepid gate)" 2>/dev/null && echo yes || echo no)"
     say "  last screen lines:"; screen gate | grep -v '^\s*$' | tail -4 | cut -c1-150 | sed 's/^/    | /'
@@ -326,10 +353,14 @@ bg)
   out=$(C --bg --remote-control ddspike06bg); say "$out" | clean /dev/stdin | sed 's/^/    | /'
   ID=$(say "$out" | grep -aoE 'backgrounded · [0-9a-f]+' | awk '{print $3}')
   [ -n "$ID" ] || { say "no background id"; exit 1; }
+  printf '%s\n' "$ID" >> "$BGIDS"   # reap stops this id and no other
   sleep 8
   say "  claude agents --json:"; agents | sed 's/^/    /'
   WPID=$(C agents --json | jq -r --arg i "$ID" '.[] | select(.id == $i) | .pid')
   DPID=$(ps -o ppid= -p "$(ps -o ppid= -p "$WPID" | tr -d ' ')" | tr -d ' ')
+  # Assumed to be the worker's grandparent; checked, and never signalled unless
+  # it is a daemon on this harness's config.
+  is_ours "$DPID" 'claude.* daemon run' || { say "  pid $DPID is not this config's daemon; will not signal it"; DPID=; }
   say "  worker pid $WPID, its PTY host $(ps -o ppid= -p "$WPID" | tr -d ' '), daemon $DPID ($(ps -o args= -p "$DPID" | cut -c1-60)…)"
   C logs "$ID" > "$RUN/bg-logs1.txt"
   B=$(rcline "$RUN/bg-logs1.txt"); U=$(uuid_of "$B")
@@ -371,10 +402,16 @@ bg)
   say "  after that attach client ended:"; agents | sed 's/^/    /'
   say "--- cleanup: stop, rm, wait for the daemon's idle exit"
   C stop "$ID" >/dev/null; C rm "$ID" | clean /dev/stdin | sed 's/^/    | /'
-  for _ in $(seq 1 30); do kill -0 "$DPID" 2>/dev/null || break; sleep 1; done
-  kill -0 "$DPID" 2>/dev/null && { say "  daemon $DPID still up after 30 s; SIGTERM"; kill -TERM "$DPID"; } || say "  daemon exited on its own"
+  sed -i "/^$ID\$/d" "$BGIDS"
+  if [ -n "$DPID" ]; then
+    for _ in $(seq 1 30); do kill -0 "$DPID" 2>/dev/null || break; sleep 1; done
+    if is_ours "$DPID" 'claude.* daemon run'; then
+      say "  daemon $DPID still up after 30 s; SIGTERM"; kill -TERM "$DPID"
+    else
+      say "  daemon exited on its own"
+    fi
+  fi
   tail -3 "$CFG/daemon.log" | cut -c1-140 | sed 's/^/    daemon.log: /'
   ;;
-*) say "unknown mode: $MODE"; exit 2 ;;
 esac
 say "=== done ($MODE)"

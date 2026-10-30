@@ -12,6 +12,16 @@ set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 S="${1:?usage: setup.sh <scratch-dir> [source-config-dir]}"
 SRC="${2:-$HOME/.claude}"
+# The scratch config gets a copy of the source's live refresh token, which can
+# refresh on its own and rotate the source's login dead (see README, traps).
+# Refuse a copy whose access token is near the point Claude Code refreshes it.
+exp=$(jq -r '.claudeAiOauth.expiresAt // 0' "$SRC/.credentials.json")
+left=$(( (exp / 1000 - $(date +%s)) / 60 ))
+if [ "$left" -lt "${TOKEN_MARGIN_MIN:-60}" ]; then
+  echo "REFUSING: $SRC's access token expires in $left min (< ${TOKEN_MARGIN_MIN:-60});" >&2
+  echo "  let the real config refresh first (use claude normally), then re-run." >&2
+  exit 3
+fi
 mkdir -p "$S/ws"
 S="$(cd "$S" && pwd)"
 if [ ! -d "$S/ws/.git" ]; then
@@ -23,7 +33,7 @@ fi
 "$HERE/../harness-02-restart/seed-config.sh" "$S/cfg" "$S/ws" "$SRC"
 
 # An *interactive* claude on a config that has only served Remote Control opens
-# on the first-run theme picker (result 0 in the report). Drydock's Feature does
+# on the first-run theme picker (result 8 in the report). Drydock's Feature does
 # not seed this; the harness does, so every later mode starts at the prompt.
 # Set NO_ONBOARDING_SEED=1 to see the picker.
 if [ -z "${NO_ONBOARDING_SEED:-}" ]; then

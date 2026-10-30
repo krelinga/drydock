@@ -25,6 +25,27 @@ mkdir -p "$RUN" "$SHOME"
 say() { printf '%s\n' "$*"; }
 t() { tmux -L "$TMUX_L" "$@"; }
 
+# The token guard. $CFG/.credentials.json is a copy of the owner's live
+# refresh token, and the copy refreshes on its own: the refresh lock is per
+# CLAUDE_CONFIG_DIR, so nothing coordinates it with the real config. A refresh
+# rotates the token (Spike 00), and the real config's next refresh then finds
+# its token dead and blanks the login. Claude Code refreshes only near the
+# access token's expiresAt (the --bg daemon schedules it a few minutes before),
+# so refuse to run unless expiresAt is TOKEN_MARGIN_MIN (default 60) minutes
+# past now -- far more than any mode takes.
+token_guard() { # token_guard <credentials.json>
+  local f="$1" exp left
+  exp=$(jq -r '.claudeAiOauth.expiresAt // 0' "$f" 2>/dev/null) || exp=0
+  left=$(( (${exp:-0} / 1000 - $(date +%s)) / 60 ))
+  if [ "$left" -lt "${TOKEN_MARGIN_MIN:-60}" ]; then
+    say "REFUSING: $f's access token expires in ${left} min (< ${TOKEN_MARGIN_MIN:-60})."
+    say "  A scratch copy could refresh it and rotate the owner's real login dead."
+    say "  Wait for the real config to refresh (run any claude command normally), then"
+    say "  re-run ./setup.sh to take a fresh copy."
+    exit 3
+  fi
+}
+
 # One-shot commands (help text, --version): no TTY, stdin closed, bounded.
 cenv() {
   timeout 30 env -i HOME="$SHOME" PATH="$PATH" TERM=dumb LANG="${LANG:-C.UTF-8}" \
@@ -101,11 +122,27 @@ reap() {
   for s in $(t list-sessions -F '#{session_name}' 2>/dev/null | grep -v '^srv$'); do term "$s"; done
   term srv
   t kill-server 2>/dev/null
-  for id in $( (cd "$WS" && cenv "$CLAUDE" agents --json) 2>/dev/null \
-               | jq -r '.[] | select(.kind == "background") | .id' 2>/dev/null); do
-    (cd "$WS" && cenv "$CLAUDE" stop "$id") >/dev/null 2>&1
-  done
+  # Only the background sessions this harness started: `bg` records each id
+  # it is handed in $BGIDS (outside the per-mode directory, so a run that died
+  # is still cleaned up by the next). Never "everything claude agents lists":
+  # the daemon's sockets are keyed by uid, so that list may hold the owner's.
+  if [ -f "$BGIDS" ]; then
+    while read -r id; do
+      [ -n "$id" ] && (cd "$WS" && cenv "$CLAUDE" stop "$id") >/dev/null 2>&1
+    done < "$BGIDS"
+    rm -f "$BGIDS"
+  fi
   return 0
+}
+BGIDS="$S/bg.ids"
+
+# is_ours <pid> <ERE>: the pid's command line matches and its environment
+# carries this harness's CLAUDE_CONFIG_DIR. Checked before any signal to a pid
+# the harness did not start itself (the --bg daemon).
+is_ours() {
+  [ -r "/proc/$1/cmdline" ] || return 1
+  tr '\0' ' ' < "/proc/$1/cmdline" | grep -qE "$2" || return 1
+  tr '\0' '\n' < "/proc/$1/environ" 2>/dev/null | grep -qx "CLAUDE_CONFIG_DIR=$CFG"
 }
 
 # The transcript directory Claude Code uses for a working directory.

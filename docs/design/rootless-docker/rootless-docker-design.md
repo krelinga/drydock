@@ -765,9 +765,9 @@ control for every probe), `remap`, `remap-keepid`, `rootless-self`, `rootless-de
 `sysbox`. Each mode runs the same probes and writes `results-<mode>.txt` with one
 `PASS|FAIL|N/A <probe> <detail>` line per probe, plus the versions it ran against (kernel, Docker,
 RootlessKit, Sysbox, devcontainer CLI 0.89.0, Feature versions). Every container it creates carries
-`drydock-spike06=<run id>` and is removed by that label on exit (`trap`). It never prunes and never
+`drydock-spike07=<run id>` and is removed by that label on exit (`trap`). It never prunes and never
 touches the host's other containers. Modes that need host changes (`rootless-*`, `sysbox`) refuse to
-run unless `SPIKE06_DISPOSABLE_HOST=1`, meaning a CI runner VM or a scratch VM. **P9 needs that flag
+run unless `SPIKE07_DISPOSABLE_HOST=1`, meaning a CI runner VM or a scratch VM. **P9 needs that flag
 in every mode, `rootful` included**, because it reads a raw block device. **Controls run in the same
 run**: Sysbox and runc share one daemon, so the `sysbox` mode runs each probe's runc twin beside it
 and records both, rather than leaning on a separate `rootful` results file (testing §4.1).
@@ -786,7 +786,7 @@ lands with the harness supersedes them.
 | P6 | Host-side `connect()` to the container's bridge IP; host-side read of `/proc/<pid>/net/tcp6` |
 | P7 | `docker stats` memory non-zero; `pause`/`unpause`; `inspect --size` |
 | P8 | devcontainers docker-in-docker Feature (pinned version): `up` succeeds, the inner `docker run hello-world`, and the inner storage driver on the Feature's `${devcontainerId}` `/var/lib/docker` volume. Under `sysbox`, `privileged` is removed **the way Phase B would**: the CLI's real argv, through a `record.sh dockerargv`-style shim that swaps exactly the one `--privileged` token for `--runtime=sysbox-runc`. A hand-written `docker run`, or a config override (which cannot unset a Feature's `privileged` anyway), would measure something else. An inner driver of **`vfs` is red**: it works, but its disk use is huge. Sysbox requires that volume to be mounted in one container at a time, and a rebuild must respect that. `exec --privileged` into the container: refused or not? |
-| P9 | Privileged container: read the first sector of the host's root block device (read-only; `SPIKE06_DISPOSABLE_HOST=1` in every mode) |
+| P9 | Privileged container: read the first sector of the host's root block device (read-only; `SPIKE07_DISPOSABLE_HOST=1` in every mode) |
 | P10 | `docker inspect` `HostConfig` of P3's and P8's containers, saved as fixtures and fed through `dockerguard`'s start check by a Go test |
 | P11 | The argv `up` produces, recorded through `record.sh dockerargv`'s shim |
 | P12 | After the switch, what of the old daemon's images, volumes and containers is visible. Under `sysbox`: a Drydock-made workspace whose container was removed during the install, started from `stopped`, is recreated by `up` (not failed) |
@@ -904,5 +904,5 @@ throwaway `--privileged` containers labelled for removal and removed afterwards:
 7. **May Spike 07 run on a CI runner via `workflow_dispatch`**, or only on a scratch VM you
    provide? It changes the runner's kernel settings and installs packages, which is fine on a
    disposable VM and is not something this devcontainer can do.
-8. **Spike numbering:** this document claims 06 because PR #139 claims 05. Confirm, or say which of
-   the two should move.
+8. **Spike numbering:** settled. 05 went to the VS Code extension and 06 to the terminal-attach
+   spike, so this one is 07 (§5.3).

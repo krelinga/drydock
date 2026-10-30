@@ -31,8 +31,8 @@ logs) and prints the lines its result rests on.
 ## The files
 
 - `setup.sh <scratch> [source-config]` builds the workspace and runs Spike 02's
-  [`seed-config.sh`](../harness-02-restart/seed-config.sh) for the three server gates (credential,
-  `oauthAccount`, `remoteDialogSeen`, trust). It then sets `hasCompletedOnboarding` and `theme`,
+  [`seed-config.sh`](../harness-02-restart/seed-config.sh), which copies the credential and passes the
+  server's three startup gates (`oauthAccount`, `remoteDialogSeen`, trust). It then sets `hasCompletedOnboarding` and `theme`,
   which the Feature does **not** write: without them an interactive `claude` opens on the first-run
   theme picker (result 8). `NO_ONBOARDING_SEED=1` skips that. The source config is only read.
 - `lib.sh`, sourced: the pane, wait, scrape and registry helpers, and `reap`.
@@ -41,6 +41,20 @@ logs) and prints the lines its result rests on.
   each conversational leaf: two leaves sharing a prefix is two writers forking one file.
 
 ## Traps worth knowing if you edit this
+
+- **The scratch config holds a copy of the owner's live refresh token, and a copy can kill the
+  original.** The refresh lock is per `CLAUDE_CONFIG_DIR`, so a scratch copy refreshes on its own;
+  a refresh rotates the refresh token (Spike 00), and the real config's next refresh then finds its
+  token dead and *blanks* the login. Claude Code refreshes only near the access token's `expiresAt`
+  (the `--bg` daemon schedules it a few minutes before), so `setup.sh` and every `run.sh` mode
+  refuse to start unless `expiresAt` is at least `TOKEN_MARGIN_MIN` (default 60) minutes away. If
+  they refuse, let the real config refresh (use `claude` normally), then re-run `setup.sh`. **Delete
+  the scratch directory when you are done** (`rm -rf "$S"`): it holds a live token.
+- **Signal only what the harness started.** `bg` records each background-session id it is handed in
+  `$S/bg.ids`, and `reap` stops those ids and nothing else — never every session `claude agents`
+  lists, since the daemon's sockets are keyed by uid and the list may hold the owner's. The
+  daemon's pid is found as the worker's grandparent and is signalled only after its command line
+  (`daemon run`) and its `CLAUDE_CONFIG_DIR` are checked.
 
 - **Everything runs under `env -i`** with only what a Drydock container gives Claude Code: a scratch
   `HOME`, `PATH`, `TERM`, `LANG`, `CLAUDE_CONFIG_DIR` and `DISABLE_AUTOUPDATER=1`. tmux panes inherit
@@ -60,5 +74,7 @@ logs) and prints the lines its result rests on.
 - **One-shot commands get stdin closed** (`cenv`): `claude remote-control --help` under `env -i` with
   an open stdin did not return.
 - `--bg` sessions live in Claude Code's own daemon (`$CFG/daemon/`, sockets under
-  `/tmp/cc-daemon-<uid>/`), which exits by itself five seconds after its last session ends; `reap`
-  stops any background session left on the scratch config.
+  `/tmp/cc-daemon-<uid>/`), which exits by itself five seconds after its last session ends.
+- **"The process logged nothing" needs a live log.** `dbg_gained` refuses a missing debug file loudly
+  and prints how many lines the file gained (its heartbeats show it is still being written) and
+  every line that is not a heartbeat.
