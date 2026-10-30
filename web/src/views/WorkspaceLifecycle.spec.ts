@@ -308,31 +308,58 @@ describe('Delete and its confirm (§6.5)', () => {
     expect(wrapper.find('[data-test="ws-deleted"]').exists()).toBe(true)
   })
 
-  it('Enter in the name field is the button’s click: one delete on a match, none otherwise, none while in flight', async () => {
-    const b = freshBackend({ signedIn: true, scriptMode: 'manual' })
-    const { wrapper, pinia } = await mountApp(`/ws/${WS_RUNNING}`)
-    await open(wrapper)
-    const input = wrapper.find('[data-test="delete-input"]')
-    const del = () => sent(b, 'DELETE', `/api/workspaces/${WS_RUNNING}`)
-    // Not the name: nothing is sent and nothing is said.
-    await input.setValue('krelinga/drydoc')
-    await input.trigger('keydown', { key: 'Enter' })
-    await settle()
-    expect(del().length).toBe(0)
-    expect(wrapper.find('[data-test="confirm-delete"] [data-test="action-error"]').exists()).toBe(false)
-    // Control: the exact name, Enter twice, then a click: one request.
-    await input.setValue('krelinga/drydock')
-    await input.trigger('keydown', { key: 'Enter' })
-    await input.trigger('keydown', { key: 'Enter' })
-    await confirmBtn(wrapper).trigger('click')
-    await settle()
-    expect(del().length).toBe(1)
-    expect(new URL(del()[0]!.url).search).toBe('?confirm=krelinga%2Fdrydock')
-    expect(deleteKey(WS_RUNNING) in useStreamStore(pinia).inFlight).toBe(true)
-    // Still in flight (the 202 is not the outcome): Enter sends nothing more.
-    await input.trigger('keydown', { key: 'Enter' })
-    await settle()
-    expect(del().length).toBe(1)
+  describe('Enter in the name field (no click anywhere in these)', () => {
+    const setup = async () => {
+      const b = freshBackend({ signedIn: true, scriptMode: 'manual' })
+      const { wrapper, pinia } = await mountApp(`/ws/${WS_RUNNING}`)
+      await open(wrapper)
+      const input = wrapper.find('[data-test="delete-input"]')
+      const del = () => sent(b, 'DELETE', `/api/workspaces/${WS_RUNNING}`)
+      return { wrapper, pinia, input, del }
+    }
+
+    it('sends exactly one delete on a matching name, and none for a near miss', async () => {
+      const { wrapper, pinia, input, del } = await setup()
+      await input.setValue('krelinga/drydoc')
+      await input.trigger('keydown', { key: 'Enter' })
+      await settle()
+      expect(del().length).toBe(0)
+      expect(wrapper.find('[data-test="confirm-delete"] [data-test="action-error"]').exists()).toBe(false)
+      // Control: the exact name, and Enter alone sends it.
+      await input.setValue('krelinga/drydock')
+      await input.trigger('keydown', { key: 'Enter' })
+      await settle()
+      expect(del().length).toBe(1)
+      expect(new URL(del()[0]!.url).search).toBe('?confirm=krelinga%2Fdrydock')
+      expect(deleteKey(WS_RUNNING) in useStreamStore(pinia).inFlight).toBe(true)
+      // In flight (the 202 is not the outcome): a second Enter, and a click, add nothing.
+      await input.trigger('keydown', { key: 'Enter' })
+      await confirmBtn(wrapper).trigger('click')
+      await settle()
+      expect(del().length).toBe(1)
+    })
+
+    it('ignores an IME commit (isComposing), and sends on a plain Enter', async () => {
+      const { input, del } = await setup()
+      await input.setValue('krelinga/drydock')
+      await input.trigger('keydown', { key: 'Enter', isComposing: true })
+      await settle()
+      expect(del().length).toBe(0)
+      await input.trigger('keydown', { key: 'Enter' })
+      await settle()
+      expect(del().length).toBe(1)
+    })
+
+    it('ignores Safari’s IME commit (keyCode 229, isComposing false), and sends on a plain Enter', async () => {
+      const { input, del } = await setup()
+      await input.setValue('krelinga/drydock')
+      await input.trigger('keydown', { key: 'Enter', keyCode: 229, isComposing: false })
+      await settle()
+      expect(del().length).toBe(0)
+      await input.trigger('keydown', { key: 'Enter' })
+      await settle()
+      expect(del().length).toBe(1)
+    })
   })
 
   it('a confirm the server refuses says why, and deletes nothing', async () => {

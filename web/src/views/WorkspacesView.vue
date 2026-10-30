@@ -98,7 +98,6 @@ function rowNote(r: CatalogRow): string | null {
           <ResourceLine :workspace="r.workspace" />
           <PortCount :workspace="r.workspace" />
           <ReadOnlyNote :workspace="r.workspace" />
-          <OpenInVSCode :workspace="r.workspace" />
           <WorkspaceIdentityNote :state="r.workspace.state" part="waiting" />
           <p v-if="status(r.workspace).since" class="detail" data-test="waiting-since">
             Waiting since {{ relativeTime(status(r.workspace).since!) }}.
@@ -106,6 +105,7 @@ function rowNote(r: CatalogRow): string | null {
           <WorkspaceAction
             :workspace="r.workspace" :action="status(r.workspace).action" :link="status(r.workspace).link"
           />
+          <OpenInVSCode :workspace="r.workspace" />
           <!--
             Stop is the detail view's now that the session half has the card
             (§6.1) — except at the cap, where MakeRoom sends the operator here
@@ -259,6 +259,8 @@ function rowNote(r: CatalogRow): string | null {
 }
 .row { padding: 11px 12px; border-bottom: 1px solid var(--line-soft); display: flex; flex-direction: column; gap: 4px; min-width: 0; }
 .row:last-child { border-bottom: 0; }
+/* The page's 8 px gap between the buttons, on the card's 4 px row gap. */
+.row :deep(.vscode) { margin-top: 4px; }
 .row.removed { border-left: 3px solid var(--warn); padding-left: 9px; }
 /* A long status line ("Failed while starting the container") wraps under the
  * name rather than squeezing it at 360 px. */

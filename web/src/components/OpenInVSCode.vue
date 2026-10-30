@@ -1,8 +1,9 @@
 <script setup lang="ts">
 // *Open in VS Code* (design §6, "Opening a workspace in VS Code"): a link,
-// styled as *Open in Claude* is (a secondary `.btn`), that the operator's VS
-// Code opens, attached to the workspace's container over Remote-SSH. The URL is the server's, read from Docker as the view was
-// served, validated by the reducer (vscodeURL) and hidden when it is older
+// styled as *Open in Claude* is (a secondary `.btn`, full width under the
+// primary action), that the operator's VS Code opens, attached to the
+// workspace's container over Remote-SSH. The URL is the server's, read from
+// Docker as the view was served, validated by the reducer (vscodeURL) and hidden when it is older
 // than the state it would open (vscodeLink).
 //
 // The href is that URL with `?windowId=_blank`, which VS Code reads as "open
@@ -45,8 +46,5 @@ const off = computed(() =>
 </template>
 
 <style scoped>
-.vscode {
-  align-self: flex-start; text-decoration: none;
-}
 .vscode-off { font-size: 12.5px; color: var(--ink-3); }
 </style>

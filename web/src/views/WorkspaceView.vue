@@ -222,7 +222,8 @@ const showSheet = computed(() => confirming.value && (canDelete.value || deleteF
 // action (its in-flight and blocked guards, key and error handling): never a
 // second path to workspaces.remove.
 function onConfirmEnter(e: KeyboardEvent): void {
-  if (e.isComposing) return
+  // Safari's IME commit arrives as key Enter, keyCode 229, isComposing false.
+  if (e.isComposing || e.keyCode === 229) return
   void confirmDelete.value?.trigger()
 }
 
@@ -258,7 +259,6 @@ watch(id, () => {
         <ResourceLine :workspace="ws" />
         <PortCount :workspace="ws" :panel="ws.state !== 'deleting'" />
         <ReadOnlyNote :workspace="ws" />
-        <OpenInVSCode :workspace="ws" note />
         <WorkspaceIdentityNote :state="ws.state" part="waiting" />
         <template v-if="openedPreview">
           <p v-if="ws.state !== 'running'" class="note" data-test="preview-not-running">
@@ -272,6 +272,7 @@ watch(id, () => {
         </template>
         <p v-if="status.since" class="note" data-test="waiting-since">Waiting since {{ relativeTime(status.since) }}.</p>
         <WorkspaceAction :workspace="ws" :action="status.action" :link="status.link" primary />
+        <OpenInVSCode :workspace="ws" note />
         <dl class="facts">
           <div><dt>Workspace</dt><dd class="mono">{{ ws.id }}</dd></div>
           <div v-if="ws.containerId"><dt>Container</dt><dd class="mono" :title="ws.containerId">{{ shortId(ws.containerId) }}</dd></div>
