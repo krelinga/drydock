@@ -344,9 +344,10 @@ silent degrade for gates; and the operator who attaches shares one input line wi
   picker. It would go through the Feature's existing locked merge of `.claude.json` (Claude Code's
   own `.claude.json.lock`, temp + `rename`, `oauthAccount` kept), and it is a Feature change, so a
   version bump. Not `theme`: that would choose the operator's theme for them.
-- **Path 3 (`--bg`): a measurement first** ([Spike 08](08-bg-rc.md)) — two workspace containers on one volume, each with a
-  background session: what `claude agents` lists in each, whether `attach` crosses containers, and
-  how the daemon's refresh takes the lock.
+- **Path 3 (`--bg`): measured, and not adopted** ([Spike 08](08-bg-rc.md), phase 2) — two
+  containers' daemons on one volume share `jobs/` and the roster: with one workspace folder a job
+  launched in one container ran in the other, and with distinct folders each daemon still marked the
+  other's live job `failed`. The daemon's refresh takes the CLI's lock (read; a live check is owed).
 - **Path 4, if it were chosen** — supervisor, classifiers and corpus all change:
   - `internal/supervisor`: launch `claude --remote-control <name>` (or `--resume <uuid> --rc`) in a
     tmux session Drydock owns (tmux added to the Feature or image), or under `--bg`; resume by id from

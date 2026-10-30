@@ -1,0 +1,55 @@
+#!/usr/bin/env bash
+# Spike 08 — build two throwaway workspaces, one shared CLAUDE_CONFIG_DIR and
+# the stand-in container image.
+#
+# Usage: ./setup.sh <scratch-dir> [source-config-dir]
+#
+# <scratch>/ws-a, ws-b   git repos with one commit, mounted at /workspace (or,
+#                        DISTINCT=1, /workspaces/ws-<w>) in containers A and B
+# <scratch>/cfg          the shared CLAUDE_CONFIG_DIR, mounted at
+#                        /home/vscode/.claude in both (the Feature's path),
+#                        seeded by Spike 02's seed-config.sh: credential,
+#                        oauthAccount, remoteDialogSeen, trust for /workspace;
+#                        plus hasCompletedOnboarding and theme (Spike 06 result 8)
+#
+# The real config (default ~/.claude) is only read, never written.
+set -euo pipefail
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+S="${1:?usage: setup.sh <scratch-dir> [source-config-dir]}"
+SRC="${2:-$HOME/.claude}"
+# The token guard (Spike 06's): the scratch config gets a copy of the source's
+# live refresh token, which a refresh would rotate dead for the source.
+exp=$(jq -r '.claudeAiOauth.expiresAt // 0' "$SRC/.credentials.json")
+left=$(( (exp / 1000 - $(date +%s)) / 60 ))
+if [ "$left" -lt "${TOKEN_MARGIN_MIN:-60}" ]; then
+  echo "REFUSING: $SRC's access token expires in $left min (< ${TOKEN_MARGIN_MIN:-60});" >&2
+  echo "  let the real config refresh first (use claude normally), then re-run." >&2
+  exit 3
+fi
+mkdir -p "$S"
+S="$(cd "$S" && pwd)"
+for w in a b; do
+  mkdir -p "$S/ws-$w"
+  if [ ! -d "$S/ws-$w/.git" ]; then
+    git -C "$S/ws-$w" init -q
+    echo "spike 08 $w" > "$S/ws-$w/README"
+    git -C "$S/ws-$w" add README
+    git -C "$S/ws-$w" -c user.email=spike@example.invalid -c user.name=spike commit -qm init
+  fi
+done
+"$HERE/../harness-02-restart/seed-config.sh" "$S/cfg" "$S/ws-a" "$SRC" >/dev/null
+# Trust is keyed by the path the container sees, not the host's: /workspace,
+# and /workspaces/ws-<w> for runs with DISTINCT=1 (lib.sh, wsdir).
+tmp="$(mktemp "$S/cfg/.claude.json.XXXXXX")"
+jq '.projects = {"/workspace": {hasTrustDialogAccepted: true},
+                 "/workspaces/ws-a": {hasTrustDialogAccepted: true},
+                 "/workspaces/ws-b": {hasTrustDialogAccepted: true}}
+    | .hasCompletedOnboarding = true | .theme = "dark"' "$S/cfg/.claude.json" > "$tmp"
+chmod 600 "$tmp" && mv "$tmp" "$S/cfg/.claude.json"
+jq -c '{org: (.oauthAccount.organizationUuid != null), remoteDialogSeen, hasCompletedOnboarding, trusted: (.projects|keys)}' "$S/cfg/.claude.json"
+# A stand-in for the Feature's CLAUDE_ENV_FILE: one line that drops a marker,
+# so a session that runs it leaves evidence (the real one is the secrets prelude).
+mkdir -p "$S/etc"
+printf '%s\n' 'echo "env-file ran pid=$$ DD_MARK=${DD_MARK:-unset}" >> /workspace/.env-file-ran' > "$S/etc/claude-env.sh"
+docker build -q -t dd-spike-08 "$HERE" >/dev/null
+echo "seeded $S (image dd-spike-08)"
