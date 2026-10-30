@@ -37,6 +37,9 @@ describe('Open in VS Code', () => {
     expect(a.element.tagName).toBe('A')
     expect(a.attributes('href')).toBe(HREF)
     expect(a.attributes('disabled')).toBeUndefined()
+    // Styled as Open in Claude is (the .btn link), but secondary beside its primary.
+    expect(a.classes()).toContain('btn')
+    expect(a.classes()).not.toContain('primary')
     expect(a.text()).toBe('Open in VS Code')
 
     const detail = await mountApp(`/ws/${WS_RUNNING}`)

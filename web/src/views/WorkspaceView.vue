@@ -212,10 +212,20 @@ watch(id, () => { stopAsked.value = false })
 const confirming = ref(false)
 const typed = ref('')
 const confirmInput = ref<HTMLInputElement | null>(null)
+const confirmDelete = ref<InstanceType<typeof ActionButton> | null>(null)
 const deleteFlight = computed(() => stream.inFlight[deleteKey(id.value)] ?? null)
 const matches = computed(() => ws.value?.fullName != null && typed.value === ws.value.fullName)
 const canDelete = computed(() => ws.value !== null && ws.value.state !== 'deleting' && ws.value.fullName !== null)
 const showSheet = computed(() => confirming.value && (canDelete.value || deleteFlight.value !== null))
+
+// Enter in the name field is the button's click, through the button's own
+// action (its in-flight and blocked guards, key and error handling): never a
+// second path to workspaces.remove.
+function onConfirmEnter(e: KeyboardEvent): void {
+  // Safari's IME commit arrives as key Enter, keyCode 229, isComposing false.
+  if (e.isComposing || e.keyCode === 229) return
+  void confirmDelete.value?.trigger()
+}
 
 async function openConfirm(): Promise<void> {
   typed.value = ''
@@ -249,7 +259,6 @@ watch(id, () => {
         <ResourceLine :workspace="ws" />
         <PortCount :workspace="ws" :panel="ws.state !== 'deleting'" />
         <ReadOnlyNote :workspace="ws" />
-        <OpenInVSCode :workspace="ws" note />
         <WorkspaceIdentityNote :state="ws.state" part="waiting" />
         <template v-if="openedPreview">
           <p v-if="ws.state !== 'running'" class="note" data-test="preview-not-running">
@@ -263,6 +272,7 @@ watch(id, () => {
         </template>
         <p v-if="status.since" class="note" data-test="waiting-since">Waiting since {{ relativeTime(status.since) }}.</p>
         <WorkspaceAction :workspace="ws" :action="status.action" :link="status.link" primary />
+        <OpenInVSCode :workspace="ws" note />
         <dl class="facts">
           <div><dt>Workspace</dt><dd class="mono">{{ ws.id }}</dd></div>
           <div v-if="ws.containerId"><dt>Container</dt><dd class="mono" :title="ws.containerId">{{ shortId(ws.containerId) }}</dd></div>
@@ -400,6 +410,7 @@ watch(id, () => {
             <label for="del-confirm">Type <code class="name">{{ ws.fullName }}</code> to confirm</label>
             <input
               id="del-confirm" ref="confirmInput" v-model="typed" type="text" data-test="delete-input"
+              @keydown.enter.prevent="onConfirmEnter"
               autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false"
               :disabled="deleteFlight !== null"
             >
@@ -410,7 +421,7 @@ watch(id, () => {
               @click="confirming = false"
             >Cancel</button>
             <ActionButton
-              label="Delete workspace" danger :blocked="!matches"
+              ref="confirmDelete" label="Delete workspace" danger :blocked="!matches"
               :flight-key="deleteKey(ws.id)" :run="() => workspaces.remove(ws!.id, typed)"
               data-test="delete-confirm"
             />

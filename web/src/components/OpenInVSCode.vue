@@ -1,8 +1,9 @@
 <script setup lang="ts">
-// *Open in VS Code* (design §6, "Opening a workspace in VS Code"): a plain
-// link the operator's VS Code opens, attached to the workspace's container
-// over Remote-SSH. The URL is the server's, read from Docker as the view was
-// served, validated by the reducer (vscodeURL) and hidden when it is older
+// *Open in VS Code* (design §6, "Opening a workspace in VS Code"): a link,
+// styled as *Open in Claude* is (a secondary `.btn`, full width under the
+// primary action), that the operator's VS Code opens, attached to the
+// workspace's container over Remote-SSH. The URL is the server's, read from
+// Docker as the view was served, validated by the reducer (vscodeURL) and hidden when it is older
 // than the state it would open (vscodeLink).
 //
 // The href is that URL with `?windowId=_blank`, which VS Code reads as "open
@@ -37,7 +38,7 @@ const off = computed(() =>
 </script>
 
 <template>
-  <a v-if="url !== null" :href="url" class="vscode" data-test="open-vscode">Open in VS Code</a>
+  <a v-if="url !== null" :href="url" class="btn vscode" data-test="open-vscode">Open in VS Code</a>
   <p v-else-if="off" class="vscode-off" data-test="vscode-off">
     Open in VS Code is off: start Drydock with <code>--vscode-ssh-host USER@HOST</code>
     (the installer's <code>--vscode-ssh-host</code>). The SSH user needs Docker access.
@@ -45,9 +46,5 @@ const off = computed(() =>
 </template>
 
 <style scoped>
-.vscode {
-  align-self: flex-start; font-size: 13px; color: var(--ink);
-  text-decoration: underline; text-underline-offset: 3px;
-}
 .vscode-off { font-size: 12.5px; color: var(--ink-3); }
 </style>

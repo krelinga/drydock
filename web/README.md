@@ -122,7 +122,8 @@ event id. Unknown is *"—"*, never 0; stale says so; memory only for `running`.
   continue* (sends the request's own hash) and *Cancel* — on the card, the catalog row and the
   detail view alike; the request is the reducer's `approval`, written only by `workspace.state`
   events and the views.
-- *Open in VS Code* is `components/OpenInVSCode.vue`, a plain `<a href>` on the running card and
+- Enter in the delete sheet's name field calls the *Delete workspace* `ActionButton`'s own click (`trigger`), so it shares its guards and in-flight key; IME commits are ignored.
+- *Open in VS Code* is `components/OpenInVSCode.vue`, a secondary `.btn` link (`<a href>`) under the primary action on the running card and
   the workspace page. Its state is the views' `vscode` field (`{configured, url}`, read from
   Docker by the server as it serves the view; no event carries it), reduced into
   `Workspace.vscode`/`vscodeAt`. The URL is kept only when it matches the shape internal/vscode
