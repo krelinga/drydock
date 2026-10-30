@@ -25,9 +25,10 @@ mkdir -p "$RUN" "$SHOME"
 say() { printf '%s\n' "$*"; }
 t() { tmux -L "$TMUX_L" "$@"; }
 
+# One-shot commands (help text, --version): no TTY, stdin closed, bounded.
 cenv() {
-  env -i HOME="$SHOME" PATH="$PATH" TERM=xterm-256color LANG="${LANG:-C.UTF-8}" \
-    CLAUDE_CONFIG_DIR="$CFG" DISABLE_AUTOUPDATER=1 "$@"
+  timeout 30 env -i HOME="$SHOME" PATH="$PATH" TERM=dumb LANG="${LANG:-C.UTF-8}" \
+    CLAUDE_CONFIG_DIR="$CFG" DISABLE_AUTOUPDATER=1 "$@" </dev/null
 }
 
 # Strip CSI sequences but keep OSC 8 payloads (where session URLs live).
@@ -121,13 +122,37 @@ typeline() {
 # Claude Code's live-session registry: $CFG/sessions/<pid>.json, one per
 # process, naming its local session id and, when it holds Remote Control, the
 # bridge session id. `registry` prints one compact line per live process.
+# A process killed with SIGKILL leaves its row behind, so each row says
+# whether its pid is still alive.
 registry() {
-  jq -c '{pid, sessionId, bridgeSessionId, entrypoint, status}' "$CFG"/sessions/*.json 2>/dev/null
+  local f pid
+  for f in "$CFG"/sessions/*.json; do
+    [ -f "$f" ] || continue
+    pid=$(jq -r .pid "$f")
+    jq -c --arg alive "$(kill -0 "$pid" 2>/dev/null && echo yes || echo DEAD)" \
+      '{pid, alive: $alive, sessionId, bridgeSessionId, entrypoint, status}' "$f"
+  done
 }
-# Local session id of the process holding a bridge session.
-uuid_of() { jq -r --arg b "$1" 'select(.bridgeSessionId == $b) | .sessionId' "$CFG"/sessions/*.json 2>/dev/null | head -1; }
-# Every registry row naming a local session id (how many processes hold it).
-holders() { jq -c --arg s "$1" 'select(.sessionId == $s) | {pid, bridgeSessionId, entrypoint}' "$CFG"/sessions/*.json 2>/dev/null; }
+# Local session id of the process holding a bridge session. The row can land a
+# few seconds after the session is announced, so wait up to 20 s for it.
+uuid_of() {
+  local i u
+  for i in $(seq 1 20); do
+    u=$(live_rows | jq -rs --arg b "$1" 'map(select(.bridgeSessionId == $b)) | sort_by(.startedAt) | last | .sessionId // empty')
+    [ -n "$u" ] && { printf '%s\n' "$u"; return 0; }
+    sleep 1
+  done
+  return 1
+}
+# The rows of live processes only.
+live_rows() {
+  local f
+  for f in "$CFG"/sessions/*.json; do
+    [ -f "$f" ] && kill -0 "$(jq -r .pid "$f")" 2>/dev/null && cat "$f"
+  done
+}
+# Every live row naming a local session id (how many processes hold it).
+holders() { live_rows | jq -c --arg s "$1" 'select(.sessionId == $s) | {pid, bridgeSessionId, entrypoint}'; }
 
 # The session URL an interactive Remote Control prints, in plain text (it is
 # *not* wrapped in OSC 8, unlike the server's).

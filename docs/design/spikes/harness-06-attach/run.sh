@@ -17,14 +17,19 @@
 #   tmux-rc             path 4: `claude --remote-control` in tmux instead of
 #                       the server: ids, turns, a client attach/resize,
 #                       SIGTERM and SIGKILL with restart
-#   tmux-rc-gates       path 4: the three config gates, one removed at a time
+#   tmux-rc-gates       path 4: the config gates, one removed at a time
+#   bg                  path 3/4: `claude --bg --remote-control` and `claude attach`
 #
 # Every mode reaps what it started (SIGTERM first; see lib.sh). Turns sent are
 # one-word replies, and few: they spend the signed-in account's quota.
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-. "$HERE/lib.sh"
 MODE="${1:?usage: S=<scratch> ./run.sh <mode>}"
+# Each mode logs to a fresh $S/run/<mode>/, so a debug file (which claude
+# appends to) never carries an earlier run's lines.
+: "${S:?set S to the scratch dir setup.sh built}"
+RUN="$S/run/$MODE"; rm -rf "$RUN"
+. "$HERE/lib.sh"
 
 # mark <pane> <log>: the lines of a terminal this spike's verdicts rest on.
 MARKERS='No conversation found|Remote Control not started here|already has Remote Control|Session resumed|own copy of the session|remote-control is active|/rc active|standing down|code 4090|already served|already in use|Trust|trust this|Enable Remote Control|organization|Error:|Remote Control (failed|disconnected)|Resume this session with|claude --resume'
@@ -69,12 +74,16 @@ cli)
     { screen probe; clean "$RUN/cli-probe.log"; } | grep -aoE '(Error|No job|not enabled|already in use|[0-9]+ awaiting input[^│]*|Working)[^│]{0,110}' | sort -u | sed 's/^/    | /' | head -4
     term probe
   done
+  say "  claude agents --json (\"active sessions (interactive and background)\") with the server up:"
+  (cd "$WS" && cenv "$CLAUDE" agents --json) | jq -c '.[] | {id, kind, status, sessionId}' 2>/dev/null | sed 's/^/    /'
+  say "  (a row with id null is listed but has no id `claude attach` takes)"
   ;;
 # ---------------------------------------------------------------------------
 server-resume)
   say "=== path 1 against the server's own session"
   start_server "$RUN/sr-srv.log" || exit 1
-  B=$(sessids "$RUN/sr-srv.log" | awk '{print $1}'); U=$(uuid_of "$B"); E=$(envid "$RUN/sr-srv.log")
+  B=$(sessids "$RUN/sr-srv.log" | awk '{print $1}'); E=$(envid "$RUN/sr-srv.log")
+  U=$(uuid_of "$B") || { say "no registry row names $B"; exit 1; }
   F="$(projdir "$WS")/$U.jsonl"
   SDBG="$RUN/sr-srv.log-${B/session_/cse_}.debug"
   say "  server: env=$E session=$B local id=$U  $(cap "$RUN/sr-srv.log")"
@@ -109,6 +118,15 @@ server-resume)
   pane c1 "$WS" "$RUN/sr-c1.log" "$CLAUDE" --continue; sleep 12
   mark c1 "$RUN/sr-c1.log"
   say "  registry:"; registry | sed 's/^/    /'
+  if holders "$U" | grep -q '"entrypoint":"cli"'; then
+    say "  --continue opened the server's own session ($U) beside it; a turn typed there:"
+    T0=$(now); typeline c1 'Reply with exactly TERM1 and nothing else.' 15
+    say "    terminal's answer: $(screen c1 | grep -aE '^● ' | tail -1)"
+    say "    the shared transcript $F, read as a tree:"; TREE "$F" | sed 's/^/      /'
+    say "    the server session's debug since (did its process notice?):"
+    dbg_since "$SDBG" "$T0" 'inbound|Inbound|Received|user message|reload|changed'
+    say "    (nothing above = the server's session never saw the terminal's turn)"
+  fi
   term c1
 
   say "--- (d) the interactive /resume picker (claude --resume, no id)"
@@ -153,6 +171,10 @@ interactive-resume)
   say "--- /remote-control in r2 (the one that was refused Remote Control)"
   T1=$(now); typeline r2 '/remote-control ' 15
   mark r2 "$RUN/ir-r2.log" | grep -aE 'active|standing'
+  # The displaced side learns of it on its next poll, which took about a
+  # minute in this spike's first attempt; wait up to 120 s.
+  for i in $(seq 1 120); do grep -aq 'code=4090' "$RUN/ir-ia.debug" && break; sleep 1; done
+  say "  ia told it was displaced after ~$((15 + i)) s:"
   mark ia "$RUN/ir-ia.log" | grep -aE 'standing|4090'
   dbg_since "$RUN/ir-ia.debug" "$T1" '4090|superseded'
   say "  same bridge id in r2? $(rcline "$RUN/ir-r2.log")"
@@ -240,23 +262,87 @@ tmux-rc)
 # ---------------------------------------------------------------------------
 tmux-rc-gates)
   say "=== path 4: the config gates, one removed at a time"
-  for g in trust dialog account; do
+  for g in trust dialog account onboarding; do
     G="$S/cfg-$g"; rm -rf "$G"; mkdir -p "$G"
     install -m 600 "$S/cfg/.credentials.json" "$G/.credentials.json"
     case "$g" in
       trust)   f='del(.projects)' ;;
       dialog)  f='del(.remoteDialogSeen)' ;;
       account) f='del(.oauthAccount)' ;;
+      onboarding) f='del(.hasCompletedOnboarding)' ;;
     esac
     jq "$f" "$S/cfg/.claude.json" > "$G/.claude.json"; chmod 600 "$G/.claude.json"
     say "--- without $g ($f)"
-    CFG="$G" pane gate "$WS" "$RUN/t4-gate-$g.log" "$CLAUDE" --remote-control ddspike06gate
+    CFG="$G" pane gate "$WS" "$RUN/t4-gate-$g.log" "$CLAUDE" --remote-control ddspike06gate \
+      --debug-file "$RUN/t4-gate-$g.debug"
     sleep 25
     mark gate "$RUN/t4-gate-$g.log"
+    say "  bridge lines in its debug log:"
+    grep -aE '\[bridge(:[a-z]+)?\]|\[remote-bridge\]' "$RUN/t4-gate-$g.debug" 2>/dev/null \
+      | grep -avE 'Queued|Drained' | cut -c26-200 | head -6 | sed 's/^/    > /'
+    say "  .claude.json afterwards: $(jq -c '{remoteDialogSeen, oauthAccount: (.oauthAccount != null), hasCompletedOnboarding}' "$G/.claude.json")"
     say "  alive after 25 s: $(kill -0 "$(panepid gate)" 2>/dev/null && echo yes || echo no)"
     say "  last screen lines:"; screen gate | grep -v '^\s*$' | tail -4 | cut -c1-150 | sed 's/^/    | /'
     CFG="$G" term gate
   done
+  ;;
+# ---------------------------------------------------------------------------
+bg)
+  say "=== path 3/4: claude --bg --remote-control, Claude Code's own background session"
+  C() { (cd "$WS" && timeout 30 env -i HOME="$SHOME" PATH="$PATH" TERM=dumb LANG="${LANG:-C.UTF-8}" \
+          CLAUDE_CONFIG_DIR="$CFG" DISABLE_AUTOUPDATER=1 "$CLAUDE" "$@" </dev/null 2>&1); }
+  agents() { C agents --json --all | jq -c '.[] | {id, kind, status, state, pid, sessionId}' 2>/dev/null; }
+  out=$(C --bg --remote-control ddspike06bg); say "$out" | clean /dev/stdin | sed 's/^/    | /'
+  ID=$(say "$out" | grep -aoE 'backgrounded · [0-9a-f]+' | awk '{print $3}')
+  [ -n "$ID" ] || { say "no background id"; exit 1; }
+  sleep 8
+  say "  claude agents --json:"; agents | sed 's/^/    /'
+  WPID=$(C agents --json | jq -r --arg i "$ID" '.[] | select(.id == $i) | .pid')
+  DPID=$(ps -o ppid= -p "$(ps -o ppid= -p "$WPID" | tr -d ' ')" | tr -d ' ')
+  say "  worker pid $WPID, its PTY host $(ps -o ppid= -p "$WPID" | tr -d ' '), daemon $DPID ($(ps -o args= -p "$DPID" | cut -c1-60)…)"
+  C logs "$ID" > "$RUN/bg-logs1.txt"
+  B=$(rcline "$RUN/bg-logs1.txt"); U=$(uuid_of "$B")
+  say "  Remote Control session from claude logs: $B; registry: $(holders "$U")"
+  grep -aE 'proactive refresh|auth:' "$CFG/daemon.log" | tail -2 | cut -c1-120 | sed 's/^/    daemon.log: /'
+
+  say "--- claude attach $ID in a tmux pane, a turn typed there"
+  pane a1 "$WS" "$RUN/bg-a1.log" "$CLAUDE" attach "$ID"; sleep 8
+  screen a1 | grep -aE 'remote-control is active|/rc' | head -2 | cut -c1-160 | sed 's/^/    | /'
+  typeline a1 'Reply with exactly BG1 and nothing else.' 15
+  say "  answer: $(screen a1 | grep -aE '^● ' | tail -1)"
+  say "--- a second attach at the same time"
+  pane a2 "$WS" "$RUN/bg-a2.log" "$CLAUDE" attach "$ID"; sleep 8
+  screen a2 | grep -v '^\s*$' | tail -4 | cut -c1-160 | sed 's/^/    a2| /'
+  say "  a1 still alive: $(kill -0 "$(panepid a1)" 2>/dev/null && echo yes || echo no)"
+  say "--- both attach clients killed (SIGTERM): does the session outlive its viewers?"
+  term a2; term a1; sleep 3
+  agents | sed 's/^/    /'
+  say "--- SIGKILL the worker (a crash): what does the daemon do, and what does attach bring back?"
+  kill -KILL "$WPID"; sleep 8
+  agents | sed 's/^/    /'
+  pane a3 "$WS" "$RUN/bg-a3.log" "$CLAUDE" attach "$ID"; sleep 15
+  say "  attach after SIGKILL: session $(rcline "$RUN/bg-a3.log") (was $B)"
+  screen a3 | grep -aE 'remote-control|/rc|Error|No job|BG1' | head -4 | cut -c1-160 | sed 's/^/    | /'
+  term a3; sleep 3
+  say "  after that attach client ended:"; agents | sed 's/^/    /'
+  say "--- claude stop $ID, then claude attach $ID again"
+  C stop "$ID" | clean /dev/stdin | sed 's/^/    | /'; sleep 5
+  agents | sed 's/^/    /'
+  pane a4 "$WS" "$RUN/bg-a4.log" "$CLAUDE" attach "$ID"; sleep 15
+  say "  after stop + attach: session $(rcline "$RUN/bg-a4.log") (was $B)"
+  screen a4 | grep -aE 'remote-control|/rc|Error|No job' | head -3 | cut -c1-160 | sed 's/^/    | /'
+  if kill -0 "$(panepid a4)" 2>/dev/null; then
+    typeline a4 'What did you reply last time? Answer with that word only.' 15
+    say "  conversation carried over? answer: $(screen a4 | grep -aE '^● ' | tail -1)"
+  fi
+  say "  attach process tree: $(ps -o pid=,args= --ppid "$(panepid a4)" 2>/dev/null | cut -c1-80 | head -2 | tr '\n' ';')"
+  term a4; sleep 3
+  say "  after that attach client ended:"; agents | sed 's/^/    /'
+  say "--- cleanup: stop, rm, wait for the daemon's idle exit"
+  C stop "$ID" >/dev/null; C rm "$ID" | clean /dev/stdin | sed 's/^/    | /'
+  for _ in $(seq 1 30); do kill -0 "$DPID" 2>/dev/null || break; sleep 1; done
+  kill -0 "$DPID" 2>/dev/null && { say "  daemon $DPID still up after 30 s; SIGTERM"; kill -TERM "$DPID"; } || say "  daemon exited on its own"
+  tail -3 "$CFG/daemon.log" | cut -c1-140 | sed 's/^/    daemon.log: /'
   ;;
 *) say "unknown mode: $MODE"; exit 2 ;;
 esac
