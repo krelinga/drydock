@@ -346,8 +346,8 @@ silent degrade for gates; and the operator who attaches shares one input line wi
   version bump. Not `theme`: that would choose the operator's theme for them.
 - **Path 3 (`--bg`): measured, and not adopted** ([Spike 08](08-bg-rc.md), phase 2) — two
   containers' daemons on one volume share `jobs/` and the roster: with one workspace folder a job
-  launched in one container ran in the other, and with distinct folders each daemon still marked the
-  other's live job `failed`. The daemon's refresh takes the CLI's lock (read; a live check is owed).
+  launched in one container ran in the other, and with distinct folders the other daemon still marked
+  the first container's live job `failed`. The daemon's refresh takes the CLI's lock (read; a live check is owed).
 - **Path 4, if it were chosen** — supervisor, classifiers and corpus all change:
   - `internal/supervisor`: launch `claude --remote-control <name>` (or `--resume <uuid> --rc`) in a
     tmux session Drydock owns (tmux added to the Feature or image), or under `--bg`; resume by id from

@@ -34,9 +34,20 @@ case "$MODE" in
   *) printf 'unknown mode: %s\n' "$MODE"; exit 2 ;;
 esac
 : "${S:?set S to the scratch dir setup.sh built}"
-RUN="$S/run/$MODE"; rm -rf "$RUN"
-. "$HERE/lib.sh"
-token_guard "$CFG/.credentials.json"
+# DISTINCT=1 moves the clones for `two` only; every other mode reads and
+# writes /workspace by name, and would silently report MISSING under it.
+if [ -n "${DISTINCT:-}" ] && [ "$MODE" != two ]; then printf 'DISTINCT=1 is for the two mode only\n'; exit 2; fi
+# First, before the guard can refuse: whatever a killed run left (sweep.sh).
+"$HERE/sweep.sh" || exit 4
+RUN="$S/run/$MODE"
+. "$HERE/lib.sh"   # refuses a CFG or S that is the real config or $HOME
+rm -rf "$RUN"; mkdir -p "$RUN"
+# The minutes each mode may run with a daemon live, for the token guard: app
+# pauses three times WAIT_APP, the rest finish in a few minutes.
+W_APP="${WAIT_APP:-300}"
+case "$W_APP" in ''|*[!0-9]*) say "WAIT_APP must be a whole number of seconds"; exit 2 ;; esac
+case "$MODE" in app) MODE_MIN=$(( (3 * W_APP + 59) / 60 + 10 )) ;; *) MODE_MIN=10 ;; esac
+token_guard "$CFG/.credentials.json" "$MODE_MIN"
 trap reap EXIT
 reap
 fresh_state
@@ -334,8 +345,8 @@ daemon)
 # ---------------------------------------------------------------------------
 app)
   # The human steps H1 and H2 (README): the owner looks at the Claude app at
-  # each pause. WAIT_APP (default 300) seconds per pause; WAIT_APP=0 dry-runs.
-  W_APP="${WAIT_APP:-300}"
+  # each pause. WAIT_APP (default 300) seconds per pause (W_APP, set above,
+  # and counted by the token guard); WAIT_APP=0 dry-runs.
   ctr_up a || exit 1
   pane fgd "$RUN/fgd.log" docker exec -u vscode -w /workspace "$(ctr a)" claude daemon run
   sleep 4

@@ -17,6 +17,16 @@ set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 S="${1:?usage: setup.sh <scratch-dir> [source-config-dir]}"
 SRC="${2:-$HOME/.claude}"
+# The scratch config is <scratch>/cfg, written and later deleted in: refuse a
+# scratch dir that is $HOME or whose cfg is the source (or the real) config.
+for real in "$SRC" "$HOME/.claude"; do
+  if [ "$(readlink -m -- "$S/cfg")" = "$(readlink -m -- "$real")" ]; then
+    echo "REFUSING: $S/cfg is $real, not a scratch copy" >&2; exit 2
+  fi
+done
+[ "$(readlink -m -- "$S")" != "$(readlink -m -- "$HOME")" ] || { echo "REFUSING: the scratch dir is \$HOME" >&2; exit 2; }
+# First, before the guard can refuse: whatever a killed run left (sweep.sh).
+"$HERE/sweep.sh" || exit 4
 # The token guard (Spike 06's): the scratch config gets a copy of the source's
 # live refresh token, which a refresh would rotate dead for the source.
 exp=$(jq -r '.claudeAiOauth.expiresAt // 0' "$SRC/.credentials.json")

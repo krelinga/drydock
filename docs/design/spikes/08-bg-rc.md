@@ -13,9 +13,11 @@ volume, and is it *workable* (can Drydock supervise it, and does it behave on th
 
 **Verdict, phase 2: not workable as Drydock's per-workspace model on the shared volume; keep the
 server.** One container's daemon runs, refuses or corrupts another container's jobs through the shared
-`jobs/` and roster: with the same workspace folder in two containers a job launched in B **ran in A**
-(result 8); with distinct folders it ran in the right container, but each daemon marked the other's
-live job dead, so `claude agents` called a serving session `failed` in both, and a `claude stop` from
+`jobs/` and roster: with the same workspace folder in two containers — which any two repositories
+whose `devcontainer.json` pins the same `workspaceFolder` give, not only two that share a name — a
+job launched in B **ran in A** (result 8); with distinct folders it ran in the right container, but
+the other daemon marked A's live job dead, so `claude agents` called a serving session `failed` in
+both containers, and a `claude stop` from
 the wrong container printed `stopped` and stopped nothing. Inside one container it is supervisable
 — a headless start, a file to read the link from, a stop that archives the session, a restart that
 keeps it — but by different means than the server's, and with Spike 06's price on top (one
@@ -51,7 +53,9 @@ phase 2 measures only whether `--bg --rc` is workable.
   *read*, and names its harness mode.
 - **Date:** 2026-10-30.
 - **Harness:** [`harness-08-bg-rc/`](harness-08-bg-rc/) (phase 2) — re-runnable; each result names
-  its mode. H1–H3 are written there as human steps.
+  its mode. H1–H3 are written there as human steps. Its token guard, like Spike 06's, keeps a run
+  clear of the daemon's *scheduled* refresh of the copied credential; it cannot stop a refresh a
+  `401` would trigger (a token revoked server-side), the residual Spike 06 carries too.
 
 ---
 
@@ -134,13 +138,13 @@ and the lifecycle across container stop and rebuild.
 | 1 | What the CLI offers | `--bg`; `agents [--json --all]`, `attach`, `logs`, `stop`, `respawn <id>\|--all`, `rm`; `daemon run\|status\|logs\|stop [--any] [--keep-workers]`. *"Service install is disabled in this version — the daemon runs on demand and exits when the last client disconnects."* `daemon run` runs it in the foreground | `cli` |
 | 2 | `claude --bg --remote-control <name>` over `docker exec`, no TTY, stdin closed | returns in 0.6 s, exit 0, `backgrounded · <id> (idle — send a prompt to start)`; starts `claude daemon run --origin transient`, which outlives the exec (reparented to PID 1, still serving 70 s later) and exits by itself 5–7 s after its last job stops | `start` |
 | 2 | What says it is up, and the link | `sessions/<pid>.json` gains `bridgeSessionId: session_…` (with `kind: bg`, `jobId`, `pidDomain`, `procStart`); `jobs/<id>/state.json` carries the same id as `cse_…` (`state: working`, `tempo: blocked`, `needs: send a prompt to start`). `claude logs <id>` shows `/rc connecting…` and the id in **plain text, not OSC 8**; no `env_…`, no `Capacity`. `claude agents --json` names the job, its pid and local session id, not the bridge session | `start` |
-| 3 | Files a start writes under `CLAUDE_CONFIG_DIR` | `daemon.lock`, `daemon.status.json`, `daemon.log`, `daemon/roster.json`, `daemon/control.key`, `jobs/<id>/state.json`, `jobs/pins.json`, `sessions/<pid>.json` (+ `.key`); sockets under `/tmp/cc-daemon-<uid>/` (per container). Jobs are never removed but by `claude rm` | `start` |
+| 3 | Files a start writes under `CLAUDE_CONFIG_DIR` | `daemon.lock`, `daemon.status.json`, `daemon.log`, `daemon/roster.json`, `daemon/control.key`, `jobs/<id>/state.json`, `jobs/pins.json`, `sessions/<pid>.json` (+ `.key`); sockets under `/tmp/cc-daemon-<uid>/` (per container). A job's entry outlives its container (`lifecycle`, result 9); that only `claude rm` removes one is *read* from the help (`cli`) | `start`, `lifecycle`; `cli` *read* |
 | 4 | Gates, one removed at a time | **trust:** `claude --bg` refuses at once, exit `1`, *"Workspace not trusted. Run `claude` in /workspace once and accept the trust prompt, then retry."* — no job, no hang. **`remoteDialogSeen`**, **`hasCompletedOnboarding`**: neither needed, Remote Control on. **`oauthAccount`:** the job runs **without Remote Control and says nothing** (`bridgeSessionId: null` everywhere, no line in `claude logs`); the record was back in `.claude.json` within 25 s, written by Claude Code itself | `gates` |
 | 5 | Whose environment the session gets | **the daemon's**: the first exec's `DD_MARK=launch1` in both jobs' worker environment and Bash tool shells; a second exec's `DD_MARK=launch2`, `DO_NOT_TRACK=1`, `DISABLE_TELEMETRY=1` reached neither, and its `env -u DISABLE_AUTOUPDATER -u CLAUDE_ENV_FILE` removed neither; `claude respawn` from a third exec (`launch3`) kept `launch1`. Workers add `CLAUDECODE=1`, `CLAUDE_CODE_SESSION_KIND=bg` | `env` |
 | 5 | `CLAUDE_ENV_FILE` | ran before the Bash call in both jobs (one marker line each, `DD_MARK=launch1`) — including the job whose launching exec had unset it | `env` |
 | 6 | `claude stop <id>` | graceful: `teardown … reason=host_exit`, `Archive cse_… status=200`, `Torn down (archive=200)`; `daemon.log` says `settled <id> (killed)` | `stop` |
 | 6 | `claude respawn <id>` after a stop | the **same** session: `Reattaching to session …`, `Unarchive … status=200` | `stop` |
-| 6 | `SIGTERM` of the worker | the same graceful archive; then, unasked, a new worker in the same PTY host about 11 s later with a **new** session (`Created session cse_…`); nothing in `daemon.log` | `stop` |
+| 6 | `SIGTERM` of the worker | the same graceful archive; then, unasked, a new worker about 11 s later with a **new** session (`Created session cse_…`); nothing in `daemon.log` | `stop` |
 | 6 | `SIGKILL` of the worker, `respawn` at once | the same session, `Unarchive … status=409` (it had not been archived), no refusal and no wait — nothing like Spike 02's *already served* lockout. `state.json` read `SIGKILL (137); respawning` (whether the daemon respawns unasked was not separated from the harness's own `respawn`; Spike 06 saw it not) | `stop` |
 | 6 | `SIGTERM` of the transient daemon | the daemon exits (`cause=signal, live_workers=1`); **the job's worker survives**, orphaned to PID 1, still serving; the next `claude --bg` starts a daemon that adopts it (`adopted=1`) | `stop` |
 | 7 | `claude daemon run` held by a `docker exec` | `origin: foreground`, the exec's process; jobs run under it; it does **not** idle-exit | `daemon` |
@@ -151,9 +155,9 @@ and the lifecycle across container stop and rebuild.
 | 8 | Same, **clones at `/workspaces/ws-a`, `/workspaces/ws-b`** | the job runs in B: a daemon logs `refused <id> (shell): working directory no longer exists or is not accessible: /workspaces/ws-b` and the other takes it ~5 s later. A's live job is still marked dead and listed `failed` in both | `DISTINCT=1 two` |
 | 8 | B: `claude stop <A's job>` | prints `stopped <id>`; A's worker untouched, still serving | `two`, `DISTINCT=1 two` |
 | 8 | B: `claude respawn <A's job>` | same folder: a **second worker in B** on the same conversation and the same app session, beside A's; distinct folders: refused, *"Workspace not trusted. /workspaces/ws-a could not be resolved on disk."* | `two`, `DISTINCT=1 two` |
-| 9 | `docker stop` (and `docker rm -f`) with a job live | immediate: PID 1 exits on `SIGTERM` and the kernel kills the rest, so **no teardown** and no archive. Left: `daemon.lock`, `daemon.status.json`, the roster's worker, `state.json` still `working`, the `sessions/` row | `lifecycle` |
+| 9 | `docker stop`, and `docker rm -f`, with a job live | immediate either way, and **no teardown** and no archive: `docker stop` SIGTERMs PID 1, which exits at once, and its exit has the kernel SIGKILL the rest; `docker rm -f` SIGKILLs at once. Left: `daemon.lock`, `daemon.status.json`, the roster's worker, `state.json` still `working`, the `sessions/` row | `lifecycle` |
 | 9 | The container back (`start`, or a new one) | no daemon until something asks; `daemon status` warns as in 8; `claude agents` lists the job `failed` and did not start a daemon; a new `--bg` works beside the stale entry (`adopt: … dead=1`, `orphan-spare reap: 1`); `respawn` of the old job reattaches **the same session** (`Unarchive … 409`) with no refusal | `lifecycle` |
-| 10 | The daemon's refresh | schedules `expiresAt − 240 s` (bounded to 5 s … 24 h; measured: `scheduling proactive refresh in 11583s` with 197 min left), and calls `checkAndRefreshOAuthTokenIfNeeded` from Claude Code's auth chunk — the CLI's own refresh, exported beside `beginOAuthRefreshLockHold`; the lock is `<dir>/.oauth_refresh.lock` with `stale: 60000`, `update: 5000` (Spike 00's values) plus a `.oauth_refresh.lock.owner` record of `pid`, `procStart`, `pidDomain`. After another process's refresh it logs `token still valid (cross-process refresh or not yet due)`; it hands the token to its workers (`token_update`) | `refresh`, *read* |
+| 10 | The daemon's refresh | schedules `expiresAt − 240 s` (bounded to 5 s … 24 h; *measured* in `start`'s `daemon.log` tail: `scheduling proactive refresh in 11583s` with 197 min left), and calls `checkAndRefreshOAuthTokenIfNeeded` from Claude Code's auth chunk — the CLI's own refresh, exported beside `beginOAuthRefreshLockHold`; the lock is `<dir>/.oauth_refresh.lock` with `stale: 60000`, `update: 5000` (Spike 00's values) plus a `.oauth_refresh.lock.owner` record of `pid`, `procStart`, `pidDomain`. After another process's refresh it logs `token still valid (cross-process refresh or not yet due)`; it hands the token to its workers (`token_update`) | `refresh`, *read*; the scheduling line `start` |
 
 ### 1 — Inside one container it is supervisable, by other means than the server's
 
@@ -198,12 +202,15 @@ This is what decides it. Each container runs its own daemon (its sockets are in 
 both read and write the one `jobs/` directory and roster on the volume (result 8):
 
 - **With the same workspace folder in both containers, a job launched in B ran in A**, in A's clone
-  and beside A's broker socket, and B's own daemon crashed trying the same job. Drydock's folders are
-  `/workspaces/<repository name>` (design §6), so two workspaces of repositories that share a name —
-  different owners, or a fork — are exactly this case.
+  and beside A's broker socket, and B's own daemon crashed trying the same job. A Drydock workspace's
+  folder is the devcontainer CLI's default, `/workspaces/<clone folder>` — the repository's name
+  (design §6, step 2, measured on CLI 0.89.0) — unless its `devcontainer.json` sets
+  `workspaceFolder`, and many pin one (`/workspace` is common). So any two running workspaces whose
+  repositories pin the same `workspaceFolder` are exactly this case, as are two of repositories that
+  share a name (different owners, or a fork).
 - **With distinct folders, the job runs where it was launched**, after a refusal by the other daemon
-  and a delay of about five seconds. But each daemon still marks the other's live jobs dead, so
-  `claude agents` shows a session that is serving as `failed`, in both containers.
+  and a delay of about five seconds. But the other daemon still marked A's live job dead, so
+  `claude agents` showed a session that was serving as `failed`, in both containers.
 - **A command run in the wrong container lies.** `claude stop` of another container's job prints
   `stopped` and stops nothing; `claude respawn` of it, with a shared folder, starts a second worker on
   the same conversation and app session.

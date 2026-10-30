@@ -14,9 +14,11 @@
 #
 # Cleanup is by recorded name only: `ctr_up` appends each container it starts to
 # $S/ctr.names and each background id it is handed goes to $S/bg.ids;
-# `reap` stops those ids, then SIGTERMs (docker stop) and removes those
-# containers, and nothing else. No process outside these containers is ever
-# signalled, and no tmux server but this harness's private one is touched.
+# `reap` stops those ids (`claude stop`, the graceful part), then docker stops
+# and removes those containers, and nothing else. Every container also carries
+# the label dd-spike-08=1, by which sweep.sh removes what a killed run left
+# (run.sh and setup.sh run it first). No process outside these containers is
+# ever signalled, and no tmux server but this harness's private one is touched.
 
 S="${S:?set S to the scratch dir setup.sh built}"
 CFG="${CFG:-$S/cfg}"
@@ -26,27 +28,41 @@ TMUX_L=dd-spike-08
 CTRS="$S/ctr.names"
 BGIDS="$S/bg.ids"
 IN_CFG=/home/vscode/.claude
+
+# The scratch config must be the scratch config: fresh_state deletes in it and
+# every container mounts it read-write, so refuse one that resolves to the real
+# config, or a scratch dir that is $HOME (S=$HOME CFG=$HOME/.claude).
+_rp() { readlink -m -- "$1"; }
+if [ "$(_rp "$CFG")" = "$(_rp "$HOME/.claude")" ] || [ "$(_rp "$S")" = "$(_rp "$HOME")" ] \
+   || { [ -n "${CLAUDE_CONFIG_DIR:-}" ] && [ "$(_rp "$CFG")" = "$(_rp "$CLAUDE_CONFIG_DIR")" ]; }; then
+  printf 'REFUSING: CFG=%s / S=%s is the real config or $HOME, not a scratch copy\n' "$CFG" "$S"; exit 2
+fi
 mkdir -p "$RUN"
 
 say() { printf '%s\n' "$*"; }
 t() { tmux -L "$TMUX_L" "$@"; }
 now() { date -u +%Y-%m-%dT%H:%M:%S; }
 
-# The token guard (Spike 06's, unchanged): refuse unless the copied access
-# token's expiresAt is TOKEN_MARGIN_MIN (default 60) minutes away. The --bg
-# daemon schedules a proactive refresh a few minutes before expiresAt; a
-# refresh of this copy rotates the owner's real refresh token dead.
-token_guard() { # token_guard <credentials.json>
-  local f="$1" exp left
+# The token guard (Spike 06's, plus the mode's own length): refuse unless the
+# copied access token's expiresAt is still TOKEN_MARGIN_MIN (default 60)
+# minutes away once the mode has run for the minutes it says it needs. The
+# --bg daemon schedules a proactive refresh four minutes before expiresAt
+# (result 10); a refresh of this copy rotates the owner's real refresh token
+# dead. It covers only that scheduled refresh: a 401 on the copy's access
+# token (revoked server-side, say) would send Claude Code to refresh it at
+# once, the residual Spike 06 has too.
+token_guard() { # token_guard <credentials.json> [minutes the mode runs]
+  local f="$1" need="${2:-0}" exp left want
   exp=$(jq -r '.claudeAiOauth.expiresAt // 0' "$f" 2>/dev/null) || exp=0
   left=$(( (${exp:-0} / 1000 - $(date +%s)) / 60 ))
-  if [ "$left" -lt "${TOKEN_MARGIN_MIN:-60}" ]; then
-    say "REFUSING: $f's access token expires in ${left} min (< ${TOKEN_MARGIN_MIN:-60})."
+  want=$(( ${TOKEN_MARGIN_MIN:-60} + need ))
+  if [ "$left" -lt "$want" ]; then
+    say "REFUSING: $f's access token expires in ${left} min (< ${TOKEN_MARGIN_MIN:-60} margin + ${need} the mode runs)."
     say "  A scratch copy could refresh it and rotate the owner's real login dead."
     say "  Let the real config refresh, delete \$S, and re-run ./setup.sh."
     exit 3
   fi
-  say "token guard: access token expires in $left min"
+  say "token guard: access token expires in $left min (needs $want: margin ${TOKEN_MARGIN_MIN:-60} + mode $need)"
 }
 
 ctr() { printf 'dd-s08-%s' "$1"; }
@@ -123,14 +139,16 @@ pane() {
   : > "$log"
   t kill-session -t "$name" 2>/dev/null
   t new-session -d -s "$name" -x 200 -y 50 "$(printf '%q ' "$@")"
-  t pipe-pane -o -t "$name" "cat >> '$log'"
+  t pipe-pane -o -t "$name" "cat >> $(printf '%q' "$log")"
 }
 screen() { t capture-pane -p -t "$1" 2>/dev/null; }
 typeline() { t send-keys -t "$1" -l "$2"; sleep 1; t send-keys -t "$1" Enter; sleep "${3:-3}"; }
 
-# reap: `claude stop` each recorded background id in its own container, then
-# docker stop (SIGTERM, SIGKILL after 10 s) and remove each recorded container,
-# then this harness's own tmux server. Nothing not recorded is touched.
+# reap: this harness's own tmux server; then `claude stop` each recorded
+# background id in its own container (the graceful stop, which archives the
+# session); then docker stop and remove each recorded container (SIGTERM to
+# PID 1, whose exit has the kernel SIGKILL every process left in it; SIGKILL
+# after 10 s if PID 1 has not exited). Nothing not recorded is touched.
 reap() {
   local w id c
   t kill-server 2>/dev/null

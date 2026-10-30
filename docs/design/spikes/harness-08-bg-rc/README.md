@@ -30,8 +30,16 @@ DISTINCT=1 ./run.sh two        # result 8: the same at /workspaces/ws-a and /wor
 WAIT_APP=300 ./run.sh app      # H1, H2
 ```
 
-Each mode writes to a fresh `$S/run/<mode>/` and prints the lines its result rests on. When done:
-`rm -rf "$S"` (it holds a live token) and `docker rmi dd-spike-08`.
+Each mode writes to a fresh `$S/run/<mode>/` and prints the lines its result rests on. `DISTINCT=1`
+is for `two` only; every other mode refuses it. When done: `./sweep.sh`, then `rm -rf "$S"` (it
+holds a live token) and `docker rmi dd-spike-08`.
+
+**If a run was interrupted** (killed, timed out, its terminal closed — anything that skipped its
+`EXIT` trap), run `./sweep.sh` before anything else, and before `rm -rf "$S"`. Its containers are
+still running, and a daemon or orphaned worker in one holds the copied refresh token in memory and
+will refresh it on its own schedule; deleting `$S` stops nothing. `sweep.sh` stops (`docker stop
+-t 10`) and removes every container labelled `dd-spike-08=1` — the label `ctr_up` puts on each, and
+nothing else carries — and `run.sh` and `setup.sh` run it first, before the token guard can refuse.
 
 ## The files
 
@@ -43,6 +51,8 @@ Each mode writes to a fresh `$S/run/<mode>/` and prints the lines its result res
   Spike 06's onboarding seed. It also writes a stand-in `CLAUDE_ENV_FILE` that appends a marker line
   to `<workspace>/.env-file-ran`. The source config is only read.
 - `lib.sh`, sourced — the containers, exec and scrape helpers, `whoruns`, and `reap`.
+- `sweep.sh` — removes every container carrying the harness's label, whatever run left it. Runs
+  no claude.
 - `run.sh <mode>` — the modes above.
 
 ## How a container is run
@@ -56,15 +66,27 @@ Feature's install and `postCreate`, the broker socket, `devcontainer up` itself.
 
 ## Traps worth knowing if you edit this
 
-- **The token guard** is Spike 06's, unchanged: the scratch config holds a copy of the owner's live
-  refresh token; a refresh of the copy rotates the real one dead. Every `--bg` daemon schedules a
-  proactive refresh **four minutes before `expiresAt`** (result 10), so every mode refuses unless
-  `expiresAt` is at least `TOKEN_MARGIN_MIN` (60) minutes away, and `reap` removes every container —
-  a daemon left running would refresh the copy on its own schedule.
-- **Cleanup is by recorded name.** `ctr_up` records each container in `$S/ctr.names`, `bg` each job
-  in `$S/bg.ids`; `reap` stops those jobs, `docker stop`s (SIGTERM, then SIGKILL after 10 s) and
-  removes those containers, and kills the private tmux server `-L dd-spike-08`. Nothing outside the
-  scratch containers is signalled.
+- **The token guard** is Spike 06's, plus the mode's length: the scratch config holds a copy of the
+  owner's live refresh token; a refresh of the copy rotates the real one dead. Every `--bg` daemon
+  schedules a proactive refresh **four minutes before `expiresAt`** (result 10), so every mode
+  refuses unless `expiresAt` is at least `TOKEN_MARGIN_MIN` (60) minutes away *plus* the minutes the
+  mode runs (10 for most; `app` counts its three `WAIT_APP` pauses, so a long `WAIT_APP` needs a
+  fresher token), and `reap` (or `sweep.sh`, after a killed run) removes every container — a daemon
+  left running would refresh the copy on its own schedule. **The guard covers only that scheduled
+  refresh.** A `401` on the copy's access token — revoked server-side, or the owner's real config
+  refreshing early for some other reason — would send Claude Code to refresh with the copied refresh
+  token at once, whatever `expiresAt` says. That residual is Spike 06's too; it is why runs are kept
+  short and nothing is left running.
+- **Cleanup is by recorded name, and by label after a killed run.** `ctr_up` records each container
+  in `$S/ctr.names` (and labels it `dd-spike-08=1`), `bg` each job in `$S/bg.ids`; `reap` kills the
+  private tmux server `-L dd-spike-08`, `claude stop`s those jobs (the graceful part: it archives the
+  session), then `docker stop`s and removes those containers. `docker stop` SIGTERMs only PID 1, the
+  sleep loop, which exits at once, and its exit has the kernel SIGKILL every process left in the
+  container (SIGKILL of PID 1 after 10 s if it has not). Nothing outside the scratch containers is
+  signalled.
+- **The scratch config is refused if it is the real one**: `lib.sh` exits when `CFG` resolves to
+  `~/.claude` (or `$CLAUDE_CONFIG_DIR`) or `S` to `$HOME`, and `setup.sh` when `<scratch>/cfg` is
+  the source config, since `fresh_state` deletes in it and every container mounts it read-write.
 - **Each mode starts from empty daemon state** (`fresh_state` deletes `daemon/`, `jobs/`,
   `sessions/` and `daemon.*` in the *scratch* config): jobs outlive their containers in the shared
   directory, and a listing would otherwise carry every earlier mode's.
@@ -104,15 +126,26 @@ The harness cannot see the app. These are the checks owed to the owner, numbered
      browser (design §7.2's handshake, by hand). Seed `remoteDialogSeen`, `hasCompletedOnboarding`
      and trust for `/workspace` in that volume's `.claude.json` (Spike 02's `seed-config.sh` does the
      first and third). This login is disposable: it is not the one Drydock or the owner uses.
-  2. Two containers like this harness's (`ctr_up a <volume path>` / `b`), both on that volume; start
-     a `--bg --remote-control` job in each, and in a third a plain `claude remote-control` server.
-  3. To avoid waiting out the ~8 h access token, edit **that volume's** `expiresAt` to about six
-     minutes from now (only this disposable login's file — never a copy of the owner's), so every
-     daemon schedules its refresh within two minutes.
-  4. Record from the shared `daemon.log`: one `auth: proactive refresh succeeded` and the other
-     daemon's `auth: token still valid (cross-process refresh or not yet due)`; the
+  2. **Before any daemon starts**, edit that volume's `expiresAt` to about six minutes from now, to
+     avoid waiting out the ~8 h access token (only this disposable login's file — never a copy of
+     the owner's). A daemon schedules its refresh when it starts (result 10's `scheduling proactive
+     refresh in …s`), so an edit made after a daemon is up moves nothing until that daemon restarts.
+     From a throwaway container on the volume:
+     `jq '.claudeAiOauth.expiresAt = ((now + 360) * 1000 | floor)' .credentials.json` to a temp file
+     beside it, then `mv` over it.
+  3. Two containers like this harness's, both on that volume (`ctr_up a dd-s08-login` and `b` —
+     `ctr_up`'s second argument is passed to `docker run -v` as is, so a volume name works); start a
+     `--bg --remote-control` job in each, and in a third a plain `claude remote-control` server. Each
+     daemon's `scheduling proactive refresh in …s` should name about two minutes.
+  4. Record, reading the volume **from inside a container** — `lib.sh`'s `state`, `whoruns`,
+     `bsid` and `dlog_since` read `$CFG` on the host, and a named volume has no host path here —
+     e.g. `docker exec dd-s08-a cat /home/vscode/.claude/daemon.log`, `… ls -la /home/vscode/.claude`,
+     `… cat /home/vscode/.claude/sessions/<pid>.json`: one `auth: proactive refresh succeeded` and
+     the other daemon's `auth: token still valid (cross-process refresh or not yet due)`; the
      `.oauth_refresh.lock` directory and its `.oauth_refresh.lock.owner` record (pid, `pidDomain`)
      while it is held; that `.credentials.json` holds a new `refreshToken` and **not** `accessToken:
      ""` (blanked); that the server and both sessions keep Remote Control (`bridgeSessionId` in
-     `sessions/`). Then `claude daemon stop --any` in both, stop the server with `SIGTERM`, remove
-     the containers and `docker volume rm dd-s08-login`, and sign that login out at claude.ai.
+     `sessions/`).
+  5. Then `claude daemon stop --any` in both, stop the server with `SIGTERM`, run `claude auth
+     logout` in one of the containers (so the login is revoked from the inside too), `./sweep.sh`,
+     `docker volume rm dd-s08-login`, and sign that login out at claude.ai.
