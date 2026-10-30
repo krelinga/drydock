@@ -11,8 +11,8 @@ The design: `docs/design/overall/drydock-design.md`, supplemented by port forwar
 (`docs/design/port-forwarding/`, "PF"), testing (`docs/design/testing/`) and the Vue frontend
 (`docs/design/frontend/`); a VS Code extension (`docs/design/vscode-extension/`, being built); a settled brand mark (`docs/design/brand/`, v1.1, with the shipping icon
 assets); an adversarial security review (`docs/design/security-review.md`); an exploration of running on
-non-root Docker (`docs/design/rootless-docker/`, declined for now); seven spikes with
-re-runnable harnesses under `docs/design/spikes/`, and an eighth (`08`) with none yet. Read the overall design before making
+non-root Docker (`docs/design/rootless-docker/`, declined for now); and eight spikes with
+re-runnable harnesses under `docs/design/spikes/`. Read the overall design before making
 architectural decisions — most "why is it like this?" questions are answered there. When a change
 contradicts it, update the doc in the same change.
 
@@ -446,8 +446,9 @@ Design §14 orders the phases so the riskiest unknown resolves first.
 0. **Spikes** — done: `00` the shared credential volume, `01` the login handshake, `02` restart
    survival, `03` `CLAUDE_ENV_FILE`, `04` the browser tier's local CA, `05` the VS Code extension
    host, `06` whether a terminal can join the app's session (not the server's; `claude --rc` beside
-   it). Still open: whether a `--spawn worktree` path needs its own trust record, and `08`, whether
-   `claude --bg --rc` is workable per workspace (phase 1, read from the binary, done; phase 2, measuring, open).
+   it), `08` whether `claude --bg --rc` is workable per workspace (no: daemons on the shared volume
+   run or misreport each other's jobs; keep the server; three app/live-refresh human steps owed).
+   Still open: whether a `--spawn worktree` path needs its own trust record.
 1. **Front door** — done, and deployed for real.
 2. **Walking skeleton** — done, reboot drill included.
 3. **Credentials** — done.
