@@ -76,7 +76,7 @@ cli)
   done
   say "  claude agents --json (\"active sessions (interactive and background)\") with the server up:"
   (cd "$WS" && cenv "$CLAUDE" agents --json) | jq -c '.[] | {id, kind, status, sessionId}' 2>/dev/null | sed 's/^/    /'
-  say "  (a row with id null is listed but has no id `claude attach` takes)"
+  say "  (a row with id null is listed but has no id that claude attach takes)"
   ;;
 # ---------------------------------------------------------------------------
 server-resume)
