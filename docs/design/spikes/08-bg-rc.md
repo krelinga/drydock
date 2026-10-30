@@ -93,8 +93,10 @@ A prompt-injected agent in workspace A can likely reach workspace B's repository
 through a shared hook. Do not run a sensitive repository beside one whose agent reads a lot of
 hostile input — issue bodies from strangers, untrusted dependencies, scraped pages. And while a
 workspace with host access approved (`privileged`, an `initializeCommand`, a sensitive bind mount,
-`--network host`) is running, a prompt-injected agent in *any* workspace can likely reach the host
-through it, the App private key and the secrets master key included.
+`--network host`) is running, a prompt-injected agent in *any* workspace can likely reach what that
+access reaches: with `privileged`, an `initializeCommand` or a sensitive bind mount, the host, the
+App private key and the secrets master key included; with `--network host`, services on the host's
+loopback.
 
 ---
 
