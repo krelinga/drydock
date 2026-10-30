@@ -7,7 +7,7 @@
 import { describe, expect, it } from 'vitest'
 import type { ApprovalView, HostSettingView } from '../types'
 import {
-  INITIALIZE_COMMAND_SENTENCE, PRIVILEGED_SENTENCE, approvalSections, sourceLabel,
+  APPROVAL_CLOSING, APPROVAL_INTRO, INITIALIZE_COMMAND_SENTENCE, PRIVILEGED_SENTENCE, approvalSections, sourceLabel,
 } from './approval'
 import { escapeFormat, showValue } from './text'
 
@@ -16,6 +16,15 @@ const req = (p: Partial<ApprovalView>): ApprovalView => ({ hash: HASH, added: []
 const priv: HostSettingView = { field: 'privileged', source: 'feature_or_image', value: true }
 const init: HostSettingView = { field: 'initializeCommand', source: 'repository', value: 'make host-setup' }
 const args: HostSettingView = { field: 'runArgs', source: 'repository', value: ['--network=host'] }
+
+describe('the intro and closing say the exposure is fleet-wide', () => {
+  it('names every other running workspace, hedged', () => {
+    expect(APPROVAL_INTRO).toContain('every other running workspace')
+    expect(APPROVAL_INTRO).toContain('very likely')
+    expect(APPROVAL_INTRO).toContain('while this one runs')
+    expect(APPROVAL_CLOSING).toContain('every running workspace')
+  })
+})
 
 describe('approvalSections: the root sentences', () => {
   it('privileged new: its sentence alone', () => {
