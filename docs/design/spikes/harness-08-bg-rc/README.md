@@ -34,6 +34,10 @@ Each mode writes to a fresh `$S/run/<mode>/` and prints the lines its result res
 is for `two` only; every other mode refuses it. When done: `./sweep.sh`, then `rm -rf "$S"` (it
 holds a live token) and `docker rmi dd-spike-08`.
 
+**Runs must not overlap.** Each `run.sh`/`setup.sh` starts with `sweep.sh`, which removes every
+container carrying the label, so a second run kills the first's containers (and pre-empts `reap`'s
+graceful `claude stop`, leaving those sessions unarchived). Run one mode at a time.
+
 **If a run was interrupted** (killed, timed out, its terminal closed — anything that skipped its
 `EXIT` trap), run `./sweep.sh` before anything else, and before `rm -rf "$S"`. Its containers are
 still running, and a daemon or orphaned worker in one holds the copied refresh token in memory and
@@ -69,7 +73,7 @@ Feature's install and `postCreate`, the broker socket, `devcontainer up` itself.
 - **The token guard** is Spike 06's, plus the mode's length: the scratch config holds a copy of the
   owner's live refresh token; a refresh of the copy rotates the real one dead. Every `--bg` daemon
   schedules a proactive refresh **four minutes before `expiresAt`** (result 10), so every mode
-  refuses unless `expiresAt` is at least `TOKEN_MARGIN_MIN` (60) minutes away *plus* the minutes the
+  refuses unless `expiresAt` is at least `TOKEN_MARGIN_MIN` (60, at least 30) minutes away *plus* the minutes the
   mode runs (10 for most; `app` counts its three `WAIT_APP` pauses, so a long `WAIT_APP` needs a
   fresher token), and `reap` (or `sweep.sh`, after a killed run) removes every container — a daemon
   left running would refresh the copy on its own schedule. **The guard covers only that scheduled

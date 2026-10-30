@@ -47,7 +47,7 @@ logs) and prints the lines its result rests on.
   a refresh rotates the refresh token (Spike 00), and the real config's next refresh then finds its
   token dead and *blanks* the login. Claude Code refreshes only near the access token's `expiresAt`
   (the `--bg` daemon schedules it a few minutes before), so `setup.sh` and every `run.sh` mode
-  refuse to start unless `expiresAt` is at least `TOKEN_MARGIN_MIN` (default 60) minutes away. If
+  refuse to start unless `expiresAt` is at least `TOKEN_MARGIN_MIN` (default 60; at least 30, whole numbers only) minutes away. If
   they refuse, let the real config refresh (use `claude` normally), then re-run `setup.sh`. **Delete
   the scratch directory when you are done** (`rm -rf "$S"`): it holds a live token.
 - **Signal only what the harness started.** `bg` records each background-session id it is handed in

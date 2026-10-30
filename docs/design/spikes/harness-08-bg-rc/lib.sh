@@ -52,17 +52,25 @@ now() { date -u +%Y-%m-%dT%H:%M:%S; }
 # token (revoked server-side, say) would send Claude Code to refresh it at
 # once, the residual Spike 06 has too.
 token_guard() { # token_guard <credentials.json> [minutes the mode runs]
-  local f="$1" need="${2:-0}" exp left want
-  exp=$(jq -r '.claudeAiOauth.expiresAt // 0' "$f" 2>/dev/null) || exp=0
-  left=$(( (${exp:-0} / 1000 - $(date +%s)) / 60 ))
-  want=$(( ${TOKEN_MARGIN_MIN:-60} + need ))
+  # Fails closed: every value is checked to be digits before any arithmetic
+  # (a bash arithmetic error aborts that line and carries on), and every
+  # step refuses with an explicit `|| exit`.
+  local f="$1" need="${2:-0}" margin="${TOKEN_MARGIN_MIN:-60}" exp left want now
+  case "$need" in ''|*[!0-9]*) say "REFUSING: the mode's minutes ('$need') are not a whole number"; exit 3 ;; esac
+  case "$margin" in ''|*[!0-9]*) say "REFUSING: TOKEN_MARGIN_MIN='$margin' is not a whole number of minutes"; exit 3 ;; esac
+  [ "$margin" -ge 30 ] || { say "REFUSING: TOKEN_MARGIN_MIN=$margin is below the floor of 30"; exit 3; }
+  exp=$(jq -r '.claudeAiOauth.expiresAt' "$f" 2>/dev/null) || { say "REFUSING: cannot read expiresAt from $f"; exit 3; }
+  case "$exp" in ''|*[!0-9]*) say "REFUSING: $f's expiresAt ('$exp') is not a whole number of milliseconds"; exit 3 ;; esac
+  now=$(date +%s) || exit 3
+  left=$(( (exp / 1000 - now) / 60 )) || exit 3
+  want=$(( margin + need )) || exit 3
   if [ "$left" -lt "$want" ]; then
-    say "REFUSING: $f's access token expires in ${left} min (< ${TOKEN_MARGIN_MIN:-60} margin + ${need} the mode runs)."
+    say "REFUSING: $f's access token expires in ${left} min (< ${margin} margin + ${need} the mode runs)."
     say "  A scratch copy could refresh it and rotate the owner's real login dead."
     say "  Let the real config refresh, delete \$S, and re-run ./setup.sh."
     exit 3
   fi
-  say "token guard: access token expires in $left min (needs $want: margin ${TOKEN_MARGIN_MIN:-60} + mode $need)"
+  say "token guard: access token expires in $left min (needs $want: margin $margin + mode $need)"
 }
 
 ctr() { printf 'dd-s08-%s' "$1"; }

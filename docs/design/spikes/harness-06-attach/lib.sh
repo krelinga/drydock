@@ -34,11 +34,17 @@ t() { tmux -L "$TMUX_L" "$@"; }
 # so refuse to run unless expiresAt is TOKEN_MARGIN_MIN (default 60) minutes
 # past now -- far more than any mode takes.
 token_guard() { # token_guard <credentials.json>
-  local f="$1" exp left
-  exp=$(jq -r '.claudeAiOauth.expiresAt // 0' "$f" 2>/dev/null) || exp=0
-  left=$(( (${exp:-0} / 1000 - $(date +%s)) / 60 ))
-  if [ "$left" -lt "${TOKEN_MARGIN_MIN:-60}" ]; then
-    say "REFUSING: $f's access token expires in ${left} min (< ${TOKEN_MARGIN_MIN:-60})."
+  # Fails closed: digits-only checks before any arithmetic (a bash arithmetic
+  # error aborts that line and carries on), and an explicit `|| exit` on each step.
+  local f="$1" margin="${TOKEN_MARGIN_MIN:-60}" exp left now
+  case "$margin" in ''|*[!0-9]*) say "REFUSING: TOKEN_MARGIN_MIN='$margin' is not a whole number of minutes"; exit 3 ;; esac
+  [ "$margin" -ge 30 ] || { say "REFUSING: TOKEN_MARGIN_MIN=$margin is below the floor of 30"; exit 3; }
+  exp=$(jq -r '.claudeAiOauth.expiresAt' "$f" 2>/dev/null) || { say "REFUSING: cannot read expiresAt from $f"; exit 3; }
+  case "$exp" in ''|*[!0-9]*) say "REFUSING: $f's expiresAt ('$exp') is not a whole number of milliseconds"; exit 3 ;; esac
+  now=$(date +%s) || exit 3
+  left=$(( (exp / 1000 - now) / 60 )) || exit 3
+  if [ "$left" -lt "$margin" ]; then
+    say "REFUSING: $f's access token expires in ${left} min (< ${margin})."
     say "  A scratch copy could refresh it and rotate the owner's real login dead."
     say "  Wait for the real config to refresh (run any claude command normally), then"
     say "  re-run ./setup.sh to take a fresh copy."

@@ -101,6 +101,8 @@ start)
   say "  daemon (was pid $D) gone after ${i} s: $([ -z "$(dpid a)" ] && echo yes || echo no)"
   agents a | sed 's/^/    /'; state
   tail -15 "$CFG/daemon.log" | cut -c1-200 | sed 's/^/    daemon.log: /'
+  say "--- result 10's scheduling line (whole log)"
+  grep -a 'scheduling proactive refresh' "$CFG/daemon.log" | cut -c1-200 | sed 's/^/    scheduling: /' || say "    (no scheduling line)"
   ;;
 # ---------------------------------------------------------------------------
 gates)
