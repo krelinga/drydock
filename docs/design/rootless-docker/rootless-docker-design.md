@@ -4,7 +4,7 @@
 `drydock` user being root on the host by way of the `docker` group? Which holes would that close,
 what would it break, how much would it cost, and how would we go about it? Nothing here is built.
 Claims marked **measured** were run for this document (§7 lists how). Claims marked **unmeasured**
-come from reading code or vendor documentation and are what Spike 06 (§5.3) is for.*
+come from reading code or vendor documentation and are what Spike 07 (§5.3) is for.*
 
 Reads with: [overall design](../overall/drydock-design.md) §6 (*What a configuration may ask of the
 host*, *The docker guard*, *Opening a workspace in VS Code*), §7.1, §13.4 and §13.5;
@@ -20,7 +20,7 @@ secrets** are the assets that matter most. As this document says, none of these 
 them: a compromised Drydock holds the App key and the secrets master key by design, whichever
 daemon or runtime it drives. What the options buy, host protection from a container or from
 Drydock, is not worth their cost and compatibility risk at present. So nothing in §2–§6 will be
-built, and Spike 06 will not be run.
+built, and Spike 07 will not be run.
 
 What does go ahead are the three standalone hardenings at the end of §6: mounting the workspace
 root `nosuid`, giving `initializeCommand` its own sentence on the approval card, and the runbook's
@@ -38,7 +38,7 @@ The analysis below is kept as it stood when the decision was made.
   docker-in-docker repository's container *is* host root, and an agent in it needs no exploit to
   reach the host. Every other route to host root needs a container-escape bug, a compromised
   Drydock, or an approved `initializeCommand`. Fix the zero-exploit path first.
-- **Do Spike 06 first.** It is cheap and specified in §5.3. The two options worth having rest on
+- **Do Spike 07 first.** It is cheap and specified in §5.3. The two options worth having rest on
   claims nobody has measured on this stack: whether the devcontainers docker-in-docker Feature runs
   under Sysbox without `privileged`, and how rootless Docker treats the bind-mounted clone and the
   broker socket.
@@ -653,7 +653,7 @@ whatever daemon that user's docker CLI reaches.
   - *Removing them*, as Sysbox recommends: each workspace's container is recreated from the clone
     on its next start. `up` finds no container carrying the id-label and creates one, and nothing
     in provisioning refuses a start from `stopped` whose container is gone. That is read from the
-    CLI's behaviour and the code, not measured, and Spike 06's P12 checks it.
+    CLI's behaviour and the code, not measured, and Spike 07's P12 checks it.
 
   A recreate keeps the clone and the named volumes, the Feature's `${devcontainerId}`
   `/var/lib/docker` included. It **loses the container's writable layer**: packages installed after
@@ -753,21 +753,21 @@ for a directory created after daemon start.
 | Clone round-trip: the agent writes, Drydock reads the lockfile, the cleanup helper empties the tree | container | Unchanged from today's tests, run on the new runtime |
 | Preview dial and discovery reach the container (rootless only) | container | A port not listening is reported closed, not "unreachable" |
 
-### 5.3 Spike 06: non-root Docker (specified, not built)
+### 5.3 Spike 07: non-root Docker (specified, not built)
 
-**Numbering.** The highest spike on `main` is 04. PR #139 (the VS Code extension design) proposes a
-Spike 05, so this one is **06**, whatever order they merge in. If #139 drops its spike, keep 06
-anyway rather than renumber a cited document.
+**Numbering.** This section first called it Spike 06. Spike 06 is now the terminal-attach spike
+([`06-terminal-attach.md`](../spikes/06-terminal-attach.md)), which was built while this one stayed
+specified, so this one is **07**; no document cites it by its old number.
 
-**Harness:** `docs/design/spikes/harness-06-nonroot-docker/`, with a README naming the command for
+**Harness:** `docs/design/spikes/harness-07-nonroot-docker/`, with a README naming the command for
 each result (the pairing CLAUDE.md asks for). `run.sh <mode>` with modes `rootful` (the positive
 control for every probe), `remap`, `remap-keepid`, `rootless-self`, `rootless-dedicated` and
 `sysbox`. Each mode runs the same probes and writes `results-<mode>.txt` with one
 `PASS|FAIL|N/A <probe> <detail>` line per probe, plus the versions it ran against (kernel, Docker,
 RootlessKit, Sysbox, devcontainer CLI 0.89.0, Feature versions). Every container it creates carries
-`drydock-spike06=<run id>` and is removed by that label on exit (`trap`). It never prunes and never
+`drydock-spike07=<run id>` and is removed by that label on exit (`trap`). It never prunes and never
 touches the host's other containers. Modes that need host changes (`rootless-*`, `sysbox`) refuse to
-run unless `SPIKE06_DISPOSABLE_HOST=1`, meaning a CI runner VM or a scratch VM. **P9 needs that flag
+run unless `SPIKE07_DISPOSABLE_HOST=1`, meaning a CI runner VM or a scratch VM. **P9 needs that flag
 in every mode, `rootful` included**, because it reads a raw block device. **Controls run in the same
 run**: Sysbox and runc share one daemon, so the `sysbox` mode runs each probe's runc twin beside it
 and records both, rather than leaning on a separate `rootful` results file (testing §4.1).
@@ -786,7 +786,7 @@ lands with the harness supersedes them.
 | P6 | Host-side `connect()` to the container's bridge IP; host-side read of `/proc/<pid>/net/tcp6` |
 | P7 | `docker stats` memory non-zero; `pause`/`unpause`; `inspect --size` |
 | P8 | devcontainers docker-in-docker Feature (pinned version): `up` succeeds, the inner `docker run hello-world`, and the inner storage driver on the Feature's `${devcontainerId}` `/var/lib/docker` volume. Under `sysbox`, `privileged` is removed **the way Phase B would**: the CLI's real argv, through a `record.sh dockerargv`-style shim that swaps exactly the one `--privileged` token for `--runtime=sysbox-runc`. A hand-written `docker run`, or a config override (which cannot unset a Feature's `privileged` anyway), would measure something else. An inner driver of **`vfs` is red**: it works, but its disk use is huge. Sysbox requires that volume to be mounted in one container at a time, and a rebuild must respect that. `exec --privileged` into the container: refused or not? |
-| P9 | Privileged container: read the first sector of the host's root block device (read-only; `SPIKE06_DISPOSABLE_HOST=1` in every mode) |
+| P9 | Privileged container: read the first sector of the host's root block device (read-only; `SPIKE07_DISPOSABLE_HOST=1` in every mode) |
 | P10 | `docker inspect` `HostConfig` of P3's and P8's containers, saved as fixtures and fed through `dockerguard`'s start check by a Go test |
 | P11 | The argv `up` produces, recorded through `record.sh dockerargv`'s shim |
 | P12 | After the switch, what of the old daemon's images, volumes and containers is visible. Under `sysbox`: a Drydock-made workspace whose container was removed during the install, started from `stopped`, is recreated by `up` (not failed) |
@@ -798,7 +798,7 @@ worth running only if the owner wants rootless kept on the table after reading �
 
 ## 6. Recommendation and phasing
 
-1. **Phase A: Spike 06** in `rootful`, `remap` and `sysbox` on a disposable `ubuntu-24.04` VM (a
+1. **Phase A: Spike 07** in `rootful`, `remap` and `sysbox` on a disposable `ubuntu-24.04` VM (a
    CI runner via `workflow_dispatch` is fine). This is the cheapest step by far: a script and a
    report, no product code. Gate on P8 (DinD under Sysbox without `privileged`), P3 (the clone
    unchanged) and P10 (what the guard must accept).
@@ -870,7 +870,7 @@ throwaway `--privileged` containers labelled for removal and removed afterwards:
   docker-in-docker Feature under anything but today's rootful daemon, and GitHub runner userns
   policy. Sysbox CE's common uid mapping is taken from its documentation (`security.md`), not
   measured.
-- **No checked-in harness yet.** These were run by hand. Spike 06's `remap` and `remap-keepid`
+- **No checked-in harness yet.** These were run by hand. Spike 07's `remap` and `remap-keepid`
   modes are specified to re-produce them (§5.3).
 
 ---
@@ -901,8 +901,8 @@ throwaway `--privileged` containers labelled for removal and removed afterwards:
    A recreate loses whatever the agents left outside the clone (§3.10).
 6. **Would you keep *Open in VS Code* under rootless**, knowing the attaching user would then be
    the `drydock` user, keys included (same-uid form)?
-7. **May Spike 06 run on a CI runner via `workflow_dispatch`**, or only on a scratch VM you
+7. **May Spike 07 run on a CI runner via `workflow_dispatch`**, or only on a scratch VM you
    provide? It changes the runner's kernel settings and installs packages, which is fine on a
    disposable VM and is not something this devcontainer can do.
-8. **Spike numbering:** this document claims 06 because PR #139 claims 05. Confirm, or say which of
-   the two should move.
+8. **Spike numbering:** settled. 05 went to the VS Code extension and 06 to the terminal-attach
+   spike, so this one is 07 (§5.3).
