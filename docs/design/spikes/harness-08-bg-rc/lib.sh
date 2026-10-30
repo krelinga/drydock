@@ -43,33 +43,41 @@ say() { printf '%s\n' "$*"; }
 t() { tmux -L "$TMUX_L" "$@"; }
 now() { date -u +%Y-%m-%dT%H:%M:%S; }
 
+# is_uint <s>: s is a plain decimal number. ASCII digits only, as an explicit
+# list (under a UTF-8 locale the range [0-9] also matches some non-ASCII
+# digits, which arithmetic then rejects); no leading zero (bash arithmetic
+# reads 010 as octal, `[` as decimal); at most 15 digits, so no sum or
+# difference below can overflow. A bare 0 passes. run.sh uses it for WAIT_APP.
+is_uint() { case $1 in ''|0?*|*[!0123456789]*) return 1 ;; esac; [ "${#1}" -le 15 ]; }
+
 # The token guard (Spike 06's, plus the mode's own length): refuse unless the
-# copied access token's expiresAt is still TOKEN_MARGIN_MIN (default 60)
-# minutes away once the mode has run for the minutes it says it needs. The
-# --bg daemon schedules a proactive refresh four minutes before expiresAt
-# (result 10); a refresh of this copy rotates the owner's real refresh token
-# dead. It covers only that scheduled refresh: a 401 on the copy's access
-# token (revoked server-side, say) would send Claude Code to refresh it at
-# once, the residual Spike 06 has too.
+# copied access token's expiresAt is still TOKEN_MARGIN_MIN (default 60, at
+# least 30) minutes away once the mode has run for the minutes it says it
+# needs. The --bg daemon schedules a proactive refresh four minutes before
+# expiresAt (result 10); a refresh of this copy rotates the owner's real
+# refresh token dead. It covers only that scheduled refresh: a 401 on the
+# copy's access token (revoked server-side, say) would send Claude Code to
+# refresh it at once, the residual Spike 06 has too.
 token_guard() { # token_guard <credentials.json> [minutes the mode runs]
-  # Fails closed: every value is checked to be digits before any arithmetic
-  # (a bash arithmetic error aborts that line and carries on), and every
-  # step refuses with an explicit `|| exit`.
+  # Fails closed. Every value passes is_uint before any arithmetic, so the
+  # arithmetic cannot fail: an arithmetic error inside a function aborts the
+  # whole call, refusal and all, and the caller runs on. And every check is
+  # `[ ok ] || refuse`, so a `[` that errors refuses too.
   local f="$1" need="${2:-0}" margin="${TOKEN_MARGIN_MIN:-60}" exp left want now
-  case "$need" in ''|*[!0-9]*) say "REFUSING: the mode's minutes ('$need') are not a whole number"; exit 3 ;; esac
-  case "$margin" in ''|*[!0-9]*) say "REFUSING: TOKEN_MARGIN_MIN='$margin' is not a whole number of minutes"; exit 3 ;; esac
+  is_uint "$need" || { say "REFUSING: the mode's minutes ('$need') are not a whole number (no leading zero, at most 15 digits)"; exit 3; }
+  is_uint "$margin" || { say "REFUSING: TOKEN_MARGIN_MIN='$margin' is not a whole number of minutes (no leading zero, at most 15 digits)"; exit 3; }
   [ "$margin" -ge 30 ] || { say "REFUSING: TOKEN_MARGIN_MIN=$margin is below the floor of 30"; exit 3; }
   exp=$(jq -r '.claudeAiOauth.expiresAt' "$f" 2>/dev/null) || { say "REFUSING: cannot read expiresAt from $f"; exit 3; }
-  case "$exp" in ''|*[!0-9]*) say "REFUSING: $f's expiresAt ('$exp') is not a whole number of milliseconds"; exit 3 ;; esac
-  now=$(date +%s) || exit 3
-  left=$(( (exp / 1000 - now) / 60 )) || exit 3
-  want=$(( margin + need )) || exit 3
-  if [ "$left" -lt "$want" ]; then
+  is_uint "$exp" || { say "REFUSING: $f's expiresAt ('$exp') is not a whole number of milliseconds (no leading zero, at most 15 digits)"; exit 3; }
+  now=$(date +%s) && is_uint "$now" || { say "REFUSING: the clock ('$now') is not a whole number of seconds (no leading zero, at most 15 digits)"; exit 3; }
+  left=$(( (exp / 1000 - now) / 60 ))
+  want=$(( margin + need ))
+  [ "$left" -ge "$want" ] || {
     say "REFUSING: $f's access token expires in ${left} min (< ${margin} margin + ${need} the mode runs)."
     say "  A scratch copy could refresh it and rotate the owner's real login dead."
     say "  Let the real config refresh, delete \$S, and re-run ./setup.sh."
     exit 3
-  fi
+  }
   say "token guard: access token expires in $left min (needs $want: margin $margin + mode $need)"
 }
 

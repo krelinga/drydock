@@ -29,18 +29,22 @@ done
 "$HERE/sweep.sh" || exit 4
 # The token guard (Spike 06's): the scratch config gets a copy of the source's
 # live refresh token, which a refresh would rotate dead for the source.
+# Fails closed: every value passes is_uint (lib.sh has the same, and why)
+# before any arithmetic, and every check is `[ ok ] || refuse`, since set -e
+# catches neither an arithmetic error nor a `[` that errors inside an `if`.
+is_uint() { case $1 in ''|0?*|*[!0123456789]*) return 1 ;; esac; [ "${#1}" -le 15 ]; }
 margin="${TOKEN_MARGIN_MIN:-60}"
-case "$margin" in ''|*[!0-9]*) echo "REFUSING: TOKEN_MARGIN_MIN='$margin' is not a whole number of minutes" >&2; exit 3 ;; esac
+is_uint "$margin" || { echo "REFUSING: TOKEN_MARGIN_MIN='$margin' is not a whole number of minutes (no leading zero, at most 15 digits)" >&2; exit 3; }
 [ "$margin" -ge 30 ] || { echo "REFUSING: TOKEN_MARGIN_MIN=$margin is below the floor of 30" >&2; exit 3; }
 exp=$(jq -r '.claudeAiOauth.expiresAt' "$SRC/.credentials.json" 2>/dev/null) || { echo "REFUSING: cannot read expiresAt from $SRC/.credentials.json" >&2; exit 3; }
-case "$exp" in ''|*[!0-9]*) echo "REFUSING: expiresAt ('$exp') is not a whole number of milliseconds" >&2; exit 3 ;; esac
-now=$(date +%s) || exit 3
-left=$(( (exp / 1000 - now) / 60 )) || exit 3
-if [ "$left" -lt "$margin" ]; then
+is_uint "$exp" || { echo "REFUSING: expiresAt ('$exp') is not a whole number of milliseconds (no leading zero, at most 15 digits)" >&2; exit 3; }
+now=$(date +%s) && is_uint "$now" || { echo "REFUSING: the clock ('$now') is not a whole number of seconds (no leading zero, at most 15 digits)" >&2; exit 3; }
+left=$(( (exp / 1000 - now) / 60 ))
+[ "$left" -ge "$margin" ] || {
   echo "REFUSING: $SRC's access token expires in $left min (< $margin);" >&2
   echo "  let the real config refresh first (use claude normally), then re-run." >&2
   exit 3
-fi
+}
 mkdir -p "$S"
 S="$(cd "$S" && pwd)"
 for w in a b; do
