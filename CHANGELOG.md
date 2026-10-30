@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.19.2](https://github.com/krelinga/drydock/compare/v0.19.1...v0.19.2) (2026-10-30)
+
+
+### Bug Fixes
+
+* say an approval exposes the host to every running workspace ([#202](https://github.com/krelinga/drydock/issues/202)) ([f2aeb09](https://github.com/krelinga/drydock/commit/f2aeb0934c1b6ed5187c01f8178b2f9b67d9064d))
+
 ## [0.19.1](https://github.com/krelinga/drydock/compare/v0.19.0...v0.19.1) (2026-10-30)
 
 
