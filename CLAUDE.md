@@ -11,8 +11,8 @@ The design: `docs/design/overall/drydock-design.md`, supplemented by port forwar
 (`docs/design/port-forwarding/`, "PF"), testing (`docs/design/testing/`) and the Vue frontend
 (`docs/design/frontend/`); a VS Code extension (`docs/design/vscode-extension/`, being built); a settled brand mark (`docs/design/brand/`, v1.1, with the shipping icon
 assets); an adversarial security review (`docs/design/security-review.md`); an exploration of running on
-non-root Docker (`docs/design/rootless-docker/`, declined for now); and seven spikes with
-re-runnable harnesses under `docs/design/spikes/`. Read the overall design before making
+non-root Docker (`docs/design/rootless-docker/`, declined for now); seven spikes with
+re-runnable harnesses under `docs/design/spikes/`, and an eighth (`08`) with none yet. Read the overall design before making
 architectural decisions — most "why is it like this?" questions are answered there. When a change
 contradicts it, update the doc in the same change.
 
@@ -399,6 +399,11 @@ These come from §2 (Claude Code constraints) and §13.5 (non-negotiables). Most
 
 - **Secrets are default-deny.** No `secret_grant` row, no secret. The required `reach` field ("what
   can someone do with this?") is a real control, not documentation.
+- **Workspaces are one trust domain.** Repos are trusted; the agent is held only at a few cheap
+  chokepoints (broker socket, no Docker socket, the approval gate; the docker guard stays as built and
+  is not extended). The shared `CLAUDE_CONFIG_DIR` carries hooks, MCP servers, plugins and skills, so
+  one workspace can very likely run code in another's Claude Code: accepted, not a bug (design §13,
+  Spike 08).
 - **Sessions are observed, not owned.** Drydock never creates a Remote Control session; it tails
   `--verbose` output and upserts `rc_session` rows. If the cache drifts, the Claude app is right. The UI
   links out with a count; it does not reimplement a session browser. The handle is the **environment
@@ -440,7 +445,8 @@ Design §14 orders the phases so the riskiest unknown resolves first.
 0. **Spikes** — done: `00` the shared credential volume, `01` the login handshake, `02` restart
    survival, `03` `CLAUDE_ENV_FILE`, `04` the browser tier's local CA, `05` the VS Code extension
    host, `06` whether a terminal can join the app's session (not the server's; `claude --rc` beside
-   it). Still open: whether a `--spawn worktree` path needs its own trust record.
+   it). Still open: whether a `--spawn worktree` path needs its own trust record, and `08`, whether
+   `claude --bg --rc` is workable per workspace (phase 1, read from the binary, done; phase 2, measuring, open).
 1. **Front door** — done, and deployed for real.
 2. **Walking skeleton** — done, reboot drill included.
 3. **Credentials** — done.
