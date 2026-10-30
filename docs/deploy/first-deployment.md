@@ -36,12 +36,12 @@ for the rest.
 Gaps found while writing this runbook. None of them blocks a first deployment if you know about
 them. Each one is also mentioned at the step where it bites.
 
-1. **The release PR cannot merge without an admin bypass.** The `main` ruleset requires five
-   status checks (`go`, `web`, `installer`, `conventional`, `contract`). The release-please PR is
-   opened by `GITHUB_TOKEN`, and a PR opened that way triggers no workflows, so those checks never
-   report and the PR shows as *blocked*. Repository admins may bypass the ruleset. Merging with the
-   bypass is safe because the release workflow runs the full suite again before it uploads anything.
-   See [step 2](#2-cut-a-release).
+1. **The release PR's checks wait for approval.** The `main` ruleset requires five status checks
+   (`go`, `web`, `installer`, `conventional`, `contract`). The release-please PR is opened by
+   `GITHUB_TOKEN`, so GitHub creates its workflow runs but holds them as `action_required` until a
+   repository writer approves them (the PR's *Checks* tab, or
+   `gh api -X POST repos/krelinga/drydock/actions/runs/<id>/approve`). Once they are green the PR
+   merges normally; no bypass is needed. See [step 2](#2-cut-a-release).
 2. **An automatic rollback cannot undo a database migration.** If an upgrade's new binary migrates
    the database and then fails to start, the installer puts the old binary back. The old binary
    then refuses the newer database (`refusing to run an older Drydock against a newer database`),
@@ -249,11 +249,12 @@ Run these from any machine with `gh` signed in as a repository admin:
   ```sh
   gh run list --repo krelinga/drydock --branch main --workflow ci.yml --limit 1
   ```
-- [ ] **Merge it with the admin bypass** ([Known issue 1](#0-known-issues--read-these-first)):
+- [ ] **Approve its workflow runs, then merge it** ([Known issue 1](#0-known-issues--read-these-first)).
+  The runs wait as `action_required`; approve each (*Checks* tab, or
+  `gh api -X POST repos/krelinga/drydock/actions/runs/<run-id>/approve`), wait for green, then:
   ```sh
-  gh pr merge <number> --repo krelinga/drydock --squash --admin
+  gh pr merge <number> --repo krelinga/drydock --squash
   ```
-  On the web, this is *Merge without waiting for requirements to be met (bypass rules)*.
 - [ ] **Watch the release workflow to the end.** It has five jobs: `release-please` tags `vX.Y.Z`
   and creates the Release **as a draft**, `test` runs the whole Go suite in exactly CI's `go`
   environment (both use `.github/actions/go-suite`), `assets` uploads the files to the draft,

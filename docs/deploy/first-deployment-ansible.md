@@ -1390,7 +1390,7 @@ destructive list best run by a person who has just deleted every workspace in th
 
 | Runbook step | Why it stays by hand |
 |---|---|
-| [0. Known issue 1](first-deployment.md#0-known-issues--read-these-first), [2. Cut a release](first-deployment.md#2-cut-a-release) | Merging the release PR needs an admin bypass, on GitHub, not on the server. The play only installs a release that is already published. |
+| [0. Known issue 1](first-deployment.md#0-known-issues--read-these-first), [2. Cut a release](first-deployment.md#2-cut-a-release) | Merging the release PR needs its workflow runs approved, on GitHub, not on the server. The play only installs a release that is already published. |
 | [1.2 DNS](first-deployment.md#12-a-hostname-for-the-ui-and-how-clients-resolve-it), [1.3 choosing a certificate](first-deployment.md#13-a-tls-certificate-every-client-trusts-for-that-hostname) | Decisions, and client-side settings. The play checks the result: the certificate matches its key and names `drydock_ui_host`. Renewal (options B and C) stays with your ACME client; copying a renewed certificate in and re-running reloads Caddy. |
 | [1.4 the App's permissions, installations and key](first-deployment.md#14-the-github-apps-private-key) | In GitHub's UI. The App is private. |
 | [3.3 a Caddy that already serves other sites](first-deployment.md#33-caddy-from-its-official-package) | A decision: `drydock_take_over_caddy`. |
