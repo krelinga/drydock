@@ -245,8 +245,8 @@ holds a GitHub credential).
 **Socket-as-identity.** Drydock binds no TCP port, and neither does the broker. The socket a request
 arrives on *is* the claim of who is asking and which repo they may touch — so the broker protocol
 carries no repository parameter (`GET-TOKEN scope=git`, `GET-SECRETS` with no arguments). A
-compromised container can only ask for what it already has. Removing the socket mount removes GitHub
-access instantly, with nothing to revoke.
+compromised container can only ask, through its own socket, for what it already has. Removing the
+socket mount removes GitHub access instantly, with nothing to revoke.
 
 **Docker is the truth, the database is the cache.** On startup, reconcile containers found by
 `label=drydock.workspace` against the `workspace` rows in one direction only. Adopt orphans rather
@@ -333,8 +333,8 @@ These come from §2 (Claude Code constraints) and §13.5 (non-negotiables). Most
   guard** (`--docker-path`), which refuses any `docker run`/`create`/`build` asking for more than
   Drydock's own flags plus the approval, any option or command it does not know, and anything that
   creates a container when it has no policy — before docker runs (§6, "The docker guard").
-- **No Docker socket in any workspace container.** Docker-out-of-Docker would let one container mount
-  another's broker socket.
+- **No Docker socket in any workspace container.** It is root on the host, which holds both keys (and
+  it would let one container mount another's broker socket).
 - **The frontend invents no state.** Every mutation returns `202`; the only local state a click may
   create is "a request is in flight". Entity state is written by exactly one thing — the reducer over
   the SSE stream — and the `202` body is discarded. Patching an entity from a mutation response looks
@@ -403,7 +403,8 @@ These come from §2 (Claude Code constraints) and §13.5 (non-negotiables). Most
   chokepoints (broker socket, no Docker socket, the approval gate; the docker guard stays as built and
   is not extended). The shared `CLAUDE_CONFIG_DIR` carries hooks, MCP servers, plugins and skills, so
   one workspace can very likely run code in another's Claude Code: accepted, not a bug (design §13,
-  Spike 08).
+  Spike 08). So a running workspace with host access approved puts the host in every workspace's
+  reach.
 - **Sessions are observed, not owned.** Drydock never creates a Remote Control session; it tails
   `--verbose` output and upserts `rc_session` rows. If the cache drifts, the Claude app is right. The UI
   links out with a count; it does not reimplement a session browser. The handle is the **environment

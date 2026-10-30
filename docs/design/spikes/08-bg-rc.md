@@ -54,8 +54,11 @@ prompt-injected agent in workspace A writes a hook into the user `settings.json`
 in workspace B runs it, inside B's container, where B's broker socket is mounted
 (`GET-TOKEN scope=git`, `GET-SECRETS`). The broker is right to answer — the socket is B's — and
 socket-as-identity holds; what the shared volume adds is a way for A's code to *be* in B. It reaches
-only workspaces that are running (a hook runs in a live Claude Code), and never the App private key,
-the secrets master key or the host: those stay behind the chokepoints design §13 keeps.
+only workspaces that are running (a hook runs in a live Claude Code), and not the App private key,
+the secrets master key or the host, which stay behind the chokepoints design §13 keeps — **unless a
+running workspace has host access approved**. An approved `privileged` container (docker-in-docker)
+is host root (design §6, *What approval means*), so a hook any workspace writes runs there with the
+host in reach.
 
 Not measured: whether every one of results 1–4 is picked up by an already-running
 `remote-control` server and its sessions without a restart, and which one is fastest. That would
@@ -88,7 +91,10 @@ adopted model, isolation is not a goal it would serve. If the model is ever tigh
 
 A prompt-injected agent in workspace A can likely reach workspace B's repository token and secrets
 through a shared hook. Do not run a sensitive repository beside one whose agent reads a lot of
-hostile input — issue bodies from strangers, untrusted dependencies, scraped pages.
+hostile input — issue bodies from strangers, untrusted dependencies, scraped pages. And while a
+workspace with host access approved (`privileged`, an `initializeCommand`, a sensitive bind mount,
+`--network host`) is running, a prompt-injected agent in *any* workspace can likely reach the host
+through it, the App private key and the secrets master key included.
 
 ---
 
