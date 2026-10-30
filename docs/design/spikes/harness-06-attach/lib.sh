@@ -127,10 +127,13 @@ reap() {
   # is still cleaned up by the next). Never "everything claude agents lists":
   # the daemon's sockets are keyed by uid, so that list may hold the owner's.
   if [ -f "$BGIDS" ]; then
+    # An id whose stop failed stays listed, for the next run's reap to retry.
+    : > "$BGIDS.keep"
     while read -r id; do
-      [ -n "$id" ] && (cd "$WS" && cenv "$CLAUDE" stop "$id") >/dev/null 2>&1
+      [ -n "$id" ] || continue
+      (cd "$WS" && cenv "$CLAUDE" stop "$id") >/dev/null 2>&1 || printf '%s\n' "$id" >> "$BGIDS.keep"
     done < "$BGIDS"
-    rm -f "$BGIDS"
+    if [ -s "$BGIDS.keep" ]; then mv "$BGIDS.keep" "$BGIDS"; else rm -f "$BGIDS" "$BGIDS.keep"; fi
   fi
   return 0
 }

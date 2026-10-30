@@ -49,7 +49,7 @@ turns() { # turns <transcript>: user/assistant record count
 }
 dbg_since() { # dbg_since <debug-file> <iso-time> <ERE>
   [ -f "$1" ] || { say "    !! no debug file $1: the lines below prove nothing"; return 0; }
-  awk -v t="$2" '$1 >= t' "$1" | grep -aE "$3" | cut -c1-200 | sed 's/^/    > /' | tail -8
+  awk -v t="$2" '$1 ~ /^[0-9]{4}-/ && $1 >= t' "$1" | grep -aE "$3" | cut -c1-200 | sed 's/^/    > /' | tail -8
 }
 # dbg_gained <debug-file> <iso-time>: the positive control for "the server's
 # session process logged nothing about it". The file must exist and still be
@@ -58,16 +58,17 @@ dbg_since() { # dbg_since <debug-file> <iso-time> <ERE>
 dbg_gained() {
   [ -f "$1" ] || { say "    !! no debug file $1: cannot say what the process saw"; return 0; }
   local n o
-  n=$(awk -v t="$2" '$1 >= t' "$1" | wc -l)
-  o=$(awk -v t="$2" '$1 >= t' "$1" | grep -avE 'Heartbeat sent|switching poll interval' | cut -c1-160)
+  n=$(awk -v t="$2" '$1 ~ /^[0-9]{4}-/ && $1 >= t' "$1" | wc -l)
+  o=$(awk -v t="$2" '$1 ~ /^[0-9]{4}-/ && $1 >= t' "$1" | grep -avE 'Heartbeat sent|switching poll interval' | cut -c1-160)
   say "    debug file gained $n lines since $2, $(printf '%s' "$o" | grep -c .) other than heartbeats:"
   [ -n "$o" ] && printf '%s\n' "$o" | tail -10 | sed 's/^/    > /'
   return 0
 }
 now() { date -u +%Y-%m-%dT%H:%M:%S; }
-trap reap EXIT
-
+# The guard runs before the trap: a refused run must not `claude stop` anything
+# on a stale copy of the credential.
 token_guard "$CFG/.credentials.json"
+trap reap EXIT
 say "claude under test: $(cenv "$CLAUDE" --version 2>&1 | head -1)"
 say "ws=$WS cfg=$CFG run=$RUN"
 reap
@@ -158,7 +159,7 @@ server-resume)
     T1=$(now); typeline c1 '/remote-control ' 15
     say "    terminal now: $(screen c1 | grep -aoE '(remote-control is active|Remote Control (failed|not started)|already)[^│]{0,100}' | tail -1)"
     say "    its session: $(rcline "$RUN/sr-c1.log") (the server's is $B)"
-    seen=no; for i in $(seq 1 90); do grep -aq 'code=4090' "$SDBG" && { seen=yes; break; }; sleep 1; done
+    seen=no; for i in $(seq 1 90); do awk -v t="$T1" '$1 ~ /^[0-9]{4}-/ && $1 >= t' "$SDBG" | grep -aq 'code=4090' && { seen=yes; break; }; sleep 1; done
     say "    the server's session process, ~$((15 + i)) s later: code 4090 seen: $seen"
     dbg_gained "$SDBG" "$T1"
     say "    server pane: $(screen srv | grep -aoE 'Capacity: [0-9]+/[0-9]+' | tail -1); session process alive: $(kill -0 "$(live_rows | jq -r --arg b "$B" 'select(.entrypoint == "sdk-cli" and .bridgeSessionId == $b) | .pid' | head -1)" 2>/dev/null && echo yes || echo no)"
@@ -380,7 +381,8 @@ bg)
   term a2; term a1; sleep 3
   agents | sed 's/^/    /'
   say "--- SIGKILL the worker (a crash): what does the daemon do, and what does attach bring back?"
-  kill -KILL "$WPID"; sleep 8
+  if is_ours "$WPID" 'claude'; then kill -KILL "$WPID"; else say "  pid $WPID is not this config's worker; will not signal it"; fi
+  sleep 8
   agents | sed 's/^/    /'
   pane a3 "$WS" "$RUN/bg-a3.log" "$CLAUDE" attach "$ID"; sleep 15
   say "  attach after SIGKILL: session $(rcline "$RUN/bg-a3.log") (was $B)"

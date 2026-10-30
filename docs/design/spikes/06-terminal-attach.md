@@ -11,11 +11,14 @@ session in tmux that the operator `tmux attach`es to (path 4, the owner's idea).
 **Answer: not onto a session the server owns. There is no attach, and a resume is a second
 writer, not a viewer.** A terminal can *open* a server session's conversation (`--resume <id>`,
 `--continue`), but it gets a second writer on the same transcript file, with its own context. The
-server's session process logged nothing but heartbeats while the terminal took turns, and it loads
-its history from Anthropic's API, not the local file — so the terminal's turns should never reach the
-app, and once the app sends turns too the file should fork (both predicted; checking needs a human,
-H1). `/remote-control` in that terminal does not take the server's session over: it creates a
-second app session. Nothing in `--help` or the binary attaches to a server's session.
+server's session process loads its history from Anthropic's API, not the local file, and the
+terminal's turns never reached the app: after the app had sent a turn and a resumed terminal typed
+`TERM1`, `TERM1` did not appear in the app's server session (H1, owner, 2026-10-30). `TERM1`'s record chains
+from `APP1`'s in the local file, so the resumed terminal had loaded the app's turn into its history.
+`/remote-control` in that terminal does not take the server's session over: it creates a second app
+session, which the app lists under its **"Remote Control"** section, not in the server's environment,
+and which is the only place `TERM1` appears. Nothing in `--help` or the binary attaches to a
+server's session.
 
 **What does work is an interactive session with Remote Control on** — `claude --remote-control`
 (`--rc` is its hidden alias), or `/remote-control` inside a running `claude`. The terminal and the
@@ -25,7 +28,9 @@ app then drive *one* conversation. It runs beside the server in the same folder 
 background mode for it, `claude --bg --remote-control` with `claude attach <id>`, which needs no
 tmux. The price, if it replaced the server: one conversation per process — no `--capacity`, no
 `--spawn worktree`, no environment, so nothing for the app to open a *new* session in — and a
-different set of startup gates, two of which hang and one of which fails silently.
+different set of startup gates, two of which hang and one of which fails silently. The app lists such a
+session under its **"Remote Control"** section and offers no way to start a new session from it
+(H2, owner, 2026-10-30).
 
 **Verdict.** Keep the server. The cheap answer to the owner's question is that the operator runs
 `claude --rc` in the container's terminal for a conversation they want in both places. That was
@@ -43,7 +48,8 @@ what §8 chose the server for.
   one pid namespace.
 - **Date:** 2026-10-30.
 - **Harness:** [`harness-06-attach/`](harness-06-attach/) — re-runnable; each result names its mode.
-- **Not measured** (needs a human at the Claude app): what the app shows. See *Owed* below.
+- **App-side results** (H1 and H2, the owner at the Claude app, same version, 2026-10-30) are marked
+  *H1* / *H2* below. H3 is not run. See *Owed*.
 
 ---
 
@@ -54,10 +60,14 @@ what §8 chose the server for.
 | 1 | Flags for resuming / attaching | `--rc [name]` is registered as `Alias for --remote-control` with `.hideHelp()` (the binary's option table; the spike ran `--remote-control`, never `--rc`); `--bg` + `attach`/`logs`/`stop` exist; `attach` takes only `--bg` ids | `cli` |
 | 2 | `--resume <id>` of the server's live session, no turns yet | `No conversation found with session ID: <id>` | `server-resume` (fresh scratch) |
 | 2 | `--continue` in the same folder, server live | **opens the server's session** as a second process on the same local id | `server-resume` |
-| 2 | `--resume <id>` once the conversation has turns, server live | opens it; terminal turns append to the server session's file; the server session's debug log gains only heartbeats | `server-resume` |
-| 2 | `/remote-control` in that terminal | a **new** app session (`session_…TZUk…`), not the server's; server stays `Capacity: 1/4`, its process alive, no `4090` in 105 s | `server-resume` |
-| 2 | `--teleport <server session>` | `This terminal now has its own copy of the session …`; `Fetched 0 events` | `server-resume` |
-| 2 | Same after `SIGTERM` of the server; then a server restart | resume works; restart reattaches the same environment and session; two processes then hold one local id | `server-resume` |
+| 2 | `--resume <id>` once the conversation has turns (unattended), server live | opens it; terminal turns append to the server session's file; the server session's debug log gains only heartbeats | `server-resume` |
+| 2 | `--resume <id>` after the app sent `APP1` (H1, owner, 2026-10-30) | opens it; `TERM1` typed there is appended to the same file as **one chain** (`APP1 -> TERM1`: the resumed terminal's history held the app's turn), no fork; the server session's debug log gained **0 lines** (not even heartbeats) in that window | `WAIT_APP=300 server-resume` |
+| 2 | Is `TERM1` in the app's server session? (H1, owner, 2026-10-30) | **no**, it never appeared | `WAIT_APP=300 server-resume`, human step |
+| 2 | `/remote-control` in that terminal (unattended) | a **new** app session (`session_…TZUk…`), not the server's; server stays `Capacity: 1/4`, its process alive, no `4090` in 105 s | `server-resume` |
+| 2 | Same (H1, owner, 2026-10-30) | a **new, separate** app session (`session_01W4JFWQ…`), visible in the app and carrying `TERM1`, listed under the app's **"Remote Control"** section, not within the server's `ddspike06` environment; server stays `Capacity: 1/4`, its session process still running | `WAIT_APP=300 server-resume` |
+| 2 | `--teleport <server session>` (unattended, no app turns) | `This terminal now has its own copy of the session …`; `Fetched 0 events` | `server-resume` |
+| 2 | Same, with app turns (H1, owner, 2026-10-30) | `Fetched 14 events over 1 page(s)`, `Filtered 14 entries to 14 messages`, then the same "own copy … will not appear in the Claude app" line | `WAIT_APP=300 server-resume` |
+| 2 | Same after `SIGTERM` of the server, and a server restart | resume works; restart reattaches the same environment and session; two processes then hold one local id | `server-resume` |
 | 3 | How the server's session process loads its history | `--resume=https://api.anthropic.com/v1/code/sessions/cse_…`: from the API, not the local `.jsonl` | `cli` |
 | 4 | Two terminals on one interactive Remote Control conversation | second gets `Remote Control not started here · … already has Remote Control for this conversation`; one file, **two branches**, no invalid lines (turns ~15 s apart; no concurrent append tried); the first terminal blind to the second's turn | `interactive-resume` |
 | 4 | `/remote-control` in the second terminal | takes the same app session; the first is told `standing down (code 4090)` ~19 s later (65 s in an earlier run) | `interactive-resume` |
@@ -67,6 +77,7 @@ what §8 chose the server for.
 | 5 | Same in a `git worktree` of the clone with **no trust record** | starts, no trust prompt | `alongside` |
 | 6 | What an interactive Remote Control session prints | the session URL once, **plain text**, no OSC 8; no `Environment ID`, no `Capacity` | `tmux-rc` |
 | 6 | A turn typed in the terminal | forwarded to the app session (`[remote-bridge] Sent result success`) | `tmux-rc` |
+| 6 | A turn sent from the app (H2, owner, 2026-10-30) | appears in the terminal (`❯ Reply with exactly APP1…` / `● APP1`), one chain in the transcript; the app lists the session under **"Remote Control"** and offers **no option to start a new session** there | `WAIT_APP=300 tmux-rc-app` |
 | 6 | A second tmux client at 80×24, then killed | window 80×23 while attached (the harness then restores 200×50 itself); no bridge state change | `tmux-rc` |
 | 7 | `SIGTERM`, then `--remote-control --continue` | same session id, same local id (`Reattaching to persisted bridge session … restored_owner_match`) | `tmux-rc` |
 | 7 | `SIGKILL`, restart at once | same session id, accepted first time, **no lockout**; conversation carried (`OK1`) | `tmux-rc` |
@@ -102,21 +113,56 @@ restarts, and its transcript is `projects/<path>/<id>.jsonl` like any other.
   shutdown, and nothing else.
 - **`/remote-control` in that terminal** creates a second app session over the same local
   conversation. The server's session is never displaced: no `4090` within 105 s, `Capacity: 1/4`,
-  process alive. So one transcript file now backs two app sessions.
+  process alive. So one transcript file now backs two app sessions. In H1 the app showed the new
+  session on its own, carrying `TERM1`, under its **"Remote Control"** section rather than in the
+  `ddspike06` environment.
 - **After a `SIGTERM` of the server**, `--resume` opens it (and, since the terminal had last held
   Remote Control on it, re-registers that second app session). Restarting the server while the
   terminal holds it reattaches the server's own environment and session, as Spike 02 found; the
   registry then shows both processes on the one id.
 - **The picker** (`claude --resume` with no id) lists the server's session among the folder's
   conversations — `(session) · 789 bytes` before a turn — with nothing marking it as served.
-- **`--teleport <session>`** is for cloud sessions: it fetched `0 events` for every Remote Control
-  session tried and started an empty local copy, saying so: *"This terminal now has its own copy of
-  the session: new work here stays local and will not appear in the Claude app."*
+- **`--teleport <session>`** is for cloud sessions: on the unattended runs, which had no app turns, it
+  fetched `0 events` for every Remote Control session tried and started an empty local copy, saying
+  so: *"This terminal now has its own copy of the session: new work here stays local and will not
+  appear in the Claude app."* With app turns present (H1) it fetched `14 events over 1 page(s)` and
+  printed the same line: content came down, and the copy is still one-way.
 
-The server-side half of this — a session with turns *sent from the app*, then resumed — is owed (H1
-below). The file only forks when both sides write, and only app turns make the server side write, so
-**a fork of a server session's file is predicted, not measured**. Results 3 and 4 are the reasons for
-the prediction.
+#### The server-side half, with a turn from the app (H1)
+
+The owner sent `Reply with exactly APP1 and nothing else.` from the app into the server's session,
+then the harness ran the steps below (`WAIT_APP=300 ./run.sh server-resume`, a fresh scratch,
+2026-10-30). What the harness printed, and what the owner saw in the app:
+
+- **(a) Resume while the server holds the session.** The registry showed two processes on the local
+  id (the server's `sdk-cli` with its bridge session, the terminal's `cli` with `null`). After `TERM1`
+  was typed, `tree.mjs` read 29 records, 0 invalid lines, **one leaf**: `APP1 -> TERM1`. `TERM1`'s record
+  chains from `APP1`'s, so the resumed terminal had loaded the app's turn into its history and extended the same chain; no fork, since
+  the app wrote nothing after the resume. The owner saw that **`TERM1` never appeared in the app's
+  server session**. The server's session process debug log gained **0 lines** in that window,
+  heartbeats included. That is weaker than the unattended result (heartbeats and nothing else): it
+  says the process logged nothing in the window, not that it was heartbeating. The window was about
+  16 s, inside the ~20 s heartbeat interval, so no heartbeat was due; the 0 lines say little.
+- **(b) `/remote-control` in the terminal.** It printed `/remote-control is active … claude.ai/code/session_01W4JFWQ…`,
+  a different session from the server's (`session_01W4JFWS…`). The server pane stayed `Capacity: 1/4`
+  and its session process kept running. The owner saw the new session in the app, carrying `TERM1`,
+  listed under **"Remote Control"**, not within the `ddspike06` environment.
+- **(c) `--continue`** printed `No conversation found to continue`. **This differs from the unattended
+  run**, where `--continue` opened the server's pre-created session. It is a discrepancy, left open.
+  The obvious hypothesis, that the harness's `SIGTERM` of the terminal after `/remote-control` archived
+  the conversation (`Torn down (archive=200)`, result 7), is **contradicted by this report's own
+  results**: result 4's `--continue` reopened an interactive conversation after both its terminals
+  were gone, and result 7's resume after `SIGTERM` reattached the same session. So no explanation is
+  offered. The registry at that point listed only the server's process.
+- **(d)** The picker step printed no matching lines in this run. That may share (c)'s unexplained
+  cause, or be render timing; not separated.
+- **(f), (g)** As unattended: after the server's `SIGTERM`, `--resume` opened the conversation and
+  held the terminal's second app session; a restarted server reattached its own environment and
+  session, and two processes then held one local id.
+
+What is **still unmeasured** is an app turn sent *after* the terminal resumed. The file forks only
+when both sides write after the resume, so a fork of a *server* session's file is still unseen;
+result 4's fork, on an interactive conversation, is the only one.
 
 ### 3 — Why: the server's sessions load from the API
 
@@ -256,16 +302,23 @@ lists the other's jobs, and the daemon's refresh against Spike 00's lock on the 
 
 **Path 1 — resume a server-owned session from a terminal: no.** It works mechanically and is
 dangerous in practice. `--resume`/`--continue` open the conversation as a second writer. The server's
-session process did not react to the terminal's turns, and it loads from the API, so the app should
-never see them; with app turns as well, the file should fork as result 4's did (both owed, H1). `/remote-control` from there makes a second app session rather than joining
-the first. After the server stops, a resume is a fine way to *continue a conversation locally*, but
+session process did not react to the terminal's turns and loads from the API, and the app never saw
+them (H1, owner, 2026-10-30); the resumed terminal's history held the app's earlier turn. A file fork needs an app
+turn after the resume, which was not tried. `/remote-control` from there makes a second app session
+rather than joining the first, listed under the app's "Remote Control" section, not in the
+environment. `--continue` is not reliable either: it opened the server's session on the unattended
+run and found nothing in H1. After the server stops, a resume is a fine way to *continue a conversation locally*, but
 not to share it. Nothing stops it in a Drydock container, which is the hazard: an operator's
-`claude --continue` in `/workspace` should land in the server's pre-created session, as it did here.
+`claude --continue` in `/workspace` can land in the server's pre-created session, as it did on the
+unattended run (it did not in H1).
 
 **Path 2 — an interactive session shared to the app beside the server: yes, as a separate
 session.** `claude --remote-control` (or `/remote-control`) gave a session the app also drives,
 beside the server, in the clone and in a worktree, with no refusal and no effect on the server. It is
-a new conversation, not the server's. Measured on the host under `env -i`, so in a workspace
+a new conversation, not the server's, and the app presumably lists it under its "Remote Control"
+section rather than in the server's environment (an extrapolation: H1 and H2 measured the
+`/remote-control` of a resumed conversation and a `--remote-control` session in tmux; neither ran
+path 2 itself). Measured on the host under `env -i`, so in a workspace
 container it *should* need nothing from Drydock: the shared volume already carries the trust record
 and `oauthAccount`, and an operator's first interactive `claude` on a fresh volume meets the theme
 picker, which a human answers once. One run in a real workspace would settle it.
@@ -277,9 +330,9 @@ until it is measured in two containers on one volume (result 10).
 
 **Path 4 — replace the server with `claude --rc` in tmux: it works, and it is a worse server.**
 Headless start, restart onto the same session after either signal, no 409, terminal and app on one
-conversation, tmux clients harmless. Against §8: one conversation per workspace instead of
+conversation in both directions (the app's turn appeared in the terminal's capture, H2), tmux clients harmless. Against §8: one conversation per workspace instead of
 `--capacity 4` with on-demand worktree sessions; no environment, so no `?environment=` link and no
-new sessions from the phone; a plain-text URL that breaks the OSC-8-only rule; two hangs and a
+new sessions from the phone (H2: the app offers none); a plain-text URL that breaks the OSC-8-only rule; two hangs and a
 silent degrade for gates; and the operator who attaches shares one input line with the phone.
 
 ## What Drydock would need for each
@@ -310,26 +363,20 @@ silent degrade for gates; and the operator who attaches shares one input line wi
 
 ## Owed (needs a human at the Claude app)
 
-- **H1 — a server session with turns from the app, then resumed.** Run
-  `WAIT_APP=300 ./run.sh server-resume` on a fresh scratch (`./setup.sh /tmp/s06b`). It prints an
-  environment link and a session name; open it in the Claude app or claude.ai, pick that session, and
-  send `Reply with exactly APP1 and nothing else.` The harness then runs result 2's steps. Report the
-  output, and look in the app after step (a) types `TERM1` in the terminal: **does `TERM1` appear in
-  the app's session?** (Predicted: no.) After step (b): **how many sessions does the app list, and
-  under what?**
-- **H2 — the app's half of path 4.** Run `WAIT_APP=300 ./run.sh tmux-rc-app`, open the printed
-  `claude.ai/code/session_…` link, send `Reply with exactly APP1 and nothing else.`, and report the
-  output (does the terminal show the app's turn) plus whether the session appears under an
-  environment in the app, and whether the app offers to start another session there.
+H1 and H2 were run by the owner on 2026-10-30 and are recorded above. Left:
+
 - **H3 — optional:** in H1, also start a *second* session from the app in that environment (it gets
   a `--spawn worktree` worktree) and send one turn; then `claude --resume` from that worktree's path
   in a terminal. That is path 1 in a worktree session, unmeasured here because only the app can
   create one.
+- **H1b — optional:** after the terminal has resumed, send a second app turn into the server's
+  session, to see whether the file forks as it did for an interactive conversation (result 4).
 
 ## Open questions
 
 - What an archived (`Torn down (archive=200)`) interactive session looks like in the app, and
   whether the app resumes it or only the terminal can.
+- Why `--continue` found nothing in H1 but opened the server's session on the unattended run (result 2).
 - Whether the `4090` takeover delay (19 s and 65 s here) is a poll interval worth knowing.
 - Whether the daemon's own OAuth refresh behaves on the shared volume like every other refresher
   (Spike 00's `mkdir` lock), and how two containers' daemons share `daemon/` and `jobs/`; untested.
