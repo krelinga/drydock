@@ -22,9 +22,11 @@ file, with the history copied, and the server's file is left alone.
 **The variant to use is `claude --resume --fork-session --rc`** (Claude Code's own picker; or
 `claude --resume <id> --fork-session --rc`), **run in the folder the conversation ran in**, then
 archive the phone's session. The folder matters: a fork drops a worktree conversation's binding to
-its worktree, so run from the clone it continues **in the clone** (result 8, measured). For the
-workspace's first session that folder is the workspace folder. For a session that ran in a worktree
-it is that worktree. That needs nothing from Drydock.
+its worktree, so run from the clone it continues **in the clone**, and nothing refuses or warns
+(result 8, measured). For the workspace's first session that folder is the workspace folder. For a
+session that ran in a worktree it is that worktree, which the operator finds from the picker
+itself: Ctrl+W in the workspace folder shows each conversation's branch. That needs nothing from
+Drydock.
 
 - **Verified against:** Claude Code `2.1.289` (`claude --version`), Linux, `tmux` 3.4 (a private `-L
   dd-spike-10` server). Every process ran on the host under `env -i` with only a Drydock container's
@@ -35,10 +37,13 @@ it is that worktree. That needs nothing from Drydock.
 - **Harness:** [`harness-10-resume-rc/`](harness-10-resume-rc/), re-runnable. Each result names its
   mode. `handoff` ran twice on fresh scratches with the same results, and a third time by accident on
   a used one, which is why the harness now refuses a used scratch. After review, `cli`, `ids`,
-  `picker`, `takeover` (new) and `worktree` were re-run with the changes below. `worktree` ran five
-  times: the fork rows (g) and (h) on every run; the Ctrl+W picker row (i) on the last two (fresh
-  scratches; the first two runs' Enter took the wrong row, and the third's Up left the list); and
-  the worktree-path picker row (j), added for the last run, once.
+  `picker`, `takeover` (new) and `worktree` were re-run with the changes below. `worktree` ran six
+  times: the fork rows (g) and (h) on every run; the Ctrl+W picker row (i) on the last three
+  (fresh scratches; the first two runs' Enter took the wrong row, and the third's Up left the list);
+  and the worktree-path picker row (j), added for the fifth run, on the last two. In the sixth run
+  each fork row was also checked to descend from the worktree conversation (its transcript carries
+  that conversation's first user record, and it recalled this run's marker), and all four did. The
+  second `takeover` run kept (f) alive 60 s before stopping it and timestamped the signal.
 - **Measured vs read.** Every result is *measured* unless marked *read* (read from the binary's
   bundled JavaScript, nothing run) or *inferred* (a cause that fits what was measured, not tested on
   its own).
@@ -71,16 +76,16 @@ it is that worktree. That needs nothing from Drydock.
 | 4 | Each reattach | an inbound `control_request subtype=end_session` replayed from the stream and answered `result=error`; the session stayed active and answered | `handoff` (c), (d), (e) |
 | 5 | Server `SIGTERM`ed, then `--resume <id> --rc` | reattached (a)'s app session (`at seq 18`, `Unarchive … status=200`); marker recalled | `handoff` (e) |
 | 5 | Server restarted while (e) holds the conversation | same environment, same server session, `Capacity: 1/4`; two processes on the local id again; (e) unaffected | `handoff` (e2) |
-| 6 | A second `--resume <id> --rc` while (e) holds it | no refusal: `Explicit enable is taking over bridge session cse_… from local pid <e>` (04:57:40.3). **(e) was displaced while (f) was still alive**: 14 s later its next request met `superseded_by_worker` and it closed with `4090` (*another connection took over this session … standing down*), 04:57:54.65, before (f) was signalled. (f), SIGTERMed, then `Torn down (archive=200)` (04:57:55.37). (e)'s process stayed alive with Remote Control off (`Torn down (archive=skipped_superseded)`) | `takeover` |
+| 6 | A second `--resume <id> --rc` while (e) holds it | no refusal: `Explicit enable is taking over bridge session cse_… from local pid <e>`. **(e) is displaced while (f) is still alive.** Second run (with (f) kept alive 60 s and the signal timestamped): take-over 05:31:38.13; 16 s later (e)'s next request met `superseded_by_worker` and it closed with `4090` (*another connection took over this session … standing down*), 05:31:54.41; at the end of the 60 s its registry row's `bridgeSessionId` was `null`; (f) was SIGTERMed at 05:32:42.92, **48.5 s after the drop**, and logged `Torn down (archive=200)` at 05:32:43.26. (e)'s process stayed alive with Remote Control off. The first run (14 s from take-over to drop, then 10 s) had the drop 0.7 s before (f)'s teardown, too close to order by its output alone | `takeover` |
 | 7 | `--resume session_…` or `--resume cse_…` (the ids Drydock knows) | not an id to it: the picker opens searching for it, `No sessions match "session_…"` | `ids` |
 | 7 | Where the local id is | not in the server's tail or debug log. The session process's argv is `--session-id cse_…` and `--sdk-url https://api.anthropic.com/v1/code/sessions/cse_…`. The local id is a **version-5 UUID, `uuid5(3ab19d7e-9f35-45c2-926e-75e271cc60b3, <the --sdk-url>)`**: computed over each of the binary's 21 distinct UUID literals as the namespace and each name the process was handed, that pair, and only it, gives the local id (measured). The binary calls it *"a uuidv5 of the session id in its `cse_` form … the same for the life of the cloud session … until a /clear in the session"* (*read*). The live-session registry `$CLAUDE_CONFIG_DIR/sessions/<pid>.json` also maps `bridgeSessionId` → `sessionId` | `ids` |
 | 8 | A `claude -w` worktree conversation, `--resume <id>` from the clone's path | accepted, and it **runs in the worktree** (registry `cwd` = `.claude/worktrees/<name>`); marker recalled; with `--rc`, a new app session as in (a). That the transcript's `worktree-state` record is what moves it is *inferred* (the binary's resume restores it; the record was not removed to test it) | `worktree` (a), (b) |
 | 8 | Same from the worktree's path | same | `worktree` (c) |
-| 8 | **`--resume <id> --fork-session --rc` from the clone's path** | accepted, history kept (marker recalled), a new app session, and it **runs in the clone** (registry `cwd` = the clone; the fork's transcript under the clone's project directory, 0 `worktree-state` records in it). The worktree binding is gone, as result 1 read. Five runs out of five | `worktree` (g) |
-| 8 | Same from the worktree's path | runs **in the worktree**, history kept, a new app session. Five out of five | `worktree` (h) |
+| 8 | **`--resume <id> --fork-session --rc` from the clone's path** | accepted, history kept (marker recalled), a new app session, and it **runs in the clone** (registry `cwd` = the clone; the fork's transcript under the clone's project directory, 0 `worktree-state` records in it). The worktree binding is gone, as result 1 read. Six runs out of six | `worktree` (g) |
+| 8 | Same from the worktree's path | runs **in the worktree**, history kept, a new app session. Six out of six | `worktree` (h) |
 | 8 | The picker from the clone's path | does not list the worktree conversation; its footer offers *Ctrl+W to show all worktrees* | `worktree` (d) |
 | 8 | The picker from the clone's path with `--fork-session --rc`, Ctrl+W, Enter on the worktree conversation | lists it (`… · worktree-ddspike10wt · 245.9KB`); the fork **runs in the clone**, history kept, as (g). Ctrl+W does not move the cursor: on a scratch with clone conversations, Enter took the one it was on | `worktree` (i) |
-| 8 | The picker from the worktree's path with `--fork-session --rc`, Enter | lists the worktree conversation without Ctrl+W (`❯ Session with memorable word · 1 minute ago · worktree-ddspike10wt`); the fork **runs in the worktree**, history kept, a new app session. One run (the row was added for the last) | `worktree` (j) | `worktree` (j) |
+| 8 | The picker from the worktree's path with `--fork-session --rc`, Enter | lists the worktree conversation without Ctrl+W (`❯ Session with memorable word · 1 minute ago · worktree-ddspike10wt`); the fork **runs in the worktree**, history kept, a new app session. Two runs (the row was added for the fifth) | `worktree` (j) |
 | 8 | A clone conversation resumed from the worktree | runs where it was launched (the worktree) and appends to the clone's transcript file | `worktree` (e) |
 | 8 | Either resumed from `$HOME` (no trust record) | the trust menu (`❯ No, exit` / `Yes, I trust this folder`), which waits | `worktree` (f) |
 
@@ -167,11 +172,12 @@ A server restart while the hand-off holds the conversation brings the server bac
 environment and session (Spike 02), next to the terminal, and neither notices the other. A second
 `--resume <id> --rc` for a conversation another terminal is serving is **not refused**: it takes the
 app session over (`Explicit enable is taking over … from local pid`). The first terminal is
-displaced while the second is still running: its next request, 14 s later in `takeover`, met
-`superseded_by_worker`, and it stood down with `4090` and stayed open with Remote Control off. When
-the second exits it archives the app session. The first draft of this report read the order the
-other way (the first dropped after the second exited); `takeover` timestamps both, and the drop came
-first. Without `--rc`, Spike 06 result 4 got `Remote Control not started here … run /remote-control
+displaced while the second is still running: its next request, 14 and 16 s after the take-over in
+the two `takeover` runs, met `superseded_by_worker`, and it stood down with `4090` and stayed open
+with Remote Control off. In the second run the second terminal was then left alive a further 48 s
+before it was stopped, so the order is not a matter of timing resolution. When the second exits it
+archives the app session. The first draft of this report read the order the other way (the first
+dropped after the second exited). Without `--rc`, Spike 06 result 4 got `Remote Control not started here … run /remote-control
 to move it`. With `--rc` the operator asked for the move, so it happens. One terminal per
 conversation is the rule.
 
@@ -188,8 +194,11 @@ too, but only for live processes, and per pid on a volume every container shares
 collide across containers).
 
 Both are undocumented internals of `2.1.289`: the namespace, the URL's form and the registry can
-each change on a bump. And the binary says the id lasts *"until a /clear in the session"* (*read*):
-after a `/clear` in the app, a stored or computed id names the conversation before it.
+each change on a bump. And the binary says the id lasts *"until a /clear in the session"* (*read*).
+The computed id is a function of the `--sdk-url` alone, which a `/clear` does not change, so after a
+`/clear` in the app it still names the conversation **before** the clear, whose transcript is still
+on the volume: `--resume` of it is accepted and silently continues the pre-clear conversation
+(*inferred*; `/clear` was not run). A stored id does the same.
 
 ### 8 — Worktrees: the fork continues where it is run
 
@@ -246,32 +255,45 @@ stands the first terminal down. Both belong in the docs sentence.
 ## What Drydock would build
 
 1. **Now, nothing but a sentence** (docs and the extension's README). *To carry a conversation from
-   the phone to this terminal, `cd` to the folder it ran in — the workspace folder, or for a session
-   the app started later, its worktree under `.claude/worktrees/` — run `claude --resume
-   --fork-session --rc` there, and pick it. (Picked from another folder, it continues in that
-   folder, not in its worktree.) Then archive the phone's session in the app: it stays in the
-   environment, holds one of the server's four places, and anything typed there afterwards does not
-   reach this terminal. The continued conversation appears in the app under Remote Control.* Gate it
-   on H2, H4 and H5 (H5 says where the server's worktrees are). Measured on the host, so one run in a
-   real workspace container should go with it (Spike 06 owes the same for `claude --rc`).
+   the phone to this terminal, run `claude --resume --fork-session --rc` in the folder the
+   conversation ran in, and pick it. If you are not sure which folder that is, run it in the
+   workspace folder first, press Ctrl+W to list every worktree's conversations, read the branch on
+   the one you want (`worktree-<name>`), press Esc, `cd` into that worktree and run the command
+   again. A wrong folder is not refused: picked from the workspace folder, a conversation that ran
+   in a worktree silently continues in the workspace folder, away from its work. Then archive the
+   phone's session in the app: it stays in the environment, holds one of the server's four places,
+   and anything typed there afterwards does not reach this terminal. The continued conversation
+   appears in the app under Remote Control.* Where the server keeps the worktrees of the sessions
+   the app starts (under `.claude/worktrees/`, like `claude -w`'s, or elsewhere) is H5's to say, so
+   the sentence names no path until then. Gate it on H2, H4 and H5. Measured on the host, so one
+   run in a real workspace container should go with it (Spike 06 owes the same for `claude --rc`).
+   The alternative to finding the folder is a plain `claude --resume --rc` from the workspace
+   folder, which follows a worktree conversation into its worktree (result 8, measured) but shares
+   the phone session's transcript and local id: the two-writer cost `--fork-session` exists to
+   avoid.
 2. **An extension command, "Continue a phone session here"**, for the attached-container window.
    It sends nothing to Drydock and mutates nothing, so it is outside the extension's rule-1 gate
-   (extension design §8). It opens an integrated terminal in the container and runs `claude
-   --resume --fork-session --rc`. The picker does the choosing, so the command must open the
-   terminal in the folder of the conversation chosen, which the picker cannot tell it: it could
-   offer the workspace folder and each worktree, or open in the workspace folder and say in its
-   message that a worktree session is continued from its worktree. Never `$HOME`. Its message also
-   says to archive the phone's session. This needs no API, schema or Feature change.
+   (extension design §8). It first offers a quick-pick of the workspace folder and each of its git
+   worktrees, each labelled by its branch (`git worktree list` in the container), then opens an
+   integrated terminal in the one chosen and runs `claude --resume --fork-session --rc` there; the
+   picker chooses the conversation. The branch is what the picker shows for a conversation, so the
+   operator can match the two; nothing can check the match, since the folder must be chosen before
+   the picker runs. Never `$HOME`. Its message also says to archive the phone's session. This needs
+   no API, schema or Feature change.
 3. **By id, only if the picker proves not enough.** A card or tree item per session would run
    `cd <its folder> && claude --resume <local id> --fork-session --rc` for one chosen session. That
    needs (i) the session ids in the workspace view (today it carries only the environment link and
-   counts: `internal/workspace/view.go`'s `SessionData`), (ii) the local id, which can be computed
-   from the `session_…` id (result 7) with no registry, but goes stale on a `/clear` in the app, so
-   it is computed at click time and a missing transcript falls back to the picker, and (iii) the
-   folder, which for a worktree session only the transcript's records or the registry's `cwd` give.
-   A Feature helper (`drydock-continue <session_…>`, with a version bump) could do all three in the
-   container at click time and exec `claude`. Either way it is three more undocumented internals
-   for the §11.1 bump ritual. The card itself gets no link: a URL cannot run a terminal command. At
+   counts: `internal/workspace/view.go`'s `SessionData`), (ii) the local id, and (iii) the folder,
+   which for a worktree session only the transcript's records or the registry's `cwd` give. The
+   local id can be computed from the `session_…` id (result 7) with no registry, but that is wrong
+   after a `/clear` in the app, and not detectably so: the computed id still names the pre-clear
+   conversation, whose transcript is still there, so the resume is accepted and continues the wrong
+   conversation, and no "missing transcript" fallback ever fires. A by-id command must instead take
+   the id from the live registry row whose `bridgeSessionId` is the session (it lists only live
+   processes and is rewritten by them, so it should follow a `/clear`; unmeasured), or check that
+   no newer transcript belongs to that session, and otherwise fall back to the picker. A Feature helper (`drydock-continue <session_…>`, with a
+   version bump) could do that in the container at click time and exec `claude`. Either way it is
+   more undocumented internals for the §11.1 bump ritual. The card itself gets no link: a URL cannot run a terminal command. At
    most it gets a copyable command.
 
 ## Owed (needs a human at the Claude app)

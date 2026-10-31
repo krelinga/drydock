@@ -80,32 +80,43 @@ token_guard() { # token_guard <credentials.json> <minutes the mode runs>
 }
 
 # Every process holding the copied token: any pid whose environment carries
-# CLAUDE_CONFIG_DIR=$CFG (Spike 06's is_ours, any command line). The panes are
-# gone by the time this runs, so what it finds outlived them (a server's
-# session child, a tool a session ran). SIGTERM, up to 20 s, then SIGKILL; each
-# pid is printed. Returns 1 if any survives the SIGKILL.
+# CLAUDE_CONFIG_DIR=$CFG, matched literally (`carries_cfg`, a local copy of
+# Spike 06's is_ours: its `grep -x` reads the path as a regex, where a `.` in
+# it matches any character). The panes are gone by the time this runs, so what
+# it finds outlived them (a server's session child, a tool a session ran).
+# SIGTERM, up to 20 s, then SIGKILL; each pid is printed, and re-checked right
+# before each signal, so a pid freed and reused since the scan is not signalled.
+# Returns 1 if any survives the SIGKILL.
+carries_cfg() {
+  [ -r "/proc/$1/environ" ] || return 1
+  tr '\0' '\n' < "/proc/$1/environ" 2>/dev/null | grep -qxF -- "CLAUDE_CONFIG_DIR=$CFG"
+}
 sweep_cfg() {
   local p i left=() alive bad=0
   for p in /proc/[0-9]*; do
     p=${p#/proc/}
     { [ "$p" = "$$" ] || [ "$p" = "$BASHPID" ]; } && continue
-    [ -r "/proc/$p/environ" ] && is_ours "$p" . && left+=("$p")
+    carries_cfg "$p" && left+=("$p")
   done
   [ "${#left[@]}" -gt 0 ] || { say "  sweep: no process carries CLAUDE_CONFIG_DIR=$CFG"; return 0; }
   for p in "${left[@]}"; do
+    carries_cfg "$p" || { say "  sweep: $p gone before its SIGTERM"; continue; }
     say "  sweep: SIGTERM $p ($(tr '\0' ' ' < "/proc/$p/cmdline" 2>/dev/null | cut -c1-80))"
     kill -TERM "$p" 2>/dev/null
   done
   for i in $(seq 1 20); do
     alive=()
-    for p in "${left[@]}"; do is_ours "$p" . && alive+=("$p"); done
+    for p in "${left[@]}"; do carries_cfg "$p" && alive+=("$p"); done
     left=("${alive[@]}")
     [ "${#left[@]}" -gt 0 ] || { say "  sweep: all gone after SIGTERM"; return 0; }
     sleep 1
   done
-  for p in "${left[@]}"; do say "  sweep: $p ignored SIGTERM for 20 s; SIGKILL"; kill -KILL "$p" 2>/dev/null; done
+  for p in "${left[@]}"; do
+    carries_cfg "$p" || continue
+    say "  sweep: $p ignored SIGTERM for 20 s; SIGKILL"; kill -KILL "$p" 2>/dev/null
+  done
   sleep 2
-  for p in "${left[@]}"; do is_ours "$p" . && { say "  sweep: $p SURVIVED SIGKILL"; bad=1; }; done
+  for p in "${left[@]}"; do carries_cfg "$p" && { say "  sweep: $p SURVIVED SIGKILL"; bad=1; }; done
   return "$bad"
 }
 

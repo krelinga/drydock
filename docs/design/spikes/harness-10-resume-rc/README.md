@@ -79,7 +79,10 @@ waits: `handoff` with `WAIT_APP=300` needs the copied token's margin plus 15 + 2
 - **H5 — a `--spawn worktree` session (manual).** The harness cannot create one. In the app, start a
   *new* session in the same environment while the run is at H4 (the server spawns it in a worktree
   of the clone) and send *Remember the word WOMBAT. Reply with exactly OK5.* Then, in another shell
-  on the host:
+  on the host, do the rest **before the run passes (f)**: at (e) it SIGTERMs the server (and with it
+  the session H5 started), and when the run ends its reap sweeps every process carrying the
+  scratch's `CLAUDE_CONFIG_DIR`, the resume typed here included. (`WAIT_APP` is the time you have
+  at each step; a larger one buys more, and the token guard counts it.)
 
   ```sh
   S=/tmp/s10h CFG=/tmp/s10h/cfg

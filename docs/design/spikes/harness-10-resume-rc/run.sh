@@ -105,12 +105,16 @@ DROP_RE='4090|session_not_active'
 takeover_watch() {
   local e="$1" f="$2" ep n0
   ep=$(panepid "$e")
-  sleep 10
+  # 60 s with both alive, so a displacement that waits on (e)'s next request
+  # (14 s in the first takeover run) lands well before (f) is signalled, and
+  # the moment of the signal is printed to the millisecond beside it.
+  say "  both alive from $(date -u +%H:%M:%S.%3N); waiting 60 s before stopping ($f)"
+  sleep 60
   n0=$(grep -acE "$DROP_RE" "$RUN/$e.debug" 2>/dev/null)
   say "  while ($f) lives: ($e) pid $ep alive=$(kill -0 "$ep" 2>/dev/null && echo yes || echo no), $n0 '$DROP_RE' lines in its debug log"
   say "    its registry row: $(live_rows | jq -c --arg p "$ep" 'select((.pid|tostring) == $p) | {bridgeSessionId}')"
   grep -aE "$DROP_RE|superseded|another connection|taking over|state=" "$RUN/$e.debug" | cut -c1-200 | tail -4 | sed 's/^/    > /'
-  say "  stopping ($f) (SIGTERM)"
+  say "  stopping ($f) (SIGTERM) at $(date -u +%H:%M:%S.%3N)"
   term "$f"
   timeout 60 bash -c "until ! kill -0 $ep 2>/dev/null || grep -aqE '$DROP_RE' '$RUN/$e.debug'; do sleep 5; done"
   sleep 5
@@ -414,6 +418,12 @@ worktree)
   # the worktree binding when they fork (`cli` prints the strings); where does
   # the fork run? A bare trailing --rc, as the docs sentence has it.
   # wfork <tag>: report the fork a pane holds (cwd, ids, the history).
+  # selrow <pane>: the picker's selected row's own metadata line only. A row
+  # is two lines, `❯ <title>` then `<age> · <branch> · <size>`, so the branch
+  # is on exactly the line after the one `❯` line: nothing else on screen (a
+  # neighbouring row, the footer) can match. wfork's descent check then
+  # confirms the Enter took the conversation meant.
+  selrow() { screen "$1" | grep -v '^\s*$' | grep -a -m1 -A1 '❯' | sed -n 2p; }
   wfork() {
     local p row id; p=$(panepid "$1")
     mark "$1" "$RUN/$1.log"
@@ -422,7 +432,21 @@ worktree)
     say "  its registry row: ${row:-none}  (the worktree is $WCWD, the clone $WS; the original $WU)"
     say "  app session printed: $(rcline "$RUN/$1.log")"
     [ -n "$id" ] && say "  worktree-state records in its transcript: $(cat "$CFG"/projects/*/"$id".jsonl 2>/dev/null | grep -ac '"worktree-state"')"
-    [ -n "$id" ] && say "  history? $(ask "$1")"
+    # Is it a fork of $WU at all? A fork's records keep the original's uuids,
+    # so the first user record of $WU's transcript must be in the fork's; and
+    # the answer must be this run's marker. Either failing is a MISMATCH: the
+    # row describes some other conversation, and says nothing about $WU.
+    local wf ff u0 ans
+    wf=$(ls "$CFG"/projects/*/"$WU".jsonl 2>/dev/null | head -1)
+    ff=$(ls -t "$CFG"/projects/*/"$id".jsonl 2>/dev/null | head -1)
+    u0=$(jq -r 'select(.type == "user") | .uuid' "$wf" 2>/dev/null | head -1)
+    ans=""; [ -n "$id" ] && ans=$(ask "$1")
+    say "  history? $ans"
+    if [ -n "$u0" ] && [ -n "$ff" ] && grep -aqF "\"uuid\":\"$u0\"" "$ff" && printf '%s' "$ans" | grep -qF "$MARKER"; then
+      say "  DESCENDS from $WU: its transcript carries $WU's first user record ($u0), and it recalled $MARKER"
+    else
+      say "  MISMATCH: not shown to be a fork of $WU (first user record ${u0:-?} in its transcript: $(grep -acF "\"uuid\":\"$u0\"" "${ff:-/dev/null}"); marker recalled: $(printf '%s' "$ans" | grep -qF "$MARKER" && echo yes || echo no))"
+    fi
   }
   # (i) first, before (g) and (h) add forks to the list. The worktree
   # conversation is then the newest in the repository ((c) just resumed it).
@@ -434,7 +458,7 @@ worktree)
   pane wi "$WS" "$RUN/wi.log" "$CLAUDE" --debug-file "$RUN/wi.debug" --resume --fork-session --rc; sleep 10
   t send-keys -t wi C-w; sleep 3
   say "  after Ctrl+W:"; screen wi | grep -v '^\s*$' | grep -aA1 -E '❯|Search' | head -8 | cut -c1-160 | sed 's/^/    | /'
-  if screen wi | grep -aA1 '❯' | grep -q 'worktree-ddspike10wt'; then
+  if selrow wi | grep -q 'worktree-ddspike10wt'; then
     t send-keys -t wi Enter; sleep 18
     wfork wi
   else
@@ -447,7 +471,7 @@ worktree)
   say "--- (j) the picker from the worktree's path with --fork-session --rc, Enter"
   pane wj "$WCWD" "$RUN/wj.log" "$CLAUDE" --debug-file "$RUN/wj.debug" --resume --fork-session --rc; sleep 10
   say "  the picker:"; screen wj | grep -v '^\s*$' | grep -aA1 -E '❯|Ctrl\+W' | head -6 | cut -c1-160 | sed 's/^/    | /'
-  if screen wj | grep -aA1 '❯' | grep -q 'worktree-ddspike10wt'; then
+  if selrow wj | grep -q 'worktree-ddspike10wt'; then
     t send-keys -t wj Enter; sleep 18
     wfork wj
   else
