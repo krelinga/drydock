@@ -112,6 +112,12 @@ adopted model, isolation is not a goal it would serve. If the model is ever tigh
 **documented** route is managed settings baked into the image that restrict hooks and MCP servers
 (design §15.2), not this variable.
 
+[Spike 09](09-split-credential.md) has since measured the variable for a different reason — `--bg`
+per workspace, not isolation — and found the split workable with conditions: the credential, the
+refresh lock and the write lock move together, `oauthAccount` must be seeded per container, and a
+check run on every bump (its `bump` mode) answers the "a bump could move it silently" objection
+above. Not adopted.
+
 ### Residual risk, for the operator
 
 A prompt-injected agent in workspace A can likely reach workspace B's repository token and secrets
