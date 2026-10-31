@@ -11,7 +11,7 @@ The design: `docs/design/overall/drydock-design.md`, supplemented by port forwar
 (`docs/design/port-forwarding/`, "PF"), testing (`docs/design/testing/`) and the Vue frontend
 (`docs/design/frontend/`); a VS Code extension (`docs/design/vscode-extension/`, being built); a settled brand mark (`docs/design/brand/`, v1.1, with the shipping icon
 assets); an adversarial security review (`docs/design/security-review.md`); an exploration of running on
-non-root Docker (`docs/design/rootless-docker/`, declined for now); and eight spikes with
+non-root Docker (`docs/design/rootless-docker/`, declined for now); and nine spikes with
 re-runnable harnesses under `docs/design/spikes/`. Read the overall design before making
 architectural decisions — most "why is it like this?" questions are answered there. When a change
 contradicts it, update the doc in the same change.
@@ -452,8 +452,12 @@ Design §14 orders the phases so the riskiest unknown resolves first.
    survival, `03` `CLAUDE_ENV_FILE`, `04` the browser tier's local CA, `05` the VS Code extension
    host, `06` whether a terminal can join the app's session (not the server's; `claude --rc` beside
    it), `08` whether `claude --bg --rc` is workable per workspace (no: daemons on the shared volume
-   run or misreport each other's jobs; keep the server; three app/live-refresh human steps owed).
-   Still open: whether a `--spawn worktree` path needs its own trust record.
+   run or misreport each other's jobs; keep the server; three app/live-refresh human steps owed),
+   `09` a split layout — a config volume per workspace, only the credential shared through the
+   undocumented `CLAUDE_SECURESTORAGE_CONFIG_DIR`, `oauthAccount` seeded (workable with conditions:
+   the credential and its locks move together and Spike 08's collision is gone; not adopted; its
+   `bump` mode is the check a `shared|split` flag would need on every bump; app and live-refresh
+   human steps owed). Still open: whether a `--spawn worktree` path needs its own trust record.
 1. **Front door** — done, and deployed for real.
 2. **Walking skeleton** — done, reboot drill included.
 3. **Credentials** — done.
