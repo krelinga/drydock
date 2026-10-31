@@ -19,7 +19,7 @@ export S=/tmp/s09
 ./run.sh bump                  # result 7: the bump-ritual check; exits 1 on any failure
 BUMP_MUTATE=var ./run.sh bump  # result 7, mutated: the variable misspelled; must exit 1 (four fail)
 BUMP_MUTATE=lock ./run.sh bump # result 7, mutated: the refresh lock moved, the credential not; must exit 1 (two fail)
-./run.sh lock                  # results 1, 6: four containers, three kinds of refresher, one lock path
+./run.sh lock                  # results 1, 6: four containers, four kinds of refresher, one lock path; in d, the .owner pids vs the daemon's
 NOVAR=1 ./run.sh lock          # results 1, 6, the control: no variable, a lock per config dir
 ./run.sh blank                 # result 1: the tombstone lands in the shared dir; every container sees it
 HOLD=1 ./run.sh blank          # result 1: with <dir>/.storage-write.lock held, the blanking write cannot land

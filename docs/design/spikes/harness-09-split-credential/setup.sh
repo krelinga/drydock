@@ -27,11 +27,14 @@ S="${1:?usage: setup.sh <scratch-dir> [source-config-dir]}"
 SRC="${2:-$HOME/.claude}"
 # Everything under <scratch> is written and later deleted in: refuse a scratch
 # dir that is $HOME, or one whose cred dir is the source (or the real) config.
-for real in "$SRC" "$HOME/.claude" "${CLAUDE_CONFIG_DIR:-$HOME/.claude}"; do
+# The same rule as lib.sh's _overlap: neither the scratch dir nor its cred dir
+# may be, be inside, or contain a real config (all resolved first).
+for real in "$SRC" "$HOME/.claude" "$HOME/.claude.json" "${CLAUDE_CONFIG_DIR:-$HOME/.claude}"; do
+  r=$(readlink -m -- "$real")
   for d in "$S" "$S/cred"; do
-    if [ "$(readlink -m -- "$d")" = "$(readlink -m -- "$real")" ]; then
-      echo "REFUSING: $d is $real, not a scratch copy" >&2; exit 2
-    fi
+    dd_=$(readlink -m -- "$d")
+    case "$dd_" in "$r"|"$r"/*) echo "REFUSING: $d is, or is inside, $real" >&2; exit 2 ;; esac
+    case "$r" in "$dd_"/*) echo "REFUSING: $d contains $real" >&2; exit 2 ;; esac
   done
 done
 [ "$(readlink -m -- "$S")" != "$(readlink -m -- "$HOME")" ] || { echo "REFUSING: the scratch dir is \$HOME" >&2; exit 2; }

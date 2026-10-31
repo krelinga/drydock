@@ -33,13 +33,13 @@ IN_CRED=/home/vscode/.claude-credentials
 LABEL=dd-spike-09=1
 # The variable's name as ctr_up sets it. Only `BUMP_MUTATE=var ./run.sh bump`
 # changes it (misspelled), to watch the bump check fail.
-VARNAME="${VARNAME:-CLAUDE_SECURESTORAGE_CONFIG_DIR}"
+VARNAME=CLAUDE_SECURESTORAGE_CONFIG_DIR
 # DEADLINE (epoch seconds): PID 1 of every container exits at it, which stops
 # the container and every claude in it, sweep or no sweep. token_guard sets it
 # to 30 min before the copied access token's expiresAt, well ahead of the
 # proactive refresh a daemon or server schedules (about 4 min before it); the
 # fake modes, which never mount the copy, get an hour.
-DEADLINE="${DEADLINE:-$(( $(date +%s) + 3600 ))}"
+DEADLINE=$(( $(date +%s) + 3600 ))
 # Only platform.claude.com carries a refresh (the binary's TOKEN_URL); a
 # TEST-NET-3 address drops the SYN, so a refresh's connect hangs and its lock
 # stays held long enough to see from outside (Spike 00's blackhole).

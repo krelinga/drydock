@@ -22,7 +22,7 @@
 #   bump       result 7: the bump-ritual check. Asserts, with a positive control
 #              for each, that under the variable the credential is read from and
 #              the refresh lock taken in the variable's dir, and the account record
-#              read from CLAUDE_CONFIG_DIR; and that today's shared layout, one dir
+#              read from CLAUDE_CONFIG_DIR; and, kept as a control, that one dir
 #              mounted at both paths, still keeps them together. Exits 1 on any failure.
 #              BUMP_MUTATE= runs it against a deliberate break, to watch it fail:
 #                var   the containers get the variable misspelled
@@ -69,13 +69,15 @@ case "${BUMP_MUTATE:-}" in
   var|lock) [ "$MODE" = bump ] || { printf 'BUMP_MUTATE= is for the bump mode only\n'; exit 2; } ;;
   *) printf 'BUMP_MUTATE=%s? (var or lock)\n' "$BUMP_MUTATE"; exit 2 ;;
 esac
-[ "${BUMP_MUTATE:-}" = var ] && VARNAME=CLAUDE_SECURESTORAGE_CONFIG_DIRX
 # First, before the guard can refuse: whatever a killed run left (sweep.sh).
 "$HERE/sweep.sh" || exit 4
 RUN="$S/run/$MODE"
 FAKE="$S/fake"
 case "$MODE" in lock|blank|bump) CRED="$FAKE/cred" ;; esac
 . "$HERE/lib.sh"   # refuses dirs that are not under $S or are the real config
+# lib.sh sets VARNAME and DEADLINE itself, never from the environment; only
+# this mutation and token_guard change them.
+[ "${BUMP_MUTATE:-}" = var ] && VARNAME=CLAUDE_SECURESTORAGE_CONFIG_DIRX
 rm -rf "$RUN"; mkdir -p "$RUN"
 W_APP="${WAIT_APP:-300}"
 is_uint "$W_APP" || { say "REFUSING: WAIT_APP='$W_APP' is not a whole number of seconds (no leading zero, at most 15 digits)"; exit 2; }
@@ -101,7 +103,7 @@ if [ "${BUMP_MUTATE:-}" = lock ]; then
   # source-only patch was tried first and changed nothing).
   NAME='.oauth_refresh.lock'; PATCH='../.claude/o_r.lock'
   M="$S/claude-mutated"; not_real "$M"
-  cp "$CLAUDE" "$M" && chmod 755 "$M" || exit 1
+  rm -f -- "$M" && cp -- "$CLAUDE" "$M" && chmod 755 "$M" || exit 1
   n=0
   for off in $(grep -aboF "$NAME" "$M" | cut -d: -f1); do
     [ "$(dd if="$M" bs=1 skip=$(( off + ${#NAME} )) count=1 status=none | tr -d '\000')" = . ] && continue  # .oauth_refresh.lock.owner
@@ -154,6 +156,7 @@ lock)
   XT=50 C b -p hi --debug-file "$(wsdir b)/.dbg" > "$RUN/b.out" &
   pane rc "$RUN/c.pane" docker exec -it -u vscode -w "$(wsdir c)" "$(ctr c)" claude remote-control --name ddspike09lock --debug-file "$(wsdir c)/.dbg"
   ID=$(bg d --remote-control ddspike09lockd --debug-file "$(wsdir d)/.dbg"); say "  d: job ${ID:-none} (exit $(cat "$RUN/bg.rc"))"
+  ps_in d > "$RUN/d.ps"
   wait "$WP"
   say "--- the lock entries over 55 s (host side; .owner mapped to its container by pid namespace):"
   sed 's/^/    /' "$RUN/watch.txt"
@@ -163,6 +166,13 @@ lock)
     grep -aiE 'oauth.*(lock|refresh)|refresh.*lock|ELOCKED|another process' "$S/ws-$w/.dbg" 2>/dev/null | cut -c1-170 | head -6 | sed 's/^/      > /'
   done
   say "  c's server screen tail:"; screen rc | grep -v '^\s*$' | tail -4 | cut -c1-160 | sed 's/^/    | /'
+  # Who in d held a refresh lock: the .owner pids the watch saw in d, against
+  # the daemon's pid (its daemon.log) and d's processes just after the launch
+  # (the `claude --bg` launcher has exited by then; a pid in neither is it,
+  # or another short-lived process).
+  say "  d: .owner pids seen in d: $(grep -oE 'pid=[0-9]+ in dd-s09-d' "$RUN/watch.txt" | cut -d' ' -f1 | cut -d= -f2 | sort -un | tr '\n' ' ')"
+  say "  d: daemon pid (daemon.log): $(grep -aoE 'daemon start .* pid=[0-9]+' "$(cfgdir ld)/daemon.log" 2>/dev/null | grep -oE 'pid=[0-9]+' | tr '\n' ' ')"
+  say "  d: processes just after the launch:"; sed 's/^/    d| /' "$RUN/d.ps"
   [ -n "$ID" ] && say "  d's daemon.log, refresh lines:" && grep -aE 'auth:' "$(cfgdir ld)/daemon.log" 2>/dev/null | cut -c1-170 | head -6 | sed 's/^/    > /'
   say "  the shared cred dir: $(tree "$FAKE/cred")"
   for w in a b c d; do say "  cfg-l$w: $(tree "$(cfgdir "l$w")" | tr ';' '\n' | grep -E 'credential|lock|storage|\.claude\.json$' | tr '\n' ';')"; done
@@ -200,6 +210,17 @@ bump)
   FAIL=0
   pass() { say "  PASS  $*"; }
   fail() { say "  FAIL  $*"; FAIL=1; }
+  # refresh_lock <cfg-name> <watch file>: the refresh lock's entry in that dir,
+  # by any name (a bump may rename it), printed as "<name> + .owner" — but
+  # only if the same watch saw the lock's .owner record there too, under its
+  # unpatched name (it is written in HS(), the variable's resolver). That
+  # keeps an unrelated lock (daemon.lock, .claude.json.lock) from passing.
+  refresh_lock() {
+    local e
+    grep -qF "$1/.oauth_refresh.lock.owner(" "$2" || return 0
+    e=$(grep -oE "$1/[^ (]+\\(" "$2" | tr -d '(' | grep -vE '\.owner$|/\.claude\.json\.lock$|/daemon\.lock$|\.tmp\.' | sort -u | head -1)
+    [ -n "$e" ] && printf '%s + .owner' "${e#"$1"/}"
+  }
   fake_setup
   say "--- 1. the binary still names the variable"
   if grep -aqF 'CLAUDE_SECURESTORAGE_CONFIG_DIR' "$CLAUDE"; then pass "CLAUDE_SECURESTORAGE_CONFIG_DIR is in the binary"
@@ -263,11 +284,12 @@ bump)
   WP=$!; sleep 1
   XT=11 C b -p hi >/dev/null; wait "$WP"
   sed 's/^/    /' "$RUN/watch-novar.txt"
-  # By any name, as in 5: this is the watch's control, not the lock's.
-  if grep -oE 'cfg-bb/[^ (]+\(' "$RUN/watch-novar.txt" | grep -v '\.owner($' | grep -qv '/\.claude\.json\.lock($'; then pass "without the variable the lock is in CLAUDE_CONFIG_DIR (the watch can see one)"
-  else fail "the control saw no lock: the watch is blind, so 4 proves nothing"; fi
+  # By any name, as in 5: this is the watch's control, not the lock's name.
+  L=$(refresh_lock cfg-bb "$RUN/watch-novar.txt")
+  if [ -n "$L" ]; then pass "without the variable the lock is in CLAUDE_CONFIG_DIR (the watch can see one): $L"
+  else fail "the control saw no refresh lock (with its .owner): the watch is blind, so 4 proves nothing"; fi
   docker rm -f "$(ctr b)" >/dev/null
-  say "--- 5. the shared layout under the variable: ONE dir mounted at both $IN_CFG and $IN_CRED (what flag=shared would run)"
+  say "--- 5. the one-dir alternative, kept as a control: ONE dir mounted at both $IN_CFG and $IN_CRED under the variable (not what flag=shared runs; shared sets no variable)"
   fake_setup; ACCT=$FAKE/acct.json mkcfg bc seeded; fake_cred "$(cfgdir bc)/.credentials.json" valid
   ctr_up c "$(cfgdir bc)" "$(cfgdir bc)" "${BLACKHOLE[@]}" || exit 1
   st=$(XT=40 C c auth status --json)
@@ -280,8 +302,9 @@ bump)
   sed 's/^/    /' "$RUN/watch-onedir.txt"
   # By any name (not the .owner record, not .claude.json.lock): with one dir
   # at both paths the lock is beside the credential wherever the bump puts it.
-  if grep -oE 'cfg-bc/[^ (]+\(' "$RUN/watch-onedir.txt" | grep -v '\.owner($' | grep -qv '/\.claude\.json\.lock($'; then pass "the refresh lock is in the one dir, beside the credential"
-  else fail "no refresh lock in the one dir"; fi
+  L=$(refresh_lock cfg-bc "$RUN/watch-onedir.txt")
+  if [ -n "$L" ]; then pass "the refresh lock is in the one dir, beside the credential: $L"
+  else fail "no refresh lock (with its .owner) in the one dir"; fi
   if [ "$FAIL" = 0 ]; then say "BUMP CHECK PASSED: under CLAUDE_SECURESTORAGE_CONFIG_DIR the credential and its refresh lock share one dir, and the account record stays in CLAUDE_CONFIG_DIR"
   else say "BUMP CHECK FAILED: the split layout is not safe on this Claude Code; keep (or fall back to) the shared layout"; exit 1; fi
   ;;
