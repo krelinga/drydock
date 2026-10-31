@@ -12,9 +12,11 @@
 # `docker stop -t 10` SIGTERMs PID 1 (the sleep loop, which exits at once, and
 # the kernel then SIGKILLs every other process in the container), with SIGKILL
 # after 10 s if it has not; then `docker rm`. Nothing without the label is
-# touched — not Spike 08's dd-spike-08, not any other spike's label. No claude
-# is run, so a job's Remote Control session is left unarchived (Spike 08
-# result 9).
+# touched — not Spike 08's dd-spike-08, not H2's dd-spike-09-h2 (`./h2.sh
+# sweep` is its own), not any other spike's label. No claude is run, so a
+# job's Remote Control session is left unarchived (Spike 08 result 9); a
+# run's own reap, which does run claude, archives it. A container left with no
+# sweep at all still exits by itself at its DEADLINE (lib.sh's ctr_up).
 set -uo pipefail
 LABEL=dd-spike-09=1
 ids=$(docker ps -aq --filter "label=$LABEL") || { echo "sweep: docker ps failed; refusing to go on" >&2; exit 4; }

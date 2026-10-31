@@ -22,13 +22,24 @@
 S="${S:?set S to the scratch dir setup.sh built}"
 CRED="${CRED:-$S/cred}"
 RUN="${RUN:-$S/run}"
-CLAUDE="${CLAUDE_BIN:-$(readlink -f "$(command -v claude)")}"
+CLAUDE="${CLAUDE_BIN:-$(readlink -f "$(command -v claude)" 2>/dev/null)}"
+[ -n "$CLAUDE" ] && [ -x "$CLAUDE" ] && [ ! -d "$CLAUDE" ] \
+  || { printf 'REFUSING: no claude binary (not on PATH, and CLAUDE_BIN unset or not executable: %s)\n' "${CLAUDE:-none}"; exit 2; }
 TMUX_L=dd-spike-09
 CTRS="$S/ctr.names"
 BGIDS="$S/bg.ids"
 IN_CFG=/home/vscode/.claude
 IN_CRED=/home/vscode/.claude-credentials
 LABEL=dd-spike-09=1
+# The variable's name as ctr_up sets it. Only `BUMP_MUTATE=var ./run.sh bump`
+# changes it (misspelled), to watch the bump check fail.
+VARNAME="${VARNAME:-CLAUDE_SECURESTORAGE_CONFIG_DIR}"
+# DEADLINE (epoch seconds): PID 1 of every container exits at it, which stops
+# the container and every claude in it, sweep or no sweep. token_guard sets it
+# to 30 min before the copied access token's expiresAt, well ahead of the
+# proactive refresh a daemon or server schedules (about 4 min before it); the
+# fake modes, which never mount the copy, get an hour.
+DEADLINE="${DEADLINE:-$(( $(date +%s) + 3600 ))}"
 # Only platform.claude.com carries a refresh (the binary's TOKEN_URL); a
 # TEST-NET-3 address drops the SYN, so a refresh's connect hangs and its lock
 # stays held long enough to see from outside (Spike 00's blackhole).
@@ -37,14 +48,23 @@ BLACKHOLE=(--add-host platform.claude.com:203.0.113.10)
 # Nothing here may be the real config: every dir is mounted read-write and
 # modes delete in them.
 _rp() { readlink -m -- "$1"; }
-not_real() { # not_real <dir>: exit unless <dir> is under $S and is not a real config
-  local d; d=$(_rp "$1")
-  case "$d" in "$(_rp "$S")"/*) ;; *) printf 'REFUSING: %s is not under $S\n' "$1"; exit 2 ;; esac
-  for real in "$HOME/.claude" "${CLAUDE_CONFIG_DIR:-$HOME/.claude}"; do
-    [ "$d" != "$(_rp "$real")" ] || { printf 'REFUSING: %s is the real config\n' "$1"; exit 2; }
+# _overlap <dir>: exit if <dir> is a real config, is inside one, or contains
+# one (~/.claude, ~/.claude.json, $CLAUDE_CONFIG_DIR), all resolved first.
+_overlap() {
+  local d real r; d=$(_rp "$1")
+  for real in "$HOME/.claude" "$HOME/.claude.json" "${CLAUDE_CONFIG_DIR:-$HOME/.claude}"; do
+    r=$(_rp "$real")
+    case "$d" in "$r"|"$r"/*) printf 'REFUSING: %s is, or is inside, the real config %s\n' "$1" "$real"; exit 2 ;; esac
+    case "$r" in "$d"/*) printf 'REFUSING: %s contains the real config %s\n' "$1" "$real"; exit 2 ;; esac
   done
 }
+not_real() { # not_real <dir>: exit unless <dir> is under $S and neither is, is inside, nor contains a real config
+  local d; d=$(_rp "$1")
+  case "$d" in "$(_rp "$S")"/*) ;; *) printf 'REFUSING: %s is not under $S\n' "$1"; exit 2 ;; esac
+  _overlap "$1"
+}
 [ "$(_rp "$S")" != "$(_rp "$HOME")" ] || { printf 'REFUSING: S is $HOME\n'; exit 2; }
+_overlap "$S"
 not_real "$CRED"
 mkdir -p "$RUN"
 
@@ -79,7 +99,8 @@ token_guard() { # token_guard <credentials.json> [minutes the mode runs]
     say "  Let the real config refresh, delete \$S, and re-run ./setup.sh."
     exit 3
   }
-  say "token guard: access token expires in $left min (needs $want: margin $margin + mode $need)"
+  DEADLINE=$(( exp / 1000 - 30 * 60 ))
+  say "token guard: access token expires in $left min (needs $want: margin $margin + mode $need); every container exits by itself at $(date -u -d "@$DEADLINE" +%H:%M:%SZ)"
 }
 
 ctr() { printf 'dd-s09-%s' "$1"; }
@@ -101,7 +122,7 @@ mkcfg() {
     bare) ;;
     *) say "mkcfg: $2?"; exit 2 ;;
   esac
-  [ -n "${3:-}" ] && install -m 600 "$3" "$d/.credentials.json"
+  if [ -n "${3:-}" ]; then install -m 600 "$3" "$d/.credentials.json" || { say "mkcfg: cannot install $3"; exit 1; }; fi
   return 0
 }
 
@@ -112,7 +133,8 @@ mkcfg() {
 ctr_up() {
   local w="$1" cfg="$2" cred="$3" a=(); shift 3
   not_real "$cfg"
-  if [ "$cred" != - ]; then not_real "$cred"; a=(-v "$cred:$IN_CRED" -e CLAUDE_SECURESTORAGE_CONFIG_DIR="$IN_CRED"); fi
+  if [ "$cred" != - ]; then not_real "$cred"; a=(-v "$cred:$IN_CRED" -e "$VARNAME=$IN_CRED"); fi
+  is_uint "$DEADLINE" && [ "$DEADLINE" -gt "$(date +%s)" ] || { say "REFUSING: DEADLINE '$DEADLINE' is not a time in the future"; exit 3; }
   docker rm -f "$(ctr "$w")" >/dev/null 2>&1
   grep -qx "$(ctr "$w")" "$CTRS" 2>/dev/null || printf '%s\n' "$(ctr "$w")" >> "$CTRS"
   mkdir -p "$S/ws-$w"
@@ -123,7 +145,7 @@ ctr_up() {
     -e HOME=/home/vscode -e CLAUDE_CONFIG_DIR="$IN_CFG" -e DISABLE_AUTOUPDATER=1 \
     -e CLAUDE_ENV_FILE=/usr/local/drydock/etc/claude-env.sh \
     "$@" dd-spike-09 \
-    /bin/sh -c 'echo Container started; trap "exit 0" 15; while sleep 1 & wait $!; do :; done' >/dev/null
+    /bin/sh -c 'echo Container started; trap "exit 0" 15; while [ "$(date +%s)" -lt "$1" ]; do sleep 1 & wait $!; done; echo "deadline $1 reached"' sh "$DEADLINE" >/dev/null
   sleep 1
   docker inspect -f '{{.State.Running}}' "$(ctr "$w")" 2>/dev/null | grep -q true \
     || { say "container $(ctr "$w") is not running:"; docker logs "$(ctr "$w")" 2>&1 | tail -5; return 1; }
@@ -234,10 +256,13 @@ screen() { t capture-pane -p -t "$1" 2>/dev/null; }
 typeline() { t send-keys -t "$1" -l "$2"; sleep 1; t send-keys -t "$1" Enter; sleep "${3:-3}"; }
 
 # reap: this harness's tmux server; `claude stop` each recorded background id
-# in its own container (graceful: archives the session); then docker stop and
-# remove each recorded container. Nothing not recorded is touched.
+# in its own container (graceful: archives the session); then, in each
+# recorded container still running, `claude daemon stop --any` and a SIGTERM
+# of every `claude remote-control` server (a clean stop deregisters it, Spike
+# 02), waiting up to 10 s for them to exit; then docker stop and remove each
+# recorded container. Nothing not recorded is touched.
 reap() {
-  local w id c
+  local w id c pids
   t kill-server 2>/dev/null
   if [ -f "$BGIDS" ]; then
     while read -r w id; do
@@ -249,9 +274,32 @@ reap() {
   if [ -f "$CTRS" ]; then
     while read -r c; do
       [ -n "$c" ] || continue
+      if docker inspect -f '{{.State.Running}}' "$c" 2>/dev/null | grep -q true; then
+        timeout 20 docker exec -u vscode "$c" claude daemon stop --any >/dev/null 2>&1
+        pids=$(docker exec "$c" ps -eo pid=,args= 2>/dev/null | awk '$2 ~ /claude$/ && $3 == "remote-control" {print $1}' | tr '\n' ' ')
+        if [ -n "${pids// }" ]; then
+          # shellcheck disable=SC2086 # a list of pids
+          docker exec -u vscode "$c" kill -TERM $pids >/dev/null 2>&1
+          # shellcheck disable=SC2016,SC2086 # $@ is the inner shell's; a list of pids
+          timeout 10 docker exec "$c" sh -c 'while :; do a=; for p in "$@"; do kill -0 "$p" 2>/dev/null && a=1; done; [ -n "$a" ] || exit 0; sleep 0.5; done' sh $pids >/dev/null 2>&1
+        fi
+      fi
       docker stop -t 10 "$c" >/dev/null 2>&1; docker rm "$c" >/dev/null 2>&1
     done < "$CTRS"
     rm -f "$CTRS"
   fi
   return 0
+}
+
+# cred_check: whether the copied credential is byte-for-byte what it was when
+# the token guard passed ($RUN/cred.sha256, which run.sh writes after the
+# guard). A changed hash means something refreshed or rewrote the copy, and
+# the owner's real login may then be dead. Run after reap, in the EXIT trap.
+cred_check() {
+  [ -f "$RUN/cred.sha256" ] || return 0
+  if [ "$(sha256sum < "$CRED/.credentials.json" 2>/dev/null)" = "$(cat "$RUN/cred.sha256")" ]; then
+    say "credential copy unchanged since the token guard (SHA-256): yes"
+  else
+    say "credential copy unchanged since the token guard (SHA-256): NO, something refreshed or rewrote it; check the real login"
+  fi
 }

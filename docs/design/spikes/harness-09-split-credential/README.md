@@ -17,6 +17,8 @@ export S=/tmp/s09
 # fake credential only — no real token is ever mounted
 ./run.sh read                  # result 6 (read): the variable's resolver and every use the results rest on
 ./run.sh bump                  # result 7: the bump-ritual check; exits 1 on any failure
+BUMP_MUTATE=var ./run.sh bump  # result 7, mutated: the variable misspelled; must exit 1 (four fail)
+BUMP_MUTATE=lock ./run.sh bump # result 7, mutated: the refresh lock moved, the credential not; must exit 1 (two fail)
 ./run.sh lock                  # results 1, 6: four containers, three kinds of refresher, one lock path
 NOVAR=1 ./run.sh lock          # results 1, 6, the control: no variable, a lock per config dir
 ./run.sh blank                 # result 1: the tombstone lands in the shared dir; every container sees it
@@ -24,7 +26,7 @@ HOLD=1 ./run.sh blank          # result 1: with <dir>/.storage-write.lock held, 
 
 # the owner's copied credential (token guard)
 ./run.sh seed                  # result 2: seeded / unseeded (the control) / env-seeded `--bg --rc`
-./run.sh server                # result 2: today's `remote-control` server, seeded / unseeded
+./run.sh server                # result 2: today's `remote-control` server, seeded / unseeded, then restarted
 ./run.sh two                   # result 3: two containers, own daemons, both at /workspace
 DISTINCT=1 ./run.sh two        # result 3: the same at /workspaces/ws-a and /workspaces/ws-b
 ./run.sh attach                # result 4: `claude attach` from a second exec, one turn
@@ -32,17 +34,23 @@ DISTINCT=1 ./run.sh two        # result 3: the same at /workspaces/ws-a and /wor
 
 # the human steps (below)
 WAIT_APP=300 ./run.sh app      # H1
-./h2.sh up|login|expire|start|record|down   # H2, on a disposable login
+./h2.sh up|login|expire|start|record|down   # H2, on a disposable login (./h2.sh sweep after a killed run)
 ```
 
 Each mode writes to a fresh `$S/run/<mode>/` and prints the lines its result rests on. `DISTINCT=1`
-is for `two` only, `NOVAR=1` for `lock`, `HOLD=1` for `blank`; every other mode refuses them. When
+is for `two` only, `NOVAR=1` for `lock`, `HOLD=1` for `blank`, `BUMP_MUTATE=` for `bump`; every other
+mode refuses them. Every real-credential mode ends with `credential copy unchanged since the token
+guard (SHA-256): yes` (or `NO`, which means something refreshed the copy: check the real login). When
 done: `./sweep.sh`, then `rm -rf "$S"` (it holds a live token) and `docker rmi dd-spike-09`.
 
 **Runs must not overlap.** Each `run.sh`/`setup.sh` starts with `sweep.sh`, which removes every
 container labelled `dd-spike-09=1`. **If a run was interrupted**, run `./sweep.sh` before anything
 else and before `rm -rf "$S"`: a daemon in a leftover container holds the copied refresh token in
-memory and refreshes it on its own schedule.
+memory and refreshes it on its own schedule. As a backstop, each container's PID 1 exits by itself at
+a deadline the token guard sets, 30 min before the copy's `expiresAt` (the daemon's proactive refresh
+is about 4 min before it), so a leftover that is never swept still stops short of that refresh. H2's
+containers carry their own label, `dd-spike-09-h2=1`, which neither `sweep.sh` nor a run touches;
+`./h2.sh sweep` removes them.
 
 ## The layout under test
 
@@ -77,6 +85,10 @@ CLI's sleep loop, `DISABLE_AUTOUPDATER=1` and `CLAUDE_ENV_FILE` in its environme
   unless the copy's `expiresAt` is `TOKEN_MARGIN_MIN` (60, at least 30) minutes away plus the mode's
   own minutes. It covers only the scheduled refresh; a `401` on the copy (revoked server-side) would
   refresh it at once — the residual Spikes 06 and 08 carry.
+- **`BUMP_MUTATE=lock` patches a copy, never the binary under test**: `$S/claude-mutated`, every
+  bare `.oauth_refresh.lock` (the bundled source's and the bytecode's constant; the binary runs the
+  bytecode, so a source-only patch changes nothing) replaced by `../.claude/o_r.lock`, the same
+  length; removed at exit. It runs on the fake credential only, like every `bump`.
 - **The fake modes never mount the real copy**: `lock`, `blank` and `bump` set the cred dir to
   `$S/fake/cred` and refuse to run if it resolves to `$S/cred`. Their credential is Spike 00's fake
   (`sk-ant-…-SPIKE09-FAKE-…`). `lock` and `bump` blackhole `platform.claude.com` (the binary's
@@ -110,13 +122,19 @@ CLI's sleep loop, `DISABLE_AUTOUPDATER=1` and `CLAUDE_ENV_FILE` in its environme
   same session? Detach or close the terminal. The harness then reports what `claude logs` saw.
 - **H2 — the refresh, live, on a disposable login.** Never runnable on a copied credential: a
   refresh rotates the refresh token and the copied login is then blanked. The owner makes a login
-  for the run:
+  for the run, in H2's own login container, used for nothing else. Best, a **separate account**.
+  Otherwise a **fresh `claude auth login` of the owner's own account**: an OAuth grant of its own,
+  with its own refresh token, which H2 rotates and `down` logs out. That rotating or revoking one
+  grant leaves the account's other logins (the owner's Drydock, this devcontainer) alone is an
+  **assumption, not verified** by this spike; if it is wrong, those are signed out too, recoverable
+  by signing in again. The steps:
   1. `./h2.sh up` — the volumes and a login container (the shared credential volume at
      `/home/vscode/.claude-credentials` with the variable set; its own config volume).
   2. `./h2.sh login` — `claude auth login --claudeai` in it; complete it in a browser. It prints the
      credential's shape (lengths only) and whether the login's `.claude.json` has an organization.
   3. `./h2.sh expire` — sets **this disposable login's** `expiresAt` to now + 6 min, before any
-     daemon starts (a daemon schedules its refresh when it starts; `expire` refuses while a, b or c
+     daemon starts (a daemon schedules its refresh when it starts; `expire` refuses while any
+     container but the login's runs on the credential volume, and `start` refuses while a, b or c
      runs).
   4. `./h2.sh start` — at once: containers a, b, c, each with its own config volume, seeded with the
      login's `oauthAccount` by `seed-oauth.sh`; `claude --bg --remote-control` in a and b, and

@@ -19,9 +19,10 @@ refresh on a disposable login).**
 
 **Verdict: workable, with conditions.** Under the variable the credential, its refresh lock (and the
 lock's owner record) and its write lock all live in the one shared directory, while `.claude.json`
-— the account record, trust, the daemon's roster and jobs — stays per container (results 1, 7). Every
-refresher in every container, of three kinds, contends on that one lock path, and none takes a lock of
-its own (result 6, with the control that without the variable each takes its own). Spike 08's
+— the account record, trust, the daemon's roster and jobs — stays per container (results 1, 7).
+Refreshers of three kinds in four containers, started at once, found that one lock path: two were
+seen holding it, one after the other, and none took a lock anywhere else (result 6, with the control
+that without the variable each container took its own, all four at once). Spike 08's
 collision is gone: two containers, each with its own daemon, at the same `/workspace` or at distinct
 folders, each see and act on only their own jobs (result 3). A seeded container's `--bg --rc` gets
 Remote Control on its first start, and a terminal's `claude attach` drives the conversation the app is
@@ -32,27 +33,36 @@ sent (results 2, 4). The conditions:
    on it safe across versions.
 2. **`oauthAccount` is in each workspace's own `.claude.json` before its first start.** Unseeded,
    `--bg --rc` runs *without Remote Control and says nothing*, and today's `remote-control` server
-   refuses with the organization error and never recovers by itself (result 2). So Drydock becomes the
-   second writer of `oauthAccount` — copied from the login's record, under `.claude.json.lock`.
-3. **Every process that reads the credential has the variable**: the Feature's `containerEnv` (so a
-   VS Code terminal's `claude attach` has it too), the identity watch, the login. Without it, a
-   per-container config holds no credential and reads as signed out.
+   refuses with the organization error, writes no record, and refused the same way when stopped and
+   started again (result 2). So Drydock becomes the second writer of `oauthAccount` — copied from the
+   login's record, under `.claude.json.lock`.
+3. **Every process that reads the credential has the variable**: the container's environment (so a
+   VS Code terminal's `claude attach` has it too — set only under `split`, see *The flag* below), the
+   identity watch, the login. Without it, a per-container config holds no credential and reads as
+   signed out.
 4. **H2 before the flag ships, H1 before it is offered.** The lock reading and the fake-credential
    measurements say the refresh serialises; only a live refresh on a login of its own shows the losers
    pick up the winner's token.
 
 - **Verified against:** Claude Code `2.1.289` (the pinned version; the host's binary, bind-mounted
   read-only into each container; `claude --version` printed first by every mode), Linux,
-  docker-in-docker, scratch Debian 12 containers run as `devcontainer up` runs one (PID 1 the CLI's
-  sleep loop), every command a `docker exec` as uid 1000. Not the Feature's install, the broker, or
-  `devcontainer up` itself. Each result is *measured* unless marked *read*, and names its harness mode.
+  docker-in-docker, scratch Debian 12 containers run as `devcontainer up` runs one (PID 1 a sleep
+  loop, as the CLI's is), every command a `docker exec` as uid 1000. Not the Feature's install, the
+  broker, or `devcontainer up` itself. Each result is *measured* unless marked *read* or *inferred*,
+  and names its harness mode.
 - **Date:** 2026-10-31.
 - **Harness:** [`harness-09-split-credential/`](harness-09-split-credential/) — re-runnable; each
   result names its mode; H1 and H2 are written there as human steps. The lock, tombstone and bump
   modes run on Spike 00's **fake** credential, never the owner's; the rest run on a copy of the
   owner's under Spike 08's token guard, each well inside the token's lifetime (the guard reported
-  246–255 min left against the 70 it needs), and no run refreshed the copy (the copied credential's
-  SHA-256 was unchanged across `seed`).
+  194–200 min left against the 70 it needs). Every real-credential mode records the copy's SHA-256
+  when the guard passes and compares it at exit (`cred_check`): unchanged in all six (`seed`,
+  `server`, `two`, `DISTINCT=1 two`, `attach`, `supervise`), so no run refreshed it. Each
+  container's PID 1 also exits by itself 30 min before the copy's `expiresAt` (the guard's
+  deadline), ahead of the proactive refresh a daemon schedules about 4 min before it (`seed`:
+  `scheduling proactive refresh in 11779s` with ~200 min left), so a killed run that is never swept
+  cannot reach that refresh. Spike 08's harness has the same residual without this deadline (its
+  PID 1 loops until stopped); it is not changed here.
 
 ---
 
@@ -62,15 +72,16 @@ sent (results 2, 4). The conditions:
 |---|---|---|---|
 | 1 | Where the credential is read from | `<variable>/.credentials.json`; one in `CLAUDE_CONFIG_DIR` is not read while the variable is set (signed out with it there and the variable's dir empty) | `bump` |
 | 1 | Where a refresh locks | `<variable>/.oauth_refresh.lock` (a directory) and `<variable>/.oauth_refresh.lock.owner` (`pid`, `procStart`, `pidDomain`); nothing in any `CLAUDE_CONFIG_DIR`. The owner record outlives the lock until the next holder rewrites it | `lock`, `bump` |
-| 1 | The legacy refresh lock | `<realpath(variable)>.lock`, **beside** the dir, so in each container's own filesystem (`/home/vscode/.claude-credentials.lock`), held by a container exactly while it held the shared lock (b: 866 of 1200 samples 50 ms apart, c: 201; a, d: 0). Without the variable it is `/home/vscode/.claude.lock` — per container in both layouts | `lock`, `NOVAR=1 lock` |
+| 1 | The legacy refresh lock | `<realpath(variable)>.lock`, **beside** the dir, so in each container's own filesystem (`/home/vscode/.claude-credentials.lock`), held by a container exactly while it held the shared lock (a: 862 of 1200 samples 50 ms apart, c: 201; b, d: 0). Without the variable it is `/home/vscode/.claude.lock` — per container in both layouts | `lock`, `NOVAR=1 lock` |
 | 1 | The credential's write lock | `<variable>/.storage-write.lock`: held there by the harness, the refresh that was refused kept its refresh lock 7.6 s waiting and **the credential was not blanked**; the control blanked it ~80 ms after taking the refresh lock. Too brief to see by polling | `HOLD=1 blank`, `blank` |
 | 1 | The tombstone | lands in the shared dir: `accessToken`/`refreshToken` `""`, `expiresAt` `0`; both containers then `loggedIn: false` — fleet-wide, as today | `blank` |
-| 1 | What stays per container | `.claude.json` (the account record: `auth status` reports the `orgId` seeded into the config, and nothing writes a `.claude.json` into the variable's dir), `daemon/`, `jobs/`, `sessions/`, `daemon.log`, `backups/`, `cache/`; each config mints its own `userID` and `machineID`. After three daemons ran on it for a minute, the shared dir held `.credentials.json` alone and no config held a credential | `bump`, `seed` |
-| 2 | `--bg --rc`, `oauthAccount` seeded | Remote Control on the first start (`bridgeSessionId` within 30 s). Claude Code rewrote the seeded record at start: `profileFetchedAt` from the source's (35 h old) to the start time, every other field kept | `seed` |
+| 1 | What stays per container | `.claude.json` (the account record: `auth status` reports the `orgId` seeded into the config, not that of a decoy record planted in the variable's dir, which nothing reads or writes; and nothing creates a `.claude.json` there), `daemon/`, `jobs/`, `sessions/`, `daemon.log`, `backups/`, `cache/`; each config mints its own `userID` and `machineID`. After three daemons ran on it for a minute, the shared dir held `.credentials.json` alone and no config held a credential | `bump`, `seed` |
+| 2 | `--bg --rc`, `oauthAccount` seeded | Remote Control on the first start (`bridgeSessionId` within 30 s). Claude Code rewrote the seeded record at start: `profileFetchedAt` from the source's (37 h old) to the start time, every other field kept | `seed` |
 | 2 | `--bg --rc`, not seeded (the control) | the job runs **without Remote Control and says nothing** (`bridgeSessionId: null`), as in Spike 08; Claude Code wrote a record of its own during the run (without the login's `organizationRole` and `workspaceRole`), and `claude stop` + `claude respawn`, or a new job, then had Remote Control | `seed` |
 | 2 | `--bg --rc`, record absent, `CLAUDE_CODE_ACCOUNT_UUID`, `_USER_EMAIL`, `_ORGANIZATION_UUID` set | Remote Control on the first start; the record written from them, then from the profile | `seed` |
 | 2 | Today's server (`claude remote-control --spawn worktree --capacity 4 --verbose`), seeded | an environment id, `Capacity: 0/4` → `1/4`; the record refreshed as above | `server` |
-| 2 | The same, not seeded | `Error: Unable to determine your organization for Remote Control eligibility`; **no record written**, so a restart would refuse again | `server` |
+| 2 | The same, not seeded | `Error: Unable to determine your organization for Remote Control eligibility`; **no record written** | `server` |
+| 2 | Both, `SIGTERM`ed and started again | the unseeded one refused the same way and still wrote no record; the seeded one came back on the **same** environment id, `Capacity: 0/4` → `1/4`. One restart measured, not a restart loop | `server` |
 | 3 | B, before running anything, with A's job live | `daemon status`: `not running`, 0 workers; `agents --all`: empty; `logs <A's id>`: `No job matching` — B sees nothing of A | `two`, `DISTINCT=1 two` |
 | 3 | Both start a job, **both at `/workspace`**, and with distinct folders | each runs in its own container under its own daemon, each with its own Remote Control session, still serving 30 s later; each lists only its own; neither `daemon.log` names the other's job | `two`, `DISTINCT=1 two` |
 | 3 | B: `claude stop` / `respawn` of A's job | `No job matching '<id>'`; A's job untouched | `two`, `DISTINCT=1 two` |
@@ -80,10 +91,14 @@ sent (results 2, 4). The conditions:
 | 6 | The resolver | `HS()`: the variable if set (an empty value means `~/.claude`), else the config dir. The plaintext store (`i()`), the credential write lock (`.storage-write`), the refresh (`let K=HS()` … `.oauth_refresh.lock`, `stale: 60000`, `update: 5000`), the legacy lock (`<realpath(K)>.lock`) and the credential's change watch (`mtime` of `HS()/.credentials.json`) all go through it. `--bg`'s job environment allowlist carries the variable to workers, kept even when empty | `read`, *read* |
 | 6 | A reader that does not | a session-store resume path (`SessionStore.load()`) copies `$CLAUDE_CONFIG_DIR/.credentials.json` directly. Not on the `--bg` or `remote-control` path; under split it would find no credential | `read`, *read* |
 | 6 | The account record's upkeep | refetched when `profileFetchedAt` is older than `RK` = 86 400 000 ms (24 h) or a field is missing; seeded from the three `CLAUDE_CODE_*` variables when absent | `read`, *read* |
-| 6 | Four refreshers in four containers at once (two `claude -p`, a `remote-control` server, a `--bg` daemon), expired fake credential, token host blackholed | **one lock, one path, one holder at a time**: c's server took `<variable>/.oauth_refresh.lock` at 1.0 s and released it at 11.1 s; b's `-p` took it at 11.4 s, held it to 41.3 s and took it again at 41.4 s; a never held it; d's daemon began its scheduled refresh inside c's hold and ended in 2.1 s without holding it | `lock` |
+| 6 | The organization lookup most API calls use (`NW`) | `CLAUDE_CODE_ORGANIZATION_UUID` if set, then the record's `organizationUuid`, then the profile endpoint — the variable before the record | `read`, *read* |
+| 6 | A refresher that finds the lock held | `ELOCKED`: up to five retries 1–2 s apart, then a dead-holder check. Its only output is an analytics event, not a debug line | `read`, *read* |
+| 6 | Four refreshers in four containers at once (two `claude -p`, a `remote-control` server, a `--bg` daemon), expired fake credential, token host blackholed | **one lock path, two holders seen, one after the other, and no lock anywhere else**: c's server took `<variable>/.oauth_refresh.lock` at 1.0 s and released it at 11.1 s; a's `-p` took it at 11.6 s, held it to 41.6 s and took it again at once; b never held it; d's daemon began its scheduled refresh inside c's hold and ended in 2.1 s without holding it. No config dir held a refresh lock (d's held only the daemon's `daemon.lock`). No debug log has an `ELOCKED` or retry line (the retry is not logged; above), so that b waited on the lock rather than on something else is *inferred* | `lock` |
 | 6 | The same without the variable (the control) | **four locks at once**: at 1.0 s each container held `.oauth_refresh.lock` in its own config dir — the struck mitigation (b) of design §7.1, measured | `NOVAR=1 lock` |
-| 6 | The daemon losing the race | `auth: proactive refresh failed, signalling re-auth required`, then `headless daemon cannot complete OAuth — run claude auth login to refresh` and `no token found, will re-check keychain every 30s`; it spawned its job only after that. The same in both layouts — not split's. Whether it recovers when a peer's refresh succeeds is H2 | `lock`, `NOVAR=1 lock` |
-| 7 | The bump-ritual check | 10 assertions, each with a positive control: the variable in the binary; the credential read from its dir and not from the config dir; the account record from the config dir; the refresh lock in its dir and not in the config dir; the watch sees a lock without the variable; and the shared layout as one dir mounted at both paths signs in and locks beside its credential. `BUMP CHECK PASSED`, exit 0. **Mutation-checked**: with the variable misspelled in the container's environment, four assertions fail and it exits 1 | `bump` |
+| 6 | The daemon's refresh | `auth: proactive refresh failed, signalling re-auth required`, then `headless daemon cannot complete OAuth — run claude auth login to refresh` and `no token found, will re-check keychain every 30s`, about 2 s after it started (2.1 s, 1.8 s); it spawned its job only after that. The same in both layouts, and in the control d's config held a refresh lock of its own, so it is **not** a reaction to a busy lock and not split's. Whether it recovers when a peer's refresh succeeds is H2 | `lock`, `NOVAR=1 lock` |
+| 7 | The bump-ritual check | 13 assertions: the variable in the binary; two tripwires (the write lock's name, the `--bg` allowlist's case for the variable) and their control; the credential read from the variable's dir and not from the config dir; the account record from the config dir, with a decoy record of another organization in the variable's dir left unread and untouched; the refresh lock in the variable's dir and no lock in the config dir; the watch sees a lock without the variable; and the shared layout as one dir mounted at both paths signs in and locks beside its credential. `BUMP CHECK PASSED`, exit 0 | `bump` |
+| 7 | The bump check, mutated: the variable misspelled in every container | **four fail**, exit 1: signed out with the credential in the variable's dir; signed in from the config dir's; `orgId` absent (signed out, so not the seeded one); no refresh lock in the variable's dir. The other nine pass: the binary's, the tripwires' three, the decoy's, no lock in the config dir, the watch's control and the one-dir pair | `BUMP_MUTATE=var bump` |
+| 7 | The bump check, mutated: the refresh lock moved, the credential not | a copy of the binary with the lock's name patched, same length, to `../.claude/o_r.lock` (both copies of the constant, source and bytecode): the refresh locked `cfg/o_r.lock` while its `.owner` record stayed in the variable's dir. **Exactly the two lock-location assertions fail**, exit 1: no refresh lock in the variable's dir, a lock in the config dir. The other eleven pass | `BUMP_MUTATE=lock bump` |
 
 ### 1 — The split is clean: the credential and its locks move together, the rest stays
 
@@ -105,9 +120,11 @@ remote user cannot write would only make its acquisition fail, which the binary 
 Spike 02's gate holds per container: a config with no account record has no Remote Control. Under
 `--bg` that is silent — a job that runs, a session the app never sees — and Claude Code writes a record
 during that first run, so the *next* start has Remote Control (result 2). The server Drydock runs today
-writes nothing: it refuses with the organization error and would refuse again on every restart, which
-Drydock's supervisor classifies as `awaiting_login` — a state a sign-in elsewhere would never clear for
-that container. Neither is a basis for a product; a seed is.
+writes nothing: it refuses with the organization error, and stopped and started again it refused the
+same way, still without a record (result 2; one restart measured). Drydock's supervisor classifies that
+refusal as `awaiting_login`, and a sign-in writes the login's config, not this one, so a sign-in would
+not clear it for that container (*inferred*: nothing in the server's path writes a record, and a
+restart did not). Neither is a basis for a product; a seed is.
 
 The seed is one object, copied from the login's own `.claude.json` into the workspace's, merged under
 Claude Code's `.claude.json.lock` the way the Feature already writes trust (`seed-oauth.sh`). Once
@@ -116,8 +133,8 @@ and a half old, and keeps it fresh on a 24-hour clock (results 2, 6). So Drydock
 not per start; a re-login as a *different* account needs a re-seed, which the 24-hour refetch would
 otherwise leave stale for up to a day. The three `CLAUDE_CODE_*` variables are a second way in
 (result 2) that writes nothing under a lock, but they are fixed in the container's environment until a
-rebuild, and the organization one is read before the record (*read*), so a changed account would stay
-wrong. The seed is the one to build.
+rebuild, and the organization lookup most API calls use returns the variable before the record
+(result 6, `read`), so a changed account would stay wrong there. The seed is the one to build.
 
 ### 3 — Spike 08's collision is gone
 
@@ -155,27 +172,45 @@ with no environment id and no `Capacity` for the app to start another in.
 Reading the binary, every credential path goes through one resolver, and the refresh, its lock and the
 write lock all resolve to the variable's dir (result 6). Measuring with a fake credential, four
 refreshers of three kinds — the CLI's own (`-p`), a `remote-control` server and a `--bg` daemon — in
-four containers contended on that one path and held it one at a time, while without the variable each
-held its own at the same instant. Spike 00's exclusion rests on `mkdir(2)` of one path, and that path
-is now the variable's dir, so it holds, on the same condition (a local filesystem).
+four containers, started at once, used only that one path: two were seen holding it, the server and
+then a `-p`, never together, and no config dir held a refresh lock, while without the variable each
+container held its own at the same instant. What the other two did is less direct: the second `-p`
+never held the lock and logged nothing about it (the `ELOCKED` retry loop emits only an analytics
+event, `read`), and the daemon ended its refresh in two seconds. Spike 00's exclusion rests on
+`mkdir(2)` of one path, and that path is now the variable's dir, so it holds, on the same condition (a
+local filesystem).
 
-What the fake cannot show is a refresh that *succeeds*: whether a daemon that lost the race picks up
-the winner's token. The daemon's own reaction to a busy lock was to give up within two seconds and
-announce *re-auth required*, re-checking every 30 s (result 6) — in both layouts, so it is a fact about
-`--bg`, not about split, and the shared layout's daemons would meet it too. Spike 08's reading has the
-daemon log `token still valid (cross-process refresh …)` after another process's refresh, which says it
-recovers; H2 is the live check, on a login of its own, and is owed before the flag ships.
+What the fake cannot show is a refresh that *succeeds*: whether a daemon picks up a peer's token. The
+daemon's own refresh gave up within about two seconds and announced *re-auth required*, re-checking
+every 30 s (result 6) — in both layouts, and in the control while its config held a refresh lock of
+its own, so it is not a reaction to a busy lock but a fact about `--bg` on an unreachable token
+endpoint, which the shared layout's daemons would meet too. Spike 08's reading has the daemon log
+`token still valid (cross-process refresh …)` after another process's refresh, which says it recovers;
+H2 is the live check, on a login of its own, and is owed before the flag ships.
 
 ### 7 — The bump check
 
 `./run.sh bump` is the check the §11.1 ritual would run whenever `split` is in use. It needs no login
 and no network beyond a blackholed host: a fake credential, two containers, a minute. It asserts that
 the variable still moves the credential, that the refresh lock still follows it (and does not stay in
-`CLAUDE_CONFIG_DIR`), that the account record still comes from `CLAUDE_CONFIG_DIR`, and that the
-shared layout, expressed as one volume mounted at both paths, still keeps them together — each with a
-control that proves the assertion can fail, and it was watched failing (result 7). A bump that moves
-the lock away from the credential — the silent failure, which would give each refresher its own lock
-again — fails it loudly, and `split` falls back to `shared`.
+`CLAUDE_CONFIG_DIR`), that the account record still comes from `CLAUDE_CONFIG_DIR` even with a decoy
+record of another organization in the variable's dir, and that the shared layout, expressed as one
+volume mounted at both paths, still keeps them together (result 7).
+
+It is mutation-checked, and the mutations are modes, so the check can be watched failing again on a
+new version. `BUMP_MUTATE=var` misspells the variable in every container — Claude Code ignoring it —
+and four assertions fail. `BUMP_MUTATE=lock` is the silent failure the check exists for: a bump that
+moves the refresh lock away from the credential, which would give each refresher its own lock again.
+It is a copy of the binary with the lock's name patched, at equal length, to climb from the variable's
+dir into the config dir; the credential and the lock's `.owner` record stay put, and exactly the two
+lock-location assertions fail (result 7). Either way it exits 1, and `split` falls back to `shared`.
+
+Two things it does not test by behaviour. The credential's write lock (`.storage-write`) and the
+`--bg` job allowlist's case for the variable are **tripwires**: the check fails if their text leaves
+the binary, but a bump that keeps the text and changes what it does passes. Their behaviour is measured
+by `HOLD=1 blank` (the write lock) and by `seed` and `two` (workers of `--bg` jobs signed in from the
+shared credential), which the bump ritual re-runs only when a tripwire trips or the refresh path
+changes.
 
 ---
 
@@ -184,21 +219,33 @@ again — fails it loudly, and `split` falls back to `shared`.
 Not adopted by this spike; recorded so the decision has its cost.
 
 **The flag.** `--claude-layout shared|split` (config; `shared` the default), held for the instance:
-changing it means rebuilding every workspace, since mounts are fixed at `up`. The Feature's
-`containerEnv` cannot take an option, so the variable is set **unconditionally** by the Feature
-(`CLAUDE_SECURESTORAGE_CONFIG_DIR=/home/vscode/.claude-credentials`, a constant on both sides like
-`container.ClaudeConfigMountPoint`), and the layout is only what Drydock mounts: `shared` mounts
-`drydock-claude-config` at both paths — today's layout, which `bump` step 5 measured under the
-variable — and `split` mounts `drydock-claude-credentials` at the variable's path and a volume of the
-workspace's own at `CLAUDE_CONFIG_DIR`. Allowed only for the Claude Code version the bump check passed
-on (a constant checked against `classify.ClaudeCodeVersion`). Falling back costs one sign-in and each
-workspace's own history: the credential is never copied between layouts.
+changing it means rebuilding every workspace, since mounts and the container's environment are fixed
+at `up`. `shared` must stay byte-for-byte today's layout, variable included: today no container has
+`CLAUDE_SECURESTORAGE_CONFIG_DIR`, and a `shared` that set it would be a different layout (one volume
+at both paths, which `bump` step 5 measures) resting on the undocumented variable — the very thing the
+fallback is for. So the variable is set **only under `split`**, and not by the Feature (its
+`containerEnv` cannot take an option): the docker guard's policy carries it, and `WithAdded` adds
+`-e CLAUDE_SECURESTORAGE_CONFIG_DIR=/home/vscode/.claude-credentials` (a constant on both sides, like
+`container.ClaudeConfigMountPoint`) right after `run`/`create`, as it adds the policy's name and
+labels today. A variable set at create is in the container's own config, so every `docker exec` —
+`devcontainer exec`, the supervisor's server, VS Code's attached window and its terminals — inherits
+it (VS Code's is *inferred*: it attaches by `docker exec`; not measured here). A Compose workspace gets
+neither name nor labels from the guard today, so `split` refuses one until it has a route of its own.
+`split` then mounts `drydock-claude-credentials` at the variable's path and a volume of the
+workspace's own at `CLAUDE_CONFIG_DIR`; `shared` mounts `drydock-claude-config` at
+`CLAUDE_CONFIG_DIR` alone, as now. Allowed only for the Claude Code version the bump check passed on
+(a constant checked against `classify.ClaudeCodeVersion`). Falling back costs one sign-in and each
+workspace's own history: the credential is never copied between layouts. (Had the Feature set the
+variable unconditionally, `shared` would be step 5's one-dir layout, which `bump` does cover; but
+then a bump that broke the variable would break `shared` too.)
 
 - **§6 step 4 (`internal/container`, `internal/provision`):** under `split`, make the credential
   volume as today's is made (local driver, the label, Drydock's uid as owner, refused if foreign or
   networked) and a per-workspace config volume the same way, labelled with the workspace, removed with
   the workspace (by label; the credential volume, like today's, by nothing). Two mounts in `up`.
-- **The Feature:** the variable in `containerEnv`; `drydock-claude-config` also writes
+- **`internal/dockerguard`:** the policy's environment entry, added by `WithAdded` and refused, like a
+  label, if the argv already sets it to anything else.
+- **The Feature:** no variable of its own; `drydock-claude-config` also writes
   `hasCompletedOnboarding` and `theme` (without them a fresh config stops an interactive `claude` at
   the first-run theme picker, Spike 06 result 8; this spike seeded both, so `attach` without them is
   not measured) and seeds `oauthAccount` from the login's record when the config has
@@ -210,7 +257,12 @@ workspace's own history: the credential is never copied between layouts.
   variable's path, with the variable set, and a `CLAUDE_CONFIG_DIR` that keeps the login's
   `.claude.json` — a `drydock-claude-login` volume, or a subdirectory of the credential volume — as the
   seed's source. After a sign-in, a re-seed is owed to every workspace whose record names another
-  account (the identity watch's `OnChange`, as `ResumeAwaitingLogin` is today).
+  account **or has none**. `drydock-claude-config` runs as a `postCreateCommand`, once per container,
+  so a running container needs Drydock to write it: the identity watch's `OnChange` (as it calls
+  `ResumeAwaitingLogin` today) launches a provision job per running workspace that runs the Feature's
+  seed in it with `devcontainer exec` — the route the supervisor already uses into the container —
+  and only then resumes a server parked on the organization refusal. A stopped workspace is seeded at
+  its next start, before its server, by the same exec.
 - **The expiry watch (`internal/identity`, §7.3):** read `.credentials.json` from the credential
   volume, and run `auth status --json` with the variable set — without it every read is `absent`.
   `blanked` is unchanged (result 1: the tombstone is fleet-wide in both layouts). H2 decides whether a
@@ -226,7 +278,10 @@ workspace's own history: the credential is never copied between layouts.
   longer exists`); plus the daemon's `headless daemon cannot complete OAuth`, which result 6 shows is
   not always a dead login.
 - **The bump ritual (testing §11.1):** add `./run.sh bump` to the harnesses re-run on every bump while
-  `split` exists, and H2 once per bump that changes the refresh path.
+  `split` exists — with `BUMP_MUTATE=var` and `BUMP_MUTATE=lock`, each of which must exit 1 with the
+  assertions result 7 names (`lock` refuses, and says so, when the lock's name is gone from the
+  binary; then the check itself has already failed) — and H2 once per bump that changes the refresh
+  path.
 
 **CLAUDE.md invariants**, if `split` is adopted:
 
@@ -247,7 +302,11 @@ workspace's own history: the credential is never copied between layouts.
 **What the split changes about the threat model.** Spike 08 phase 1 found the shared volume carries
 code-running inputs (hooks, plugins, skills, the user `CLAUDE.md`, MCP servers) from every workspace to
 every other. Under `split` those are per workspace, and that path is gone; what stays shared is the
-credential, which any workspace can still read, replace or blank (as today). Isolation is not a goal of
+credential, which any workspace can still read, replace or blank (as today). The credential dir is
+mounted read-write in every workspace, so a workspace can also plant files there beside the
+credential — and whatever a later Claude Code version reads through the secure-storage resolver
+(`HS()`) would then be read from a dir every workspace writes; today that is the credential and its
+locks (result 6), and `./run.sh read` is where a new reader would show. Isolation is not a goal of
 the adopted model (design §13), so this is a side effect, not a reason; but the residual-risk paragraph
 of Spike 08 would no longer describe a `split` instance.
 
@@ -261,7 +320,12 @@ Written as steps in the [harness README](harness-09-split-credential/README.md#t
 - **H2** — a live refresh under split on a **disposable login the owner makes for the run**
   (`./h2.sh up`, `login`, `expire`, `start`, `record`, `down`): two daemons and a server on one
   credential volume, each with its own config; one refresh, the others adopting it, the credential not
-  blanked, every session keeping Remote Control. Never on a copied credential.
+  blanked, every session keeping Remote Control. Never on a copied credential. *Disposable* means
+  made in H2's own login container and used for nothing else: best a separate account; otherwise a
+  fresh `claude auth login` of the owner's account, which is an OAuth grant of its own that H2
+  rotates and finally logs out. That rotating or revoking one grant leaves the account's other logins
+  alone is an **assumption this spike has not verified**; if it is wrong, H2 signs the owner's other
+  logins out too (recoverable by signing in again).
 
 ## Open questions
 

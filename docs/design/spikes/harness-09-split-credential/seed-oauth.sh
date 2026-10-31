@@ -28,15 +28,29 @@ umask 077
 held=false
 cleanup() { rm -f "$tmp"; if $held; then rmdir "$lock" 2>/dev/null || true; fi; }
 trap cleanup EXIT
-trap 'exit 1' HUP INT TERM
+# While the lock is being taken a signal only sets a flag, checked once
+# `held` says whether the lock is ours: no signal can land between a mkdir
+# that succeeded and held=true, so an interrupted seed never leaves the lock
+# behind (and never removes one it does not hold).
+sig=
+trap 'sig=1' HUP INT TERM
 tries=0
-until mkdir "$lock" 2>/dev/null; do
-  [ -d "$lock" ] || continue
+while :; do
+  if mkdir "$lock" 2>/dev/null; then held=true; break; fi
+  if [ ! -d "$lock" ]; then
+    # Not held, yet mkdir failed: once more at once (the holder may have
+    # released between the two calls); if it still fails with no lock there,
+    # mkdir cannot work in this dir, and retrying would never end.
+    if mkdir "$lock" 2>/dev/null; then held=true; break; fi
+    [ -d "$lock" ] || { echo "seed-oauth: cannot make $lock and no one holds it; refusing" >&2; exit 1; }
+  fi
+  [ -z "$sig" ] || exit 1
   tries=$((tries + 1))
   [ "$tries" -lt 60 ] || { echo "seed-oauth: $lock held for over a minute; not stealing it" >&2; exit 1; }
   sleep 1
 done
-held=true
+[ -z "$sig" ] || exit 1
+trap 'exit 1' HUP INT TERM
 if [ -e "$file" ]; then
   jq -e 'type == "object"' "$file" >/dev/null 2>&1 || { echo "seed-oauth: $file is not a JSON object; refusing" >&2; exit 1; }
   jq --slurpfile a "$acct" '.oauthAccount = $a[0]' "$file" > "$tmp"
