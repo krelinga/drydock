@@ -453,14 +453,16 @@ Design §14 orders the phases so the riskiest unknown resolves first.
    host, `06` whether a terminal can join the app's session (not the server's; `claude --rc` beside
    it), `08` whether `claude --bg --rc` is workable per workspace (no: daemons on the shared volume
    run or misreport each other's jobs; keep the server; three app/live-refresh human steps owed),
-<<<<<<< HEAD
    `09` a split layout — a config volume per workspace, only the credential shared through the
    undocumented `CLAUDE_SECURESTORAGE_CONFIG_DIR`, `oauthAccount` seeded (workable with conditions:
    the credential and its locks move together and Spike 08's collision is gone; not adopted; its
    `bump` mode is the check a `shared|split` flag would need on every bump; app and live-refresh
    human steps owed), `10` handing a phone conversation to a laptop terminal (`claude --resume
-   --fork-session --rc` in the workspace folder: full history, server untouched, a new app session;
-   app-side H1–H5 owed). Still open: whether a `--spawn worktree` path needs its own trust record.
+   --fork-session --rc` run in the folder the conversation ran in — a fork drops a worktree binding,
+   so from the clone a worktree session silently continues in the clone: full history, server
+   untouched, a new app session; a copy, so the phone's session stays, holding a capacity place,
+   until archived; app-side H1–H5 owed). Still open: whether a `--spawn worktree` path needs its own
+   trust record.
 1. **Front door** — done, and deployed for real.
 2. **Walking skeleton** — done, reboot drill included.
 3. **Credentials** — done.
